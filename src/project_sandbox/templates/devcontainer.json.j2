@@ -5,10 +5,16 @@
     "context": "../.project-sandbox"
   },
   "runArgs": [
+{% if firewall_enabled %}
     "--cap-add=NET_ADMIN",
-    "--cap-add=NET_RAW"{% if memory %},
-    "--memory={{ memory }}"{% endif %}{% if cpus %},
-    "--cpus={{ cpus }}"{% endif %}
+    "--cap-add=NET_RAW"{% if memory or cpus %},{% endif %}
+{% endif %}
+{% if memory %}
+    "--memory={{ memory }}"{% if cpus %},{% endif %}
+{% endif %}
+{% if cpus %}
+    "--cpus={{ cpus }}"
+{% endif %}
   ],
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=delegated",
   "workspaceFolder": "/workspace",
@@ -29,7 +35,7 @@
     "source=${localEnv:HOME}/.codex,target=/home/agent/.codex.host,type=bind{% if ro_creds %},readonly{% endif %}"{% endif %}{% for m in extra_mounts %},
     "{{ m }}"{% endfor %}
   ],
-  "postStartCommand": "sudo /usr/local/bin/project-sandbox-init-firewall && /usr/local/bin/project-sandbox-devcontainer-init",
+  "postStartCommand": "{% if firewall_enabled %}sudo /usr/local/bin/project-sandbox-init-firewall && {% endif %}/usr/local/bin/project-sandbox-devcontainer-init",
   "waitFor": "postStartCommand",
   "customizations": {
     "vscode": {

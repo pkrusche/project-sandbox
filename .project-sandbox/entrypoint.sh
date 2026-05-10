@@ -1,0 +1,55 @@
+#!/bin/sh
+set -eu
+
+if [ -n "${PROJECT_SANDBOX_USER_NAME:-}" ] || [ -n "${PROJECT_SANDBOX_USER_EMAIL:-}" ]; then
+  : > "$HOME/.gitconfig"
+  [ -n "${PROJECT_SANDBOX_USER_NAME:-}" ] && git config --global user.name "$PROJECT_SANDBOX_USER_NAME"
+  [ -n "${PROJECT_SANDBOX_USER_EMAIL:-}" ] && git config --global user.email "$PROJECT_SANDBOX_USER_EMAIL"
+  mkdir -p "$HOME/.config/jj"
+  cat > "$HOME/.config/jj/config.toml" <<EOT
+[user]
+name  = "${PROJECT_SANDBOX_USER_NAME:-}"
+email = "${PROJECT_SANDBOX_USER_EMAIL:-}"
+EOT
+fi
+
+mkdir -p "$HOME/.claude" "$HOME/.codex"
+if [ -f "$HOME/.claude.host/.credentials.json" ]; then
+  cp "$HOME/.claude.host/.credentials.json" "$HOME/.claude/.credentials.json"
+  chmod 600 "$HOME/.claude/.credentials.json"
+fi
+if [ -f "$HOME/.codex.host/auth.json" ]; then
+  cp "$HOME/.codex.host/auth.json" "$HOME/.codex/auth.json"
+  chmod 600 "$HOME/.codex/auth.json"
+fi
+
+for d in "$HOME/.claude" "$HOME/.codex"; do
+  [ -d "$d" ] && sudo chown -R agent:agent "$d" 2>/dev/null || true
+done
+
+if [ "${PROJECT_SANDBOX_NO_FIREWALL:-0}" != "1" ]; then
+  sudo /usr/local/bin/project-sandbox-init-firewall
+fi
+
+case "${1:-bash}" in
+  project-sandbox-run)
+    shift
+    case "${1:-bash}" in
+      claude) shift; exec claude "$@" ;;
+      codex) shift; exec codex "$@" ;;
+      claude-headless)
+        shift
+        if [ -n "${PROJECT_SANDBOX_PROMPT_FILE:-}" ]; then
+          exec claude -p "$(cat "$PROJECT_SANDBOX_PROMPT_FILE")" --output-format stream-json --dangerously-skip-permissions
+        fi
+        exec claude -p "${PROJECT_SANDBOX_PROMPT:-}" --output-format stream-json --dangerously-skip-permissions
+        ;;
+      codex-headless)
+        shift
+        PROMPT="${PROJECT_SANDBOX_PROMPT:-$(cat "${PROJECT_SANDBOX_PROMPT_FILE:-/dev/null}")}"
+        exec codex exec "$PROMPT"
+        ;;
+      *) exec "${@:-bash}" ;;
+    esac ;;
+  *) exec "$@" ;;
+esac

@@ -35,6 +35,7 @@ def build_parser() -> ArgumentParser:
     p.add_argument("--log")
     p.add_argument("--timeout", type=int)
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--verbose", action="store_true")
     return p
 
 
@@ -85,6 +86,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         workspace = wt.path.resolve()
 
+    if not args.devcontainer_only:
+        rc = container_cli.ensure_system_started(dry_run=args.dry_run)
+        if rc != 0:
+            return rc
+
     if not args.devcontainer_only and not args.no_build:
         rc = container_cli.build_image(context_dir=context_dir, image_tag=args.image_tag, dry_run=args.dry_run)
         if rc != 0:
@@ -100,6 +106,7 @@ def main(argv: list[str] | None = None) -> int:
             identity=identity,
             install_claude=install_claude,
             install_codex=install_codex,
+            firewall_enabled=not args.no_firewall,
             memory=args.memory,
             cpus=args.cpus,
             ro_creds=ro_creds,
@@ -130,6 +137,33 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     run_agent = "codex" if args.agent == "both" else args.agent
+    extra_mounts = list(args.extra_mounts)
+    extra_env: list[str] = []
+    run_mode_agent = run_agent
+    unsupervised = bool(args.prompt or args.prompt_text)
+    log_path: Path | None = None
+
+    if unsupervised:
+        prompts_dir = ensure_dir(context_dir / "prompts")
+        log_path = Path(args.log).resolve() if args.log else session.default_log_path(project, args.branch, run_agent)
+        run_mode_agent = f"{run_agent}-headless"
+        if args.prompt:
+            prompt_file = resolve_strict(args.prompt)
+            extra_mounts.append(
+                f"type=bind,source={prompt_file},target=/workspace/.project-sandbox-prompt,readonly"
+            )
+            extra_env.append("PROJECT_SANDBOX_PROMPT_FILE=/workspace/.project-sandbox-prompt")
+        elif args.prompt_text:
+            if len(args.prompt_text) <= 4096:
+                extra_env.append(f"PROJECT_SANDBOX_PROMPT={args.prompt_text}")
+            else:
+                long_prompt = prompts_dir / "prompt.txt"
+                long_prompt.write_text(args.prompt_text, encoding="utf-8")
+                extra_mounts.append(
+                    f"type=bind,source={long_prompt},target=/workspace/.project-sandbox-prompt,readonly"
+                )
+                extra_env.append("PROJECT_SANDBOX_PROMPT_FILE=/workspace/.project-sandbox-prompt")
+
     cmd = container_cli.build_run_argv(
         image=args.image_tag,
         project_abs=workspace,
@@ -141,20 +175,15 @@ def main(argv: list[str] | None = None) -> int:
         memory=args.memory,
         cpus=args.cpus,
         ro_creds=ro_creds,
-        extra_mounts=args.extra_mounts,
-        agent=run_agent,
+        extra_mounts=extra_mounts,
+        agent=run_mode_agent,
         firewall_enabled=not args.no_firewall,
-        interactive=not (args.prompt or args.prompt_text),
+        interactive=not unsupervised,
+        extra_env=extra_env,
     )
 
-    if args.prompt or args.prompt_text:
-        prompt_text = args.prompt_text
-        if args.prompt:
-            prompt_text = resolve_strict(args.prompt).read_text(encoding="utf-8")
-        cmd += ["--env", f"PROJECT_SANDBOX_PROMPT={prompt_text or ''}"]
-        cmd[-1], cmd[-2] = cmd[-2], cmd[-1]
-        cmd[-1] = f"{run_agent}-headless"
-        log_path = Path(args.log).resolve() if args.log else session.default_log_path(project, args.branch, run_agent)
+    if unsupervised:
+        assert log_path is not None
         exit_code = session.run(cmd, log_path=log_path, timeout=args.timeout, dry_run=args.dry_run)
     else:
         exit_code = container_cli.run(cmd, dry_run=args.dry_run)
@@ -170,5 +199,18 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _write_project_sandbox_gitignore(context_dir: Path) -> None:
-    content = """*\n!claude/\n!claude/settings.json\n!codex/\n!codex/config.toml\n!init-firewall.sh\n!bin/\n!bin/run-claude\n!bin/run-codex\n!Dockerfile\n!entrypoint.sh\n!project-sandbox-devcontainer-init\n!sessions/\n"""
+    content = """*
+!.gitignore
+!claude/
+!claude/settings.json
+!codex/
+!codex/config.toml
+!init-firewall.sh
+!Dockerfile
+!entrypoint.sh
+!project-sandbox-devcontainer-init
+!bin/
+!bin/run-claude
+!bin/run-codex
+"""
     (context_dir / ".gitignore").write_text(content, encoding="utf-8")

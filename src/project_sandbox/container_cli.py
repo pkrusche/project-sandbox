@@ -27,7 +27,6 @@ def build_run_argv(
         "container",
         "run",
         "--rm",
-        "-it" if interactive else "-i",
         "--memory",
         memory,
         "--cpus",
@@ -35,6 +34,8 @@ def build_run_argv(
         "--workdir",
         "/workspace",
     ]
+    if interactive:
+        argv.append("-it")
     if firewall_enabled:
         argv += ["--cap-add", "NET_ADMIN", "--cap-add", "NET_RAW"]
     argv += [
@@ -81,6 +82,14 @@ def build_run_argv(
 
 def build_image(*, context_dir: Path, image_tag: str, dry_run: bool = False) -> int:
     cmd = ["container", "build", "-t", image_tag, str(context_dir)]
+    if dry_run:
+        print(" ".join(cmd))
+        return 0
+    return subprocess.run(cmd, check=False).returncode
+
+
+def ensure_system_started(*, dry_run: bool = False) -> int:
+    cmd = ["container", "system", "start"]
     if dry_run:
         print(" ".join(cmd))
         return 0

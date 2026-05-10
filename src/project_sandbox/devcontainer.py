@@ -11,6 +11,7 @@ def render(
     identity: GitIdentity,
     install_claude: bool,
     install_codex: bool,
+    firewall_enabled: bool,
     memory: str | None,
     cpus: int | None,
     ro_creds: bool,
@@ -22,6 +23,8 @@ def render(
 
     _symlink(dc_dir / "Dockerfile", Path("../.project-sandbox/Dockerfile"))
     _symlink(dc_dir / "init-firewall.sh", Path("../.project-sandbox/init-firewall.sh"))
+    _symlink(dc_dir / "claude", Path("../.project-sandbox/claude"))
+    _symlink(dc_dir / "codex", Path("../.project-sandbox/codex"))
 
     out = dc_dir / "devcontainer.json"
     if out.exists() and not refresh:
@@ -34,6 +37,7 @@ def render(
             project_name=project.name,
             install_claude=install_claude,
             install_codex=install_codex,
+            firewall_enabled=firewall_enabled,
             memory=memory,
             cpus=cpus,
             ro_creds=ro_creds,
@@ -53,5 +57,7 @@ def _symlink(link: Path, target: Path) -> None:
     if link.exists() or link.is_symlink():
         if link.resolve() == (link.parent / target).resolve():
             return
+        if link.is_dir() and not link.is_symlink():
+            raise RuntimeError(f"Cannot replace directory with symlink: {link}")
         link.unlink()
     link.symlink_to(target)

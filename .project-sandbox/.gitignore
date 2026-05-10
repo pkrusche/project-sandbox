@@ -1,0 +1,13 @@
+*
+!.gitignore
+!claude/
+!claude/settings.json
+!codex/
+!codex/config.toml
+!init-firewall.sh
+!Dockerfile
+!entrypoint.sh
+!project-sandbox-devcontainer-init
+!bin/
+!bin/run-claude
+!bin/run-codex
