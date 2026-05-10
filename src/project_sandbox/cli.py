@@ -44,6 +44,12 @@ def build_parser() -> ArgumentParser:
     )
     p.add_argument("--prompt")
     p.add_argument("--prompt-text")
+    p.add_argument(
+        "--agent",
+        choices=["claude", "codex"],
+        default="claude",
+        help="Agent to run in unsupervised mode (default: claude).",
+    )
     p.add_argument("--log")
     p.add_argument("--timeout", type=int)
     p.add_argument("--dry-run", action="store_true")
@@ -140,7 +146,7 @@ def main(argv: list[str] | None = None) -> int:
             extra_envs=[],
         )
 
-    run_agent = "claude"
+    run_agent = args.agent
     cmd, log_path, unsupervised = _build_session_command(
         args,
         project=project,
@@ -183,7 +189,7 @@ def _dry_run(
     context_dir = project / ".project-sandbox"
     claude_cfg = context_dir / "claude" / "settings.json"
     codex_cfg = context_dir / "codex" / "config.toml"
-    run_agent = "claude"
+    run_agent = args.agent
 
     print("DRY RUN: no files, worktrees, images, or containers will be created.")
     if worktree is not None:
