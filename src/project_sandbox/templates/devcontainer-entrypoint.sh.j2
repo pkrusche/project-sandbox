@@ -8,12 +8,6 @@ if [ -n "$NAME" ] || [ -n "$EMAIL" ]; then
   : > "$HOME/.gitconfig"
   [ -n "$NAME" ] && git config --global user.name "$NAME"
   [ -n "$EMAIL" ] && git config --global user.email "$EMAIL"
-  mkdir -p "$HOME/.config/jj"
-  cat > "$HOME/.config/jj/config.toml" <<EOT
-[user]
-name  = "${NAME}"
-email = "${EMAIL}"
-EOT
 fi
 
 mkdir -p "$HOME/.claude" "$HOME/.codex"

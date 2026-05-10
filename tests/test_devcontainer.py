@@ -1,0 +1,77 @@
+import json
+import sys
+import tempfile
+from pathlib import Path
+from unittest import TestCase
+
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from project_sandbox import devcontainer
+from project_sandbox.git_identity import GitIdentity
+
+
+def _render(project: Path, *, refresh: bool = False, firewall_enabled: bool = True) -> Path:
+    return devcontainer.render(
+        project,
+        identity=GitIdentity("Ada", "ada@example.com"),
+        install_claude=True,
+        install_codex=True,
+        firewall_enabled=firewall_enabled,
+        memory="8g",
+        cpus=4,
+        ro_creds=False,
+        extra_mounts=[],
+        refresh=refresh,
+    )
+
+
+class DevcontainerTests(TestCase):
+    def test_render_writes_valid_devcontainer_json_with_capabilities(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / ".project-sandbox").mkdir()
+
+            _render(project)
+            spec = json.loads((project / ".devcontainer" / "devcontainer.json").read_text())
+
+            self.assertEqual(spec["remoteUser"], "agent")
+            self.assertIn("--cap-add=NET_ADMIN", spec["runArgs"])
+            self.assertIn("--cap-add=NET_RAW", spec["runArgs"])
+
+    def test_render_creates_relative_symlinks_into_project_sandbox(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / ".project-sandbox").mkdir()
+
+            _render(project)
+            dc_dir = project / ".devcontainer"
+
+            for name in ("Dockerfile", "init-firewall.sh", "claude", "codex"):
+                link = dc_dir / name
+                self.assertTrue(link.is_symlink(), f"{name} is not a symlink")
+                target = link.readlink()
+                self.assertTrue(str(target).startswith("../.project-sandbox"))
+
+    def test_render_is_idempotent_without_refresh(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / ".project-sandbox").mkdir()
+
+            _render(project)
+            spec_path = project / ".devcontainer" / "devcontainer.json"
+            mtime = spec_path.stat().st_mtime_ns
+
+            _render(project)
+            self.assertEqual(spec_path.stat().st_mtime_ns, mtime)
+
+    def test_render_omits_capabilities_when_firewall_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / ".project-sandbox").mkdir()
+
+            _render(project, firewall_enabled=False)
+            spec = json.loads((project / ".devcontainer" / "devcontainer.json").read_text())
+
+            self.assertNotIn("--cap-add=NET_ADMIN", spec["runArgs"])
+            self.assertNotIn("project-sandbox-init-firewall", spec["postStartCommand"])

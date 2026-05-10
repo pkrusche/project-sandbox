@@ -5,12 +5,6 @@ if [ -n "${PROJECT_SANDBOX_USER_NAME:-}" ] || [ -n "${PROJECT_SANDBOX_USER_EMAIL
   : > "$HOME/.gitconfig"
   [ -n "${PROJECT_SANDBOX_USER_NAME:-}" ] && git config --global user.name "$PROJECT_SANDBOX_USER_NAME"
   [ -n "${PROJECT_SANDBOX_USER_EMAIL:-}" ] && git config --global user.email "$PROJECT_SANDBOX_USER_EMAIL"
-  mkdir -p "$HOME/.config/jj"
-  cat > "$HOME/.config/jj/config.toml" <<EOT
-[user]
-name  = "${PROJECT_SANDBOX_USER_NAME:-}"
-email = "${PROJECT_SANDBOX_USER_EMAIL:-}"
-EOT
 fi
 
 mkdir -p "$HOME/.claude" "$HOME/.codex"

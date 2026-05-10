@@ -10,8 +10,8 @@ readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11"
 dependencies = [
-    "jinja2>=3.1",
-    "pytest>=9.0.3",
+    "jinja2==3.1.6",
+    "pytest==9.0.3",
 ]
 
 [project.scripts]
@@ -19,3 +19,6 @@ project-sandbox = "project_sandbox.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/project_sandbox"]
+
+[tool.uv]
+cache-dir = ".uv_cache"

