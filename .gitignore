@@ -8,6 +8,11 @@ build/
 dist/
 .venv/
 .project-sandbox/
+.uv-cache
+.uv_cache
+.pycache-test
+.pytest_cache
+.uv-python
 
 # project-sandbox — do not commit agent secrets
 .project-sandbox/claude/.credentials.json
