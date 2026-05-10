@@ -77,7 +77,7 @@ Open the project in VS Code, Cursor, or any devcontainer-aware IDE and choose **
 Generate the devcontainer without building or running anything:
 
 ```bash
-uv run project-sandbox --devcontainer-only /absolute/path/to/repo python:3.12-slim
+uv run project-sandbox /absolute/path/to/repo python:3.12-slim
 ```
 
 This is useful for repos whose owners do not have `apple/container` installed but want the sandboxed agent environment for IDE or Codespaces use.
@@ -168,7 +168,7 @@ Tests cover CLI surface, dry-run non-mutation, renderer output, launcher shell q
 A self-contained end-to-end smoke test creates a throwaway hello-world project, runs the tool against it, and validates every generated artefact:
 
 ```bash
-./scripts/e2e-test.sh                  # portable: --devcontainer-only path
+./scripts/e2e-test.sh                  # portable: devcontainer only path
 ./scripts/e2e-test.sh --with-container # also exercises launcher generation (requires apple/container)
 ```
 

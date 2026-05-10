@@ -9,8 +9,6 @@ def render(
     project: Path,
     *,
     identity: GitIdentity,
-    install_claude: bool,
-    install_codex: bool,
     firewall_enabled: bool,
     memory: str | None,
     cpus: int | None,
@@ -34,8 +32,6 @@ def render(
     out.write_text(
         tmpl.render(
             project_name=project.name,
-            install_claude=install_claude,
-            install_codex=install_codex,
             firewall_enabled=firewall_enabled,
             memory=memory,
             cpus=cpus,

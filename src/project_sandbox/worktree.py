@@ -37,6 +37,9 @@ def teardown(repo: Path, wt: Worktree, *, after: str) -> None:
     if after == "ask":
         after = _prompt_user(wt)
 
+    if after in ("merge", "rebase"):
+        _clear_stale_index_lock(repo, wt)
+
     if after == "merge":
         _git(repo, ["merge", "--no-ff", wt.branch, "-m", f"Merge agent session: {wt.branch}"])
     elif after == "rebase":
@@ -63,6 +66,16 @@ def _git(repo: Path, args: list[str], capture: bool = False) -> str:
 def _list_worktrees(repo: Path) -> list[str]:
     out = _git(repo, ["worktree", "list", "--porcelain"], capture=True)
     return [line.split()[-1] for line in out.splitlines() if line.startswith("worktree")]
+
+
+def _clear_stale_index_lock(repo: Path, wt: Worktree) -> None:
+    # A container crash mid-commit may leave index.lock in the worktree metadata.
+    # Remove it so the host-side merge/rebase can proceed.
+    git_dir = repo.resolve() / ".git"
+    wt_name = wt.path.name
+    lock = git_dir / "worktrees" / wt_name / "index.lock"
+    if lock.exists():
+        lock.unlink()
 
 
 def _prompt_user(wt: Worktree) -> str:

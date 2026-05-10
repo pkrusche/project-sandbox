@@ -16,8 +16,6 @@ class RendererTests(TestCase):
             dockerfile.render(
                 context,
                 base_image="python:3.12-slim",
-                install_claude=True,
-                install_codex=False,
             )
             claude = config_claude.render(context)
             codex = config_codex.render(context)

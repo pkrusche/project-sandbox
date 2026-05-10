@@ -11,13 +11,11 @@ from . import (
     launcher,
     session,
 )
+from . import (
+    worktree as worktree_mod,
+)
 from .git_identity import read as read_identity
 from .paths import ensure_dir, resolve_strict
-
-BRANCH_DISABLED_MESSAGE = (
-    "--branch is temporarily disabled. Git worktree support needs a metadata-mount redesign "
-    "so git commands work correctly inside the container."
-)
 
 
 def build_parser() -> ArgumentParser:
@@ -36,7 +34,7 @@ def build_parser() -> ArgumentParser:
     p.add_argument("--firewall-allow-openai", action="store_true")
     p.add_argument(
         "--branch",
-        help="Temporarily disabled until worktree metadata mounting is redesigned.",
+        help="Run the agent in a git worktree on this branch (created if it doesn't exist).",
     )
     p.add_argument("--worktree-base")
     p.add_argument("--worktree-dir")
@@ -59,21 +57,23 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.prompt and args.prompt_text:
         raise SystemExit("Use only one of --prompt or --prompt-text")
-    if args.branch:
-        raise SystemExit(BRANCH_DISABLED_MESSAGE)
+    if (
+        args.branch
+        and (args.prompt or args.prompt_text)
+        and args.after_session == "ask"
+    ):
+        raise SystemExit(
+            "--after-session=ask is not valid in unsupervised mode; use --after-session=nothing or another option."
+        )
 
     project = resolve_strict(args.project)
     identity = read_identity()
-    install_claude = True
-    install_codex = True
+
+    wt, workspace = _setup_worktree(args, project)
 
     if args.dry_run:
         return _dry_run(
-            args,
-            project=project,
-            identity=identity,
-            install_claude=install_claude,
-            install_codex=install_codex,
+            args, project=project, workspace=workspace, worktree=wt, identity=identity
         )
 
     context_dir = ensure_dir(project / ".project-sandbox")
@@ -81,15 +81,13 @@ def main(argv: list[str] | None = None) -> int:
     dockerfile.render(
         context_dir,
         base_image=args.base_image,
-        install_claude=install_claude,
-        install_codex=install_codex,
         refresh=args.rebuild,
     )
     dockerfile.render_entrypoint(context_dir, refresh=args.rebuild)
     dockerfile.render_devcontainer_entrypoint(context_dir, refresh=args.rebuild)
     firewall.render(
         context_dir,
-        allow_openai=args.firewall_allow_openai or install_codex,
+        allow_openai=args.firewall_allow_openai,
         extra_domains=args.extra_domain,
     )
 
@@ -99,12 +97,11 @@ def main(argv: list[str] | None = None) -> int:
     _write_project_sandbox_gitignore(context_dir)
     _update_project_gitignore(project)
 
-    workspace = project
-
-    if not args.devcontainer_only:
-        rc = container_cli.ensure_system_started()
-        if rc != 0:
-            return rc
+    rc = container_cli.ensure_system_started()
+    if rc != 0:
+        print(
+            "[W] Apple container system not running - if you're on a Mac, you may need to install or start it. Otherwise, you can still work wiht the devcontainer setup."
+        )
 
     if not args.no_build:
         rc = container_cli.build_image(
@@ -119,8 +116,6 @@ def main(argv: list[str] | None = None) -> int:
     devcontainer.render(
         project,
         identity=identity,
-        install_claude=install_claude,
-        install_codex=install_codex,
         firewall_enabled=not args.no_firewall,
         memory=args.memory,
         cpus=args.cpus,
@@ -153,6 +148,7 @@ def main(argv: list[str] | None = None) -> int:
         project=project,
         context_dir=context_dir,
         workspace=workspace,
+        worktree=wt,
         identity=identity,
         run_agent=run_agent,
         claude_cfg=claude_cfg,
@@ -164,8 +160,6 @@ def main(argv: list[str] | None = None) -> int:
         _print_next_steps(
             context_dir=context_dir,
             project=project,
-            install_claude=install_claude,
-            install_codex=install_codex,
         )
 
     if unsupervised:
@@ -174,11 +168,19 @@ def main(argv: list[str] | None = None) -> int:
     else:
         exit_code = container_cli.run(cmd)
 
+    if wt is not None:
+        _teardown_worktree(args, project=project, wt=wt, exit_code=exit_code)
+
     return exit_code
 
 
 def _dry_run(
-    args, *, project: Path, identity, install_claude: bool, install_codex: bool
+    args,
+    *,
+    project: Path,
+    workspace: Path,
+    worktree,
+    identity,
 ) -> int:
     context_dir = project / ".project-sandbox"
     claude_cfg = context_dir / "claude" / "settings.json"
@@ -186,6 +188,9 @@ def _dry_run(
     run_agent = "claude"
 
     print("DRY RUN: no files, worktrees, images, or containers will be created.")
+    if worktree is not None:
+        print(f"Would create worktree at: {workspace}")
+        print(f"Would mount .git metadata: {(project / '.git').resolve()}")
     print(f"Would render sandbox assets under: {context_dir}")
     print(f"Would render devcontainer under: {project / '.devcontainer'}")
 
@@ -199,7 +204,8 @@ def _dry_run(
         args,
         project=project,
         context_dir=context_dir,
-        workspace=project,
+        workspace=workspace,
+        worktree=worktree,
         identity=identity,
         run_agent=run_agent,
         claude_cfg=claude_cfg,
@@ -211,9 +217,39 @@ def _dry_run(
         session.run(cmd, log_path=log_path, timeout=args.timeout, dry_run=True)
     else:
         container_cli.run(cmd, dry_run=True)
-    if install_claude or install_codex:
-        print(f"Would write launcher scripts under: {context_dir / 'bin'}")
+    print(f"Would write launcher scripts under: {context_dir / 'bin'}")
     return 0
+
+
+def _setup_worktree(args, project: Path):
+    """Return (Worktree | None, workspace_path)."""
+    if not args.branch:
+        return None, project
+
+    if (project / ".jj").is_dir():
+        raise SystemExit("--branch is not yet supported for jj repos.")
+
+    git_dir = project / ".git"
+    if not git_dir.is_dir():
+        raise SystemExit(
+            "--branch requires a plain git repo at the project root "
+            "(.git is a file or missing — worktree-of-worktree and submodules are not supported)."
+        )
+
+    wt = worktree_mod.setup(
+        repo=project,
+        branch=args.branch,
+        base=args.worktree_base,
+        worktree_dir=Path(args.worktree_dir) if args.worktree_dir else None,
+    )
+    return wt, wt.path
+
+
+def _teardown_worktree(args, *, project: Path, wt, exit_code: int) -> None:
+    after = args.after_session
+    if exit_code != 0 and after == "ask":
+        after = "nothing"
+    worktree_mod.teardown(project, wt, after=after)
 
 
 def _build_session_command(
@@ -222,6 +258,7 @@ def _build_session_command(
     project: Path,
     context_dir: Path,
     workspace: Path,
+    worktree,
     identity,
     run_agent: str,
     claude_cfg: Path,
@@ -229,6 +266,14 @@ def _build_session_command(
     create_prompt_files: bool,
 ) -> tuple[list[str], Path | None, bool]:
     extra_mounts = list(args.extra_mounts)
+    if worktree is not None:
+        git_dir_host = (project / ".git").resolve()
+        git_dir_str = str(git_dir_host)
+        if any(git_dir_str in m for m in extra_mounts):
+            raise SystemExit(
+                f"--mount conflicts with the worktree .git metadata mount at {git_dir_str}"
+            )
+        extra_mounts.append(f"type=bind,source={git_dir_str},target={git_dir_str}")
     extra_env: list[str] = []
     run_mode_agent = run_agent
     unsupervised = bool(args.prompt or args.prompt_text)
@@ -297,30 +342,22 @@ def _print_next_steps(
     *,
     context_dir: Path,
     project: Path,
-    install_claude: bool,
-    install_codex: bool,
 ) -> None:
     print("\n=== project-sandbox ready ===")
     print(f"  Project:  {project}")
     print(f"  Sandbox:  {context_dir}")
     print()
     print("  Generated launcher scripts:")
-    if install_claude:
-        print(f"    {context_dir / 'bin' / 'run-claude'}")
-    if install_codex:
-        print(f"    {context_dir / 'bin' / 'run-codex'}")
+    print(f"    {context_dir / 'bin' / 'run-claude'}")
+    print(f"    {context_dir / 'bin' / 'run-codex'}")
     print()
     print("  Devcontainer:")
     print(f"    {project / '.devcontainer' / 'devcontainer.json'}")
-    print(
-        "  → Open this project in VS Code / Cursor and choose 'Reopen in Container'."
-    )
+    print("  → Open this project in VS Code / Cursor and choose 'Reopen in Container'.")
     print()
     print("  To run an agent interactively:")
-    if install_claude:
-        print(f"    {context_dir / 'bin' / 'run-claude'}")
-    if install_codex:
-        print(f"    {context_dir / 'bin' / 'run-codex'}")
+    print(f"    {context_dir / 'bin' / 'run-claude'}")
+    print(f"    {context_dir / 'bin' / 'run-codex'}")
     print()
 
 

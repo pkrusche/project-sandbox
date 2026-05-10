@@ -12,23 +12,17 @@ RUN set -eux; \
 
 RUN useradd -m -u 1000 -s /bin/bash agent
 
-{% if install_claude or install_codex %}
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && \
     apt-get update && apt-get install -y --no-install-recommends nodejs && \
     rm -rf /var/lib/apt/lists/*
-{% endif %}
 
 RUN JJ_ARCH=$(uname -m | sed 's/aarch64/aarch64/;s/x86_64/x86_64/') && \
     curl -fsSL "https://github.com/jj-vcs/jj/releases/latest/download/jj-${JJ_ARCH}-unknown-linux-musl.tar.gz" \
     | tar -xz -C /usr/local/bin jj && \
     chmod 0755 /usr/local/bin/jj
 
-{% if install_claude %}
 RUN npm install -g @anthropic-ai/claude-code
-{% endif %}
-{% if install_codex %}
 RUN npm install -g @openai/codex
-{% endif %}
 
 COPY init-firewall.sh /usr/local/bin/project-sandbox-init-firewall
 COPY entrypoint.sh /usr/local/bin/project-sandbox-entrypoint

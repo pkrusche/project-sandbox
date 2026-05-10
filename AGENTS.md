@@ -37,4 +37,4 @@ Keep unrelated edits in separate changes. Recent history uses short imperative d
 
 ## Security & Configuration Tips
 
-Treat generated container config and firewall behavior as security-sensitive. Avoid passing secrets through environment variables; prefer mounted credential files. Keep `--branch` behavior disabled until worktree metadata mounting is redesigned and covered by tests.
+Treat generated container config and firewall behavior as security-sensitive. Avoid passing secrets through environment variables; prefer mounted credential files. The `--branch` flag is active: it mounts the worktree directory at `/workspace` and bind-mounts the main repo's `.git/` at its absolute host path so `git` works inside the container (via VirtioFS UID remapping).

@@ -55,8 +55,8 @@ if [ "$WITH_CONTAINER" = 1 ]; then
   echo "Running: uv run project-sandbox --no-build $TMP_PROJECT python:3.12-slim"
   uv run project-sandbox --no-build "$TMP_PROJECT" python:3.12-slim
 else
-  echo "Running: uv run project-sandbox --devcontainer-only $TMP_PROJECT python:3.12-slim"
-  uv run project-sandbox --devcontainer-only "$TMP_PROJECT" python:3.12-slim
+  echo "Running: uv run project-sandbox $TMP_PROJECT python:3.12-slim"
+  uv run project-sandbox "$TMP_PROJECT" python:3.12-slim
 fi
 echo
 

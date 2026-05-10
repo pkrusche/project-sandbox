@@ -7,8 +7,6 @@ def render(
     context_dir: Path,
     *,
     base_image: str,
-    install_claude: bool,
-    install_codex: bool,
     refresh: bool = False,
 ) -> Path:
     out = context_dir / "Dockerfile"
@@ -19,8 +17,6 @@ def render(
     out.write_text(
         tmpl.render(
             base_image=base_image,
-            install_claude=install_claude,
-            install_codex=install_codex,
         )
         + "\n",
         encoding="utf-8",

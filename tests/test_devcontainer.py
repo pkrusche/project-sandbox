@@ -16,8 +16,6 @@ def _render(
     return devcontainer.render(
         project,
         identity=GitIdentity("Ada", "ada@example.com"),
-        install_claude=True,
-        install_codex=True,
         firewall_enabled=firewall_enabled,
         memory="8g",
         cpus=4,
