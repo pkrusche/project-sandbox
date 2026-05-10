@@ -7,19 +7,19 @@ GIT_EMAIL="$(git config --global user.email 2>/dev/null || echo '')"
 
 exec container run \
   --rm -it \
-  --memory {{ memory }} --cpus {{ cpus }} \
+  --memory {{ memory|shq }} --cpus {{ cpus|shq }} \
 {% if firewall_enabled %}
   --cap-add NET_ADMIN --cap-add NET_RAW \
 {% endif %}
   --workdir /workspace \
-  --mount type=bind,source={{ project_abs }},target=/workspace \
-  --mount type=bind,source={{ claude_settings_abs }},target=/home/agent/.claude/settings.json,readonly \
-  --mount type=bind,source={{ codex_config_abs }},target=/home/agent/.codex/config.toml,readonly \
+  --mount {{ ("type=bind,source=" ~ project_abs ~ ",target=/workspace")|shq }} \
+  --mount {{ ("type=bind,source=" ~ claude_settings_abs ~ ",target=/home/agent/.claude/settings.json,readonly")|shq }} \
+  --mount {{ ("type=bind,source=" ~ codex_config_abs ~ ",target=/home/agent/.codex/config.toml,readonly")|shq }} \
 {% if claude_home_host_abs %}
-  --mount type=bind,source={{ claude_home_host_abs }},target=/home/agent/.claude.host{{ ',readonly' if ro_creds else '' }} \
+  --mount {{ ("type=bind,source=" ~ claude_home_host_abs ~ ",target=/home/agent/.claude.host" ~ (",readonly" if ro_creds else ""))|shq }} \
 {% endif %}
 {% if codex_home_host_abs %}
-  --mount type=bind,source={{ codex_home_host_abs }},target=/home/agent/.codex.host{{ ',readonly' if ro_creds else '' }} \
+  --mount {{ ("type=bind,source=" ~ codex_home_host_abs ~ ",target=/home/agent/.codex.host" ~ (",readonly" if ro_creds else ""))|shq }} \
 {% endif %}
   --env PROJECT_SANDBOX_USER_NAME="${GIT_NAME}" \
   --env PROJECT_SANDBOX_USER_EMAIL="${GIT_EMAIL}" \
@@ -31,7 +31,7 @@ exec container run \
   --env PROJECT_SANDBOX_NO_FIREWALL=1 \
 {% endif %}
 {% for env in extra_envs %}
-  --env {{ env }} \
+  --env {{ env|shq }} \
 {% endfor %}
-  {{ image_tag }} \
-  project-sandbox-run {{ agent }} "$@"
+  {{ image_tag|shq }} \
+  project-sandbox-run {{ agent|shq }} "$@"

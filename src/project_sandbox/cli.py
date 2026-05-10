@@ -1,10 +1,15 @@
 from argparse import ArgumentParser
 from pathlib import Path
 
-from . import config_claude, config_codex, container_cli, devcontainer, dockerfile, firewall, launcher, session, worktree as worktree_mod
+from . import config_claude, config_codex, container_cli, devcontainer, dockerfile, firewall, launcher, session
 from .git_identity import read as read_identity
 from .paths import ensure_dir, resolve_strict
 
+
+BRANCH_DISABLED_MESSAGE = (
+    "--branch is temporarily disabled. Git worktree support needs a metadata-mount redesign "
+    "so git commands work correctly inside the container."
+)
 
 
 def build_parser() -> ArgumentParser:
@@ -26,7 +31,7 @@ def build_parser() -> ArgumentParser:
     p.add_argument("--firewall-allow-openai", action="store_true")
     p.add_argument("--no-devcontainer", action="store_true")
     p.add_argument("--devcontainer-only", action="store_true")
-    p.add_argument("--branch")
+    p.add_argument("--branch", help="Temporarily disabled until worktree metadata mounting is redesigned.")
     p.add_argument("--worktree-base")
     p.add_argument("--worktree-dir")
     p.add_argument("--after-session", choices=["ask", "merge", "rebase", "pr", "nothing"], default="ask")
@@ -46,13 +51,24 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("Use only one of --prompt or --prompt-text")
     if args.devcontainer_only and (args.prompt or args.prompt_text):
         raise SystemExit("--prompt/--prompt-text are not compatible with --devcontainer-only")
+    if args.branch:
+        raise SystemExit(BRANCH_DISABLED_MESSAGE)
 
     project = resolve_strict(args.project)
-    context_dir = ensure_dir(project / ".project-sandbox")
-
     identity = read_identity()
     install_claude = args.agent in ("claude", "both")
     install_codex = args.agent in ("codex", "both")
+
+    if args.dry_run:
+        return _dry_run(
+            args,
+            project=project,
+            identity=identity,
+            install_claude=install_claude,
+            install_codex=install_codex,
+        )
+
+    context_dir = ensure_dir(project / ".project-sandbox")
 
     dockerfile.render(
         context_dir,
@@ -77,23 +93,14 @@ def main(argv: list[str] | None = None) -> int:
     _update_project_gitignore(project)
 
     workspace = project
-    wt = None
-    if args.branch:
-        wt = worktree_mod.setup(
-            project,
-            args.branch,
-            base=args.worktree_base,
-            worktree_dir=Path(args.worktree_dir).resolve() if args.worktree_dir else None,
-        )
-        workspace = wt.path.resolve()
 
     if not args.devcontainer_only:
-        rc = container_cli.ensure_system_started(dry_run=args.dry_run)
+        rc = container_cli.ensure_system_started()
         if rc != 0:
             return rc
 
     if not args.devcontainer_only and not args.no_build:
-        rc = container_cli.build_image(context_dir=context_dir, image_tag=args.image_tag, dry_run=args.dry_run)
+        rc = container_cli.build_image(context_dir=context_dir, image_tag=args.image_tag)
         if rc != 0:
             return rc
 
@@ -138,6 +145,86 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     run_agent = "claude" if args.agent in ("claude", "both") else "codex"
+    cmd, log_path, unsupervised = _build_session_command(
+        args,
+        project=project,
+        context_dir=context_dir,
+        workspace=workspace,
+        identity=identity,
+        run_agent=run_agent,
+        claude_cfg=claude_cfg,
+        codex_cfg=codex_cfg,
+        create_prompt_files=True,
+    )
+
+    if not unsupervised:
+        _print_next_steps(
+            context_dir=context_dir,
+            project=project,
+            install_claude=install_claude,
+            install_codex=install_codex,
+            no_devcontainer=args.no_devcontainer,
+        )
+
+    if unsupervised:
+        assert log_path is not None
+        exit_code = session.run(cmd, log_path=log_path, timeout=args.timeout)
+    else:
+        exit_code = container_cli.run(cmd)
+
+    return exit_code
+
+
+def _dry_run(args, *, project: Path, identity, install_claude: bool, install_codex: bool) -> int:
+    context_dir = project / ".project-sandbox"
+    claude_cfg = context_dir / "claude" / "settings.json"
+    codex_cfg = context_dir / "codex" / "config.toml"
+    run_agent = "claude" if args.agent in ("claude", "both") else "codex"
+
+    print("DRY RUN: no files, worktrees, images, or containers will be created.")
+    print(f"Would render sandbox assets under: {context_dir}")
+    if not args.no_devcontainer:
+        print(f"Would render devcontainer under: {project / '.devcontainer'}")
+    if args.devcontainer_only:
+        return 0
+
+    container_cli.ensure_system_started(dry_run=True)
+    if not args.no_build:
+        container_cli.build_image(context_dir=context_dir, image_tag=args.image_tag, dry_run=True)
+
+    cmd, log_path, unsupervised = _build_session_command(
+        args,
+        project=project,
+        context_dir=context_dir,
+        workspace=project,
+        identity=identity,
+        run_agent=run_agent,
+        claude_cfg=claude_cfg,
+        codex_cfg=codex_cfg,
+        create_prompt_files=False,
+    )
+    if unsupervised:
+        assert log_path is not None
+        session.run(cmd, log_path=log_path, timeout=args.timeout, dry_run=True)
+    else:
+        container_cli.run(cmd, dry_run=True)
+    if install_claude or install_codex:
+        print(f"Would write launcher scripts under: {context_dir / 'bin'}")
+    return 0
+
+
+def _build_session_command(
+    args,
+    *,
+    project: Path,
+    context_dir: Path,
+    workspace: Path,
+    identity,
+    run_agent: str,
+    claude_cfg: Path,
+    codex_cfg: Path,
+    create_prompt_files: bool,
+) -> tuple[list[str], Path | None, bool]:
     extra_mounts = list(args.extra_mounts)
     extra_env: list[str] = []
     run_mode_agent = run_agent
@@ -145,8 +232,11 @@ def main(argv: list[str] | None = None) -> int:
     log_path: Path | None = None
 
     if unsupervised:
-        prompts_dir = ensure_dir(context_dir / "prompts")
-        log_path = Path(args.log).resolve() if args.log else session.default_log_path(project, args.branch, run_agent)
+        log_path = (
+            Path(args.log).resolve()
+            if args.log
+            else session.default_log_path(project, args.branch, run_agent, create=create_prompt_files)
+        )
         run_mode_agent = f"{run_agent}-headless"
         if args.prompt:
             prompt_file = resolve_strict(args.prompt)
@@ -158,54 +248,41 @@ def main(argv: list[str] | None = None) -> int:
             if len(args.prompt_text) <= 4096:
                 extra_env.append(f"PROJECT_SANDBOX_PROMPT={args.prompt_text}")
             else:
+                prompts_dir = context_dir / "prompts"
                 long_prompt = prompts_dir / "prompt.txt"
-                long_prompt.write_text(args.prompt_text, encoding="utf-8")
+                if create_prompt_files:
+                    ensure_dir(prompts_dir)
+                    long_prompt.write_text(args.prompt_text, encoding="utf-8")
+                else:
+                    print(f"Would write long prompt to: {long_prompt}")
                 extra_mounts.append(
-                    f"type=bind,source={long_prompt},target=/workspace/.project-sandbox-prompt,readonly"
+                    f"type=bind,source={long_prompt.resolve()},target=/workspace/.project-sandbox-prompt,readonly"
                 )
                 extra_env.append("PROJECT_SANDBOX_PROMPT_FILE=/workspace/.project-sandbox-prompt")
 
-    if not args.dry_run and not unsupervised:
-        _print_next_steps(
-            context_dir=context_dir,
-            project=project,
-            install_claude=install_claude,
-            install_codex=install_codex,
-            no_devcontainer=args.no_devcontainer,
-        )
-
-    cmd = container_cli.build_run_argv(
-        image=args.image_tag,
-        project_abs=workspace,
-        claude_cfg=claude_cfg,
-        codex_cfg=codex_cfg,
-        claude_home_host=claude_home_host,
-        codex_home_host=codex_home_host,
-        identity=identity,
-        memory=args.memory,
-        cpus=args.cpus,
-        ro_creds=ro_creds,
-        extra_mounts=extra_mounts,
-        agent=run_mode_agent,
-        firewall_enabled=not args.no_firewall,
-        interactive=not unsupervised,
-        extra_env=extra_env,
+    claude_home_host = Path.home() / ".claude"
+    codex_home_host = Path.home() / ".codex"
+    return (
+        container_cli.build_run_argv(
+            image=args.image_tag,
+            project_abs=workspace,
+            claude_cfg=claude_cfg,
+            codex_cfg=codex_cfg,
+            claude_home_host=claude_home_host,
+            codex_home_host=codex_home_host,
+            identity=identity,
+            memory=args.memory,
+            cpus=args.cpus,
+            ro_creds=args.credentials_mode == "ro",
+            extra_mounts=extra_mounts,
+            agent=run_mode_agent,
+            firewall_enabled=not args.no_firewall,
+            interactive=not unsupervised,
+            extra_env=extra_env,
+        ),
+        log_path,
+        unsupervised,
     )
-
-    if unsupervised:
-        assert log_path is not None
-        exit_code = session.run(cmd, log_path=log_path, timeout=args.timeout, dry_run=args.dry_run)
-    else:
-        exit_code = container_cli.run(cmd, dry_run=args.dry_run)
-
-    if wt:
-        after = args.after_session
-        if (args.prompt or args.prompt_text) and after == "ask":
-            print("WARNING: --after-session ask is not valid in unsupervised mode. Defaulting to 'nothing'.")
-            after = "nothing"
-        worktree_mod.teardown(project, wt, after=after)
-
-    return exit_code
 
 
 def _print_next_steps(

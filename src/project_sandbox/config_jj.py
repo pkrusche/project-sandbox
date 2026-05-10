@@ -7,8 +7,12 @@ def render(home: Path, *, name: str | None, email: str | None) -> Path:
     out = cfg_dir / "config.toml"
     out.write_text(
         "[user]\n"
-        f"name = \"{(name or '').replace('\\"', '\\\\"')}\"\n"
-        f"email = \"{(email or '').replace('\\"', '\\\\"')}\"\n",
+        f"name = \"{_toml_string(name or '')}\"\n"
+        f"email = \"{_toml_string(email or '')}\"\n",
         encoding="utf-8",
     )
     return out
+
+
+def _toml_string(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')

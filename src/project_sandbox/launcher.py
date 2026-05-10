@@ -1,4 +1,5 @@
 from pathlib import Path
+import shlex
 
 from jinja2 import Environment, PackageLoader
 
@@ -21,6 +22,7 @@ def render(
     extra_envs: list[str],
 ) -> Path:
     env = Environment(loader=PackageLoader("project_sandbox", "templates"))
+    env.filters["shq"] = _shell_quote
     tmpl = env.get_template("run-agent.sh.j2")
     output.write_text(
         tmpl.render(
@@ -42,3 +44,7 @@ def render(
     )
     output.chmod(0o755)
     return output
+
+
+def _shell_quote(value: object) -> str:
+    return shlex.quote(str(value))
