@@ -3,7 +3,6 @@ import tempfile
 from pathlib import Path
 from unittest import TestCase
 
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from project_sandbox.container_cli import build_run_argv
@@ -24,8 +23,9 @@ class ContainerCliTests(TestCase):
                 identity=GitIdentity("Ada Lovelace", "ada@example.com"),
                 memory="8g",
                 cpus=4,
-                ro_creds=True,
-                extra_mounts=["type=bind,source=/tmp/prompt.txt,target=/workspace/prompt,readonly"],
+                extra_mounts=[
+                    "type=bind,source=/tmp/prompt.txt,target=/workspace/prompt,readonly"
+                ],
                 agent="claude-headless",
                 firewall_enabled=True,
                 interactive=False,
@@ -36,4 +36,6 @@ class ContainerCliTests(TestCase):
         self.assertIn("--cap-add", cmd)
         self.assertIn("NET_ADMIN", cmd)
         self.assertIn("PROJECT_SANDBOX_PROMPT=fix the tests", cmd)
-        self.assertEqual(cmd[-3:], ["project-sandbox:test", "project-sandbox-run", "claude-headless"])
+        self.assertEqual(
+            cmd[-3:], ["project-sandbox:test", "project-sandbox-run", "claude-headless"]
+        )

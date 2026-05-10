@@ -8,7 +8,6 @@ def render(
     *,
     allow_openai: bool,
     extra_domains: list[str],
-    no_ipv6_firewall: bool = False,
 ) -> Path:
     env = Environment(loader=PackageLoader("project_sandbox", "templates"))
     tmpl = env.get_template("init-firewall.sh.j2")
@@ -17,7 +16,6 @@ def render(
         tmpl.render(
             allow_openai=allow_openai,
             extra_domains=extra_domains,
-            no_ipv6_firewall=no_ipv6_firewall,
         )
         + "\n",
         encoding="utf-8",

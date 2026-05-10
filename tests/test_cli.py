@@ -22,7 +22,6 @@ class CliTests(TestCase):
         self.assertEqual(raised.exception.code, 0)
         help_text = stdout.getvalue()
         self.assertIn("--dry-run", help_text)
-        self.assertIn("--devcontainer-only", help_text)
         self.assertIn("--branch", help_text)
 
     def test_dry_run_does_not_write_project_files(self) -> None:
@@ -31,7 +30,7 @@ class CliTests(TestCase):
             (project / "README.md").write_text("# demo\n", encoding="utf-8")
 
             with patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")):
-                rc = cli.main(["--dry-run", "--no-build", "--no-devcontainer", str(project), "python:3.12-slim"])
+                rc = cli.main(["--dry-run", "--no-build", str(project), "python:3.12-slim"])
 
             self.assertEqual(rc, 0)
             self.assertFalse((project / ".project-sandbox").exists())

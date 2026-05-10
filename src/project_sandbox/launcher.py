@@ -1,8 +1,7 @@
-from pathlib import Path
 import shlex
+from pathlib import Path
 
 from jinja2 import Environment, PackageLoader
-
 
 
 def render(
@@ -16,7 +15,6 @@ def render(
     codex_config_abs: Path,
     claude_home_host_abs: Path | None,
     codex_home_host_abs: Path | None,
-    ro_creds: bool,
     firewall_enabled: bool,
     agent: str,
     extra_envs: list[str],
@@ -34,7 +32,6 @@ def render(
             codex_config_abs=codex_config_abs,
             claude_home_host_abs=claude_home_host_abs,
             codex_home_host_abs=codex_home_host_abs,
-            ro_creds=ro_creds,
             firewall_enabled=firewall_enabled,
             agent=agent,
             extra_envs=extra_envs,

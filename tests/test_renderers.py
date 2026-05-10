@@ -3,7 +3,6 @@ import tempfile
 from pathlib import Path
 from unittest import TestCase
 
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from project_sandbox import config_claude, config_codex, dockerfile, firewall, launcher
@@ -14,19 +13,28 @@ class RendererTests(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             context = Path(tmp)
 
-            dockerfile.render(context, base_image="python:3.12-slim", install_claude=True, install_codex=False)
+            dockerfile.render(
+                context,
+                base_image="python:3.12-slim",
+                install_claude=True,
+                install_codex=False,
+            )
             claude = config_claude.render(context)
             codex = config_codex.render(context)
             fw = firewall.render(
                 context,
                 allow_openai=True,
                 extra_domains=["internal.example.com"],
-                no_ipv6_firewall=False,
             )
 
-            self.assertIn("FROM python:3.12-slim", (context / "Dockerfile").read_text(encoding="utf-8"))
+            self.assertIn(
+                "FROM python:3.12-slim",
+                (context / "Dockerfile").read_text(encoding="utf-8"),
+            )
             self.assertIn("bypassPermissions", claude.read_text(encoding="utf-8"))
-            self.assertIn('approval_policy = "never"', codex.read_text(encoding="utf-8"))
+            self.assertIn(
+                'approval_policy = "never"', codex.read_text(encoding="utf-8")
+            )
             firewall_text = fw.read_text(encoding="utf-8")
             self.assertIn('"api.openai.com"', firewall_text)
             self.assertIn('"internal.example.com"', firewall_text)
@@ -48,7 +56,6 @@ class RendererTests(TestCase):
                 codex_config_abs=project / ".project-sandbox/codex/config.toml",
                 claude_home_host_abs=None,
                 codex_home_host_abs=None,
-                ro_creds=True,
                 firewall_enabled=True,
                 agent="claude",
                 extra_envs=["KEY=value with spaces"],

@@ -13,12 +13,8 @@ if ! ip6tables -L >/dev/null 2>&1; then
      && [ "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null)" = "1" ]; then
     IPV6_FW=0
   else
-{% if no_ipv6_firewall %}
-    IPV6_FW=0
-{% else %}
     echo "ERROR: ip6tables unavailable and sysctl fallback failed."
     exit 1
-{% endif %}
   fi
 fi
 

@@ -16,10 +16,10 @@ exec container run \
   --mount {{ ("type=bind,source=" ~ claude_settings_abs ~ ",target=/home/agent/.claude/settings.json,readonly")|shq }} \
   --mount {{ ("type=bind,source=" ~ codex_config_abs ~ ",target=/home/agent/.codex/config.toml,readonly")|shq }} \
 {% if claude_home_host_abs %}
-  --mount {{ ("type=bind,source=" ~ claude_home_host_abs ~ ",target=/home/agent/.claude.host" ~ (",readonly" if ro_creds else ""))|shq }} \
+  --mount {{ ("type=bind,source=" ~ claude_home_host_abs ~ ",target=/home/agent/.claude.host,readonly")|shq }} \
 {% endif %}
 {% if codex_home_host_abs %}
-  --mount {{ ("type=bind,source=" ~ codex_home_host_abs ~ ",target=/home/agent/.codex.host" ~ (",readonly" if ro_creds else ""))|shq }} \
+  --mount {{ ("type=bind,source=" ~ codex_home_host_abs ~ ",target=/home/agent/.codex.host,readonly")|shq }} \
 {% endif %}
   --env PROJECT_SANDBOX_USER_NAME="${GIT_NAME}" \
   --env PROJECT_SANDBOX_USER_EMAIL="${GIT_EMAIL}" \

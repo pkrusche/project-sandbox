@@ -1,6 +1,6 @@
+import subprocess
 from collections.abc import Sequence
 from pathlib import Path
-import subprocess
 
 from .git_identity import GitIdentity
 
@@ -16,7 +16,6 @@ def build_run_argv(
     identity: GitIdentity,
     memory: str,
     cpus: int,
-    ro_creds: bool,
     extra_mounts: list[str],
     agent: str,
     firewall_enabled: bool,
@@ -46,11 +45,16 @@ def build_run_argv(
         "--mount",
         f"type=bind,source={codex_cfg},target=/home/agent/.codex/config.toml,readonly",
     ]
-    ro = ",readonly" if ro_creds else ""
     if claude_home_host.exists():
-        argv += ["--mount", f"type=bind,source={claude_home_host},target=/home/agent/.claude.host{ro}"]
+        argv += [
+            "--mount",
+            f"type=bind,source={claude_home_host},target=/home/agent/.claude.host,readonly",
+        ]
     if codex_home_host.exists():
-        argv += ["--mount", f"type=bind,source={codex_home_host},target=/home/agent/.codex.host{ro}"]
+        argv += [
+            "--mount",
+            f"type=bind,source={codex_home_host},target=/home/agent/.codex.host,readonly",
+        ]
     if identity.name:
         argv += [
             "--env",
@@ -69,7 +73,12 @@ def build_run_argv(
             "--env",
             f"GIT_COMMITTER_EMAIL={identity.email}",
         ]
-    argv += ["--env", "CLAUDE_CONFIG_DIR=/home/agent/.claude", "--env", "CODEX_HOME=/home/agent/.codex"]
+    argv += [
+        "--env",
+        "CLAUDE_CONFIG_DIR=/home/agent/.claude",
+        "--env",
+        "CODEX_HOME=/home/agent/.codex",
+    ]
     if not firewall_enabled:
         argv += ["--env", "PROJECT_SANDBOX_NO_FIREWALL=1"]
     for env in extra_env:

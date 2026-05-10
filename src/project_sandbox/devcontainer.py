@@ -14,7 +14,6 @@ def render(
     firewall_enabled: bool,
     memory: str | None,
     cpus: int | None,
-    ro_creds: bool,
     extra_mounts: list[str],
     refresh: bool = False,
 ) -> Path:
@@ -40,7 +39,6 @@ def render(
             firewall_enabled=firewall_enabled,
             memory=memory,
             cpus=cpus,
-            ro_creds=ro_creds,
             mount_claude_host=Path.home().joinpath(".claude").exists(),
             mount_codex_host=Path.home().joinpath(".codex").exists(),
             claude_settings_mount="${localWorkspaceFolder}/.project-sandbox/claude/settings.json",

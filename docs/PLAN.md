@@ -600,7 +600,7 @@ The `agent-run.sh.j2` template adds these unconditionally when the firewall is e
 ```python
 def build_run_argv(*, image, project_abs, claude_cfg, codex_cfg,
                    claude_home_host, codex_home_host,
-                   identity, memory, cpus, ro_creds, extra_mounts,
+                   identity, memory, cpus, extra_mounts,
                    agent, firewall_enabled):
     argv = [
         "container", "run",
@@ -616,9 +616,8 @@ def build_run_argv(*, image, project_abs, claude_cfg, codex_cfg,
         "--mount", f"type=bind,source={claude_cfg},target=/home/agent/.claude/settings.json,readonly",
         "--mount", f"type=bind,source={codex_cfg},target=/home/agent/.codex/config.toml,readonly",
     ]
-    ro = ",readonly" if ro_creds else ""
     if claude_home_host.exists():
-        argv += ["--mount", f"type=bind,source={claude_home_host},target=/home/agent/.claude.host{ro}"]
+        argv += ["--mount", f"type=bind,source={claude_home_host},target=/home/agent/.claude.host,readonly"]
     if codex_home_host.exists():
         argv += ["--mount", f"type=bind,source={codex_home_host},target=/home/agent/.codex.host{ro}"]
     # Identity
@@ -716,10 +715,10 @@ exec container run \
   --mount type=bind,source={{ claude_settings_abs }},target=/home/agent/.claude/settings.json,readonly \
   --mount type=bind,source={{ codex_config_abs }},target=/home/agent/.codex/config.toml,readonly \
 {% if claude_home_host_abs %}
-  --mount type=bind,source={{ claude_home_host_abs }},target=/home/agent/.claude.host{{ ',readonly' if ro_creds else '' }} \
+  --mount type=bind,source={{ claude_home_host_abs }},target=/home/agent/.claude.host,readonly \
 {% endif %}
 {% if codex_home_host_abs %}
-  --mount type=bind,source={{ codex_home_host_abs }},target=/home/agent/.codex.host{{ ',readonly' if ro_creds else '' }} \
+  --mount type=bind,source={{ codex_home_host_abs }},target=/home/agent/.codex.host,readonly \
 {% endif %}
   --env PROJECT_SANDBOX_USER_NAME="${GIT_NAME}" \
   --env PROJECT_SANDBOX_USER_EMAIL="${GIT_EMAIL}" \
@@ -1171,8 +1170,8 @@ This template models Anthropic's reference `devcontainer.json` closely, substitu
   "mounts": [
     "source=${localWorkspaceFolder}/.project-sandbox/claude/settings.json,target=/home/agent/.claude/settings.json,type=bind,readonly",
     "source=${localWorkspaceFolder}/.project-sandbox/codex/config.toml,target=/home/agent/.codex/config.toml,type=bind,readonly"{% if mount_claude_host %},
-    "source=${localEnv:HOME}/.claude,target=/home/agent/.claude.host,type=bind{% if ro_creds %},readonly{% endif %}"{% endif %}{% if mount_codex_host %},
-    "source=${localEnv:HOME}/.codex,target=/home/agent/.codex.host,type=bind{% if ro_creds %},readonly{% endif %}"{% endif %}{% for m in extra_mounts %},
+    "source=${localEnv:HOME}/.claude,target=/home/agent/.claude.host,type=bind,readonly"{% endif %}{% if mount_codex_host %},
+    "source=${localEnv:HOME}/.codex,target=/home/agent/.codex.host,type=bind,readonly"{% endif %}{% for m in extra_mounts %},
     "{{ m }}"{% endfor %}
   ],
 
@@ -1291,7 +1290,6 @@ def render(
     firewall_enabled: bool,
     memory: str | None,
     cpus: int | None,
-    ro_creds: bool,
     extra_mounts: list[str],
     extra_domains: list[str],
     allow_openai: bool,
@@ -1319,7 +1317,6 @@ def render(
         install_codex=install_codex,
         memory=memory,
         cpus=cpus,
-        ro_creds=ro_creds,
         mount_claude_host=(project.parent / ".claude").exists() or
                           Path.home().joinpath(".claude").exists(),
         mount_codex_host=(project.parent / ".codex").exists() or
@@ -1353,7 +1350,6 @@ if not args.no_devcontainer:
         firewall_enabled=not args.no_firewall,
         memory=args.memory,
         cpus=args.cpus,
-        ro_creds=args.credentials_mode == "ro",
         extra_mounts=args.extra_mounts,
         extra_domains=args.extra_domain,
         allow_openai=args.firewall_allow_openai or args.agent in ("codex", "both"),

@@ -4,14 +4,15 @@ import tempfile
 from pathlib import Path
 from unittest import TestCase
 
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from project_sandbox import devcontainer
 from project_sandbox.git_identity import GitIdentity
 
 
-def _render(project: Path, *, refresh: bool = False, firewall_enabled: bool = True) -> Path:
+def _render(
+    project: Path, *, refresh: bool = False, firewall_enabled: bool = True
+) -> Path:
     return devcontainer.render(
         project,
         identity=GitIdentity("Ada", "ada@example.com"),
@@ -20,7 +21,6 @@ def _render(project: Path, *, refresh: bool = False, firewall_enabled: bool = Tr
         firewall_enabled=firewall_enabled,
         memory="8g",
         cpus=4,
-        ro_creds=False,
         extra_mounts=[],
         refresh=refresh,
     )
@@ -33,7 +33,9 @@ class DevcontainerTests(TestCase):
             (project / ".project-sandbox").mkdir()
 
             _render(project)
-            spec = json.loads((project / ".devcontainer" / "devcontainer.json").read_text())
+            spec = json.loads(
+                (project / ".devcontainer" / "devcontainer.json").read_text()
+            )
 
             self.assertEqual(spec["remoteUser"], "agent")
             self.assertIn("--cap-add=NET_ADMIN", spec["runArgs"])
@@ -71,7 +73,9 @@ class DevcontainerTests(TestCase):
             (project / ".project-sandbox").mkdir()
 
             _render(project, firewall_enabled=False)
-            spec = json.loads((project / ".devcontainer" / "devcontainer.json").read_text())
+            spec = json.loads(
+                (project / ".devcontainer" / "devcontainer.json").read_text()
+            )
 
             self.assertNotIn("--cap-add=NET_ADMIN", spec["runArgs"])
             self.assertNotIn("project-sandbox-init-firewall", spec["postStartCommand"])
