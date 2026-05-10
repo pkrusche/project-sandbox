@@ -112,11 +112,17 @@ done
 # ============================================================
 # Host gateway (port-forwarding / IDE attach)
 # ============================================================
-HOST_NET4=$(ip route | awk '/^[0-9]+\.[0-9]+\.[0-9]+\.0\// {print $1; exit}') || true
-if [ -n "$HOST_NET4" ]; then
-  echo "Allowing host network (IPv4): $HOST_NET4"
-  iptables -A OUTPUT -d "$HOST_NET4" -j ACCEPT
-  iptables -A INPUT  -s "$HOST_NET4" -j ACCEPT
+# ============================================================
+# Host gateway (port-forwarding / IDE attach)
+# ============================================================
+HOST_IF4=$(ip route | awk '/default/ {print $5; exit}') || true
+if [ -n "$HOST_IF4" ]; then
+  HOST_NET4=$(ip -o -4 addr show dev "$HOST_IF4" 2>/dev/null | awk '{print $4; exit}') || true
+  if [ -n "$HOST_NET4" ]; then
+    echo "Allowing host network (IPv4): $HOST_NET4 (via $HOST_IF4)"
+    iptables -A OUTPUT -d "$HOST_NET4" -j ACCEPT
+    iptables -A INPUT  -s "$HOST_NET4" -j ACCEPT
+  fi
 fi
 
 if [ "$IPV6_FW" = "1" ]; then
