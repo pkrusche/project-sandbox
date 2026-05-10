@@ -180,3 +180,4 @@ The full original design lives in [`docs/PLAN.md`](docs/PLAN.md).
 
  - [agentbox](https://github.com/fletchgqc/agentbox/tree/main)
  - [Claude Code devcontainer](https://github.com/anthropics/claude-code/tree/main/.devcontainer)
+- [Jarek Hartman: Codex in the jail](https://jhartman.pl/posts/macos/2026-02-02-codex-in-the-jail/)
