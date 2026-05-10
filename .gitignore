@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.dist/
+build/
+dist/
+.venv/
+
+# project-sandbox — do not commit agent secrets
+.project-sandbox/claude/.credentials.json
+.project-sandbox/codex/auth.json

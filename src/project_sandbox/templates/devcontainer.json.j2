@@ -1,0 +1,46 @@
+{
+  "name": "{{ project_name }} (project-sandbox)",
+  "build": {
+    "dockerfile": "../.project-sandbox/Dockerfile",
+    "context": "../.project-sandbox"
+  },
+  "runArgs": [
+    "--cap-add=NET_ADMIN",
+    "--cap-add=NET_RAW"{% if memory %},
+    "--memory={{ memory }}"{% endif %}{% if cpus %},
+    "--cpus={{ cpus }}"{% endif %}
+  ],
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=delegated",
+  "workspaceFolder": "/workspace",
+  "remoteUser": "agent",
+  "containerEnv": {
+    "CLAUDE_CONFIG_DIR": "/home/agent/.claude",
+    "CODEX_HOME": "/home/agent/.codex",
+    "NODE_OPTIONS": "--max-old-space-size=4096"
+  },
+  "remoteEnv": {
+    "PROJECT_SANDBOX_USER_NAME": "{{ user_name }}",
+    "PROJECT_SANDBOX_USER_EMAIL": "{{ user_email }}"
+  },
+  "mounts": [
+    "source=${localWorkspaceFolder}/.project-sandbox/claude/settings.json,target=/home/agent/.claude/settings.json,type=bind,readonly",
+    "source=${localWorkspaceFolder}/.project-sandbox/codex/config.toml,target=/home/agent/.codex/config.toml,type=bind,readonly"{% if mount_claude_host %},
+    "source=${localEnv:HOME}/.claude,target=/home/agent/.claude.host,type=bind{% if ro_creds %},readonly{% endif %}"{% endif %}{% if mount_codex_host %},
+    "source=${localEnv:HOME}/.codex,target=/home/agent/.codex.host,type=bind{% if ro_creds %},readonly{% endif %}"{% endif %}{% for m in extra_mounts %},
+    "{{ m }}"{% endfor %}
+  ],
+  "postStartCommand": "sudo /usr/local/bin/project-sandbox-init-firewall && /usr/local/bin/project-sandbox-devcontainer-init",
+  "waitFor": "postStartCommand",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "anthropic.claude-code"{% if install_codex %},
+        "openai.codex-vscode"{% endif %}
+      ],
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "bash"
+      }
+    }
+  },
+  "features": {}
+}
