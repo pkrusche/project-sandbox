@@ -105,7 +105,7 @@ for domain in "${DOMAINS[@]}"; do
     while IFS= read -r ip6; do
       [[ "$ip6" =~ : ]] || continue
       ipset add --exist allowed-ipv6 "$ip6" 2>/dev/null || true
-    done < <(dig +noall +answer +time=5 AAAA "$domain" 2>/dev/null | awk '$4=="AAAA"{print $5}' || true)
+    done < <(dig +noall +answer +time=5 AAAA "$domain" 2>/dev/null | awk '$4=="AAAA" {print $5}' || true)
   fi
 done
 
