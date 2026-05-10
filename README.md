@@ -165,8 +165,18 @@ uv run pytest -q
 
 Tests cover CLI surface, dry-run non-mutation, renderer output, launcher shell quoting, container `argv` construction, devcontainer JSON validity and symlinks, gitignore helpers, and Python-native unsupervised-session timeout handling.
 
+A self-contained end-to-end smoke test creates a throwaway hello-world project, runs the tool against it, and validates every generated artefact:
+
+```bash
+./scripts/e2e-test.sh                  # portable: --devcontainer-only path
+./scripts/e2e-test.sh --with-container # also exercises launcher generation (requires apple/container)
+```
+
+The test prints the temp project path on success so the generated files can be inspected.
+
 The full original design lives in [`docs/PLAN.md`](docs/PLAN.md).
 
-## Acknowledgements
+## References
 
-Inspired by [agentbox](https://github.com/fletchgqc/agentbox/tree/main), which pioneered the pattern of running AI coding agents inside disposable container sandboxes.
+ - [agentbox](https://github.com/fletchgqc/agentbox/tree/main)
+ - [Claude Code devcontainer](https://github.com/anthropics/claude-code/tree/main/.devcontainer)
