@@ -112,9 +112,6 @@ done
 # ============================================================
 # Host gateway (port-forwarding / IDE attach)
 # ============================================================
-# ============================================================
-# Host gateway (port-forwarding / IDE attach)
-# ============================================================
 HOST_IF4=$(ip route | awk '/default/ {print $5; exit}') || true
 if [ -n "$HOST_IF4" ]; then
   HOST_NET4=$(ip -o -4 addr show dev "$HOST_IF4" 2>/dev/null | awk '{print $4; exit}') || true

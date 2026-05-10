@@ -137,7 +137,7 @@ def main(argv: list[str] | None = None) -> int:
             extra_envs=[],
         )
 
-    run_agent = "codex" if args.agent == "both" else args.agent
+    run_agent = "claude" if args.agent in ("claude", "both") else "codex"
     extra_mounts = list(args.extra_mounts)
     extra_env: list[str] = []
     run_mode_agent = run_agent
@@ -164,6 +164,15 @@ def main(argv: list[str] | None = None) -> int:
                     f"type=bind,source={long_prompt},target=/workspace/.project-sandbox-prompt,readonly"
                 )
                 extra_env.append("PROJECT_SANDBOX_PROMPT_FILE=/workspace/.project-sandbox-prompt")
+
+    if not args.dry_run and not unsupervised:
+        _print_next_steps(
+            context_dir=context_dir,
+            project=project,
+            install_claude=install_claude,
+            install_codex=install_codex,
+            no_devcontainer=args.no_devcontainer,
+        )
 
     cmd = container_cli.build_run_argv(
         image=args.image_tag,
@@ -197,6 +206,37 @@ def main(argv: list[str] | None = None) -> int:
         worktree_mod.teardown(project, wt, after=after)
 
     return exit_code
+
+
+def _print_next_steps(
+    *,
+    context_dir: Path,
+    project: Path,
+    install_claude: bool,
+    install_codex: bool,
+    no_devcontainer: bool,
+) -> None:
+    print("\n=== project-sandbox ready ===")
+    print(f"  Project:  {project}")
+    print(f"  Sandbox:  {context_dir}")
+    print()
+    print("  Generated launcher scripts:")
+    if install_claude:
+        print(f"    {context_dir / 'bin' / 'run-claude'}")
+    if install_codex:
+        print(f"    {context_dir / 'bin' / 'run-codex'}")
+    if not no_devcontainer:
+        print()
+        print("  Devcontainer:")
+        print(f"    {project / '.devcontainer' / 'devcontainer.json'}")
+        print("  → Open this project in VS Code / Cursor and choose 'Reopen in Container'.")
+    print()
+    print("  To run an agent interactively:")
+    if install_claude:
+        print(f"    {context_dir / 'bin' / 'run-claude'}")
+    if install_codex:
+        print(f"    {context_dir / 'bin' / 'run-codex'}")
+    print()
 
 
 def _update_project_gitignore(project: Path) -> None:
