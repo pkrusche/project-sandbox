@@ -1,0 +1,56 @@
+{
+  "name": "{{ project_name }} (project-sandbox)",
+  "build": {
+    "dockerfile": "../.project-sandbox/Dockerfile",
+    "context": "../.project-sandbox"
+  },
+  "runArgs": [
+{% if firewall_enabled %}
+    "--cap-add=NET_ADMIN",
+    "--cap-add=NET_RAW"{% if memory or cpus %},{% endif %}
+{% endif %}
+{% if memory %}
+    "--memory={{ memory }}"{% if cpus %},{% endif %}
+{% endif %}
+{% if cpus %}
+    "--cpus={{ cpus }}"
+{% endif %}
+  ],
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=delegated",
+  "workspaceFolder": "/workspace",
+  "remoteUser": "agent",
+  "containerEnv": {
+    "CLAUDE_CONFIG_DIR": "/home/agent/.claude",
+    "CODEX_HOME": "/home/agent/.codex",
+    "NODE_OPTIONS": "--max-old-space-size=4096"
+  },
+  "remoteEnv": {
+    "PROJECT_SANDBOX_USER_NAME": "{{ user_name }}",
+    "PROJECT_SANDBOX_USER_EMAIL": "{{ user_email }}"
+  },
+  "mounts": [
+    "source={{ claude_settings_mount }},target=/home/agent/.claude/settings.json,type=bind,readonly",
+    "source={{ codex_config_mount }},target=/home/agent/.codex/config.toml,type=bind,readonly"{% if mount_claude_host %},
+    "source=${localEnv:HOME}/.claude,target=/home/agent/.claude.host,type=bind{% if ro_creds %},readonly{% endif %}"{% endif %}{% if mount_codex_host %},
+    "source=${localEnv:HOME}/.codex,target=/home/agent/.codex.host,type=bind{% if ro_creds %},readonly{% endif %}"{% endif %}{% for m in extra_mounts %},
+    "{{ m }}"{% endfor %}
+  ],
+  "postStartCommand": "{% if firewall_enabled %}sudo /usr/local/bin/project-sandbox-init-firewall && {% endif %}/usr/local/bin/project-sandbox-devcontainer-init",
+  "waitFor": "postStartCommand",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "anthropic.claude-code"{% if install_codex %},
+        "openai.codex-vscode"{% endif %}
+      ],
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "bash"
+      }
+    }
+  },
+  "features": {}{% if cpus or memory %},
+  "hostRequirements": {
+{% if cpus %}    "cpus": {{ cpus }}{% if memory %},
+{% endif %}{% endif %}{% if memory %}    "memory": "{{ memory | replace('g', '') }}gb"
+{% endif %}  }{% endif %}
+}
