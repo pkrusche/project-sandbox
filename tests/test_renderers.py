@@ -21,7 +21,6 @@ class RendererTests(TestCase):
             codex = config_codex.render(context)
             fw = firewall.render(
                 context,
-                allow_openai=True,
                 extra_domains=["internal.example.com"],
             )
 
@@ -35,6 +34,7 @@ class RendererTests(TestCase):
             )
             firewall_text = fw.read_text(encoding="utf-8")
             self.assertIn('"api.openai.com"', firewall_text)
+            self.assertNotIn("statsig", firewall_text)
             self.assertIn('"internal.example.com"', firewall_text)
 
     def test_launcher_shell_quotes_paths_with_spaces(self) -> None:

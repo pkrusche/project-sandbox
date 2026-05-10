@@ -80,12 +80,8 @@ fi
 DOMAINS=(
   "registry.npmjs.org"
   "api.anthropic.com"
-  "statsig.anthropic.com"
-  "statsig.com"
-  "sentry.io"
-{% if allow_openai %}
   "api.openai.com"
-{% endif %}
+  "sentry.io"
 {% for domain in extra_domains %}
   "{{ domain }}"
 {% endfor %}

@@ -31,7 +31,6 @@ def build_parser() -> ArgumentParser:
     p.add_argument("--mount", dest="extra_mounts", action="append", default=[])
     p.add_argument("--extra-domain", action="append", default=[])
     p.add_argument("--no-firewall", action="store_true")
-    p.add_argument("--firewall-allow-openai", action="store_true")
     p.add_argument(
         "--branch",
         help="Run the agent in a git worktree on this branch (created if it doesn't exist).",
@@ -87,7 +86,6 @@ def main(argv: list[str] | None = None) -> int:
     dockerfile.render_devcontainer_entrypoint(context_dir, refresh=args.rebuild)
     firewall.render(
         context_dir,
-        allow_openai=args.firewall_allow_openai,
         extra_domains=args.extra_domain,
     )
 
