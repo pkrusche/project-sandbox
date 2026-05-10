@@ -39,14 +39,31 @@ case "${1:-bash}" in
       codex) shift; exec codex "$@" ;;
       claude-headless)
         shift
-        if [ -n "${PROJECT_SANDBOX_PROMPT_FILE:-}" ]; then
+        if [ -n "${PROJECT_SANDBOX_PROMPT_FILE:-}" ] && [ -r "${PROJECT_SANDBOX_PROMPT_FILE}" ]; then
           exec claude -p "$(cat "$PROJECT_SANDBOX_PROMPT_FILE")" --output-format stream-json --dangerously-skip-permissions
+        elif [ -n "${PROJECT_SANDBOX_PROMPT_FILE:-}" ]; then
+          echo "ERROR: Prompt file is not readable: ${PROJECT_SANDBOX_PROMPT_FILE}" >&2
+          exit 2
+        elif [ -z "${PROJECT_SANDBOX_PROMPT:-}" ]; then
+          echo "ERROR: No prompt provided for claude-headless mode." >&2
+          exit 2
         fi
         exec claude -p "${PROJECT_SANDBOX_PROMPT:-}" --output-format stream-json --dangerously-skip-permissions
         ;;
       codex-headless)
         shift
-        PROMPT="${PROJECT_SANDBOX_PROMPT:-$(cat "${PROJECT_SANDBOX_PROMPT_FILE:-/dev/null}")}"
+        if [ -n "${PROJECT_SANDBOX_PROMPT_FILE:-}" ] && [ -r "${PROJECT_SANDBOX_PROMPT_FILE}" ]; then
+          PROMPT="$(cat "${PROJECT_SANDBOX_PROMPT_FILE}")"
+        elif [ -n "${PROJECT_SANDBOX_PROMPT_FILE:-}" ]; then
+          echo "ERROR: Prompt file is not readable: ${PROJECT_SANDBOX_PROMPT_FILE}" >&2
+          exit 2
+        else
+          PROMPT="${PROJECT_SANDBOX_PROMPT:-}"
+        fi
+        if [ -z "${PROMPT}" ]; then
+          echo "ERROR: No prompt provided for codex-headless mode." >&2
+          exit 2
+        fi
         exec codex exec "$PROMPT"
         ;;
       *) exec "${@:-bash}" ;;
