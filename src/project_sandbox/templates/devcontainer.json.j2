@@ -48,5 +48,9 @@
       }
     }
   },
-  "features": {}
+  "features": {}{% if cpus or memory %},
+  "hostRequirements": {
+{% if cpus %}    "cpus": {{ cpus }}{% if memory %},
+{% endif %}{% endif %}{% if memory %}    "memory": "{{ memory | replace('g', '') }}gb"
+{% endif %}  }{% endif %}
 }

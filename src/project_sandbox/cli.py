@@ -74,6 +74,7 @@ def main(argv: list[str] | None = None) -> int:
     codex_cfg = config_codex.render(context_dir, refresh=args.refresh_config)
 
     _write_project_sandbox_gitignore(context_dir)
+    _update_project_gitignore(project)
 
     workspace = project
     wt = None
@@ -196,6 +197,22 @@ def main(argv: list[str] | None = None) -> int:
         worktree_mod.teardown(project, wt, after=after)
 
     return exit_code
+
+
+def _update_project_gitignore(project: Path) -> None:
+    """Idempotently append credential-secret ignore entries to project .gitignore."""
+    marker = "# project-sandbox — do not commit agent secrets"
+    lines_to_add = [
+        marker,
+        ".project-sandbox/claude/.credentials.json",
+        ".project-sandbox/codex/auth.json",
+    ]
+    gi = project / ".gitignore"
+    existing = gi.read_text(encoding="utf-8") if gi.exists() else ""
+    if marker in existing:
+        return
+    sep = "\n" if existing and not existing.endswith("\n") else ""
+    gi.write_text(existing + sep + "\n".join(lines_to_add) + "\n", encoding="utf-8")
 
 
 def _write_project_sandbox_gitignore(context_dir: Path) -> None:
