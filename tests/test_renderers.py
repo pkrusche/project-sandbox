@@ -29,12 +29,12 @@ class RendererTests(TestCase):
                 (context / "Dockerfile").read_text(encoding="utf-8"),
             )
             self.assertIn("bypassPermissions", claude.read_text(encoding="utf-8"))
+            codex_text = codex.read_text(encoding="utf-8")
             self.assertIn(
-                'approval_policy = "never"', codex.read_text(encoding="utf-8")
+                'approval_policy = "never"', codex_text
             )
-            self.assertIn(
-                "enabled = false", codex.read_text(encoding="utf-8")
-            )
+            self.assertIn("[analytics]\nenabled = false", codex_text)
+            self.assertIn("[feedback]\nenabled = false", codex_text)
             firewall_text = fw.read_text(encoding="utf-8")
             self.assertIn('"api.openai.com"', firewall_text)
             self.assertNotIn("statsig", firewall_text)
