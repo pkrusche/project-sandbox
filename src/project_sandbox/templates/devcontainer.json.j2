@@ -29,8 +29,8 @@
     "PROJECT_SANDBOX_USER_EMAIL": "{{ user_email }}"
   },
   "mounts": [
-    "source=${localWorkspaceFolder}/.project-sandbox/claude/settings.json,target=/home/agent/.claude/settings.json,type=bind,readonly",
-    "source=${localWorkspaceFolder}/.project-sandbox/codex/config.toml,target=/home/agent/.codex/config.toml,type=bind,readonly"{% if mount_claude_host %},
+    "source={{ claude_settings_mount }},target=/home/agent/.claude/settings.json,type=bind,readonly",
+    "source={{ codex_config_mount }},target=/home/agent/.codex/config.toml,type=bind,readonly"{% if mount_claude_host %},
     "source=${localEnv:HOME}/.claude,target=/home/agent/.claude.host,type=bind{% if ro_creds %},readonly{% endif %}"{% endif %}{% if mount_codex_host %},
     "source=${localEnv:HOME}/.codex,target=/home/agent/.codex.host,type=bind{% if ro_creds %},readonly{% endif %}"{% endif %}{% for m in extra_mounts %},
     "{{ m }}"{% endfor %}

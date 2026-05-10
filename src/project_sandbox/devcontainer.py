@@ -43,6 +43,8 @@ def render(
             ro_creds=ro_creds,
             mount_claude_host=Path.home().joinpath(".claude").exists(),
             mount_codex_host=Path.home().joinpath(".codex").exists(),
+            claude_settings_mount="${localWorkspaceFolder}/.project-sandbox/claude/settings.json",
+            codex_config_mount="${localWorkspaceFolder}/.project-sandbox/codex/config.toml",
             extra_mounts=extra_mounts,
             user_name=identity.name or "",
             user_email=identity.email or "",
