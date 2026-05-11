@@ -85,11 +85,16 @@ class RendererTests(TestCase):
                 extra_envs=[],
             )
             text = out.read_text(encoding="utf-8")
-            # Default: firewall on, no override
+            # Default: firewall on, _NO_FIREWALL starts at 0
             self.assertIn("_NO_FIREWALL=0", text)
             # Runtime --no-firewall parsing must be present
-            self.assertIn("--no-firewall", text)
+            self.assertIn('"$_arg" = "--no-firewall"', text)
+            # NET_ADMIN is added only when _NO_FIREWALL is 0
+            self.assertIn('if [ "$_NO_FIREWALL" = "0" ]', text)
             self.assertIn("NET_ADMIN", text)
+            # PROJECT_SANDBOX_NO_FIREWALL=1 is set only when _NO_FIREWALL is 1
+            self.assertIn('if [ "$_NO_FIREWALL" = "1" ]', text)
+            self.assertIn("PROJECT_SANDBOX_NO_FIREWALL=1", text)
 
     def test_launcher_firewall_disabled_baked_in(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -109,6 +114,8 @@ class RendererTests(TestCase):
                 extra_envs=[],
             )
             text = out.read_text(encoding="utf-8")
-            # Generated with firewall off: default is disabled
+            # Generated with firewall off: default is _NO_FIREWALL=1
             self.assertIn("_NO_FIREWALL=1", text)
+            # NET_ADMIN guard and env var are still emitted (runtime toggle works both ways)
+            self.assertIn("NET_ADMIN", text)
             self.assertIn("PROJECT_SANDBOX_NO_FIREWALL=1", text)

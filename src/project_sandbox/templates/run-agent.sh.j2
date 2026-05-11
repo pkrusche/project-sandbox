@@ -6,6 +6,7 @@ GIT_NAME="$(git config --global user.name 2>/dev/null || echo '')"
 GIT_EMAIL="$(git config --global user.email 2>/dev/null || echo '')"
 
 # Parse --no-firewall from argv; remaining args are forwarded to the container.
+# --no-firewall must be passed as a standalone flag (not --no-firewall=value).
 _NO_FIREWALL={{ "1" if not firewall_enabled else "0" }}
 _PASSTHROUGH=()
 for _arg in "$@"; do
