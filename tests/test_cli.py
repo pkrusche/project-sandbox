@@ -130,3 +130,24 @@ class CliTests(TestCase):
                 ])
         self.assertIn("ask", str(raised.exception).lower())
         self.assertIn("unsupervised", str(raised.exception).lower())
+
+    def test_unsupervised_opencode_not_supported(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+
+            with patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")):
+                with self.assertRaises(SystemExit) as raised:
+                    cli.main([
+                        "--dry-run",
+                        "--no-build",
+                        "--agent",
+                        "opencode",
+                        "--prompt-text",
+                        "fix this",
+                        str(project),
+                        "python:3.12-slim",
+                    ])
+
+        self.assertIn("claude", str(raised.exception).lower())
+        self.assertIn("codex", str(raised.exception).lower())

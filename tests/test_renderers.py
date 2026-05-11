@@ -57,6 +57,8 @@ class RendererTests(TestCase):
                 codex_config_abs=project / ".project-sandbox/codex/config.toml",
                 claude_home_host_abs=None,
                 codex_home_host_abs=None,
+                opencode_home_host_abs=project / ".config/opencode",
+                copilot_home_host_abs=project / ".copilot",
                 firewall_enabled=True,
                 agent="claude",
                 extra_envs=["KEY=value with spaces"],
@@ -66,6 +68,8 @@ class RendererTests(TestCase):
             self.assertIn("'type=bind,source=", text)
             self.assertIn("project with spaces", text)
             self.assertIn("--env 'KEY=value with spaces'", text)
+            self.assertIn("/home/agent/.config/opencode.host", text)
+            self.assertIn("/home/agent/.copilot.host", text)
 
     def test_launcher_firewall_enabled_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

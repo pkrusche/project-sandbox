@@ -39,3 +39,38 @@ class ContainerCliTests(TestCase):
         self.assertEqual(
             cmd[-3:], ["project-sandbox:test", "project-sandbox-run", "claude-headless"]
         )
+
+    def test_build_run_argv_mounts_opencode_and_copilot_homes_when_present(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            opencode_home = root / ".config" / "opencode"
+            copilot_home = root / ".copilot"
+            opencode_home.mkdir(parents=True)
+            copilot_home.mkdir(parents=True)
+
+            cmd = build_run_argv(
+                image="project-sandbox:test",
+                project_abs=root / "workspace",
+                claude_cfg=root / "claude/settings.json",
+                codex_cfg=root / "codex/config.toml",
+                claude_home_host=None,
+                codex_home_host=None,
+                opencode_home_host=opencode_home,
+                copilot_home_host=copilot_home,
+                identity=GitIdentity("Ada Lovelace", "ada@example.com"),
+                memory="8g",
+                cpus=4,
+                extra_mounts=[],
+                agent="copilot",
+                firewall_enabled=False,
+                interactive=True,
+            )
+
+        self.assertIn(
+            f"type=bind,source={opencode_home},target=/home/agent/.config/opencode.host,readonly",
+            cmd,
+        )
+        self.assertIn(
+            f"type=bind,source={copilot_home},target=/home/agent/.copilot.host,readonly",
+            cmd,
+        )

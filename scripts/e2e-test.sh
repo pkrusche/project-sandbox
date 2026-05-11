@@ -73,6 +73,8 @@ REQUIRED=(
   "$PS/codex/config.toml"
   "$PS/bin/run-claude"
   "$PS/bin/run-codex"
+  "$PS/bin/run-opencode"
+  "$PS/bin/run-copilot"
   "$DC/devcontainer.json"
   "$TMP_PROJECT/.gitignore"
 )

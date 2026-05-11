@@ -23,6 +23,8 @@ RUN JJ_ARCH=$(uname -m | sed 's/aarch64/aarch64/;s/x86_64/x86_64/') && \
 
 RUN npm install -g @anthropic-ai/claude-code
 RUN npm install -g @openai/codex
+RUN npm install -g opencode-ai
+RUN npm install -g @github/copilot
 
 COPY init-firewall.sh /usr/local/bin/project-sandbox-init-firewall
 COPY entrypoint.sh /usr/local/bin/project-sandbox-entrypoint

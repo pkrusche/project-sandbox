@@ -1,6 +1,6 @@
 # project-sandbox
 
-`project-sandbox` runs Claude Code and Codex CLI inside per-project Linux containers managed by Apple's [`container`](https://github.com/apple/container) runtime. Each container runs in its own VM with hardware-enforced isolation, so the box itself is the security boundary — the agents are configured to operate freely inside it.
+`project-sandbox` runs Claude Code, Codex CLI, OpenCode, and GitHub Copilot CLI inside per-project Linux containers managed by Apple's [`container`](https://github.com/apple/container) runtime. Each container runs in its own VM with hardware-enforced isolation, so the box itself is the security boundary — the agents are configured to operate freely inside it.
 
 The tool generates a derived image, sanitized agent configs, an egress firewall, launcher scripts, and a parallel devcontainer specification so the same sandbox is reachable from VS Code, Cursor, JetBrains Gateway, GitHub Codespaces, or any Docker-compatible devcontainer client.
 
@@ -13,7 +13,7 @@ Given `project-sandbox /path/to/repo python:3.12-slim`:
 3. Render `<project>/.project-sandbox/` — `Dockerfile`, `entrypoint.sh`, `init-firewall.sh`, sanitized `claude/settings.json` and `codex/config.toml`, a devcontainer post-start init script, and a per-project `.gitignore` that whitelists the assets meant to be committed.
 4. Build the image with `container build`.
 5. Render `<project>/.devcontainer/` with symlinks back into `.project-sandbox/` so the Dockerfile and firewall script remain a single source of truth.
-6. Generate `<project>/.project-sandbox/bin/run-claude` and `run-codex` launchers that invoke `container run` with `NET_ADMIN`/`NET_RAW` capabilities, the right bind mounts, and the host git identity threaded through environment variables.
+6. Generate `<project>/.project-sandbox/bin/run-claude`, `run-codex`, `run-opencode`, and `run-copilot` launchers that invoke `container run` with `NET_ADMIN`/`NET_RAW` capabilities, the right bind mounts, and the host git identity threaded through environment variables.
 7. The container entrypoint wires git identity, copies credentials from the read-only host mount into the container's home, then runs the firewall before exec'ing the agent.
 8. Append agent-secret paths to `<project>/.gitignore` (idempotent).
 
@@ -59,6 +59,8 @@ uv run project-sandbox --dry-run /absolute/path/to/repo python:3.12-slim
 │   ├── codex/config.toml            # sanitized Codex config (committed)
 │   ├── bin/run-claude               # launcher → container run
 │   ├── bin/run-codex                # launcher → container run
+│   ├── bin/run-opencode             # launcher → container run
+│   ├── bin/run-copilot              # launcher → container run
 │   └── sessions/                    # unsupervised-mode logs (gitignored)
 └── .devcontainer/
     ├── devcontainer.json            # generated
@@ -95,12 +97,12 @@ uv run project-sandbox \
 
 - `--prompt FILE` bind-mounts the file at `/workspace/.project-sandbox-prompt`.
 - `--prompt-text "…"` passes the prompt via env var (or via a temp file if longer than 4096 chars).
-- `--agent {claude,codex}` selects which agent to run (default: `claude`). Use `--agent codex` to run Codex instead.
+- `--agent {claude,codex,opencode,copilot}` selects which agent to run (default: `claude`).
 - `--log FILE` overrides the default log path under `.project-sandbox/sessions/<agent>-main-<timestamp>.log`.
 - `--timeout SECONDS` kills the container if the agent runs too long; the launcher returns exit code `124` on timeout.
 - The agent's exit code is propagated, so CI pipelines can detect failures.
 
-Unsupervised sessions implicitly skip the interactive `-it` flags, switch the dispatch to `claude-headless` / `codex-headless`, and run with `--dangerously-skip-permissions` (Claude) or `approval_policy = "never"` (Codex). The container is still the sandbox boundary; review the diff before integrating.
+Unsupervised sessions currently support `--agent claude` and `--agent codex` only. They skip the interactive `-it` flags, switch the dispatch to `claude-headless` / `codex-headless`, and run with `--dangerously-skip-permissions` (Claude) or `approval_policy = "never"` (Codex). The container is still the sandbox boundary; review the diff before integrating.
 
 A maliciously crafted file in the workspace (e.g. a prompt-injection in a README) can still steer an unsupervised agent. Use narrow prompts and inspect the diff before merging.
 

@@ -17,6 +17,9 @@ from . import (
 from .git_identity import read as read_identity
 from .paths import ensure_dir, resolve_strict
 
+SUPPORTED_AGENTS = ("claude", "codex", "opencode", "copilot")
+HEADLESS_AGENTS = ("claude", "codex")
+
 
 def build_parser() -> ArgumentParser:
     p = ArgumentParser(prog="project-sandbox")
@@ -46,9 +49,9 @@ def build_parser() -> ArgumentParser:
     p.add_argument("--prompt-text")
     p.add_argument(
         "--agent",
-        choices=["claude", "codex"],
+        choices=list(SUPPORTED_AGENTS),
         default="claude",
-        help="Agent to run in unsupervised mode (default: claude).",
+        help="Agent to run (default: claude).",
     )
     p.add_argument("--log")
     p.add_argument("--timeout", type=int)
@@ -116,6 +119,8 @@ def main(argv: list[str] | None = None) -> int:
 
     claude_home_host = Path.home() / ".claude"
     codex_home_host = Path.home() / ".codex"
+    opencode_home_host = Path.home() / ".config" / "opencode"
+    copilot_home_host = Path.home() / ".copilot"
 
     devcontainer.render(
         project,
@@ -128,7 +133,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     script_dir = ensure_dir(context_dir / "bin")
-    for agent in ["claude", "codex"]:
+    for agent in SUPPORTED_AGENTS:
         launcher.render(
             output=script_dir / f"run-{agent}",
             image_tag=args.image_tag,
@@ -141,6 +146,12 @@ def main(argv: list[str] | None = None) -> int:
             if claude_home_host.exists()
             else None,
             codex_home_host_abs=codex_home_host if codex_home_host.exists() else None,
+            opencode_home_host_abs=opencode_home_host
+            if opencode_home_host.exists()
+            else None,
+            copilot_home_host_abs=copilot_home_host
+            if copilot_home_host.exists()
+            else None,
             firewall_enabled=not args.no_firewall,
             agent=agent,
             extra_envs=[],
@@ -284,6 +295,10 @@ def _build_session_command(
     log_path: Path | None = None
 
     if unsupervised:
+        if run_agent not in HEADLESS_AGENTS:
+            raise SystemExit(
+                "--prompt/--prompt-text currently support only --agent=claude or --agent=codex."
+            )
         log_path = (
             Path(args.log).resolve()
             if args.log
@@ -320,6 +335,8 @@ def _build_session_command(
 
     claude_home_host = Path.home() / ".claude"
     codex_home_host = Path.home() / ".codex"
+    opencode_home_host = Path.home() / ".config" / "opencode"
+    copilot_home_host = Path.home() / ".copilot"
     return (
         container_cli.build_run_argv(
             image=args.image_tag,
@@ -328,6 +345,8 @@ def _build_session_command(
             codex_cfg=codex_cfg,
             claude_home_host=claude_home_host,
             codex_home_host=codex_home_host,
+            opencode_home_host=opencode_home_host,
+            copilot_home_host=copilot_home_host,
             identity=identity,
             memory=args.memory,
             cpus=args.cpus,
@@ -352,16 +371,16 @@ def _print_next_steps(
     print(f"  Sandbox:  {context_dir}")
     print()
     print("  Generated launcher scripts:")
-    print(f"    {context_dir / 'bin' / 'run-claude'}")
-    print(f"    {context_dir / 'bin' / 'run-codex'}")
+    for agent in SUPPORTED_AGENTS:
+        print(f"    {context_dir / 'bin' / f'run-{agent}'}")
     print()
     print("  Devcontainer:")
     print(f"    {project / '.devcontainer' / 'devcontainer.json'}")
     print("  → Open this project in VS Code / Cursor and choose 'Reopen in Container'.")
     print()
     print("  To run an agent interactively:")
-    print(f"    {context_dir / 'bin' / 'run-claude'}")
-    print(f"    {context_dir / 'bin' / 'run-codex'}")
+    for agent in SUPPORTED_AGENTS:
+        print(f"    {context_dir / 'bin' / f'run-{agent}'}")
     print()
 
 
@@ -395,5 +414,7 @@ def _write_project_sandbox_gitignore(context_dir: Path) -> None:
 !bin/
 !bin/run-claude
 !bin/run-codex
+!bin/run-opencode
+!bin/run-copilot
 """
     (context_dir / ".gitignore").write_text(content, encoding="utf-8")
