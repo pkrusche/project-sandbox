@@ -5,33 +5,49 @@ set -euo pipefail
 GIT_NAME="$(git config --global user.name 2>/dev/null || echo '')"
 GIT_EMAIL="$(git config --global user.email 2>/dev/null || echo '')"
 
-exec container run \
-  --rm -it \
-  --memory {{ memory|shq }} --cpus {{ cpus|shq }} \
-{% if firewall_enabled %}
-  --cap-add NET_ADMIN --cap-add NET_RAW \
-{% endif %}
-  --workdir /workspace \
-  --mount {{ ("type=bind,source=" ~ project_abs ~ ",target=/workspace")|shq }} \
-  --mount {{ ("type=bind,source=" ~ claude_settings_abs ~ ",target=/home/agent/.claude/settings.json,readonly")|shq }} \
-  --mount {{ ("type=bind,source=" ~ codex_config_abs ~ ",target=/home/agent/.codex/config.toml,readonly")|shq }} \
+# Parse --no-firewall from argv; remaining args are forwarded to the container.
+_NO_FIREWALL={{ "1" if not firewall_enabled else "0" }}
+_PASSTHROUGH=()
+for _arg in "$@"; do
+  if [ "$_arg" = "--no-firewall" ]; then
+    _NO_FIREWALL=1
+  else
+    _PASSTHROUGH+=("$_arg")
+  fi
+done
+
+_CMD=(
+  container run
+  --rm -it
+  --memory {{ memory|shq }} --cpus {{ cpus|shq }}
+)
+if [ "$_NO_FIREWALL" = "0" ]; then
+  _CMD+=(--cap-add NET_ADMIN --cap-add NET_RAW)
+fi
+_CMD+=(
+  --workdir /workspace
+  --mount {{ ("type=bind,source=" ~ project_abs ~ ",target=/workspace")|shq }}
+  --mount {{ ("type=bind,source=" ~ claude_settings_abs ~ ",target=/home/agent/.claude/settings.json,readonly")|shq }}
+  --mount {{ ("type=bind,source=" ~ codex_config_abs ~ ",target=/home/agent/.codex/config.toml,readonly")|shq }}
 {% if claude_home_host_abs %}
-  --mount {{ ("type=bind,source=" ~ claude_home_host_abs ~ ",target=/home/agent/.claude.host,readonly")|shq }} \
+  --mount {{ ("type=bind,source=" ~ claude_home_host_abs ~ ",target=/home/agent/.claude.host,readonly")|shq }}
 {% endif %}
 {% if codex_home_host_abs %}
-  --mount {{ ("type=bind,source=" ~ codex_home_host_abs ~ ",target=/home/agent/.codex.host,readonly")|shq }} \
+  --mount {{ ("type=bind,source=" ~ codex_home_host_abs ~ ",target=/home/agent/.codex.host,readonly")|shq }}
 {% endif %}
-  --env PROJECT_SANDBOX_USER_NAME="${GIT_NAME}" \
-  --env PROJECT_SANDBOX_USER_EMAIL="${GIT_EMAIL}" \
-  --env GIT_AUTHOR_NAME="${GIT_NAME}" --env GIT_AUTHOR_EMAIL="${GIT_EMAIL}" \
-  --env GIT_COMMITTER_NAME="${GIT_NAME}" --env GIT_COMMITTER_EMAIL="${GIT_EMAIL}" \
-  --env CLAUDE_CONFIG_DIR=/home/agent/.claude \
-  --env CODEX_HOME=/home/agent/.codex \
-{% if not firewall_enabled %}
-  --env PROJECT_SANDBOX_NO_FIREWALL=1 \
-{% endif %}
+  --env "PROJECT_SANDBOX_USER_NAME=${GIT_NAME}"
+  --env "PROJECT_SANDBOX_USER_EMAIL=${GIT_EMAIL}"
+  --env "GIT_AUTHOR_NAME=${GIT_NAME}" --env "GIT_AUTHOR_EMAIL=${GIT_EMAIL}"
+  --env "GIT_COMMITTER_NAME=${GIT_NAME}" --env "GIT_COMMITTER_EMAIL=${GIT_EMAIL}"
+  --env CLAUDE_CONFIG_DIR=/home/agent/.claude
+  --env CODEX_HOME=/home/agent/.codex
 {% for env in extra_envs %}
-  --env {{ env|shq }} \
+  --env {{ env|shq }}
 {% endfor %}
-  {{ image_tag|shq }} \
-  project-sandbox-run {{ agent|shq }} "$@"
+)
+if [ "$_NO_FIREWALL" = "1" ]; then
+  _CMD+=(--env PROJECT_SANDBOX_NO_FIREWALL=1)
+fi
+_CMD+=({{ image_tag|shq }} project-sandbox-run {{ agent|shq }})
+
+exec "${_CMD[@]}" "${_PASSTHROUGH[@]}"
