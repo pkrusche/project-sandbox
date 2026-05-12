@@ -28,6 +28,11 @@ class RendererTests(TestCase):
                 "FROM python:3.12-slim",
                 (context / "Dockerfile").read_text(encoding="utf-8"),
             )
+            docker_text = (context / "Dockerfile").read_text(encoding="utf-8")
+            self.assertIn("npm install -g @anthropic-ai/claude-code", docker_text)
+            self.assertIn("npm install -g @openai/codex", docker_text)
+            self.assertIn("npm install -g opencode-ai", docker_text)
+            self.assertIn("npm install -g @github/copilot", docker_text)
             self.assertIn("bypassPermissions", claude.read_text(encoding="utf-8"))
             codex_text = codex.read_text(encoding="utf-8")
             self.assertIn(
@@ -123,3 +128,27 @@ class RendererTests(TestCase):
             # NET_ADMIN guard and env var are still emitted (runtime toggle works both ways)
             self.assertIn("NET_ADMIN", text)
             self.assertIn("PROJECT_SANDBOX_NO_FIREWALL=1", text)
+
+    def test_dockerfile_renderer_can_skip_agent_installs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            dockerfile.render(
+                context,
+                base_image="python:3.12-slim",
+                install_agents=("codex",),
+            )
+            text = (context / "Dockerfile").read_text(encoding="utf-8")
+            self.assertNotIn("@anthropic-ai/claude-code", text)
+            self.assertIn("@openai/codex", text)
+            self.assertNotIn("opencode-ai", text)
+            self.assertNotIn("@github/copilot", text)
+
+    def test_entrypoint_supports_all_headless_agents(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            dockerfile.render_entrypoint(context)
+            text = (context / "entrypoint.sh").read_text(encoding="utf-8")
+            self.assertIn("claude-headless", text)
+            self.assertIn("codex-headless", text)
+            self.assertIn("opencode-headless", text)
+            self.assertIn("copilot-headless", text)

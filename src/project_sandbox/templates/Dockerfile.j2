@@ -21,10 +21,18 @@ RUN JJ_ARCH=$(uname -m | sed 's/aarch64/aarch64/;s/x86_64/x86_64/') && \
     | tar -xz -C /usr/local/bin jj && \
     chmod 0755 /usr/local/bin/jj
 
+{% if install_claude %}
 RUN npm install -g @anthropic-ai/claude-code
+{% endif %}
+{% if install_codex %}
 RUN npm install -g @openai/codex
+{% endif %}
+{% if install_opencode %}
 RUN npm install -g opencode-ai
+{% endif %}
+{% if install_copilot %}
 RUN npm install -g @github/copilot
+{% endif %}
 
 COPY init-firewall.sh /usr/local/bin/project-sandbox-init-firewall
 COPY entrypoint.sh /usr/local/bin/project-sandbox-entrypoint

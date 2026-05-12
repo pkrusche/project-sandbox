@@ -18,7 +18,16 @@ from .git_identity import read as read_identity
 from .paths import ensure_dir, resolve_strict
 
 SUPPORTED_AGENTS = ("claude", "codex", "opencode", "copilot")
-HEADLESS_AGENTS = ("claude", "codex")
+
+
+def _agent_host_paths() -> dict[str, Path]:
+    home = Path.home()
+    return {
+        "claude": home / ".claude",
+        "codex": home / ".codex",
+        "opencode": home / ".config" / "opencode",
+        "copilot": home / ".copilot",
+    }
 
 
 def build_parser() -> ArgumentParser:
@@ -76,12 +85,21 @@ def main(argv: list[str] | None = None) -> int:
 
     project = resolve_strict(args.project)
     identity = read_identity()
+    host_paths = _agent_host_paths()
+    available_agents = tuple(
+        agent for agent in SUPPORTED_AGENTS if host_paths[agent].exists()
+    )
 
     wt, workspace = _setup_worktree(args, project)
 
     if args.dry_run:
         return _dry_run(
-            args, project=project, workspace=workspace, worktree=wt, identity=identity
+            args,
+            project=project,
+            workspace=workspace,
+            worktree=wt,
+            identity=identity,
+            available_agents=available_agents,
         )
 
     context_dir = ensure_dir(project / ".project-sandbox")
@@ -89,6 +107,7 @@ def main(argv: list[str] | None = None) -> int:
     dockerfile.render(
         context_dir,
         base_image=args.base_image,
+        install_agents=available_agents,
         refresh=args.rebuild,
     )
     dockerfile.render_entrypoint(context_dir, refresh=args.rebuild)
@@ -117,11 +136,6 @@ def main(argv: list[str] | None = None) -> int:
         if rc != 0:
             return rc
 
-    claude_home_host = Path.home() / ".claude"
-    codex_home_host = Path.home() / ".codex"
-    opencode_home_host = Path.home() / ".config" / "opencode"
-    copilot_home_host = Path.home() / ".copilot"
-
     devcontainer.render(
         project,
         identity=identity,
@@ -133,7 +147,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     script_dir = ensure_dir(context_dir / "bin")
-    for agent in SUPPORTED_AGENTS:
+    for agent in available_agents:
         launcher.render(
             output=script_dir / f"run-{agent}",
             image_tag=args.image_tag,
@@ -142,16 +156,10 @@ def main(argv: list[str] | None = None) -> int:
             project_abs=workspace,
             claude_settings_abs=claude_cfg,
             codex_config_abs=codex_cfg,
-            claude_home_host_abs=claude_home_host
-            if claude_home_host.exists()
-            else None,
-            codex_home_host_abs=codex_home_host if codex_home_host.exists() else None,
-            opencode_home_host_abs=opencode_home_host
-            if opencode_home_host.exists()
-            else None,
-            copilot_home_host_abs=copilot_home_host
-            if copilot_home_host.exists()
-            else None,
+            claude_home_host_abs=host_paths["claude"] if "claude" in available_agents else None,
+            codex_home_host_abs=host_paths["codex"] if "codex" in available_agents else None,
+            opencode_home_host_abs=host_paths["opencode"] if "opencode" in available_agents else None,
+            copilot_home_host_abs=host_paths["copilot"] if "copilot" in available_agents else None,
             firewall_enabled=not args.no_firewall,
             agent=agent,
             extra_envs=[],
@@ -166,6 +174,8 @@ def main(argv: list[str] | None = None) -> int:
         worktree=wt,
         identity=identity,
         run_agent=run_agent,
+        available_agents=available_agents,
+        host_paths=host_paths,
         claude_cfg=claude_cfg,
         codex_cfg=codex_cfg,
         create_prompt_files=True,
@@ -175,6 +185,7 @@ def main(argv: list[str] | None = None) -> int:
         _print_next_steps(
             context_dir=context_dir,
             project=project,
+            available_agents=available_agents,
         )
 
     if unsupervised:
@@ -196,6 +207,7 @@ def _dry_run(
     workspace: Path,
     worktree,
     identity,
+    available_agents: tuple[str, ...],
 ) -> int:
     context_dir = project / ".project-sandbox"
     claude_cfg = context_dir / "claude" / "settings.json"
@@ -223,6 +235,8 @@ def _dry_run(
         worktree=worktree,
         identity=identity,
         run_agent=run_agent,
+        available_agents=available_agents,
+        host_paths=_agent_host_paths(),
         claude_cfg=claude_cfg,
         codex_cfg=codex_cfg,
         create_prompt_files=False,
@@ -276,10 +290,22 @@ def _build_session_command(
     worktree,
     identity,
     run_agent: str,
+    available_agents: tuple[str, ...],
+    host_paths: dict[str, Path],
     claude_cfg: Path,
     codex_cfg: Path,
     create_prompt_files: bool,
 ) -> tuple[list[str], Path | None, bool]:
+    if run_agent not in available_agents:
+        if not available_agents:
+            raise SystemExit(
+                "No supported host agent config directories found (expected one of: ~/.claude, ~/.codex, ~/.config/opencode, ~/.copilot)."
+            )
+        available = ", ".join(available_agents)
+        raise SystemExit(
+            f"--agent={run_agent} is unavailable on this host; available agents: {available}"
+        )
+
     extra_mounts = list(args.extra_mounts)
     if worktree is not None:
         git_dir_host = (project / ".git").resolve()
@@ -295,10 +321,6 @@ def _build_session_command(
     log_path: Path | None = None
 
     if unsupervised:
-        if run_agent not in HEADLESS_AGENTS:
-            raise SystemExit(
-                "--prompt/--prompt-text currently support only --agent=claude or --agent=codex."
-            )
         log_path = (
             Path(args.log).resolve()
             if args.log
@@ -333,20 +355,16 @@ def _build_session_command(
                     "PROJECT_SANDBOX_PROMPT_FILE=/workspace/.project-sandbox-prompt"
                 )
 
-    claude_home_host = Path.home() / ".claude"
-    codex_home_host = Path.home() / ".codex"
-    opencode_home_host = Path.home() / ".config" / "opencode"
-    copilot_home_host = Path.home() / ".copilot"
     return (
         container_cli.build_run_argv(
             image=args.image_tag,
             project_abs=workspace,
             claude_cfg=claude_cfg,
             codex_cfg=codex_cfg,
-            claude_home_host=claude_home_host,
-            codex_home_host=codex_home_host,
-            opencode_home_host=opencode_home_host,
-            copilot_home_host=copilot_home_host,
+            claude_home_host=host_paths["claude"] if "claude" in available_agents else None,
+            codex_home_host=host_paths["codex"] if "codex" in available_agents else None,
+            opencode_home_host=host_paths["opencode"] if "opencode" in available_agents else None,
+            copilot_home_host=host_paths["copilot"] if "copilot" in available_agents else None,
             identity=identity,
             memory=args.memory,
             cpus=args.cpus,
@@ -365,13 +383,14 @@ def _print_next_steps(
     *,
     context_dir: Path,
     project: Path,
+    available_agents: tuple[str, ...],
 ) -> None:
     print("\n=== project-sandbox ready ===")
     print(f"  Project:  {project}")
     print(f"  Sandbox:  {context_dir}")
     print()
     print("  Generated launcher scripts:")
-    for agent in SUPPORTED_AGENTS:
+    for agent in available_agents:
         print(f"    {context_dir / 'bin' / f'run-{agent}'}")
     print()
     print("  Devcontainer:")
@@ -379,7 +398,7 @@ def _print_next_steps(
     print("  → Open this project in VS Code / Cursor and choose 'Reopen in Container'.")
     print()
     print("  To run an agent interactively:")
-    for agent in SUPPORTED_AGENTS:
+    for agent in available_agents:
         print(f"    {context_dir / 'bin' / f'run-{agent}'}")
     print()
 
