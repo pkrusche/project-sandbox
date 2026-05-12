@@ -299,7 +299,7 @@ def _build_session_command(
     if run_agent not in available_agents:
         if not available_agents:
             raise SystemExit(
-                "No supported host agent config directories found (expected one of: ~/.claude, ~/.codex, ~/.config/opencode, ~/.copilot)."
+                "No supported host agent config directories found. Set up at least one of: ~/.claude, ~/.codex, ~/.config/opencode, ~/.copilot."
             )
         available = ", ".join(available_agents)
         raise SystemExit(
