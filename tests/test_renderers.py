@@ -24,11 +24,8 @@ class RendererTests(TestCase):
                 extra_domains=["internal.example.com"],
             )
 
-            self.assertIn(
-                "FROM python:3.12-slim",
-                (context / "Dockerfile").read_text(encoding="utf-8"),
-            )
             docker_text = (context / "Dockerfile").read_text(encoding="utf-8")
+            self.assertIn("FROM python:3.12-slim", docker_text)
             self.assertIn("npm install -g @anthropic-ai/claude-code", docker_text)
             self.assertIn("npm install -g @openai/codex", docker_text)
             self.assertIn("npm install -g opencode-ai", docker_text)
