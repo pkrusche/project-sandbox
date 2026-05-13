@@ -11,8 +11,8 @@ def build_run_argv(
     project_abs: Path,
     claude_cfg: Path,
     codex_cfg: Path,
-    claude_home_host: Path,
-    codex_home_host: Path,
+    claude_home_host: Path | None,
+    codex_home_host: Path | None,
     identity: GitIdentity,
     memory: str,
     cpus: int,
@@ -21,6 +21,8 @@ def build_run_argv(
     firewall_enabled: bool,
     interactive: bool,
     extra_env: Sequence[str] = (),
+    opencode_home_host: Path | None = None,
+    copilot_home_host: Path | None = None,
 ) -> list[str]:
     argv = [
         "container",
@@ -45,15 +47,25 @@ def build_run_argv(
         "--mount",
         f"type=bind,source={codex_cfg},target=/home/agent/.codex/config.toml,readonly",
     ]
-    if claude_home_host.exists():
+    if claude_home_host and claude_home_host.exists():
         argv += [
             "--mount",
             f"type=bind,source={claude_home_host},target=/home/agent/.claude.host,readonly",
         ]
-    if codex_home_host.exists():
+    if codex_home_host and codex_home_host.exists():
         argv += [
             "--mount",
             f"type=bind,source={codex_home_host},target=/home/agent/.codex.host,readonly",
+        ]
+    if opencode_home_host and opencode_home_host.exists():
+        argv += [
+            "--mount",
+            f"type=bind,source={opencode_home_host},target=/home/agent/.config/opencode.host,readonly",
+        ]
+    if copilot_home_host and copilot_home_host.exists():
+        argv += [
+            "--mount",
+            f"type=bind,source={copilot_home_host},target=/home/agent/.copilot.host,readonly",
         ]
     if identity.name:
         argv += [

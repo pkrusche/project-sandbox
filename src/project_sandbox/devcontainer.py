@@ -37,6 +37,8 @@ def render(
             cpus=cpus,
             mount_claude_host=Path.home().joinpath(".claude").exists(),
             mount_codex_host=Path.home().joinpath(".codex").exists(),
+            mount_opencode_host=Path.home().joinpath(".config/opencode").exists(),
+            mount_copilot_host=Path.home().joinpath(".copilot").exists(),
             claude_settings_mount="${localWorkspaceFolder}/.project-sandbox/claude/settings.json",
             codex_config_mount="${localWorkspaceFolder}/.project-sandbox/codex/config.toml",
             extra_mounts=extra_mounts,

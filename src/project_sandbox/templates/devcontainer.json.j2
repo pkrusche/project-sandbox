@@ -32,7 +32,9 @@
     "source={{ claude_settings_mount }},target=/home/agent/.claude/settings.json,type=bind,readonly",
     "source={{ codex_config_mount }},target=/home/agent/.codex/config.toml,type=bind,readonly"{% if mount_claude_host %},
     "source=${localEnv:HOME}/.claude,target=/home/agent/.claude.host,type=bind,readonly"{% endif %}{% if mount_codex_host %},
-    "source=${localEnv:HOME}/.codex,target=/home/agent/.codex.host,type=bind,readonly"{% endif %}{% for m in extra_mounts %},
+    "source=${localEnv:HOME}/.codex,target=/home/agent/.codex.host,type=bind,readonly"{% endif %}{% if mount_opencode_host %},
+    "source=${localEnv:HOME}/.config/opencode,target=/home/agent/.config/opencode.host,type=bind,readonly"{% endif %}{% if mount_copilot_host %},
+    "source=${localEnv:HOME}/.copilot,target=/home/agent/.copilot.host,type=bind,readonly"{% endif %}{% for m in extra_mounts %},
     "{{ m }}"{% endfor %}
   ],
   "postStartCommand": "{% if firewall_enabled %}sudo /usr/local/bin/project-sandbox-init-firewall && {% endif %}/usr/local/bin/project-sandbox-devcontainer-init",

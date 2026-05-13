@@ -7,7 +7,7 @@ if [ -n "${PROJECT_SANDBOX_USER_NAME:-}" ] || [ -n "${PROJECT_SANDBOX_USER_EMAIL
   [ -n "${PROJECT_SANDBOX_USER_EMAIL:-}" ] && git config --global user.email "$PROJECT_SANDBOX_USER_EMAIL"
 fi
 
-mkdir -p "$HOME/.claude" "$HOME/.codex"
+mkdir -p "$HOME/.claude" "$HOME/.codex" "$HOME/.copilot" "$HOME/.config/opencode"
 if [ -f "$HOME/.claude.host/.credentials.json" ]; then
   cp "$HOME/.claude.host/.credentials.json" "$HOME/.claude/.credentials.json"
   chmod 600 "$HOME/.claude/.credentials.json"
@@ -16,8 +16,14 @@ if [ -f "$HOME/.codex.host/auth.json" ]; then
   cp "$HOME/.codex.host/auth.json" "$HOME/.codex/auth.json"
   chmod 600 "$HOME/.codex/auth.json"
 fi
+if [ -d "$HOME/.copilot.host" ]; then
+  cp -R "$HOME/.copilot.host/." "$HOME/.copilot/"
+fi
+if [ -d "$HOME/.config/opencode.host" ]; then
+  cp -R "$HOME/.config/opencode.host/." "$HOME/.config/opencode/"
+fi
 
-for d in "$HOME/.claude" "$HOME/.codex"; do
+for d in "$HOME/.claude" "$HOME/.codex" "$HOME/.copilot" "$HOME/.config/opencode"; do
   [ -d "$d" ] && sudo chown -R agent:agent "$d" 2>/dev/null || true
 done
 
@@ -31,6 +37,8 @@ case "${1:-bash}" in
     case "${1:-bash}" in
       claude) shift; exec claude "$@" ;;
       codex) shift; exec codex "$@" ;;
+      opencode) shift; exec opencode "$@" ;;
+      copilot) shift; exec copilot "$@" ;;
       claude-headless)
         shift
         if [ -n "${PROJECT_SANDBOX_PROMPT_FILE:-}" ] && [ -r "${PROJECT_SANDBOX_PROMPT_FILE}" ]; then
@@ -59,6 +67,38 @@ case "${1:-bash}" in
           exit 2
         fi
         exec codex exec "$PROMPT"
+        ;;
+      opencode-headless)
+        shift
+        if [ -n "${PROJECT_SANDBOX_PROMPT_FILE:-}" ] && [ -r "${PROJECT_SANDBOX_PROMPT_FILE}" ]; then
+          PROMPT="$(cat "${PROJECT_SANDBOX_PROMPT_FILE}")"
+        elif [ -n "${PROJECT_SANDBOX_PROMPT_FILE:-}" ]; then
+          echo "ERROR: Prompt file is not readable: ${PROJECT_SANDBOX_PROMPT_FILE}" >&2
+          exit 2
+        else
+          PROMPT="${PROJECT_SANDBOX_PROMPT:-}"
+        fi
+        if [ -z "${PROMPT}" ]; then
+          echo "ERROR: No prompt provided for opencode-headless mode." >&2
+          exit 2
+        fi
+        exec opencode run "$PROMPT"
+        ;;
+      copilot-headless)
+        shift
+        if [ -n "${PROJECT_SANDBOX_PROMPT_FILE:-}" ] && [ -r "${PROJECT_SANDBOX_PROMPT_FILE}" ]; then
+          PROMPT="$(cat "${PROJECT_SANDBOX_PROMPT_FILE}")"
+        elif [ -n "${PROJECT_SANDBOX_PROMPT_FILE:-}" ]; then
+          echo "ERROR: Prompt file is not readable: ${PROJECT_SANDBOX_PROMPT_FILE}" >&2
+          exit 2
+        else
+          PROMPT="${PROJECT_SANDBOX_PROMPT:-}"
+        fi
+        if [ -z "${PROMPT}" ]; then
+          echo "ERROR: No prompt provided for copilot-headless mode." >&2
+          exit 2
+        fi
+        exec copilot --headless --prompt "$PROMPT"
         ;;
       *) exec "${@:-bash}" ;;
     esac ;;

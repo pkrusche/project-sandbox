@@ -7,6 +7,7 @@ def render(
     context_dir: Path,
     *,
     base_image: str,
+    install_agents: tuple[str, ...] = ("claude", "codex", "opencode", "copilot"),
     refresh: bool = False,
 ) -> Path:
     out = context_dir / "Dockerfile"
@@ -17,6 +18,10 @@ def render(
     out.write_text(
         tmpl.render(
             base_image=base_image,
+            install_claude="claude" in install_agents,
+            install_codex="codex" in install_agents,
+            install_opencode="opencode" in install_agents,
+            install_copilot="copilot" in install_agents,
         )
         + "\n",
         encoding="utf-8",

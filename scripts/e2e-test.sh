@@ -71,11 +71,14 @@ REQUIRED=(
   "$PS/.gitignore"
   "$PS/claude/settings.json"
   "$PS/codex/config.toml"
-  "$PS/bin/run-claude"
-  "$PS/bin/run-codex"
   "$DC/devcontainer.json"
   "$TMP_PROJECT/.gitignore"
 )
+
+[ -d "$HOME/.claude" ] && REQUIRED+=("$PS/bin/run-claude")
+[ -d "$HOME/.codex" ] && REQUIRED+=("$PS/bin/run-codex")
+[ -d "$HOME/.config/opencode" ] && REQUIRED+=("$PS/bin/run-opencode")
+[ -d "$HOME/.copilot" ] && REQUIRED+=("$PS/bin/run-copilot")
 
 SYMLINKS=(
   "$DC/Dockerfile"

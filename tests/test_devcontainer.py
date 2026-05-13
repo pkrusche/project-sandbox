@@ -3,6 +3,7 @@ import sys
 import tempfile
 from pathlib import Path
 from unittest import TestCase
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -77,3 +78,27 @@ class DevcontainerTests(TestCase):
 
             self.assertNotIn("--cap-add=NET_ADMIN", spec["runArgs"])
             self.assertNotIn("project-sandbox-init-firewall", spec["postStartCommand"])
+
+    def test_render_mounts_opencode_and_copilot_hosts_when_present(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_home = Path(tmp) / "home"
+            project = Path(tmp) / "project"
+            (project / ".project-sandbox").mkdir(parents=True)
+            (fake_home / ".config" / "opencode").mkdir(parents=True)
+            (fake_home / ".copilot").mkdir(parents=True)
+
+            with patch.object(devcontainer.Path, "home", return_value=fake_home):
+                _render(project, refresh=True)
+
+            spec = json.loads(
+                (project / ".devcontainer" / "devcontainer.json").read_text()
+            )
+            mounts = "\n".join(spec["mounts"])
+            self.assertIn(
+                "source=${localEnv:HOME}/.config/opencode,target=/home/agent/.config/opencode.host,type=bind,readonly",
+                mounts,
+            )
+            self.assertIn(
+                "source=${localEnv:HOME}/.copilot,target=/home/agent/.copilot.host,type=bind,readonly",
+                mounts,
+            )

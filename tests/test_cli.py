@@ -15,6 +15,15 @@ from project_sandbox.git_identity import GitIdentity
 from project_sandbox.worktree import Worktree
 
 
+def _agent_paths(home: Path) -> dict[str, Path]:
+    return {
+        "claude": home / ".claude",
+        "codex": home / ".codex",
+        "opencode": home / ".config" / "opencode",
+        "copilot": home / ".copilot",
+    }
+
+
 def _make_git_repo(path: Path) -> None:
     subprocess.run(["git", "init", str(path)], check=True, capture_output=True)
     subprocess.run(["git", "-C", str(path), "config", "user.email", "t@test.com"], check=True, capture_output=True)
@@ -39,8 +48,14 @@ class CliTests(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
             (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            host_home = project / "home"
+            paths = _agent_paths(host_home)
+            paths["claude"].mkdir(parents=True)
 
-            with patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")):
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(cli, "_agent_host_paths", return_value=paths),
+            ):
                 rc = cli.main(["--dry-run", "--no-build", str(project), "python:3.12-slim"])
 
             self.assertEqual(rc, 0)
@@ -51,7 +66,10 @@ class CliTests(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
             (project / ".jj").mkdir()
-            with patch.object(cli, "read_identity", return_value=GitIdentity("A", "a@b.com")):
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("A", "a@b.com")),
+                patch.object(cli, "_agent_host_paths", return_value=_agent_paths(project / "home")),
+            ):
                 with self.assertRaises(SystemExit) as raised:
                     cli.main(["--branch", "feat/x", str(project), "python:3.12-slim"])
         self.assertIn("jj", str(raised.exception).lower())
@@ -60,7 +78,10 @@ class CliTests(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
             (project / ".git").write_text("gitdir: ../some/.git/worktrees/x\n", encoding="utf-8")
-            with patch.object(cli, "read_identity", return_value=GitIdentity("A", "a@b.com")):
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("A", "a@b.com")),
+                patch.object(cli, "_agent_host_paths", return_value=_agent_paths(project / "home")),
+            ):
                 with self.assertRaises(SystemExit) as raised:
                     cli.main(["--branch", "feat/x", str(project), "python:3.12-slim"])
         self.assertIn("plain git repo", str(raised.exception))
@@ -72,11 +93,15 @@ class CliTests(TestCase):
 
             wt_path = project.parent / f"{project.name}-worktrees" / "feat-x"
             fake_wt = Worktree(path=wt_path, branch="feat/x", created=True)
+            host_home = project / "home"
+            paths = _agent_paths(host_home)
+            paths["claude"].mkdir(parents=True)
 
             stdout_buf = io.StringIO()
             with (
                 patch.object(cli, "read_identity", return_value=GitIdentity("A", "a@b.com")),
                 patch.object(cli.worktree_mod, "setup", return_value=fake_wt),
+                patch.object(cli, "_agent_host_paths", return_value=paths),
                 contextlib.redirect_stdout(stdout_buf),
             ):
                 rc = cli.main([
@@ -102,11 +127,15 @@ class CliTests(TestCase):
 
             wt_path = project.parent / f"{project.name}-worktrees" / "feat-x"
             fake_wt = Worktree(path=wt_path, branch="feat/x", created=True)
+            host_home = project / "home"
+            paths = _agent_paths(host_home)
+            paths["claude"].mkdir(parents=True)
 
             stdout_buf = io.StringIO()
             with (
                 patch.object(cli, "read_identity", return_value=GitIdentity("A", "a@b.com")),
                 patch.object(cli.worktree_mod, "setup", return_value=fake_wt),
+                patch.object(cli, "_agent_host_paths", return_value=paths),
                 contextlib.redirect_stdout(stdout_buf),
             ):
                 cli.main([
@@ -130,3 +159,84 @@ class CliTests(TestCase):
                 ])
         self.assertIn("ask", str(raised.exception).lower())
         self.assertIn("unsupervised", str(raised.exception).lower())
+
+    def test_unsupervised_opencode_uses_headless_dispatch_when_available(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            host_home = project / "home"
+            paths = _agent_paths(host_home)
+            paths["opencode"].mkdir(parents=True)
+            out = io.StringIO()
+
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(cli, "_agent_host_paths", return_value=paths),
+                contextlib.redirect_stdout(out),
+            ):
+                rc = cli.main([
+                    "--dry-run",
+                    "--no-build",
+                    "--agent",
+                    "opencode",
+                    "--prompt-text",
+                    "fix this",
+                    str(project),
+                    "python:3.12-slim",
+                ])
+
+        self.assertEqual(rc, 0)
+        self.assertIn("opencode-headless", out.getvalue())
+
+    def test_unsupervised_copilot_uses_headless_dispatch_when_available(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            host_home = project / "home"
+            paths = _agent_paths(host_home)
+            paths["copilot"].mkdir(parents=True)
+            out = io.StringIO()
+
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(cli, "_agent_host_paths", return_value=paths),
+                contextlib.redirect_stdout(out),
+            ):
+                rc = cli.main([
+                    "--dry-run",
+                    "--no-build",
+                    "--agent",
+                    "copilot",
+                    "--prompt-text",
+                    "fix this",
+                    str(project),
+                    "python:3.12-slim",
+                ])
+
+        self.assertEqual(rc, 0)
+        self.assertIn("copilot-headless", out.getvalue())
+
+    def test_unavailable_agent_raises_with_available_list(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            host_home = project / "home"
+            paths = _agent_paths(host_home)
+            paths["claude"].mkdir(parents=True)
+
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(cli, "_agent_host_paths", return_value=paths),
+            ):
+                with self.assertRaises(SystemExit) as raised:
+                    cli.main([
+                        "--dry-run",
+                        "--no-build",
+                        "--agent",
+                        "copilot",
+                        str(project),
+                        "python:3.12-slim",
+                    ])
+
+        self.assertIn("unavailable", str(raised.exception).lower())
+        self.assertIn("claude", str(raised.exception).lower())

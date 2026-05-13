@@ -18,6 +18,8 @@ def render(
     firewall_enabled: bool,
     agent: str,
     extra_envs: list[str],
+    opencode_home_host_abs: Path | None = None,
+    copilot_home_host_abs: Path | None = None,
 ) -> Path:
     env = Environment(loader=PackageLoader("project_sandbox", "templates"))
     env.filters["shq"] = _shell_quote
@@ -32,6 +34,8 @@ def render(
             codex_config_abs=codex_config_abs,
             claude_home_host_abs=claude_home_host_abs,
             codex_home_host_abs=codex_home_host_abs,
+            opencode_home_host_abs=opencode_home_host_abs,
+            copilot_home_host_abs=copilot_home_host_abs,
             firewall_enabled=firewall_enabled,
             agent=agent,
             extra_envs=extra_envs,

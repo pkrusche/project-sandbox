@@ -36,10 +36,18 @@ _CMD+=(
 {% if codex_home_host_abs %}
   --mount {{ ("type=bind,source=" ~ codex_home_host_abs ~ ",target=/home/agent/.codex.host,readonly")|shq }}
 {% endif %}
+{% if opencode_home_host_abs %}
+  --mount {{ ("type=bind,source=" ~ opencode_home_host_abs ~ ",target=/home/agent/.config/opencode.host,readonly")|shq }}
+{% endif %}
+{% if copilot_home_host_abs %}
+  --mount {{ ("type=bind,source=" ~ copilot_home_host_abs ~ ",target=/home/agent/.copilot.host,readonly")|shq }}
+{% endif %}
   --env "PROJECT_SANDBOX_USER_NAME=${GIT_NAME}"
   --env "PROJECT_SANDBOX_USER_EMAIL=${GIT_EMAIL}"
-  --env "GIT_AUTHOR_NAME=${GIT_NAME}" --env "GIT_AUTHOR_EMAIL=${GIT_EMAIL}"
-  --env "GIT_COMMITTER_NAME=${GIT_NAME}" --env "GIT_COMMITTER_EMAIL=${GIT_EMAIL}"
+  --env "GIT_AUTHOR_NAME=${GIT_NAME}"
+  --env "GIT_AUTHOR_EMAIL=${GIT_EMAIL}"
+  --env "GIT_COMMITTER_NAME=${GIT_NAME}"
+  --env "GIT_COMMITTER_EMAIL=${GIT_EMAIL}"
   --env CLAUDE_CONFIG_DIR=/home/agent/.claude
   --env CODEX_HOME=/home/agent/.codex
 {% for env in extra_envs %}
