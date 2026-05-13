@@ -2,10 +2,10 @@
 # End-to-end smoke test for project-sandbox.
 #
 # Creates a throwaway Python hello-world project, runs the tool against it,
-# and verifies that every expected artefact was written. By default this uses
-# --devcontainer-only so the test is portable to hosts without apple/container
-# installed; pass --with-container to additionally exercise the launcher path
-# (requires the `container` CLI on PATH and a running container system).
+# and verifies that every expected artefact was written. By default this passes
+# --no-build so the test is portable to hosts without apple/container installed;
+# pass --with-container to additionally exercise the image build (requires the
+# `container` CLI on PATH and a running container system).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -52,11 +52,11 @@ echo
 
 cd "$ROOT"
 if [ "$WITH_CONTAINER" = 1 ]; then
-  echo "Running: uv run project-sandbox --no-build $TMP_PROJECT python:3.12-slim"
-  uv run project-sandbox --no-build "$TMP_PROJECT" python:3.12-slim
-else
   echo "Running: uv run project-sandbox $TMP_PROJECT python:3.12-slim"
   uv run project-sandbox "$TMP_PROJECT" python:3.12-slim
+else
+  echo "Running: uv run project-sandbox --no-build $TMP_PROJECT python:3.12-slim"
+  uv run project-sandbox --no-build "$TMP_PROJECT" python:3.12-slim
 fi
 echo
 
@@ -71,13 +71,11 @@ REQUIRED=(
   "$PS/.gitignore"
   "$PS/claude/settings.json"
   "$PS/codex/config.toml"
+  "$PS/bin/run-claude"
+  "$PS/bin/run-codex"
   "$DC/devcontainer.json"
   "$TMP_PROJECT/.gitignore"
 )
-
-if [ "$WITH_CONTAINER" = 1 ]; then
-  REQUIRED+=("$PS/bin/run-claude" "$PS/bin/run-codex")
-fi
 
 SYMLINKS=(
   "$DC/Dockerfile"

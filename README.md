@@ -174,8 +174,6 @@ A self-contained end-to-end smoke test creates a throwaway hello-world project, 
 
 The test prints the temp project path on success so the generated files can be inspected.
 
-The full original design lives in [`docs/PLAN.md`](docs/PLAN.md).
-
 ## References
 
  - [agentbox](https://github.com/fletchgqc/agentbox/tree/main)

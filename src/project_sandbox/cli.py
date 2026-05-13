@@ -104,7 +104,7 @@ def main(argv: list[str] | None = None) -> int:
     rc = container_cli.ensure_system_started()
     if rc != 0:
         print(
-            "[W] Apple container system not running - if you're on a Mac, you may need to install or start it. Otherwise, you can still work wiht the devcontainer setup."
+            "[W] Apple container system not running - if you're on a Mac, you may need to install or start it. Otherwise, you can still work with the devcontainer setup."
         )
 
     if not args.no_build:

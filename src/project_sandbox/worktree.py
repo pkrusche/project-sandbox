@@ -43,7 +43,11 @@ def teardown(repo: Path, wt: Worktree, *, after: str) -> None:
     if after == "merge":
         _git(repo, ["merge", "--no-ff", wt.branch, "-m", f"Merge agent session: {wt.branch}"])
     elif after == "rebase":
-        _git(repo, ["rebase", "HEAD", wt.branch])
+        current = _git(repo, ["rev-parse", "--abbrev-ref", "HEAD"], capture=True).strip()
+        subprocess.run(
+            ["git", "-C", str(wt.path), "rebase", current],
+            check=True,
+        )
         _git(repo, ["merge", "--ff-only", wt.branch])
     elif after == "pr":
         _git(repo, ["push", "-u", "origin", wt.branch])

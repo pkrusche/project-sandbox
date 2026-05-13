@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-Source code lives in `src/project_sandbox/`. The CLI entry point is `cli.py`, runtime command construction is in `container_cli.py`, and generated assets are rendered from `src/project_sandbox/templates/`. Tests live in `tests/` and mirror behavior by module or feature, for example `tests/test_cli.py` and `tests/test_renderers.py`. Longer design notes are in `docs/PLAN.md`; user-facing usage belongs in `README.md`.
+Source code lives in `src/project_sandbox/`. The CLI entry point is `cli.py`, runtime command construction is in `container_cli.py`, and generated assets are rendered from `src/project_sandbox/templates/`. Tests live in `tests/` and mirror behavior by module or feature, for example `tests/test_cli.py` and `tests/test_renderers.py`. User-facing usage belongs in `README.md`.
 
 ## Build, Test, and Development Commands
 

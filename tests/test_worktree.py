@@ -140,6 +140,25 @@ class WorktreeTeardownTests(TestCase):
         self.assertIn("agent work", log)
         self.assertFalse(self.wt.path.exists())
 
+    def test_teardown_rebase_replays_onto_main(self) -> None:
+        # Add a divergent commit on main so rebase actually has work to do.
+        (self.repo / "main.txt").write_text("main\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.repo), "add", "."], check=True, capture_output=True)
+        subprocess.run(
+            ["git", "-C", str(self.repo), "commit", "-m", "main commit"],
+            check=True, capture_output=True,
+        )
+
+        worktree_mod.teardown(self.repo, self.wt, after="rebase")
+
+        log = subprocess.run(
+            ["git", "-C", str(self.repo), "log", "--oneline"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        self.assertIn("agent work", log)
+        self.assertIn("main commit", log)
+        self.assertFalse(self.wt.path.exists())
+
     def test_teardown_clears_stale_index_lock(self) -> None:
         # Simulate a stale lock left by a crashed container.
         git_dir = self.repo.resolve() / ".git"
