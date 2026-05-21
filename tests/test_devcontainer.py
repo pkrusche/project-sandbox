@@ -46,6 +46,20 @@ class DevcontainerTests(TestCase):
             self.assertEqual(spec["build"]["context"], "../.project-sandbox")
             self.assertIn("--cap-add=NET_ADMIN", spec["runArgs"])
             self.assertIn("--cap-add=NET_RAW", spec["runArgs"])
+            self.assertIn(
+                "sudo -n /usr/local/bin/project-sandbox-init-firewall",
+                spec["postStartCommand"],
+            )
+            mounts = "\n".join(spec["mounts"])
+            self.assertIn(
+                "source=${localWorkspaceFolder}/.project-sandbox/claude,target=/project-sandbox-config/claude,type=bind,readonly",
+                mounts,
+            )
+            self.assertIn(
+                "source=${localWorkspaceFolder}/.project-sandbox/codex,target=/project-sandbox-config/codex,type=bind,readonly",
+                mounts,
+            )
+            self.assertNotIn("/home/agent/.claude/settings.json", mounts)
 
     def test_render_creates_relative_symlinks_into_project_sandbox(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

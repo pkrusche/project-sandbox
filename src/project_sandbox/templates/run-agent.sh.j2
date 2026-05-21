@@ -28,8 +28,8 @@ fi
 _CMD+=(
   --workdir /workspace
   --mount {{ ("type=bind,source=" ~ project_abs ~ ",target=/workspace")|shq }}
-  --mount {{ ("type=bind,source=" ~ claude_settings_abs ~ ",target=/home/agent/.claude/settings.json,readonly")|shq }}
-  --mount {{ ("type=bind,source=" ~ codex_config_abs ~ ",target=/home/agent/.codex/config.toml,readonly")|shq }}
+  --mount {{ ("type=bind,source=" ~ claude_config_dir_abs ~ ",target=/project-sandbox-config/claude,readonly")|shq }}
+  --mount {{ ("type=bind,source=" ~ codex_config_dir_abs ~ ",target=/project-sandbox-config/codex,readonly")|shq }}
 {% if claude_home_host_abs %}
   --mount {{ ("type=bind,source=" ~ claude_home_host_abs ~ ",target=/home/agent/.claude.host,readonly")|shq }}
 {% endif %}

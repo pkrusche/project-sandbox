@@ -43,9 +43,9 @@ def build_run_argv(
         "--mount",
         f"type=bind,source={project_abs},target=/workspace",
         "--mount",
-        f"type=bind,source={claude_cfg},target=/home/agent/.claude/settings.json,readonly",
+        f"type=bind,source={claude_cfg.parent},target=/project-sandbox-config/claude,readonly",
         "--mount",
-        f"type=bind,source={codex_cfg},target=/home/agent/.codex/config.toml,readonly",
+        f"type=bind,source={codex_cfg.parent},target=/project-sandbox-config/codex,readonly",
     ]
     if claude_home_host and claude_home_host.exists():
         argv += [

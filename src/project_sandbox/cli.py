@@ -124,6 +124,7 @@ def main(argv: list[str] | None = None) -> int:
         build_context=build_context,
         install_agents=available_agents,
         refresh=args.rebuild,
+        warn=print,
     )
     dockerfile.render_entrypoint(context_dir, refresh=args.rebuild)
     dockerfile.render_devcontainer_entrypoint(context_dir, refresh=args.rebuild)
@@ -133,6 +134,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     claude_cfg = config_claude.render(context_dir, refresh=args.refresh_config)
+    config_claude.sync_credentials(context_dir)
     codex_cfg = config_codex.render(context_dir, refresh=args.refresh_config)
 
     _write_project_sandbox_gitignore(context_dir)
@@ -162,7 +164,7 @@ def main(argv: list[str] | None = None) -> int:
         cpus=args.cpus,
         extra_mounts=args.extra_mounts,
         build_context=build_context,
-        refresh=args.refresh_config,
+        refresh=args.refresh_config or args.rebuild,
     )
 
     script_dir = ensure_dir(context_dir / "bin")
@@ -247,6 +249,8 @@ def _dry_run(
     if base_dockerfile is not None:
         print(f"Would append sandbox layers to Dockerfile: {base_dockerfile}")
         print(f"Would use build context: {build_context}")
+        for warning in dockerfile.source_warnings(base_dockerfile):
+            print(warning)
 
     container_cli.ensure_system_started(dry_run=True)
     if not args.no_build:
@@ -473,6 +477,7 @@ def _update_project_gitignore(project: Path) -> None:
     lines_to_add = [
         marker,
         ".project-sandbox/claude/.credentials.json",
+        ".project-sandbox/claude/.claude.json",
         ".project-sandbox/codex/auth.json",
     ]
     gi = project / ".gitignore"

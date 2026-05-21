@@ -19,6 +19,7 @@ class UpdateProjectGitignoreTests(TestCase):
 
             self.assertIn("# project-sandbox — do not commit agent secrets", content)
             self.assertIn(".project-sandbox/claude/.credentials.json", content)
+            self.assertIn(".project-sandbox/claude/.claude.json", content)
             self.assertIn(".project-sandbox/codex/auth.json", content)
 
     def test_is_idempotent(self) -> None:

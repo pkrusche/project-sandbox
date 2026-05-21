@@ -38,6 +38,18 @@ class ContainerCliTests(TestCase):
         self.assertIn("--cap-add", cmd)
         self.assertIn("NET_ADMIN", cmd)
         self.assertIn("PROJECT_SANDBOX_PROMPT=fix the tests", cmd)
+        self.assertIn(
+            f"type=bind,source={root / 'claude'},target=/project-sandbox-config/claude,readonly",
+            cmd,
+        )
+        self.assertIn(
+            f"type=bind,source={root / 'codex'},target=/project-sandbox-config/codex,readonly",
+            cmd,
+        )
+        self.assertNotIn(
+            f"type=bind,source={root / 'claude/settings.json'},target=/home/agent/.claude/settings.json,readonly",
+            cmd,
+        )
         self.assertEqual(
             cmd[-3:], ["project-sandbox:test", "project-sandbox-run", "claude-headless"]
         )

@@ -96,6 +96,41 @@ class CliTests(TestCase):
             self.assertIn(f"Would use build context: {project.resolve()}", output)
             self.assertFalse((project / ".project-sandbox").exists())
 
+    def test_dry_run_warns_when_source_dockerfile_user_setup_is_removed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            source = project / "Dockerfile"
+            source.write_text(
+                "FROM python:3.12-slim\n"
+                "RUN useradd -m -u 1000 app\n"
+                "USER app\n",
+                encoding="utf-8",
+            )
+            host_home = project / "home"
+            paths = _agent_paths(host_home)
+            paths["claude"].mkdir(parents=True)
+            out = io.StringIO()
+
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(cli, "_agent_host_paths", return_value=paths),
+                contextlib.redirect_stdout(out),
+            ):
+                rc = cli.main([
+                    "--dry-run",
+                    "--no-build",
+                    "--dockerfile",
+                    str(source),
+                    str(project),
+                ])
+
+            self.assertEqual(rc, 0)
+            output = out.getvalue()
+            self.assertIn("WARNING: Removed 2 restricted user setup instructions", output)
+            self.assertIn("project-sandbox will create its own agent user with UID 1000", output)
+            self.assertFalse((project / ".project-sandbox").exists())
+
     def test_dockerfile_and_base_image_are_mutually_exclusive(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
