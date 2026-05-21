@@ -16,6 +16,7 @@ _STALE_JJ_EXTRACT_MARKER = "tar -xz -C /usr/local/bin jj"
 _CONFIG_TARGET_PLACEHOLDER_MARKER = "/home/agent/.claude/settings.json"
 _CONFIG_DIR_MOUNT_TARGET_MARKER = "/project-sandbox-config/claude"
 _GENERATED_DOCKERFILE_MARKER = "project-sandbox-entrypoint"
+_JJ_IDENTITY_MARKER = "jj config set --user user.name"
 
 
 def render(
@@ -179,7 +180,7 @@ def _sandbox_copy_prefix(*, context_dir: Path, build_context: Path) -> str:
 
 def render_entrypoint(context_dir: Path, *, refresh: bool = False) -> Path:
     out = context_dir / "entrypoint.sh"
-    if out.exists() and not refresh:
+    if out.exists() and not refresh and not _stale_entrypoint(out):
         return out
     env = Environment(loader=PackageLoader("project_sandbox", "templates"))
     tmpl = env.get_template("entrypoint.sh.j2")
@@ -190,10 +191,15 @@ def render_entrypoint(context_dir: Path, *, refresh: bool = False) -> Path:
 
 def render_devcontainer_entrypoint(context_dir: Path, *, refresh: bool = False) -> Path:
     out = context_dir / "project-sandbox-devcontainer-init"
-    if out.exists() and not refresh:
+    if out.exists() and not refresh and not _stale_entrypoint(out):
         return out
     env = Environment(loader=PackageLoader("project_sandbox", "templates"))
     tmpl = env.get_template("devcontainer-entrypoint.sh.j2")
     out.write_text(tmpl.render() + "\n", encoding="utf-8")
     out.chmod(0o755)
     return out
+
+
+def _stale_entrypoint(path: Path) -> bool:
+    text = path.read_text(encoding="utf-8")
+    return "git config --global user.name" in text and _JJ_IDENTITY_MARKER not in text

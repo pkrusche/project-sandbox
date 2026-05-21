@@ -10,6 +10,11 @@ if [ -n "$NAME" ] || [ -n "$EMAIL" ]; then
   [ -n "$EMAIL" ] && git config --global user.email "$EMAIL"
 fi
 
+if command -v jj >/dev/null 2>&1 && { [ -n "$NAME" ] || [ -n "$EMAIL" ]; }; then
+  [ -n "$NAME" ] && (cd "$HOME" && jj config set --user user.name "$NAME")
+  [ -n "$EMAIL" ] && (cd "$HOME" && jj config set --user user.email "$EMAIL")
+fi
+
 mkdir -p "$HOME/.claude" "$HOME/.codex" "$HOME/.copilot" "$HOME/.config/opencode"
 if [ -f "/project-sandbox-config/claude/settings.json" ]; then
   cp "/project-sandbox-config/claude/settings.json" "$HOME/.claude/settings.json"

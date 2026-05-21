@@ -1,10 +1,18 @@
 #!/bin/sh
 set -eu
 
-if [ -n "${PROJECT_SANDBOX_USER_NAME:-}" ] || [ -n "${PROJECT_SANDBOX_USER_EMAIL:-}" ]; then
+NAME="${PROJECT_SANDBOX_USER_NAME:-}"
+EMAIL="${PROJECT_SANDBOX_USER_EMAIL:-}"
+
+if [ -n "$NAME" ] || [ -n "$EMAIL" ]; then
   : > "$HOME/.gitconfig"
-  [ -n "${PROJECT_SANDBOX_USER_NAME:-}" ] && git config --global user.name "$PROJECT_SANDBOX_USER_NAME"
-  [ -n "${PROJECT_SANDBOX_USER_EMAIL:-}" ] && git config --global user.email "$PROJECT_SANDBOX_USER_EMAIL"
+  [ -n "$NAME" ] && git config --global user.name "$NAME"
+  [ -n "$EMAIL" ] && git config --global user.email "$EMAIL"
+fi
+
+if command -v jj >/dev/null 2>&1 && { [ -n "$NAME" ] || [ -n "$EMAIL" ]; }; then
+  [ -n "$NAME" ] && (cd "$HOME" && jj config set --user user.name "$NAME")
+  [ -n "$EMAIL" ] && (cd "$HOME" && jj config set --user user.email "$EMAIL")
 fi
 
 mkdir -p "$HOME/.claude" "$HOME/.codex" "$HOME/.copilot" "$HOME/.config/opencode"

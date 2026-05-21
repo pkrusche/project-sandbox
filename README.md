@@ -14,7 +14,7 @@ Given `project-sandbox /path/to/repo python:3.12-slim`:
 4. Build the image with `container build`.
 5. Render `<project>/.devcontainer/` with symlinks back into `.project-sandbox/` so the Dockerfile and firewall script remain a single source of truth.
 6. Detect available host agent configs (`~/.claude`, `~/.codex`, `~/.config/opencode`, `~/.copilot`) and install only those agent CLIs into the generated image. Bash is always available.
-7. The container entrypoint wires git identity, copies credentials from the read-only host mount into the container's home, then runs the firewall before exec'ing the agent.
+7. The container entrypoint wires Git and jj identity, copies credentials from the read-only host mount into the container's home, then runs the firewall before exec'ing the agent.
 8. Append agent-secret paths to `<project>/.gitignore` (idempotent).
 
 ## Install
@@ -159,7 +159,7 @@ The tool does **not** protect against:
 - Base images, including the final stage of a Dockerfile passed with `--dockerfile`, must be Debian or Ubuntu based — the firewall depends on `apt` packages including `aggregate`, which Alpine does not ship.
 - Apple `container` is required for direct Python CLI runs. The generated `.devcontainer/` works with any Docker-compatible runtime (Docker Desktop, OrbStack, Codespaces).
 - `--branch` (worktree mode) creates a git worktree on the given branch (creating it if it doesn't exist), mounts the worktree at `/workspace`, and bind-mounts the main repo's `.git/` so `git` works correctly inside the container. After the session, `--after-session` controls whether to merge, rebase, open a PR, or do nothing. Note: jj repos and worktree-of-worktree setups are not yet supported.
-- `jj` is installed in the container for users who want to shell in and use it, but the tool itself does not write any jj configuration. Configure jj inside the container yourself if you need it.
+- `jj` is installed in the container and configured with the same global name/email identity passed to Git, but jj-native repos are not yet supported by `--branch`.
 
 ## Development
 

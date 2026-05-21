@@ -257,12 +257,32 @@ class RendererTests(TestCase):
             self.assertIn("/project-sandbox-config/codex/config.toml", text)
             self.assertIn("sudo -n /usr/local/bin/project-sandbox-init-firewall", text)
             self.assertNotIn("sudo chown", text)
+            self.assertIn('jj config set --user user.name "$NAME"', text)
+            self.assertIn('jj config set --user user.email "$EMAIL"', text)
             self.assertIn("claude-headless", text)
             self.assertIn("codex-headless", text)
             self.assertIn("opencode-headless", text)
             self.assertIn("copilot-headless", text)
             self.assertIn("bash-headless", text)
             self.assertIn('exec bash -lc "$PROMPT"', text)
+
+    def test_entrypoint_renderer_refreshes_missing_jj_identity_setup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            existing = context / "entrypoint.sh"
+            existing.write_text(
+                "#!/bin/sh\n"
+                "[ -n \"${PROJECT_SANDBOX_USER_NAME:-}\" ] "
+                "&& git config --global user.name "
+                "\"$PROJECT_SANDBOX_USER_NAME\"\n",
+                encoding="utf-8",
+            )
+
+            dockerfile.render_entrypoint(context)
+            text = existing.read_text(encoding="utf-8")
+
+            self.assertIn('jj config set --user user.name "$NAME"', text)
+            self.assertIn('jj config set --user user.email "$EMAIL"', text)
 
     def test_devcontainer_entrypoint_copies_staged_claude_credentials(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -274,3 +294,21 @@ class RendererTests(TestCase):
             self.assertIn("/project-sandbox-config/claude/settings.json", text)
             self.assertIn("/project-sandbox-config/claude/.claude.json", text)
             self.assertIn("/project-sandbox-config/codex/config.toml", text)
+            self.assertIn('jj config set --user user.name "$NAME"', text)
+            self.assertIn('jj config set --user user.email "$EMAIL"', text)
+
+    def test_devcontainer_entrypoint_refreshes_missing_jj_identity_setup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            existing = context / "project-sandbox-devcontainer-init"
+            existing.write_text(
+                "#!/bin/sh\n"
+                "[ -n \"$NAME\" ] && git config --global user.name \"$NAME\"\n",
+                encoding="utf-8",
+            )
+
+            dockerfile.render_devcontainer_entrypoint(context)
+            text = existing.read_text(encoding="utf-8")
+
+            self.assertIn('jj config set --user user.name "$NAME"', text)
+            self.assertIn('jj config set --user user.email "$EMAIL"', text)
