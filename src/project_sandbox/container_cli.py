@@ -89,6 +89,8 @@ def build_run_argv(
         "--env",
         "CLAUDE_CONFIG_DIR=/home/agent/.claude",
         "--env",
+        "CLAUDE_SECURESTORAGE_CONFIG_DIR=/home/agent/.claude",
+        "--env",
         "CODEX_HOME=/home/agent/.codex",
     ]
     if not firewall_enabled:

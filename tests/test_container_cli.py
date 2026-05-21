@@ -38,6 +38,8 @@ class ContainerCliTests(TestCase):
         self.assertIn("--cap-add", cmd)
         self.assertIn("NET_ADMIN", cmd)
         self.assertIn("PROJECT_SANDBOX_PROMPT=fix the tests", cmd)
+        self.assertIn("CLAUDE_CONFIG_DIR=/home/agent/.claude", cmd)
+        self.assertIn("CLAUDE_SECURESTORAGE_CONFIG_DIR=/home/agent/.claude", cmd)
         self.assertIn(
             f"type=bind,source={root / 'claude'},target=/project-sandbox-config/claude,readonly",
             cmd,

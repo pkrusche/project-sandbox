@@ -8,14 +8,17 @@ The tool generates a derived image, sanitized agent configs, an egress firewall,
 
 Given `project-sandbox /path/to/repo python:3.12-slim`:
 
+1. Read host `git config --global` identity.
+2. Render `<project>/.project-sandbox/` — `Dockerfile`, `entrypoint.sh`, `init-firewall.sh`, sanitized `claude/settings.json` and `codex/config.toml`, a devcontainer post-start init script, and generated credential/config staging files.
+3. Render `<project>/.devcontainer/` with symlinks back into `.project-sandbox/` so the Dockerfile and firewall script remain a single source of truth.
+4. Detect available host agent configs (`~/.claude`, `~/.codex`, `~/.config/opencode`, `~/.copilot`) and install only those agent CLIs into the generated Dockerfile. Bash is always available.
+5. Append `.project-sandbox/` to `<project>/.gitignore` (idempotent).
+
+Given `project-sandbox --agent claude /path/to/repo python:3.12-slim`, it additionally:
+
 1. Verify the `container` system service is running.
-2. Read host `git config --global` identity.
-3. Render `<project>/.project-sandbox/` — `Dockerfile`, `entrypoint.sh`, `init-firewall.sh`, sanitized `claude/settings.json` and `codex/config.toml`, a devcontainer post-start init script, and a per-project `.gitignore` that whitelists the assets meant to be committed.
-4. Build the image with `container build`.
-5. Render `<project>/.devcontainer/` with symlinks back into `.project-sandbox/` so the Dockerfile and firewall script remain a single source of truth.
-6. Detect available host agent configs (`~/.claude`, `~/.codex`, `~/.config/opencode`, `~/.copilot`) and install only those agent CLIs into the generated image. Bash is always available.
-7. The container entrypoint wires Git and jj identity, copies credentials from the read-only host mount into the container's home, then runs the firewall before exec'ing the agent.
-8. Append agent-secret paths to `<project>/.gitignore` (idempotent).
+2. Build the image with `container build`.
+3. The container entrypoint wires Git and jj identity, copies staged credentials into the container's home, then runs the firewall before exec'ing the agent.
 
 ## Install
 
@@ -56,15 +59,15 @@ uv run project-sandbox --dry-run /absolute/path/to/repo python:3.12-slim
 
 ```
 <project>/
-├── .gitignore                       # appended (idempotent): credential paths
+├── .gitignore                       # appended (idempotent): .project-sandbox/
 ├── .project-sandbox/
-│   ├── .gitignore                   # whitelist of committed assets
-│   ├── Dockerfile                   # generated, committed
+│   ├── .gitignore                   # local safeguard; parent .gitignore ignores the whole directory
+│   ├── Dockerfile                   # generated
 │   ├── entrypoint.sh                # container PID 1
 │   ├── init-firewall.sh             # iptables/ipset egress allowlist
 │   ├── project-sandbox-devcontainer-init  # devcontainer postStart helper
-│   ├── claude/settings.json         # sanitized Claude config (committed)
-│   ├── codex/config.toml            # sanitized Codex config (committed)
+│   ├── claude/settings.json         # sanitized Claude config
+│   ├── codex/config.toml            # sanitized Codex config
 │   └── sessions/                    # unsupervised-mode logs (gitignored)
 └── .devcontainer/
     ├── devcontainer.json            # generated
@@ -74,11 +77,13 @@ uv run project-sandbox --dry-run /absolute/path/to/repo python:3.12-slim
     └── codex               → ../.project-sandbox/codex
 ```
 
-The Dockerfile, both sanitized configs, and `init-firewall.sh` are intended to be committed so the team gets a consistent dev environment from `git clone`. Credential files are not.
+The `.project-sandbox/` directory is generated local state and is ignored as a whole. Re-run `project-sandbox` after cloning, pulling generated config changes, or refreshing credentials.
 
 ## Devcontainer flow
 
 Open the project in VS Code, Cursor, or any devcontainer-aware IDE and choose **Reopen in Container**. The generated `devcontainer.json` builds the same image, mounts the same sanitized configs, runs the same firewall via `postStartCommand`, and waits for it before opening a terminal.
+
+Because `.project-sandbox/` is ignored, re-run `project-sandbox /absolute/path/to/repo python:3.12-slim` on the host before opening or rebuilding the devcontainer. The devcontainer post-start helper prints the same reminder.
 
 Generate the devcontainer without building or running anything:
 
@@ -101,7 +106,7 @@ uv run project-sandbox \
 
 - `--prompt FILE` bind-mounts the file at `/workspace/.project-sandbox-prompt`.
 - `--prompt-text "…"` passes the prompt via env var (or via a temp file if longer than 4096 chars).
-- `--agent {claude,codex,opencode,copilot,bash}` selects which agent to run (default: `claude`). Claude, Codex, OpenCode, and Copilot require their host config directories; Bash is always available.
+- `--agent {claude,codex,opencode,copilot,bash}` selects which agent to run. If omitted, the CLI only initializes generated config files unless a prompt is supplied. Claude, Codex, OpenCode, and Copilot require their host config directories; Bash is always available.
 - `--log FILE` overrides the default log path under `.project-sandbox/sessions/<agent>-main-<timestamp>.log`.
 - `--timeout SECONDS` kills the container if the agent runs too long; the CLI returns exit code `124` on timeout.
 - The agent's exit code is propagated, so CI pipelines can detect failures.

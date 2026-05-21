@@ -67,8 +67,7 @@ def build_parser() -> ArgumentParser:
     p.add_argument(
         "--agent",
         choices=list(SUPPORTED_AGENTS),
-        default="claude",
-        help="Agent to run (default: claude).",
+        help="Agent to run. When omitted, project-sandbox only initializes generated config files.",
     )
     p.add_argument("--log")
     p.add_argument("--timeout", type=int)
@@ -82,6 +81,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.prompt and args.prompt_text:
         raise SystemExit("Use only one of --prompt or --prompt-text")
+    run_agent = _requested_agent(args)
+    if args.branch and run_agent is None:
+        raise SystemExit("--branch requires --agent, --prompt, or --prompt-text")
     if (
         args.branch
         and (args.prompt or args.prompt_text)
@@ -96,7 +98,7 @@ def main(argv: list[str] | None = None) -> int:
     host_paths = _agent_host_paths()
     available_agents = _available_agents(host_paths)
 
-    wt, workspace = _setup_worktree(args, project)
+    wt, workspace = _setup_worktree(args, project) if run_agent else (None, project)
 
     if args.dry_run:
         return _dry_run(
@@ -138,6 +140,25 @@ def main(argv: list[str] | None = None) -> int:
     _write_project_sandbox_gitignore(context_dir)
     _update_project_gitignore(project)
 
+    devcontainer.render(
+        project,
+        identity=identity,
+        firewall_enabled=not args.no_firewall,
+        memory=args.memory,
+        cpus=args.cpus,
+        extra_mounts=args.extra_mounts,
+        build_context=build_context,
+        refresh=args.refresh_config or args.rebuild,
+    )
+
+    if run_agent is None:
+        _print_next_steps(
+            context_dir=context_dir,
+            project=project,
+            available_agents=available_agents,
+        )
+        return 0
+
     rc = container_cli.ensure_system_started()
     if rc != 0:
         print(
@@ -154,18 +175,6 @@ def main(argv: list[str] | None = None) -> int:
         if rc != 0:
             return rc
 
-    devcontainer.render(
-        project,
-        identity=identity,
-        firewall_enabled=not args.no_firewall,
-        memory=args.memory,
-        cpus=args.cpus,
-        extra_mounts=args.extra_mounts,
-        build_context=build_context,
-        refresh=args.refresh_config or args.rebuild,
-    )
-
-    run_agent = args.agent
     cmd, log_path, unsupervised = _build_session_command(
         args,
         project=project,
@@ -205,6 +214,14 @@ def _available_agents(host_paths: dict[str, Path]) -> tuple[str, ...]:
     return (*configured, "bash")
 
 
+def _requested_agent(args) -> str | None:
+    if args.agent:
+        return args.agent
+    if args.prompt or args.prompt_text:
+        return "claude"
+    return None
+
+
 def _dry_run(
     args,
     *,
@@ -217,7 +234,7 @@ def _dry_run(
     context_dir = project / ".project-sandbox"
     claude_cfg = context_dir / "claude" / "settings.json"
     codex_cfg = context_dir / "codex" / "config.toml"
-    run_agent = args.agent
+    run_agent = _requested_agent(args)
 
     print("DRY RUN: no files, worktrees, images, or containers will be created.")
     if worktree is not None:
@@ -236,6 +253,10 @@ def _dry_run(
         for warning in dockerfile.source_warnings(base_dockerfile):
             print(warning)
 
+    if run_agent is None:
+        print("Would initialize config files only; no agent container would be started.")
+        return 0
+
     container_cli.ensure_system_started(dry_run=True)
     if not args.no_build:
         container_cli.build_image(
@@ -245,7 +266,6 @@ def _dry_run(
             dockerfile_path=context_dir / "Dockerfile",
             dry_run=True,
         )
-
     cmd, log_path, unsupervised = _build_session_command(
         args,
         project=project,
@@ -455,13 +475,16 @@ def _update_project_gitignore(project: Path) -> None:
     marker = "# project-sandbox — do not commit agent secrets"
     lines_to_add = [
         marker,
-        ".project-sandbox/claude/.credentials.json",
-        ".project-sandbox/claude/.claude.json",
-        ".project-sandbox/codex/auth.json",
+        ".project-sandbox/",
     ]
     gi = project / ".gitignore"
     existing = gi.read_text(encoding="utf-8") if gi.exists() else ""
+    existing_lines = set(existing.splitlines())
     if marker in existing:
+        missing = [line for line in lines_to_add if line not in existing_lines]
+        if missing:
+            sep = "\n" if existing and not existing.endswith("\n") else ""
+            gi.write_text(existing + sep + "\n".join(missing) + "\n", encoding="utf-8")
         return
     sep = "\n" if existing and not existing.endswith("\n") else ""
     gi.write_text(existing + sep + "\n".join(lines_to_add) + "\n", encoding="utf-8")

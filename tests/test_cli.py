@@ -64,6 +64,34 @@ class CliTests(TestCase):
             self.assertFalse((project / ".project-sandbox").exists())
             self.assertFalse((project / ".gitignore").exists())
 
+    def test_default_run_initializes_files_without_starting_agent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            host_home = project / "home"
+            paths = _agent_paths(host_home)
+            paths["claude"].mkdir(parents=True)
+            out = io.StringIO()
+
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(cli, "_agent_host_paths", return_value=paths),
+                patch.object(cli.config_claude, "sync_credentials"),
+                patch.object(cli.container_cli, "ensure_system_started") as ensure_system_started,
+                patch.object(cli.container_cli, "build_image") as build_image,
+                patch.object(cli.container_cli, "run") as run,
+                contextlib.redirect_stdout(out),
+            ):
+                rc = cli.main([str(project), "python:3.12-slim"])
+
+            self.assertEqual(rc, 0)
+            self.assertTrue((project / ".project-sandbox" / "Dockerfile").exists())
+            self.assertTrue((project / ".devcontainer" / "devcontainer.json").exists())
+            self.assertIn("project-sandbox ready", out.getvalue())
+            ensure_system_started.assert_not_called()
+            build_image.assert_not_called()
+            run.assert_not_called()
+
     def test_bash_agent_is_available_without_host_agent_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
@@ -184,7 +212,14 @@ class CliTests(TestCase):
                 patch.object(cli, "_agent_host_paths", return_value=_agent_paths(project / "home")),
             ):
                 with self.assertRaises(SystemExit) as raised:
-                    cli.main(["--branch", "feat/x", str(project), "python:3.12-slim"])
+                    cli.main([
+                        "--agent",
+                        "claude",
+                        "--branch",
+                        "feat/x",
+                        str(project),
+                        "python:3.12-slim",
+                    ])
         self.assertIn("jj", str(raised.exception).lower())
 
     def test_branch_file_git_raises(self) -> None:
@@ -196,7 +231,14 @@ class CliTests(TestCase):
                 patch.object(cli, "_agent_host_paths", return_value=_agent_paths(project / "home")),
             ):
                 with self.assertRaises(SystemExit) as raised:
-                    cli.main(["--branch", "feat/x", str(project), "python:3.12-slim"])
+                    cli.main([
+                        "--agent",
+                        "claude",
+                        "--branch",
+                        "feat/x",
+                        str(project),
+                        "python:3.12-slim",
+                    ])
         self.assertIn("plain git repo", str(raised.exception))
 
     def test_branch_dry_run_argv_includes_git_metadata_mount(self) -> None:
@@ -219,6 +261,7 @@ class CliTests(TestCase):
             ):
                 rc = cli.main([
                     "--dry-run", "--no-build", "--no-firewall",
+                    "--agent", "claude",
                     "--branch", "feat/x", "--after-session", "nothing",
                     str(project), "python:3.12-slim",
                 ])
@@ -253,6 +296,7 @@ class CliTests(TestCase):
             ):
                 cli.main([
                     "--dry-run", "--no-build", "--no-firewall",
+                    "--agent", "claude",
                     "--branch", "feat/x", "--after-session", "nothing",
                     str(project), "python:3.12-slim",
                 ])
@@ -260,6 +304,25 @@ class CliTests(TestCase):
         output = stdout_buf.getvalue()
         self.assertIn("Would create worktree at:", output)
         self.assertIn("Would mount .git metadata:", output)
+
+    def test_branch_without_agent_or_prompt_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            _make_git_repo(project)
+
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("A", "a@b.com")),
+                patch.object(cli, "_agent_host_paths", return_value=_agent_paths(project / "home")),
+            ):
+                with self.assertRaises(SystemExit) as raised:
+                    cli.main([
+                        "--branch",
+                        "feat/x",
+                        str(project),
+                        "python:3.12-slim",
+                    ])
+
+        self.assertIn("--branch requires", str(raised.exception))
 
     def test_after_session_ask_unsupervised_raises(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

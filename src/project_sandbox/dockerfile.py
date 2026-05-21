@@ -17,6 +17,7 @@ _CONFIG_TARGET_PLACEHOLDER_MARKER = "/home/agent/.claude/settings.json"
 _CONFIG_DIR_MOUNT_TARGET_MARKER = "/project-sandbox-config/claude"
 _GENERATED_DOCKERFILE_MARKER = "project-sandbox-entrypoint"
 _JJ_IDENTITY_MARKER = "jj config set --user user.name"
+_CLAUDE_CONFIG_DIR_JSON_MARKER = "$HOME/.claude/.claude.json"
 
 
 def render(
@@ -202,4 +203,9 @@ def render_devcontainer_entrypoint(context_dir: Path, *, refresh: bool = False) 
 
 def _stale_entrypoint(path: Path) -> bool:
     text = path.read_text(encoding="utf-8")
-    return "git config --global user.name" in text and _JJ_IDENTITY_MARKER not in text
+    return (
+        "git config --global user.name" in text and _JJ_IDENTITY_MARKER not in text
+    ) or (
+        "/project-sandbox-config/claude/.claude.json" in text
+        and _CLAUDE_CONFIG_DIR_JSON_MARKER not in text
+    )

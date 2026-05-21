@@ -1,7 +1,10 @@
+import json
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
 from unittest import TestCase
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -75,11 +78,137 @@ class RendererTests(TestCase):
                 '{"token":"dir"}\n',
             )
             self.assertEqual(
-                staged_home_credentials.read_text(encoding="utf-8"),
-                '{"token":"home"}\n',
+                json.loads(staged_home_credentials.read_text(encoding="utf-8")),
+                {
+                    "autoUpdaterStatus": "disabled",
+                    "autoUpdates": False,
+                    "bypassPermissionsModeAccepted": True,
+                    "installMethod": "npm",
+                    "theme": "auto",
+                    "token": "home",
+                },
             )
             self.assertEqual(staged_credentials.stat().st_mode & 0o777, 0o600)
             self.assertEqual(staged_home_credentials.stat().st_mode & 0o777, 0o600)
+
+    def test_claude_config_dir_account_state_is_staged_when_root_json_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            context = root / ".project-sandbox"
+            (home / ".claude").mkdir(parents=True)
+            (home / ".claude" / ".claude.json").write_text(
+                '{"oauthAccount":{"accountUuid":"abc"}}\n',
+                encoding="utf-8",
+            )
+
+            config_claude.sync_credentials(context, home=home)
+
+            staged_home_credentials = context / "claude" / ".claude.json"
+            self.assertEqual(
+                json.loads(staged_home_credentials.read_text(encoding="utf-8")),
+                {
+                    "autoUpdaterStatus": "disabled",
+                    "autoUpdates": False,
+                    "bypassPermissionsModeAccepted": True,
+                    "installMethod": "npm",
+                    "oauthAccount": {"accountUuid": "abc"},
+                    "theme": "auto",
+                },
+            )
+            self.assertEqual(staged_home_credentials.stat().st_mode & 0o777, 0o600)
+
+    def test_claude_config_state_is_created_to_accept_bypass_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            context = root / ".project-sandbox"
+            home.mkdir()
+
+            config_claude.sync_credentials(context, home=home)
+
+            staged_home_credentials = context / "claude" / ".claude.json"
+            self.assertEqual(
+                json.loads(staged_home_credentials.read_text(encoding="utf-8")),
+                {
+                    "autoUpdaterStatus": "disabled",
+                    "autoUpdates": False,
+                    "bypassPermissionsModeAccepted": True,
+                    "installMethod": "npm",
+                    "theme": "auto",
+                },
+            )
+            self.assertEqual(staged_home_credentials.stat().st_mode & 0o777, 0o600)
+
+    def test_claude_host_native_install_state_is_overridden_for_container(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            context = root / ".project-sandbox"
+            home.mkdir()
+            (home / ".claude.json").write_text(
+                '{"autoUpdates":true,"installMethod":"native","theme":"light"}\n',
+                encoding="utf-8",
+            )
+
+            config_claude.sync_credentials(context, home=home)
+
+            staged_home_credentials = context / "claude" / ".claude.json"
+            self.assertEqual(
+                json.loads(staged_home_credentials.read_text(encoding="utf-8")),
+                {
+                    "autoUpdaterStatus": "disabled",
+                    "autoUpdates": False,
+                    "bypassPermissionsModeAccepted": True,
+                    "installMethod": "npm",
+                    "theme": "auto",
+                },
+            )
+
+    def test_claude_oauth_credentials_are_staged_from_macos_keychain(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp) / ".project-sandbox"
+            keychain_payload = (
+                '{"claudeAiOauth":{"accessToken":"access",'
+                '"refreshToken":"refresh","expiresAt":4102444800000}}\n'
+            )
+
+            with (
+                patch("project_sandbox.config_claude.sys.platform", "darwin"),
+                patch("project_sandbox.config_claude.shutil.which", return_value="/usr/bin/security"),
+                patch(
+                    "project_sandbox.config_claude._keychain_account",
+                    return_value="test-user",
+                ),
+                patch("project_sandbox.config_claude.subprocess.run") as run,
+            ):
+                run.return_value = subprocess.CompletedProcess(
+                    args=[],
+                    returncode=0,
+                    stdout=keychain_payload,
+                    stderr="",
+                )
+
+                config_claude.sync_credentials(context)
+
+            staged_credentials = context / "claude" / ".credentials.json"
+            self.assertEqual(
+                staged_credentials.read_text(encoding="utf-8"),
+                keychain_payload,
+            )
+            self.assertEqual(staged_credentials.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(
+                run.call_args.args[0],
+                [
+                    "security",
+                    "find-generic-password",
+                    "-a",
+                    "test-user",
+                    "-w",
+                    "-s",
+                    "Claude Code-credentials",
+                ],
+            )
 
     def test_dockerfile_renderer_can_skip_agent_installs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -256,6 +385,9 @@ class RendererTests(TestCase):
             text = (context / "entrypoint.sh").read_text(encoding="utf-8")
             self.assertIn("/project-sandbox-config/claude/settings.json", text)
             self.assertIn("/project-sandbox-config/claude/.claude.json", text)
+            self.assertIn('"$HOME/.claude/.claude.json"', text)
+            self.assertIn("CLAUDE_SECURESTORAGE_CONFIG_DIR", text)
+            self.assertIn('[ ! -s "$HOME/.claude/.credentials.json" ]', text)
             self.assertIn("/project-sandbox-config/codex/config.toml", text)
             self.assertIn("sudo -n /usr/local/bin/project-sandbox-init-firewall", text)
             self.assertNotIn("sudo chown", text)
@@ -286,6 +418,23 @@ class RendererTests(TestCase):
             self.assertIn('jj config set --user user.name "$NAME"', text)
             self.assertIn('jj config set --user user.email "$EMAIL"', text)
 
+    def test_entrypoint_renderer_refreshes_missing_claude_config_dir_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            existing = context / "entrypoint.sh"
+            existing.write_text(
+                "#!/bin/sh\n"
+                "if [ -f \"/project-sandbox-config/claude/.claude.json\" ]; then\n"
+                "  cp \"/project-sandbox-config/claude/.claude.json\" \"$HOME/.claude.json\"\n"
+                "fi\n",
+                encoding="utf-8",
+            )
+
+            dockerfile.render_entrypoint(context)
+            text = existing.read_text(encoding="utf-8")
+
+            self.assertIn('"$HOME/.claude/.claude.json"', text)
+
     def test_devcontainer_entrypoint_copies_staged_claude_credentials(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             context = Path(tmp)
@@ -295,9 +444,32 @@ class RendererTests(TestCase):
             )
             self.assertIn("/project-sandbox-config/claude/settings.json", text)
             self.assertIn("/project-sandbox-config/claude/.claude.json", text)
+            self.assertIn('"$HOME/.claude/.claude.json"', text)
+            self.assertIn("CLAUDE_SECURESTORAGE_CONFIG_DIR", text)
+            self.assertIn("re-run 'project-sandbox <project> <base_image>'", text)
+            self.assertIn('[ ! -s "$HOME/.claude/.credentials.json" ]', text)
             self.assertIn("/project-sandbox-config/codex/config.toml", text)
             self.assertIn('jj config set --user user.name "$NAME"', text)
             self.assertIn('jj config set --user user.email "$EMAIL"', text)
+
+    def test_devcontainer_entrypoint_renderer_refreshes_missing_claude_config_dir_json(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            existing = context / "project-sandbox-devcontainer-init"
+            existing.write_text(
+                "#!/bin/sh\n"
+                "if [ -f \"/project-sandbox-config/claude/.claude.json\" ]; then\n"
+                "  cp \"/project-sandbox-config/claude/.claude.json\" \"$HOME/.claude.json\"\n"
+                "fi\n",
+                encoding="utf-8",
+            )
+
+            dockerfile.render_devcontainer_entrypoint(context)
+            text = existing.read_text(encoding="utf-8")
+
+            self.assertIn('"$HOME/.claude/.claude.json"', text)
 
     def test_devcontainer_entrypoint_refreshes_missing_jj_identity_setup(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

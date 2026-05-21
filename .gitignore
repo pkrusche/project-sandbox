@@ -15,5 +15,4 @@ dist/
 .uv-python
 
 # project-sandbox — do not commit agent secrets
-.project-sandbox/claude/.credentials.json
-.project-sandbox/codex/auth.json
+.project-sandbox/

@@ -16,23 +16,34 @@ if command -v jj >/dev/null 2>&1 && { [ -n "$NAME" ] || [ -n "$EMAIL" ]; }; then
 fi
 
 mkdir -p "$HOME/.claude" "$HOME/.codex" "$HOME/.copilot" "$HOME/.config/opencode"
+echo "project-sandbox: devcontainer uses generated config; re-run 'project-sandbox <project> <base_image>' on the host after credential or config changes." >&2
+export CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+export CLAUDE_SECURESTORAGE_CONFIG_DIR="${CLAUDE_SECURESTORAGE_CONFIG_DIR:-$HOME/.claude}"
 if [ -f "/project-sandbox-config/claude/settings.json" ]; then
   cp "/project-sandbox-config/claude/settings.json" "$HOME/.claude/settings.json"
 fi
-if [ -f "/project-sandbox-config/claude/.credentials.json" ]; then
+if [ -s "/project-sandbox-config/claude/.credentials.json" ]; then
   cp "/project-sandbox-config/claude/.credentials.json" "$HOME/.claude/.credentials.json"
   chmod 600 "$HOME/.claude/.credentials.json"
 fi
 if [ -f "/project-sandbox-config/claude/.claude.json" ]; then
   cp "/project-sandbox-config/claude/.claude.json" "$HOME/.claude.json"
+  cp "/project-sandbox-config/claude/.claude.json" "$HOME/.claude/.claude.json"
   chmod 600 "$HOME/.claude.json"
+  chmod 600 "$HOME/.claude/.claude.json"
 fi
 if [ -f "/project-sandbox-config/codex/config.toml" ]; then
   cp "/project-sandbox-config/codex/config.toml" "$HOME/.codex/config.toml"
 fi
-if [ -f "$HOME/.claude.host/.credentials.json" ]; then
+if [ ! -s "$HOME/.claude/.credentials.json" ] && [ -s "$HOME/.claude.host/.credentials.json" ]; then
   cp "$HOME/.claude.host/.credentials.json" "$HOME/.claude/.credentials.json"
   chmod 600 "$HOME/.claude/.credentials.json"
+fi
+if [ ! -f "$HOME/.claude.json" ] && [ -f "$HOME/.claude.host/.claude.json" ]; then
+  cp "$HOME/.claude.host/.claude.json" "$HOME/.claude.json"
+  cp "$HOME/.claude.host/.claude.json" "$HOME/.claude/.claude.json"
+  chmod 600 "$HOME/.claude.json"
+  chmod 600 "$HOME/.claude/.claude.json"
 fi
 if [ -f "$HOME/.codex.host/auth.json" ]; then
   cp "$HOME/.codex.host/auth.json" "$HOME/.codex/auth.json"

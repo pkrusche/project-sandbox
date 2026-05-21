@@ -42,6 +42,11 @@ class DevcontainerTests(TestCase):
             )
 
             self.assertEqual(spec["remoteUser"], "agent")
+            self.assertEqual(spec["containerEnv"]["CLAUDE_CONFIG_DIR"], "/home/agent/.claude")
+            self.assertEqual(
+                spec["containerEnv"]["CLAUDE_SECURESTORAGE_CONFIG_DIR"],
+                "/home/agent/.claude",
+            )
             self.assertEqual(spec["build"]["dockerfile"], "../.project-sandbox/Dockerfile")
             self.assertEqual(spec["build"]["context"], "../.project-sandbox")
             self.assertIn("--cap-add=NET_ADMIN", spec["runArgs"])
