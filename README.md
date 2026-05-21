@@ -116,7 +116,7 @@ When the firewall is enabled (default), `init-firewall.sh` runs as root inside t
 
 - Sets `iptables` and `ip6tables` policies to DROP.
 - Pins DNS to the resolver(s) in `/etc/resolv.conf` only (closes the DNS-tunnel exfiltration gap in the upstream Anthropic devcontainer).
-- Allows GitHub's published IP ranges (fetched from `api.github.com/meta`), `registry.npmjs.org`, `api.anthropic.com`, and `api.openai.com`.
+- Allows GitHub's published IP ranges (fetched from `api.github.com/meta`), `registry.npmjs.org`, `api.anthropic.com`, `api.openai.com`, `auth.openai.com`, and `chatgpt.com`.
 - Allows the host gateway subnet so port-forwarding and IDE attach work.
 - Mirrors the IPv4 allowlist into a parallel IPv6 set; falls back to disabling IPv6 via `sysctl` when `ip6_tables` is unavailable — the script exits with an error if both `ip6tables` and `sysctl` are unavailable.
 

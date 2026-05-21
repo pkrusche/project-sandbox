@@ -49,6 +49,8 @@ class RendererTests(TestCase):
             self.assertIn("[feedback]\nenabled = false", codex_text)
             firewall_text = fw.read_text(encoding="utf-8")
             self.assertIn('"api.openai.com"', firewall_text)
+            self.assertIn('"auth.openai.com"', firewall_text)
+            self.assertIn('"chatgpt.com"', firewall_text)
             self.assertNotIn("statsig", firewall_text)
             self.assertIn('"internal.example.com"', firewall_text)
 
