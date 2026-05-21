@@ -89,8 +89,11 @@ class CliTests(TestCase):
 
             self.assertEqual(rc, 0)
             output = out.getvalue()
-            self.assertIn(f"Would append sandbox layers to Dockerfile: {source}", output)
-            self.assertIn(f"Would use build context: {project}", output)
+            self.assertIn(
+                f"Would append sandbox layers to Dockerfile: {source.resolve()}",
+                output,
+            )
+            self.assertIn(f"Would use build context: {project.resolve()}", output)
             self.assertFalse((project / ".project-sandbox").exists())
 
     def test_dockerfile_and_base_image_are_mutually_exclusive(self) -> None:
