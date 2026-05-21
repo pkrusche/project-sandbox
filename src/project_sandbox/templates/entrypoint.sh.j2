@@ -49,6 +49,7 @@ case "${1:-bash}" in
       codex) shift; exec codex "$@" ;;
       opencode) shift; exec opencode "$@" ;;
       copilot) shift; exec copilot "$@" ;;
+      bash) shift; exec bash "$@" ;;
       claude-headless)
         shift
         if [ -n "${PROJECT_SANDBOX_PROMPT_FILE:-}" ] && [ -r "${PROJECT_SANDBOX_PROMPT_FILE}" ]; then
@@ -109,6 +110,22 @@ case "${1:-bash}" in
           exit 2
         fi
         exec copilot --headless --prompt "$PROMPT"
+        ;;
+      bash-headless)
+        shift
+        if [ -n "${PROJECT_SANDBOX_PROMPT_FILE:-}" ] && [ -r "${PROJECT_SANDBOX_PROMPT_FILE}" ]; then
+          PROMPT="$(cat "${PROJECT_SANDBOX_PROMPT_FILE}")"
+        elif [ -n "${PROJECT_SANDBOX_PROMPT_FILE:-}" ]; then
+          echo "ERROR: Prompt file is not readable: ${PROJECT_SANDBOX_PROMPT_FILE}" >&2
+          exit 2
+        else
+          PROMPT="${PROJECT_SANDBOX_PROMPT:-}"
+        fi
+        if [ -z "${PROMPT}" ]; then
+          echo "ERROR: No prompt provided for bash-headless mode." >&2
+          exit 2
+        fi
+        exec bash -lc "$PROMPT"
         ;;
       *) exec "${@:-bash}" ;;
     esac ;;

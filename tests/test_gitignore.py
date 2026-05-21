@@ -61,9 +61,5 @@ class WriteProjectSandboxGitignoreTests(TestCase):
                 "!init-firewall.sh",
                 "!Dockerfile",
                 "!entrypoint.sh",
-                "!bin/run-claude",
-                "!bin/run-codex",
-                "!bin/run-opencode",
-                "!bin/run-copilot",
             ):
                 self.assertIn(keep, content)

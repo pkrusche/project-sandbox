@@ -8,7 +8,6 @@ from . import (
     devcontainer,
     dockerfile,
     firewall,
-    launcher,
     session,
 )
 from . import (
@@ -17,7 +16,8 @@ from . import (
 from .git_identity import read as read_identity
 from .paths import ensure_dir, resolve_strict
 
-SUPPORTED_AGENTS = ("claude", "codex", "opencode", "copilot")
+CONFIGURED_AGENTS = ("claude", "codex", "opencode", "copilot")
+SUPPORTED_AGENTS = (*CONFIGURED_AGENTS, "bash")
 
 
 def _agent_host_paths() -> dict[str, Path]:
@@ -94,9 +94,7 @@ def main(argv: list[str] | None = None) -> int:
     project = resolve_strict(args.project)
     identity = read_identity()
     host_paths = _agent_host_paths()
-    available_agents = tuple(
-        agent for agent in SUPPORTED_AGENTS if host_paths[agent].exists()
-    )
+    available_agents = _available_agents(host_paths)
 
     wt, workspace = _setup_worktree(args, project)
 
@@ -167,25 +165,6 @@ def main(argv: list[str] | None = None) -> int:
         refresh=args.refresh_config or args.rebuild,
     )
 
-    script_dir = ensure_dir(context_dir / "bin")
-    for agent in available_agents:
-        launcher.render(
-            output=script_dir / f"run-{agent}",
-            image_tag=args.image_tag,
-            memory=args.memory,
-            cpus=args.cpus,
-            project_abs=workspace,
-            claude_settings_abs=claude_cfg,
-            codex_config_abs=codex_cfg,
-            claude_home_host_abs=host_paths["claude"] if "claude" in available_agents else None,
-            codex_home_host_abs=host_paths["codex"] if "codex" in available_agents else None,
-            opencode_home_host_abs=host_paths["opencode"] if "opencode" in available_agents else None,
-            copilot_home_host_abs=host_paths["copilot"] if "copilot" in available_agents else None,
-            firewall_enabled=not args.no_firewall,
-            agent=agent,
-            extra_envs=[],
-        )
-
     run_agent = args.agent
     cmd, log_path, unsupervised = _build_session_command(
         args,
@@ -219,6 +198,11 @@ def main(argv: list[str] | None = None) -> int:
         _teardown_worktree(args, project=project, wt=wt, exit_code=exit_code)
 
     return exit_code
+
+
+def _available_agents(host_paths: dict[str, Path]) -> tuple[str, ...]:
+    configured = tuple(agent for agent in CONFIGURED_AGENTS if host_paths[agent].exists())
+    return (*configured, "bash")
 
 
 def _dry_run(
@@ -281,7 +265,6 @@ def _dry_run(
         session.run(cmd, log_path=log_path, timeout=args.timeout, dry_run=True)
     else:
         container_cli.run(cmd, dry_run=True)
-    print(f"Would write launcher scripts under: {context_dir / 'bin'}")
     return 0
 
 
@@ -367,7 +350,7 @@ def _build_session_command(
     if run_agent not in available_agents:
         if not available_agents:
             raise SystemExit(
-                "No supported host agent config directories found. Set up at least one of: ~/.claude, ~/.codex, ~/.config/opencode, ~/.copilot."
+                "No supported agents are available."
             )
         available = ", ".join(available_agents)
         raise SystemExit(
@@ -457,17 +440,13 @@ def _print_next_steps(
     print(f"  Project:  {project}")
     print(f"  Sandbox:  {context_dir}")
     print()
-    print("  Generated launcher scripts:")
-    for agent in available_agents:
-        print(f"    {context_dir / 'bin' / f'run-{agent}'}")
-    print()
     print("  Devcontainer:")
     print(f"    {project / '.devcontainer' / 'devcontainer.json'}")
     print("  → Open this project in VS Code / Cursor and choose 'Reopen in Container'.")
     print()
-    print("  To run an agent interactively:")
+    print("  To run an agent from the CLI:")
     for agent in available_agents:
-        print(f"    {context_dir / 'bin' / f'run-{agent}'}")
+        print(f"    project-sandbox --agent {agent} ...")
     print()
 
 
@@ -499,10 +478,5 @@ def _write_project_sandbox_gitignore(context_dir: Path) -> None:
 !Dockerfile
 !entrypoint.sh
 !project-sandbox-devcontainer-init
-!bin/
-!bin/run-claude
-!bin/run-codex
-!bin/run-opencode
-!bin/run-copilot
 """
     (context_dir / ".gitignore").write_text(content, encoding="utf-8")

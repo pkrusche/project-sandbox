@@ -44,6 +44,7 @@ class CliTests(TestCase):
         self.assertIn("--dry-run", help_text)
         self.assertIn("--branch", help_text)
         self.assertIn("--dockerfile", help_text)
+        self.assertIn("bash", help_text)
 
     def test_dry_run_does_not_write_project_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -62,6 +63,32 @@ class CliTests(TestCase):
             self.assertEqual(rc, 0)
             self.assertFalse((project / ".project-sandbox").exists())
             self.assertFalse((project / ".gitignore").exists())
+
+    def test_bash_agent_is_available_without_host_agent_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            out = io.StringIO()
+
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(cli, "_agent_host_paths", return_value=_agent_paths(project / "home")),
+                contextlib.redirect_stdout(out),
+            ):
+                rc = cli.main([
+                    "--dry-run",
+                    "--no-build",
+                    "--no-firewall",
+                    "--agent",
+                    "bash",
+                    str(project),
+                    "python:3.12-slim",
+                ])
+
+            self.assertEqual(rc, 0)
+            output = out.getvalue()
+            self.assertIn("project-sandbox-run bash", output)
+            self.assertNotIn("Would write launcher scripts", output)
 
     def test_dry_run_accepts_dockerfile_without_base_image(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -302,6 +329,31 @@ class CliTests(TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("copilot-headless", out.getvalue())
 
+    def test_unsupervised_bash_uses_headless_dispatch_without_host_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            out = io.StringIO()
+
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(cli, "_agent_host_paths", return_value=_agent_paths(project / "home")),
+                contextlib.redirect_stdout(out),
+            ):
+                rc = cli.main([
+                    "--dry-run",
+                    "--no-build",
+                    "--agent",
+                    "bash",
+                    "--prompt-text",
+                    "echo ok",
+                    str(project),
+                    "python:3.12-slim",
+                ])
+
+        self.assertEqual(rc, 0)
+        self.assertIn("bash-headless", out.getvalue())
+
     def test_unavailable_agent_raises_with_available_list(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
@@ -326,3 +378,4 @@ class CliTests(TestCase):
 
         self.assertIn("unavailable", str(raised.exception).lower())
         self.assertIn("claude", str(raised.exception).lower())
+        self.assertIn("bash", str(raised.exception).lower())

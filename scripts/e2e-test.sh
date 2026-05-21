@@ -75,11 +75,6 @@ REQUIRED=(
   "$TMP_PROJECT/.gitignore"
 )
 
-[ -d "$HOME/.claude" ] && REQUIRED+=("$PS/bin/run-claude")
-[ -d "$HOME/.codex" ] && REQUIRED+=("$PS/bin/run-codex")
-[ -d "$HOME/.config/opencode" ] && REQUIRED+=("$PS/bin/run-opencode")
-[ -d "$HOME/.copilot" ] && REQUIRED+=("$PS/bin/run-copilot")
-
 SYMLINKS=(
   "$DC/Dockerfile"
   "$DC/init-firewall.sh"
@@ -127,12 +122,13 @@ check_contains() {
 }
 
 check_contains "$PS/Dockerfile" "FROM python:3.12-slim"
-check_contains "$PS/Dockerfile" "useradd -m -u 1000 -s /bin/bash agent"
+check_contains "$PS/Dockerfile" "useradd -m -u 1000 -g agent -s /bin/bash agent"
 check_contains "$PS/Dockerfile" "/usr/local/bin/jj"
 check_contains "$PS/init-firewall.sh" "ipset create allowed-ipv4"
 check_contains "$PS/claude/settings.json" "bypassPermissions"
 check_contains "$PS/codex/config.toml" 'approval_policy = "never"'
 check_contains "$PS/entrypoint.sh" "project-sandbox-init-firewall"
+check_contains "$PS/entrypoint.sh" "bash-headless"
 check_contains "$TMP_PROJECT/.gitignore" "project-sandbox — do not commit agent secrets"
 
 if command -v python3 >/dev/null 2>&1; then

@@ -1,8 +1,8 @@
 # project-sandbox
 
-`project-sandbox` runs Claude Code, Codex CLI, OpenCode, and GitHub Copilot CLI inside per-project Linux containers managed by Apple's [`container`](https://github.com/apple/container) runtime. Each container runs in its own VM with hardware-enforced isolation, so the box itself is the security boundary — the agents are configured to operate freely inside it.
+`project-sandbox` runs Claude Code, Codex CLI, OpenCode, GitHub Copilot CLI, or a plain Bash shell inside per-project Linux containers managed by Apple's [`container`](https://github.com/apple/container) runtime. Each container runs in its own VM with hardware-enforced isolation, so the box itself is the security boundary — the agents are configured to operate freely inside it.
 
-The tool generates a derived image, sanitized agent configs, an egress firewall, launcher scripts, and a parallel devcontainer specification so the same sandbox is reachable from VS Code, Cursor, JetBrains Gateway, GitHub Codespaces, or any Docker-compatible devcontainer client.
+The tool generates a derived image, sanitized agent configs, an egress firewall, and a parallel devcontainer specification so the same sandbox is reachable from the Python CLI, VS Code, Cursor, JetBrains Gateway, GitHub Codespaces, or any Docker-compatible devcontainer client.
 
 ## What it does end-to-end
 
@@ -13,7 +13,7 @@ Given `project-sandbox /path/to/repo python:3.12-slim`:
 3. Render `<project>/.project-sandbox/` — `Dockerfile`, `entrypoint.sh`, `init-firewall.sh`, sanitized `claude/settings.json` and `codex/config.toml`, a devcontainer post-start init script, and a per-project `.gitignore` that whitelists the assets meant to be committed.
 4. Build the image with `container build`.
 5. Render `<project>/.devcontainer/` with symlinks back into `.project-sandbox/` so the Dockerfile and firewall script remain a single source of truth.
-6. Detect available host agent configs (`~/.claude`, `~/.codex`, `~/.config/opencode`, `~/.copilot`), install only those agent CLIs into the generated image, and generate matching launcher scripts under `<project>/.project-sandbox/bin/`.
+6. Detect available host agent configs (`~/.claude`, `~/.codex`, `~/.config/opencode`, `~/.copilot`) and install only those agent CLIs into the generated image. Bash is always available.
 7. The container entrypoint wires git identity, copies credentials from the read-only host mount into the container's home, then runs the firewall before exec'ing the agent.
 8. Append agent-secret paths to `<project>/.gitignore` (idempotent).
 
@@ -65,10 +65,6 @@ uv run project-sandbox --dry-run /absolute/path/to/repo python:3.12-slim
 │   ├── project-sandbox-devcontainer-init  # devcontainer postStart helper
 │   ├── claude/settings.json         # sanitized Claude config (committed)
 │   ├── codex/config.toml            # sanitized Codex config (committed)
-│   ├── bin/run-claude               # launcher → container run (when ~/.claude exists)
-│   ├── bin/run-codex                # launcher → container run (when ~/.codex exists)
-│   ├── bin/run-opencode             # launcher → container run (when ~/.config/opencode exists)
-│   ├── bin/run-copilot              # launcher → container run (when ~/.copilot exists)
 │   └── sessions/                    # unsupervised-mode logs (gitignored)
 └── .devcontainer/
     ├── devcontainer.json            # generated
@@ -105,12 +101,12 @@ uv run project-sandbox \
 
 - `--prompt FILE` bind-mounts the file at `/workspace/.project-sandbox-prompt`.
 - `--prompt-text "…"` passes the prompt via env var (or via a temp file if longer than 4096 chars).
-- `--agent {claude,codex,opencode,copilot}` selects which agent to run (default: `claude`). The selected agent must have a host config directory available when the sandbox is generated.
+- `--agent {claude,codex,opencode,copilot,bash}` selects which agent to run (default: `claude`). Claude, Codex, OpenCode, and Copilot require their host config directories; Bash is always available.
 - `--log FILE` overrides the default log path under `.project-sandbox/sessions/<agent>-main-<timestamp>.log`.
-- `--timeout SECONDS` kills the container if the agent runs too long; the launcher returns exit code `124` on timeout.
+- `--timeout SECONDS` kills the container if the agent runs too long; the CLI returns exit code `124` on timeout.
 - The agent's exit code is propagated, so CI pipelines can detect failures.
 
-Unsupervised sessions skip the interactive `-it` flags and switch dispatch to `<agent>-headless` for all supported agents. Claude runs with `--dangerously-skip-permissions`, Codex uses `approval_policy = "never"`, OpenCode runs via `opencode run`, and Copilot runs with `copilot --headless --prompt ...`. The container is still the sandbox boundary; review the diff before integrating.
+Unsupervised sessions skip the interactive `-it` flags and switch dispatch to `<agent>-headless` for all supported agents. Claude runs with `--dangerously-skip-permissions`, Codex uses `approval_policy = "never"`, OpenCode runs via `opencode run`, Copilot runs with `copilot --headless --prompt ...`, and Bash runs with `bash -lc`. The container is still the sandbox boundary; review the diff before integrating.
 
 A maliciously crafted file in the workspace (e.g. a prompt-injection in a README) can still steer an unsupervised agent. Use narrow prompts and inspect the diff before merging.
 
@@ -161,7 +157,7 @@ The tool does **not** protect against:
 ## Limitations
 
 - Base images, including the final stage of a Dockerfile passed with `--dockerfile`, must be Debian or Ubuntu based — the firewall depends on `apt` packages including `aggregate`, which Alpine does not ship.
-- Apple `container` is required to run the launchers. The generated `.devcontainer/` works with any Docker-compatible runtime (Docker Desktop, OrbStack, Codespaces).
+- Apple `container` is required for direct Python CLI runs. The generated `.devcontainer/` works with any Docker-compatible runtime (Docker Desktop, OrbStack, Codespaces).
 - `--branch` (worktree mode) creates a git worktree on the given branch (creating it if it doesn't exist), mounts the worktree at `/workspace`, and bind-mounts the main repo's `.git/` so `git` works correctly inside the container. After the session, `--after-session` controls whether to merge, rebase, open a PR, or do nothing. Note: jj repos and worktree-of-worktree setups are not yet supported.
 - `jj` is installed in the container for users who want to shell in and use it, but the tool itself does not write any jj configuration. Configure jj inside the container yourself if you need it.
 
@@ -173,13 +169,13 @@ uv run python -m compileall src tests
 uv run pytest -q
 ```
 
-Tests cover CLI surface, dry-run non-mutation, renderer output, launcher shell quoting, container `argv` construction, devcontainer JSON validity and symlinks, gitignore helpers, and Python-native unsupervised-session timeout handling.
+Tests cover CLI surface, dry-run non-mutation, renderer output, container `argv` construction, devcontainer JSON validity and symlinks, gitignore helpers, and Python-native unsupervised-session timeout handling.
 
 A self-contained end-to-end smoke test creates a throwaway hello-world project, runs the tool against it, and validates every generated artefact:
 
 ```bash
 ./scripts/e2e-test.sh                  # portable: devcontainer only path
-./scripts/e2e-test.sh --with-container # also exercises launcher generation (requires apple/container)
+./scripts/e2e-test.sh --with-container # also exercises direct CLI container runs (requires apple/container)
 ```
 
 The test prints the temp project path on success so the generated files can be inspected.
