@@ -101,8 +101,21 @@ def build_run_argv(
     return argv
 
 
-def build_image(*, context_dir: Path, image_tag: str, dry_run: bool = False) -> int:
-    cmd = ["container", "build", "-t", image_tag, str(context_dir)]
+def build_image(
+    *,
+    context_dir: Path,
+    image_tag: str,
+    build_context: Path | None = None,
+    dockerfile_path: Path | None = None,
+    dry_run: bool = False,
+) -> int:
+    build_context = build_context or context_dir
+    dockerfile_path = dockerfile_path or context_dir / "Dockerfile"
+    cmd = ["container", "build", "-t", image_tag]
+    default_dockerfile = build_context / "Dockerfile"
+    if dockerfile_path.resolve(strict=False) != default_dockerfile.resolve(strict=False):
+        cmd += ["-f", str(dockerfile_path)]
+    cmd.append(str(build_context))
     if dry_run:
         print(" ".join(cmd))
         return 0

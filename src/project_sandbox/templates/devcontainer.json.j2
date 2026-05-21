@@ -1,8 +1,8 @@
 {
   "name": "{{ project_name }} (project-sandbox)",
   "build": {
-    "dockerfile": "../.project-sandbox/Dockerfile",
-    "context": "../.project-sandbox"
+    "dockerfile": "{{ dockerfile_ref }}",
+    "context": "{{ build_context_ref }}"
   },
   "runArgs": [
 {% if firewall_enabled %}

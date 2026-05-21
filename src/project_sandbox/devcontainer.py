@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from jinja2 import Environment, PackageLoader
@@ -13,6 +14,7 @@ def render(
     memory: str | None,
     cpus: int | None,
     extra_mounts: list[str],
+    build_context: Path | None = None,
     refresh: bool = False,
 ) -> Path:
     dc_dir = project / ".devcontainer"
@@ -29,9 +31,13 @@ def render(
 
     env = Environment(loader=PackageLoader("project_sandbox", "templates"))
     tmpl = env.get_template("devcontainer.json.j2")
+    generated_dockerfile = project / ".project-sandbox" / "Dockerfile"
+    build_context = build_context or project / ".project-sandbox"
     out.write_text(
         tmpl.render(
             project_name=project.name,
+            dockerfile_ref=_devcontainer_ref(dc_dir, generated_dockerfile),
+            build_context_ref=_devcontainer_ref(dc_dir, build_context),
             firewall_enabled=firewall_enabled,
             memory=memory,
             cpus=cpus,
@@ -59,3 +65,9 @@ def _symlink(link: Path, target: Path) -> None:
             raise RuntimeError(f"Cannot replace directory with symlink: {link}")
         link.unlink()
     link.symlink_to(target)
+
+
+def _devcontainer_ref(dc_dir: Path, path: Path) -> str:
+    return Path(
+        os.path.relpath(path.resolve(strict=False), dc_dir.resolve(strict=False))
+    ).as_posix()

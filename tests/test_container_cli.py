@@ -2,10 +2,12 @@ import sys
 import tempfile
 from pathlib import Path
 from unittest import TestCase
+import contextlib
+import io
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from project_sandbox.container_cli import build_run_argv
+from project_sandbox.container_cli import build_image, build_run_argv
 from project_sandbox.git_identity import GitIdentity
 
 
@@ -73,4 +75,26 @@ class ContainerCliTests(TestCase):
         self.assertIn(
             f"type=bind,source={copilot_home},target=/home/agent/.copilot.host,readonly",
             cmd,
+        )
+
+    def test_build_image_can_use_generated_dockerfile_with_project_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            context = root / ".project-sandbox"
+            context.mkdir()
+            out = io.StringIO()
+
+            with contextlib.redirect_stdout(out):
+                rc = build_image(
+                    context_dir=context,
+                    image_tag="project-sandbox:test",
+                    build_context=root,
+                    dockerfile_path=context / "Dockerfile",
+                    dry_run=True,
+                )
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            out.getvalue().strip(),
+            f"container build -t project-sandbox:test -f {context / 'Dockerfile'} {root}",
         )

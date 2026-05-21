@@ -33,7 +33,15 @@ def _agent_host_paths() -> dict[str, Path]:
 def build_parser() -> ArgumentParser:
     p = ArgumentParser(prog="project-sandbox")
     p.add_argument("project")
-    p.add_argument("base_image")
+    p.add_argument("base_image", nargs="?")
+    p.add_argument(
+        "--dockerfile",
+        help="Build the sandbox on top of an existing Dockerfile instead of a base image tag.",
+    )
+    p.add_argument(
+        "--docker-context",
+        help="Build context to use with --dockerfile (default: project root).",
+    )
     p.add_argument("--image-tag", default="project-sandbox:latest")
     p.add_argument("--rebuild", action="store_true")
     p.add_argument("--refresh-config", action="store_true")
@@ -103,10 +111,17 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     context_dir = ensure_dir(project / ".project-sandbox")
+    base_image, base_dockerfile, build_context = _resolve_build_source(
+        args,
+        project=project,
+        context_dir=context_dir,
+    )
 
     dockerfile.render(
         context_dir,
-        base_image=args.base_image,
+        base_image=base_image,
+        base_dockerfile=base_dockerfile,
+        build_context=build_context,
         install_agents=available_agents,
         refresh=args.rebuild,
     )
@@ -131,7 +146,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.no_build:
         rc = container_cli.build_image(
-            context_dir=context_dir, image_tag=args.image_tag
+            context_dir=context_dir,
+            image_tag=args.image_tag,
+            build_context=build_context,
+            dockerfile_path=context_dir / "Dockerfile",
         )
         if rc != 0:
             return rc
@@ -143,6 +161,7 @@ def main(argv: list[str] | None = None) -> int:
         memory=args.memory,
         cpus=args.cpus,
         extra_mounts=args.extra_mounts,
+        build_context=build_context,
         refresh=args.refresh_config,
     )
 
@@ -220,11 +239,23 @@ def _dry_run(
         print(f"Would mount .git metadata: {(project / '.git').resolve()}")
     print(f"Would render sandbox assets under: {context_dir}")
     print(f"Would render devcontainer under: {project / '.devcontainer'}")
+    _, base_dockerfile, build_context = _resolve_build_source(
+        args,
+        project=project,
+        context_dir=context_dir,
+    )
+    if base_dockerfile is not None:
+        print(f"Would append sandbox layers to Dockerfile: {base_dockerfile}")
+        print(f"Would use build context: {build_context}")
 
     container_cli.ensure_system_started(dry_run=True)
     if not args.no_build:
         container_cli.build_image(
-            context_dir=context_dir, image_tag=args.image_tag, dry_run=True
+            context_dir=context_dir,
+            image_tag=args.image_tag,
+            build_context=build_context,
+            dockerfile_path=context_dir / "Dockerfile",
+            dry_run=True,
         )
 
     cmd, log_path, unsupervised = _build_session_command(
@@ -248,6 +279,39 @@ def _dry_run(
         container_cli.run(cmd, dry_run=True)
     print(f"Would write launcher scripts under: {context_dir / 'bin'}")
     return 0
+
+
+def _resolve_build_source(
+    args,
+    *,
+    project: Path,
+    context_dir: Path,
+) -> tuple[str | None, Path | None, Path]:
+    if args.docker_context and not args.dockerfile:
+        raise SystemExit("--docker-context requires --dockerfile")
+
+    if args.dockerfile:
+        if args.base_image:
+            raise SystemExit("Use either base_image or --dockerfile, not both")
+        base_dockerfile = resolve_strict(args.dockerfile)
+        if not base_dockerfile.is_file():
+            raise SystemExit(f"--dockerfile must point to a file: {base_dockerfile}")
+        build_context = (
+            resolve_strict(args.docker_context) if args.docker_context else project
+        )
+        if not build_context.is_dir():
+            raise SystemExit(f"--docker-context must point to a directory: {build_context}")
+        try:
+            context_dir.resolve(strict=False).relative_to(build_context.resolve())
+        except ValueError as exc:
+            raise SystemExit(
+                "--docker-context must contain the generated .project-sandbox directory"
+            ) from exc
+        return None, base_dockerfile, build_context
+
+    if not args.base_image:
+        raise SystemExit("base_image is required unless --dockerfile is used")
+    return args.base_image, None, context_dir
 
 
 def _setup_worktree(args, project: Path):

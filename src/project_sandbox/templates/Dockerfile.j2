@@ -1,7 +1,13 @@
+{% if source_dockerfile_text -%}
+{{ source_dockerfile_text }}
+{% else %}
 FROM {{ base_image }}
-
+{% endif %}
 SHELL ["/bin/bash", "-lc"]
 
+{% if source_dockerfile_text -%}
+USER root
+{% endif %}
 RUN set -eux; \
     export DEBIAN_FRONTEND=noninteractive; \
     apt-get update; \
@@ -10,7 +16,9 @@ RUN set -eux; \
         iptables ipset iproute2 dnsutils aggregate; \
     rm -rf /var/lib/apt/lists/*
 
-RUN useradd -m -u 1000 -s /bin/bash agent
+RUN if ! id -u agent >/dev/null 2>&1; then \
+        useradd -m -u 1000 -s /bin/bash agent; \
+    fi
 
 RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && \
     apt-get update && apt-get install -y --no-install-recommends nodejs && \
@@ -34,9 +42,9 @@ RUN npm install -g opencode-ai
 RUN npm install -g @github/copilot
 {% endif %}
 
-COPY init-firewall.sh /usr/local/bin/project-sandbox-init-firewall
-COPY entrypoint.sh /usr/local/bin/project-sandbox-entrypoint
-COPY project-sandbox-devcontainer-init /usr/local/bin/project-sandbox-devcontainer-init
+COPY {{ sandbox_copy_prefix }}init-firewall.sh /usr/local/bin/project-sandbox-init-firewall
+COPY {{ sandbox_copy_prefix }}entrypoint.sh /usr/local/bin/project-sandbox-entrypoint
+COPY {{ sandbox_copy_prefix }}project-sandbox-devcontainer-init /usr/local/bin/project-sandbox-devcontainer-init
 
 RUN chmod 0755 /usr/local/bin/project-sandbox-init-firewall \
     /usr/local/bin/project-sandbox-entrypoint \

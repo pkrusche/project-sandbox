@@ -12,7 +12,11 @@ from project_sandbox.git_identity import GitIdentity
 
 
 def _render(
-    project: Path, *, refresh: bool = False, firewall_enabled: bool = True
+    project: Path,
+    *,
+    refresh: bool = False,
+    firewall_enabled: bool = True,
+    build_context: Path | None = None,
 ) -> Path:
     return devcontainer.render(
         project,
@@ -21,6 +25,7 @@ def _render(
         memory="8g",
         cpus=4,
         extra_mounts=[],
+        build_context=build_context,
         refresh=refresh,
     )
 
@@ -37,6 +42,8 @@ class DevcontainerTests(TestCase):
             )
 
             self.assertEqual(spec["remoteUser"], "agent")
+            self.assertEqual(spec["build"]["dockerfile"], "../.project-sandbox/Dockerfile")
+            self.assertEqual(spec["build"]["context"], "../.project-sandbox")
             self.assertIn("--cap-add=NET_ADMIN", spec["runArgs"])
             self.assertIn("--cap-add=NET_RAW", spec["runArgs"])
 
@@ -102,3 +109,16 @@ class DevcontainerTests(TestCase):
                 "source=${localEnv:HOME}/.copilot,target=/home/agent/.copilot.host,type=bind,readonly",
                 mounts,
             )
+
+    def test_render_can_use_project_root_build_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / ".project-sandbox").mkdir()
+
+            _render(project, build_context=project)
+            spec = json.loads(
+                (project / ".devcontainer" / "devcontainer.json").read_text()
+            )
+
+            self.assertEqual(spec["build"]["dockerfile"], "../.project-sandbox/Dockerfile")
+            self.assertEqual(spec["build"]["context"], "..")

@@ -43,6 +43,7 @@ class CliTests(TestCase):
         help_text = stdout.getvalue()
         self.assertIn("--dry-run", help_text)
         self.assertIn("--branch", help_text)
+        self.assertIn("--dockerfile", help_text)
 
     def test_dry_run_does_not_write_project_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -61,6 +62,53 @@ class CliTests(TestCase):
             self.assertEqual(rc, 0)
             self.assertFalse((project / ".project-sandbox").exists())
             self.assertFalse((project / ".gitignore").exists())
+
+    def test_dry_run_accepts_dockerfile_without_base_image(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            source = project / "Dockerfile"
+            source.write_text("FROM python:3.12-slim\n", encoding="utf-8")
+            host_home = project / "home"
+            paths = _agent_paths(host_home)
+            paths["claude"].mkdir(parents=True)
+            out = io.StringIO()
+
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(cli, "_agent_host_paths", return_value=paths),
+                contextlib.redirect_stdout(out),
+            ):
+                rc = cli.main([
+                    "--dry-run",
+                    "--no-build",
+                    "--dockerfile",
+                    str(source),
+                    str(project),
+                ])
+
+            self.assertEqual(rc, 0)
+            output = out.getvalue()
+            self.assertIn(f"Would append sandbox layers to Dockerfile: {source}", output)
+            self.assertIn(f"Would use build context: {project}", output)
+            self.assertFalse((project / ".project-sandbox").exists())
+
+    def test_dockerfile_and_base_image_are_mutually_exclusive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            source = project / "Dockerfile"
+            source.write_text("FROM python:3.12-slim\n", encoding="utf-8")
+
+            with self.assertRaises(SystemExit) as raised:
+                cli.main([
+                    "--dry-run",
+                    "--dockerfile",
+                    str(source),
+                    str(project),
+                    "python:3.12-slim",
+                ])
+
+            self.assertIn("either base_image or --dockerfile", str(raised.exception))
 
     def test_branch_jj_repo_raises(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

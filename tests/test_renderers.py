@@ -140,6 +140,37 @@ class RendererTests(TestCase):
             self.assertNotIn("opencode-ai", text)
             self.assertNotIn("@github/copilot", text)
 
+    def test_dockerfile_renderer_extends_source_dockerfile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            context = project / ".project-sandbox"
+            context.mkdir()
+            source = project / "Dockerfile"
+            source.write_text(
+                "# syntax=docker/dockerfile:1\n"
+                "FROM ubuntu:24.04\n"
+                "RUN echo app-layer\n"
+                "USER app\n",
+                encoding="utf-8",
+            )
+
+            dockerfile.render(
+                context,
+                base_dockerfile=source,
+                build_context=project,
+                install_agents=("codex",),
+            )
+
+            text = (context / "Dockerfile").read_text(encoding="utf-8")
+            self.assertTrue(text.startswith("# syntax=docker/dockerfile:1\n"))
+            self.assertIn("RUN echo app-layer", text)
+            self.assertIn("USER root", text)
+            self.assertIn("npm install -g @openai/codex", text)
+            self.assertIn(
+                "COPY .project-sandbox/init-firewall.sh /usr/local/bin/project-sandbox-init-firewall",
+                text,
+            )
+
     def test_entrypoint_supports_all_headless_agents(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             context = Path(tmp)

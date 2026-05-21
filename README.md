@@ -38,6 +38,14 @@ uv run project-sandbox --help
 uv run project-sandbox /absolute/path/to/repo python:3.12-slim
 ```
 
+To build on top of a repo's existing Dockerfile instead of a base image tag:
+
+```bash
+uv run project-sandbox /absolute/path/to/repo --dockerfile /absolute/path/to/repo/Dockerfile
+```
+
+In this mode, `.project-sandbox/Dockerfile` starts with the existing Dockerfile contents and appends the sandbox runtime, firewall, and installed coding agents. The build context defaults to the project root so existing `COPY` instructions keep working; use `--docker-context` if that Dockerfile expects a different context.
+
 Use `--dry-run` to preview every action without writing files or starting the runtime:
 
 ```bash
@@ -152,7 +160,7 @@ The tool does **not** protect against:
 
 ## Limitations
 
-- Base images must be Debian or Ubuntu based — the firewall depends on `apt` packages including `aggregate`, which Alpine does not ship.
+- Base images, including the final stage of a Dockerfile passed with `--dockerfile`, must be Debian or Ubuntu based — the firewall depends on `apt` packages including `aggregate`, which Alpine does not ship.
 - Apple `container` is required to run the launchers. The generated `.devcontainer/` works with any Docker-compatible runtime (Docker Desktop, OrbStack, Codespaces).
 - `--branch` (worktree mode) creates a git worktree on the given branch (creating it if it doesn't exist), mounts the worktree at `/workspace`, and bind-mounts the main repo's `.git/` so `git` works correctly inside the container. After the session, `--after-session` controls whether to merge, rebase, open a PR, or do nothing. Note: jj repos and worktree-of-worktree setups are not yet supported.
 - `jj` is installed in the container for users who want to shell in and use it, but the tool itself does not write any jj configuration. Configure jj inside the container yourself if you need it.
