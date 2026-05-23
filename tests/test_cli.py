@@ -12,7 +12,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from project_sandbox import cli
 from project_sandbox.git_identity import GitIdentity
-from project_sandbox.worktree import Worktree
 
 
 def _agent_paths(home: Path) -> dict[str, Path]:
@@ -105,7 +104,7 @@ class CliTests(TestCase):
             build_image.assert_not_called()
             run.assert_not_called()
 
-    def test_default_run_refreshes_existing_generated_files(self) -> None:
+    def test_default_run_overwrites_existing_generated_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
             (project / "README.md").write_text("# demo\n", encoding="utf-8")
@@ -330,7 +329,6 @@ class CliTests(TestCase):
             _make_git_repo(project)
 
             wt_path = project.parent / f"{project.name}-worktrees" / "feat-x"
-            fake_wt = Worktree(path=wt_path, branch="feat/x", created=True)
             host_home = project / "home"
             paths = _agent_paths(host_home)
             paths["claude"].mkdir(parents=True)
@@ -338,7 +336,7 @@ class CliTests(TestCase):
             stdout_buf = io.StringIO()
             with (
                 patch.object(cli, "read_identity", return_value=GitIdentity("A", "a@b.com")),
-                patch.object(cli.worktree_mod, "setup", return_value=fake_wt),
+                patch.object(cli.worktree_mod, "setup") as setup_worktree,
                 patch.object(cli, "_agent_host_paths", return_value=paths),
                 contextlib.redirect_stdout(stdout_buf),
             ):
@@ -350,6 +348,8 @@ class CliTests(TestCase):
                 ])
 
         self.assertEqual(rc, 0)
+        setup_worktree.assert_not_called()
+        self.assertFalse(wt_path.exists())
         output = stdout_buf.getvalue()
 
         git_dir = str((project / ".git").resolve())
@@ -365,7 +365,6 @@ class CliTests(TestCase):
             _make_git_repo(project)
 
             wt_path = project.parent / f"{project.name}-worktrees" / "feat-x"
-            fake_wt = Worktree(path=wt_path, branch="feat/x", created=True)
             host_home = project / "home"
             paths = _agent_paths(host_home)
             paths["claude"].mkdir(parents=True)
@@ -373,7 +372,7 @@ class CliTests(TestCase):
             stdout_buf = io.StringIO()
             with (
                 patch.object(cli, "read_identity", return_value=GitIdentity("A", "a@b.com")),
-                patch.object(cli.worktree_mod, "setup", return_value=fake_wt),
+                patch.object(cli.worktree_mod, "setup") as setup_worktree,
                 patch.object(cli, "_agent_host_paths", return_value=paths),
                 contextlib.redirect_stdout(stdout_buf),
             ):
@@ -385,7 +384,9 @@ class CliTests(TestCase):
                 ])
 
         output = stdout_buf.getvalue()
-        self.assertIn("Would create worktree at:", output)
+        setup_worktree.assert_not_called()
+        self.assertFalse(wt_path.exists())
+        self.assertIn("Would use worktree at:", output)
         self.assertIn("Would mount .git metadata:", output)
 
     def test_branch_without_agent_or_prompt_raises(self) -> None:

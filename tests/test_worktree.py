@@ -32,7 +32,6 @@ class WorktreeSetupTests(TestCase):
     def test_setup_creates_new_branch_and_worktree(self) -> None:
         wt = worktree_mod.setup(self.repo, "feat/hello")
 
-        self.assertTrue(wt.created)
         self.assertEqual(wt.branch, "feat/hello")
         self.assertTrue(wt.path.is_dir())
         # worktree's .git should be a file (gitdir pointer)
@@ -57,8 +56,6 @@ class WorktreeSetupTests(TestCase):
         wt1 = worktree_mod.setup(self.repo, "feat/x")
         wt2 = worktree_mod.setup(self.repo, "feat/x")
 
-        self.assertTrue(wt1.created)
-        self.assertFalse(wt2.created)
         self.assertEqual(wt1.path, wt2.path)
 
     def test_setup_existing_branch(self) -> None:
@@ -68,7 +65,6 @@ class WorktreeSetupTests(TestCase):
         )
         wt = worktree_mod.setup(self.repo, "existing-branch")
 
-        self.assertFalse(wt.created)
         self.assertTrue(wt.path.is_dir())
 
     def test_setup_respects_base_branch(self) -> None:
@@ -96,7 +92,6 @@ class WorktreeSetupTests(TestCase):
 
         wt = worktree_mod.setup(self.repo, "feat/from-base", base="base-branch")
 
-        self.assertTrue(wt.created)
         self.assertTrue((wt.path / "base.txt").exists())
 
 

@@ -216,7 +216,7 @@ class RendererTests(TestCase):
                 },
             )
 
-    def test_claude_settings_with_host_theme_are_refreshed_to_auto(self) -> None:
+    def test_claude_settings_with_host_theme_are_overwritten_to_auto(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             context = Path(tmp) / ".project-sandbox"
             settings = context / "claude" / "settings.json"
@@ -290,7 +290,7 @@ class RendererTests(TestCase):
             self.assertNotIn("opencode-ai", text)
             self.assertNotIn("@github/copilot", text)
 
-    def test_dockerfile_renderer_refreshes_stale_agent_uid_setup(self) -> None:
+    def test_dockerfile_renderer_overwrites_existing_agent_uid_setup(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             context = Path(tmp)
             existing = context / "Dockerfile"
@@ -314,10 +314,9 @@ class RendererTests(TestCase):
             self.assertNotIn("if ! id -u agent", text)
             self.assertIn("existing_uid_user", text)
             self.assertIn("Removing existing UID 1000 user", text)
-            self.assertEqual(len(warnings), 1)
-            self.assertIn("Regenerating stale project-sandbox Dockerfile", warnings[0])
+            self.assertEqual(warnings, [])
 
-    def test_dockerfile_renderer_refreshes_stale_jj_install(self) -> None:
+    def test_dockerfile_renderer_overwrites_existing_jj_install(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             context = Path(tmp)
             existing = context / "Dockerfile"
@@ -342,11 +341,9 @@ class RendererTests(TestCase):
             self.assertNotIn("releases/latest/download/jj-${JJ_ARCH}", text)
             self.assertNotIn("tar -xz -C /usr/local/bin jj", text)
             self.assertIn('install -m 0755 "$jj_tmp/jj" /usr/local/bin/jj', text)
-            self.assertEqual(len(warnings), 1)
-            self.assertIn("old jj download URL", warnings[0])
-            self.assertIn("old jj extraction", warnings[0])
+            self.assertEqual(warnings, [])
 
-    def test_dockerfile_renderer_refreshes_missing_config_mount_targets(self) -> None:
+    def test_dockerfile_renderer_overwrites_missing_config_mount_targets(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             context = Path(tmp)
             existing = context / "Dockerfile"
@@ -367,8 +364,7 @@ class RendererTests(TestCase):
             text = existing.read_text(encoding="utf-8")
             self.assertIn("/home/agent/.claude/settings.json", text)
             self.assertIn("/home/agent/.codex/config.toml", text)
-            self.assertEqual(len(warnings), 1)
-            self.assertIn("old config file mount targets", warnings[0])
+            self.assertEqual(warnings, [])
 
     def test_dockerfile_renderer_extends_source_dockerfile(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -468,7 +464,7 @@ class RendererTests(TestCase):
             self.assertIn("bash-headless", text)
             self.assertIn('exec bash -lc "$PROMPT"', text)
 
-    def test_entrypoint_renderer_refreshes_missing_jj_identity_setup(self) -> None:
+    def test_entrypoint_renderer_overwrites_missing_jj_identity_setup(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             context = Path(tmp)
             existing = context / "entrypoint.sh"
@@ -486,7 +482,7 @@ class RendererTests(TestCase):
             self.assertIn('jj config set --user user.name "$NAME"', text)
             self.assertIn('jj config set --user user.email "$EMAIL"', text)
 
-    def test_entrypoint_renderer_refreshes_config_dir_claude_credentials(self) -> None:
+    def test_entrypoint_renderer_overwrites_config_dir_claude_credentials(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             context = Path(tmp)
             existing = context / "entrypoint.sh"
@@ -523,7 +519,7 @@ class RendererTests(TestCase):
             self.assertIn('jj config set --user user.name "$NAME"', text)
             self.assertIn('jj config set --user user.email "$EMAIL"', text)
 
-    def test_devcontainer_entrypoint_renderer_refreshes_config_dir_claude_credentials(
+    def test_devcontainer_entrypoint_renderer_overwrites_config_dir_claude_credentials(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -543,7 +539,7 @@ class RendererTests(TestCase):
             self.assertIn("/project-sandbox-secrets/claude/.claude.json", text)
             self.assertNotIn("/project-sandbox-config/claude/.claude.json", text)
 
-    def test_entrypoint_renderer_refreshes_stale_claude_config_dir_env(self) -> None:
+    def test_entrypoint_renderer_overwrites_stale_claude_config_dir_env(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             context = Path(tmp)
             existing = context / "entrypoint.sh"
@@ -559,7 +555,7 @@ class RendererTests(TestCase):
             self.assertIn("CLAUDE_SECURESTORAGE_CONFIG_DIR", text)
             self.assertNotIn("CLAUDE_CONFIG_DIR", text)
 
-    def test_devcontainer_entrypoint_refreshes_missing_jj_identity_setup(self) -> None:
+    def test_devcontainer_entrypoint_overwrites_missing_jj_identity_setup(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             context = Path(tmp)
             existing = context / "project-sandbox-devcontainer-init"

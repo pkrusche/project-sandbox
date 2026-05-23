@@ -17,7 +17,6 @@ def render(
     extra_mounts: list[str],
     claude_credentials_dir: Path | None = None,
     build_context: Path | None = None,
-    refresh: bool = False,
 ) -> Path:
     dc_dir = project / ".devcontainer"
     dc_dir.mkdir(exist_ok=True)
@@ -28,9 +27,6 @@ def render(
     _symlink(dc_dir / "codex", Path("../.project-sandbox/codex"))
 
     out = dc_dir / "devcontainer.json"
-    if out.exists() and not refresh and not _stale_devcontainer(out):
-        return dc_dir
-
     env = Environment(loader=PackageLoader("project_sandbox", "templates"))
     tmpl = env.get_template("devcontainer.json.j2")
     generated_dockerfile = project / ".project-sandbox" / "Dockerfile"
@@ -76,12 +72,3 @@ def _devcontainer_ref(dc_dir: Path, path: Path) -> str:
     return Path(
         os.path.relpath(path.resolve(strict=False), dc_dir.resolve(strict=False))
     ).as_posix()
-
-
-def _stale_devcontainer(path: Path) -> bool:
-    text = path.read_text(encoding="utf-8")
-    return (
-        "/home/agent/.claude.host" in text
-        or "/project-sandbox-secrets/claude" not in text
-        or '"CLAUDE_CONFIG_DIR"' in text
-    )

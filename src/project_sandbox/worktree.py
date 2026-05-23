@@ -7,30 +7,34 @@ import subprocess
 class Worktree:
     path: Path
     branch: str
-    created: bool
 
 
 def setup(repo: Path, branch: str, base: str | None = None, worktree_dir: Path | None = None) -> Worktree:
     repo = repo.resolve()
-    wt_root = worktree_dir or (repo.parent / f"{repo.name}-worktrees")
-    wt_path = wt_root / branch.replace("/", "-")
+    wt_path = path_for(repo, branch, worktree_dir=worktree_dir)
 
     if wt_path.exists():
         _git(repo, ["worktree", "prune"])
         existing = _list_worktrees(repo)
         if str(wt_path) in existing:
-            return Worktree(path=wt_path, branch=branch, created=False)
+            return Worktree(path=wt_path, branch=branch)
 
     branches = _git(repo, ["branch", "--list", branch], capture=True)
     branch_exists = branch.strip() in branches
 
     if branch_exists:
         _git(repo, ["worktree", "add", str(wt_path), branch])
-        return Worktree(path=wt_path, branch=branch, created=False)
+        return Worktree(path=wt_path, branch=branch)
 
     base_ref = base or "HEAD"
     _git(repo, ["worktree", "add", "-b", branch, str(wt_path), base_ref])
-    return Worktree(path=wt_path, branch=branch, created=True)
+    return Worktree(path=wt_path, branch=branch)
+
+
+def path_for(repo: Path, branch: str, worktree_dir: Path | None = None) -> Path:
+    repo = repo.resolve()
+    wt_root = worktree_dir or (repo.parent / f"{repo.name}-worktrees")
+    return wt_root / branch.replace("/", "-")
 
 
 def teardown(repo: Path, wt: Worktree, *, after: str) -> None:

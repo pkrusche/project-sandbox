@@ -7,19 +7,6 @@ from jinja2 import Environment, PackageLoader
 _USER_SETUP_COMMAND_RE = re.compile(
     r"(?<![\w.-])(addgroup|adduser|groupadd|groupmod|useradd|usermod)(?![\w.-])"
 )
-_STALE_AGENT_SETUP_MARKER = (
-    "if ! id -u agent >/dev/null 2>&1; then \\\n"
-    "        useradd -m -u 1000 -s /bin/bash agent;"
-)
-_STALE_JJ_DOWNLOAD_MARKER = "releases/latest/download/jj-${JJ_ARCH}"
-_STALE_JJ_EXTRACT_MARKER = "tar -xz -C /usr/local/bin jj"
-_CONFIG_TARGET_PLACEHOLDER_MARKER = "/home/agent/.claude/settings.json"
-_CONFIG_DIR_MOUNT_TARGET_MARKER = "/project-sandbox-config/claude"
-_GENERATED_DOCKERFILE_MARKER = "project-sandbox-entrypoint"
-_JJ_IDENTITY_MARKER = "jj config set --user user.name"
-_CLAUDE_CONFIG_DIR_JSON_MARKER = "$HOME/.claude/.claude.json"
-_CLAUDE_SECRETS_MARKER = "/project-sandbox-secrets/claude/.claude.json"
-_CLAUDE_CONFIG_DIR_ENV_MARKER = "CLAUDE_CONFIG_DIR"
 
 
 def render(
@@ -29,23 +16,12 @@ def render(
     base_dockerfile: Path | None = None,
     build_context: Path | None = None,
     install_agents: tuple[str, ...] = ("claude", "codex", "opencode", "copilot"),
-    refresh: bool = False,
     warn: Callable[[str], None] | None = None,
 ) -> Path:
     if (base_image is None) == (base_dockerfile is None):
         raise ValueError("Provide exactly one of base_image or base_dockerfile")
 
     out = context_dir / "Dockerfile"
-    if out.exists() and not refresh:
-        stale_reasons = _stale_generated_dockerfile_reasons(out)
-        if stale_reasons:
-            if warn is not None:
-                warn(
-                    f"WARNING: Regenerating stale project-sandbox Dockerfile at {out}; "
-                    + " ".join(stale_reasons)
-                )
-        else:
-            return out
     source_dockerfile_text = ""
     if base_dockerfile is not None:
         source_dockerfile_text, warnings = _read_source_dockerfile(base_dockerfile)
@@ -81,28 +57,6 @@ def render(
 def source_warnings(base_dockerfile: Path) -> tuple[str, ...]:
     _, warnings = _read_source_dockerfile(base_dockerfile)
     return warnings
-
-
-def _stale_generated_dockerfile_reasons(path: Path) -> tuple[str, ...]:
-    text = path.read_text(encoding="utf-8")
-    reasons: list[str] = []
-    if _STALE_AGENT_SETUP_MARKER in text:
-        reasons.append("old agent UID setup failed when UID 1000 already existed.")
-    if _STALE_JJ_DOWNLOAD_MARKER in text:
-        reasons.append("old jj download URL no longer matches release asset names.")
-    if _STALE_JJ_EXTRACT_MARKER in text:
-        reasons.append("old jj extraction expected the wrong archive member path.")
-    if (
-        _GENERATED_DOCKERFILE_MARKER in text
-        and _CONFIG_TARGET_PLACEHOLDER_MARKER not in text
-    ):
-        reasons.append("old config file mount targets were not created in the image.")
-    if (
-        _GENERATED_DOCKERFILE_MARKER in text
-        and _CONFIG_DIR_MOUNT_TARGET_MARKER not in text
-    ):
-        reasons.append("old config directory mount targets were not created in the image.")
-    return tuple(reasons)
 
 
 def _read_source_dockerfile(base_dockerfile: Path) -> tuple[str, tuple[str, ...]]:
@@ -181,10 +135,8 @@ def _sandbox_copy_prefix(*, context_dir: Path, build_context: Path) -> str:
     return relative.as_posix().rstrip("/") + "/"
 
 
-def render_entrypoint(context_dir: Path, *, refresh: bool = False) -> Path:
+def render_entrypoint(context_dir: Path) -> Path:
     out = context_dir / "entrypoint.sh"
-    if out.exists() and not refresh and not _stale_entrypoint(out):
-        return out
     env = Environment(loader=PackageLoader("project_sandbox", "templates"))
     tmpl = env.get_template("entrypoint.sh.j2")
     out.write_text(tmpl.render() + "\n", encoding="utf-8")
@@ -192,28 +144,10 @@ def render_entrypoint(context_dir: Path, *, refresh: bool = False) -> Path:
     return out
 
 
-def render_devcontainer_entrypoint(context_dir: Path, *, refresh: bool = False) -> Path:
+def render_devcontainer_entrypoint(context_dir: Path) -> Path:
     out = context_dir / "project-sandbox-devcontainer-init"
-    if out.exists() and not refresh and not _stale_entrypoint(out):
-        return out
     env = Environment(loader=PackageLoader("project_sandbox", "templates"))
     tmpl = env.get_template("devcontainer-entrypoint.sh.j2")
     out.write_text(tmpl.render() + "\n", encoding="utf-8")
     out.chmod(0o755)
     return out
-
-
-def _stale_entrypoint(path: Path) -> bool:
-    text = path.read_text(encoding="utf-8")
-    return (
-        "git config --global user.name" in text and _JJ_IDENTITY_MARKER not in text
-    ) or (
-        "/project-sandbox-config/claude/.claude.json" in text
-    ) or (
-        _CLAUDE_CONFIG_DIR_JSON_MARKER in text
-        and _CLAUDE_SECRETS_MARKER not in text
-    ) or (
-        ".claude.host" in text
-    ) or (
-        _CLAUDE_CONFIG_DIR_ENV_MARKER in text
-    )

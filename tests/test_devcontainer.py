@@ -14,7 +14,6 @@ from project_sandbox.git_identity import GitIdentity
 def _render(
     project: Path,
     *,
-    refresh: bool = False,
     firewall_enabled: bool = True,
     build_context: Path | None = None,
 ) -> Path:
@@ -26,7 +25,6 @@ def _render(
         cpus=4,
         extra_mounts=[],
         build_context=build_context,
-        refresh=refresh,
     )
 
 
@@ -85,19 +83,21 @@ class DevcontainerTests(TestCase):
                 target = link.readlink()
                 self.assertTrue(str(target).startswith("../.project-sandbox"))
 
-    def test_render_is_idempotent_without_refresh(self) -> None:
+    def test_render_overwrites_existing_devcontainer_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
             (project / ".project-sandbox").mkdir()
-
-            _render(project)
             spec_path = project / ".devcontainer" / "devcontainer.json"
-            mtime = spec_path.stat().st_mtime_ns
+            spec_path.parent.mkdir()
+            spec_path.write_text('{"old":true}\n', encoding="utf-8")
 
             _render(project)
-            self.assertEqual(spec_path.stat().st_mtime_ns, mtime)
+            spec = json.loads(spec_path.read_text(encoding="utf-8"))
 
-    def test_render_refreshes_stale_claude_host_mount(self) -> None:
+            self.assertEqual(spec["remoteUser"], "agent")
+            self.assertNotIn("old", spec)
+
+    def test_render_overwrites_existing_claude_host_mount(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
             dc_dir = project / ".devcontainer"
@@ -116,7 +116,7 @@ class DevcontainerTests(TestCase):
                 spec_path.read_text(encoding="utf-8"),
             )
 
-    def test_render_refreshes_missing_claude_secrets_mount(self) -> None:
+    def test_render_overwrites_existing_missing_claude_secrets_mount(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
             dc_dir = project / ".devcontainer"
@@ -135,7 +135,7 @@ class DevcontainerTests(TestCase):
                 spec_path.read_text(encoding="utf-8"),
             )
 
-    def test_render_refreshes_stale_claude_config_dir_env(self) -> None:
+    def test_render_overwrites_existing_claude_config_dir_env(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
             dc_dir = project / ".devcontainer"
@@ -174,7 +174,7 @@ class DevcontainerTests(TestCase):
             (fake_home / ".copilot").mkdir(parents=True)
 
             with patch.object(devcontainer.Path, "home", return_value=fake_home):
-                _render(project, refresh=True)
+                _render(project)
 
             spec = json.loads(
                 (project / ".devcontainer" / "devcontainer.json").read_text()

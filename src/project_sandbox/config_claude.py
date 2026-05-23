@@ -37,14 +37,10 @@ CREDENTIALS_ROOT = Path("/tmp")
 
 def render(
     project_sandbox_dir: Path,
-    *,
-    refresh: bool = False,
 ) -> Path:
     out_dir = project_sandbox_dir / "claude"
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / "settings.json"
-    if out.exists() and not refresh and not _stale_settings(out):
-        return out
     env = Environment(loader=PackageLoader("project_sandbox", "templates"))
     tmpl = env.get_template("claude-settings.json.j2")
     out.write_text(
@@ -138,14 +134,6 @@ def _credential_state(existing: dict[str, object]) -> dict[str, object]:
         for key, value in existing.items()
         if key in CLAUDE_CREDENTIAL_STATE_KEYS
     }
-
-
-def _stale_settings(path: Path) -> bool:
-    try:
-        existing = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return True
-    return not isinstance(existing, dict) or existing.get("theme") != "auto"
 
 
 def _stage_macos_keychain_credentials(out_dir: Path) -> bool:

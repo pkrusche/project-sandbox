@@ -96,9 +96,13 @@ def main(argv: list[str] | None = None) -> int:
     host_paths = _agent_host_paths()
     available_agents = _available_agents(host_paths)
 
-    wt, workspace = _setup_worktree(args, project) if run_agent else (None, project)
+    if run_agent is not None and args.branch:
+        _validate_worktree_project(project)
+    if run_agent is not None:
+        _ensure_agent_available(run_agent, available_agents)
 
     if args.dry_run:
+        wt, workspace = _plan_worktree(args, project) if run_agent else (None, project)
         return _dry_run(
             args,
             project=project,
@@ -106,7 +110,10 @@ def main(argv: list[str] | None = None) -> int:
             worktree=wt,
             identity=identity,
             available_agents=available_agents,
+            host_paths=host_paths,
         )
+
+    wt, workspace = _setup_worktree(args, project) if run_agent else (None, project)
 
     context_dir = ensure_dir(project / ".project-sandbox")
     base_image, base_dockerfile, build_context = _resolve_build_source(
@@ -121,20 +128,19 @@ def main(argv: list[str] | None = None) -> int:
         base_dockerfile=base_dockerfile,
         build_context=build_context,
         install_agents=available_agents,
-        refresh=True,
         warn=print,
     )
-    dockerfile.render_entrypoint(context_dir, refresh=True)
-    dockerfile.render_devcontainer_entrypoint(context_dir, refresh=True)
+    dockerfile.render_entrypoint(context_dir)
+    dockerfile.render_devcontainer_entrypoint(context_dir)
     firewall.render(
         context_dir,
         extra_domains=args.extra_domain,
     )
 
-    claude_cfg = config_claude.render(context_dir, refresh=True)
+    claude_cfg = config_claude.render(context_dir)
     claude_credentials_dir = config_claude.credentials_dir(context_dir)
     config_claude.sync_credentials(context_dir)
-    codex_cfg = config_codex.render(context_dir, refresh=True)
+    codex_cfg = config_codex.render(context_dir)
 
     _write_project_sandbox_gitignore(context_dir)
     _update_project_gitignore(project)
@@ -148,7 +154,6 @@ def main(argv: list[str] | None = None) -> int:
         extra_mounts=args.extra_mounts,
         claude_credentials_dir=claude_credentials_dir,
         build_context=build_context,
-        refresh=True,
     )
 
     if run_agent is None:
@@ -223,6 +228,15 @@ def _requested_agent(args) -> str | None:
     return None
 
 
+def _ensure_agent_available(run_agent: str, available_agents: tuple[str, ...]) -> None:
+    if run_agent in available_agents:
+        return
+    available = ", ".join(available_agents)
+    raise SystemExit(
+        f"--agent={run_agent} is unavailable on this host; available agents: {available}"
+    )
+
+
 def _dry_run(
     args,
     *,
@@ -231,6 +245,7 @@ def _dry_run(
     worktree,
     identity,
     available_agents: tuple[str, ...],
+    host_paths: dict[str, Path],
 ) -> int:
     context_dir = project / ".project-sandbox"
     claude_cfg = context_dir / "claude" / "settings.json"
@@ -240,7 +255,7 @@ def _dry_run(
 
     print("DRY RUN: no files, worktrees, images, or containers will be created.")
     if worktree is not None:
-        print(f"Would create worktree at: {workspace}")
+        print(f"Would use worktree at: {workspace}")
         print(f"Would mount .git metadata: {(project / '.git').resolve()}")
     print(f"Would render sandbox assets under: {context_dir}")
     print(f"Would render devcontainer under: {project / '.devcontainer'}")
@@ -277,7 +292,7 @@ def _dry_run(
         identity=identity,
         run_agent=run_agent,
         available_agents=available_agents,
-        host_paths=_agent_host_paths(),
+        host_paths=host_paths,
         claude_cfg=claude_cfg,
         claude_credentials_dir=claude_credentials_dir,
         codex_cfg=codex_cfg,
@@ -329,6 +344,36 @@ def _setup_worktree(args, project: Path):
     if not args.branch:
         return None, project
 
+    _validate_worktree_project(project)
+
+    wt = worktree_mod.setup(
+        repo=project,
+        branch=args.branch,
+        base=args.worktree_base,
+        worktree_dir=_worktree_dir(args),
+    )
+    return wt, wt.path
+
+
+def _plan_worktree(args, project: Path):
+    """Return a non-mutating Worktree placeholder and workspace path for dry-run."""
+    if not args.branch:
+        return None, project
+
+    _validate_worktree_project(project)
+    wt_path = worktree_mod.path_for(
+        project,
+        args.branch,
+        worktree_dir=_worktree_dir(args),
+    )
+    return worktree_mod.Worktree(path=wt_path, branch=args.branch), wt_path
+
+
+def _worktree_dir(args) -> Path | None:
+    return Path(args.worktree_dir) if args.worktree_dir else None
+
+
+def _validate_worktree_project(project: Path) -> None:
     if (project / ".jj").is_dir():
         raise SystemExit("--branch is not yet supported for jj repos.")
 
@@ -338,14 +383,6 @@ def _setup_worktree(args, project: Path):
             "--branch requires a plain git repo at the project root "
             "(.git is a file or missing — worktree-of-worktree and submodules are not supported)."
         )
-
-    wt = worktree_mod.setup(
-        repo=project,
-        branch=args.branch,
-        base=args.worktree_base,
-        worktree_dir=Path(args.worktree_dir) if args.worktree_dir else None,
-    )
-    return wt, wt.path
 
 
 def _teardown_worktree(args, *, project: Path, wt, exit_code: int) -> None:
@@ -372,10 +409,6 @@ def _build_session_command(
     create_prompt_files: bool,
 ) -> tuple[list[str], Path | None, bool]:
     if run_agent not in available_agents:
-        if not available_agents:
-            raise SystemExit(
-                "No supported agents are available."
-            )
         available = ", ".join(available_agents)
         raise SystemExit(
             f"--agent={run_agent} is unavailable on this host; available agents: {available}"
