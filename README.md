@@ -81,9 +81,9 @@ The `.project-sandbox/` directory is generated local state and is ignored as a w
 
 ## Devcontainer flow
 
-Open the project in VS Code, Cursor, or any devcontainer-aware IDE and choose **Reopen in Container**. The generated `devcontainer.json` builds the same image, mounts the same sanitized configs, runs the same firewall via `postStartCommand`, and waits for it before opening a terminal.
+Before starting the devcontainer, run `project-sandbox /absolute/path/to/repo python:3.12-slim` once on the host. This refreshes the `/tmp/project-sandbox-<uid>/...` Claude credential staging directory that the devcontainer mounts at startup.
 
-Because `.project-sandbox/` is ignored, re-run `project-sandbox /absolute/path/to/repo python:3.12-slim` on the host before opening or rebuilding the devcontainer. The devcontainer post-start helper prints the same reminder.
+Then open the project in VS Code, Cursor, or any devcontainer-aware IDE and choose **Reopen in Container**. The generated `devcontainer.json` builds the same image, mounts the same sanitized configs and staged credentials, runs the same firewall via `postStartCommand`, and waits for it before opening a terminal. Re-run the same `project-sandbox` command before starting or rebuilding the devcontainer again whenever credentials may have changed, `/tmp` may have been cleaned, or you are on a different host.
 
 Generate the devcontainer without building or running anything:
 
