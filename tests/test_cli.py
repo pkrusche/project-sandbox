@@ -44,7 +44,20 @@ class CliTests(TestCase):
         self.assertIn("--dry-run", help_text)
         self.assertIn("--branch", help_text)
         self.assertIn("--dockerfile", help_text)
+        self.assertNotIn("--rebuild", help_text)
+        self.assertNotIn("--refresh-config", help_text)
         self.assertIn("bash", help_text)
+
+    def test_refresh_flags_are_removed(self) -> None:
+        parser = cli.build_parser()
+
+        for flag in ("--rebuild", "--refresh-config"):
+            with self.subTest(flag=flag):
+                with (
+                    self.assertRaises(SystemExit),
+                    contextlib.redirect_stderr(io.StringIO()),
+                ):
+                    parser.parse_args([flag, "/tmp/project", "python:3.12-slim"])
 
     def test_dry_run_does_not_write_project_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -91,6 +104,76 @@ class CliTests(TestCase):
             ensure_system_started.assert_not_called()
             build_image.assert_not_called()
             run.assert_not_called()
+
+    def test_default_run_refreshes_existing_generated_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            sandbox = project / ".project-sandbox"
+            sandbox.mkdir()
+            (sandbox / "Dockerfile").write_text("FROM old:image\n", encoding="utf-8")
+            (sandbox / "entrypoint.sh").write_text(
+                "#!/bin/sh\necho old\n",
+                encoding="utf-8",
+            )
+            (sandbox / "project-sandbox-devcontainer-init").write_text(
+                "#!/bin/sh\necho old\n",
+                encoding="utf-8",
+            )
+            (sandbox / "claude").mkdir()
+            (sandbox / "claude" / "settings.json").write_text(
+                '{"theme":"dark"}\n',
+                encoding="utf-8",
+            )
+            (sandbox / "codex").mkdir()
+            (sandbox / "codex" / "config.toml").write_text(
+                "old = true\n",
+                encoding="utf-8",
+            )
+            dc_dir = project / ".devcontainer"
+            dc_dir.mkdir()
+            (dc_dir / "devcontainer.json").write_text(
+                '{"old":true}\n',
+                encoding="utf-8",
+            )
+            host_home = project / "home"
+            paths = _agent_paths(host_home)
+            paths["claude"].mkdir(parents=True)
+
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(cli, "_agent_host_paths", return_value=paths),
+                patch.object(cli.config_claude, "sync_credentials"),
+            ):
+                rc = cli.main([str(project), "python:3.12-slim"])
+
+            self.assertEqual(rc, 0)
+            self.assertIn(
+                "FROM python:3.12-slim",
+                (sandbox / "Dockerfile").read_text(encoding="utf-8"),
+            )
+            self.assertIn(
+                "project-sandbox-run",
+                (sandbox / "entrypoint.sh").read_text(encoding="utf-8"),
+            )
+            self.assertIn(
+                "devcontainer init complete",
+                (sandbox / "project-sandbox-devcontainer-init").read_text(
+                    encoding="utf-8"
+                ),
+            )
+            self.assertIn(
+                '"theme": "auto"',
+                (sandbox / "claude" / "settings.json").read_text(encoding="utf-8"),
+            )
+            self.assertIn(
+                'approval_policy = "never"',
+                (sandbox / "codex" / "config.toml").read_text(encoding="utf-8"),
+            )
+            self.assertIn(
+                '"remoteUser": "agent"',
+                (dc_dir / "devcontainer.json").read_text(encoding="utf-8"),
+            )
 
     def test_bash_agent_is_available_without_host_agent_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

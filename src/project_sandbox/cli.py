@@ -43,8 +43,6 @@ def build_parser() -> ArgumentParser:
         help="Build context to use with --dockerfile (default: project root).",
     )
     p.add_argument("--image-tag", default="project-sandbox:latest")
-    p.add_argument("--rebuild", action="store_true")
-    p.add_argument("--refresh-config", action="store_true")
     p.add_argument("--no-build", action="store_true")
     p.add_argument("--memory", default="8g")
     p.add_argument("--cpus", type=int, default=4)
@@ -123,20 +121,20 @@ def main(argv: list[str] | None = None) -> int:
         base_dockerfile=base_dockerfile,
         build_context=build_context,
         install_agents=available_agents,
-        refresh=args.rebuild,
+        refresh=True,
         warn=print,
     )
-    dockerfile.render_entrypoint(context_dir, refresh=args.rebuild)
-    dockerfile.render_devcontainer_entrypoint(context_dir, refresh=args.rebuild)
+    dockerfile.render_entrypoint(context_dir, refresh=True)
+    dockerfile.render_devcontainer_entrypoint(context_dir, refresh=True)
     firewall.render(
         context_dir,
         extra_domains=args.extra_domain,
     )
 
-    claude_cfg = config_claude.render(context_dir, refresh=args.refresh_config)
+    claude_cfg = config_claude.render(context_dir, refresh=True)
     claude_credentials_dir = config_claude.credentials_dir(context_dir)
     config_claude.sync_credentials(context_dir)
-    codex_cfg = config_codex.render(context_dir, refresh=args.refresh_config)
+    codex_cfg = config_codex.render(context_dir, refresh=True)
 
     _write_project_sandbox_gitignore(context_dir)
     _update_project_gitignore(project)
@@ -150,7 +148,7 @@ def main(argv: list[str] | None = None) -> int:
         extra_mounts=args.extra_mounts,
         claude_credentials_dir=claude_credentials_dir,
         build_context=build_context,
-        refresh=args.refresh_config or args.rebuild,
+        refresh=True,
     )
 
     if run_agent is None:

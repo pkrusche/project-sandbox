@@ -153,7 +153,7 @@ The tool does **not** protect against:
 ## Troubleshooting
 
 - **`container system start` failed.** Make sure macOS 15+ is current and `apple/container` is installed; the tool calls `container system start` idempotently before building.
-- **Build OOM.** The builder VM is separate from run VMs. Bump it: `container builder start --memory 8g --cpus 8`, then re-run with `--rebuild`.
+- **Build OOM.** The builder VM is separate from run VMs. Bump it: `container builder start --memory 8g --cpus 8`, then re-run `project-sandbox`.
 - **GitHub meta API timeout.** The firewall script falls back to an empty `{web,api,git,ipv6}` set and starts with a partial allowlist. Re-running the agent later (with the firewall flushed and rebuilt at container start) will retry.
 - **`ip6tables` unavailable.** The script attempts `sysctl net.ipv6.conf.all.disable_ipv6=1` first. If that also fails, the script aborts with an error.
 - **Credentials look stale.** Re-run `project-sandbox` on the host to refresh the `/tmp` credential staging directory from the host agent config or macOS Keychain.
