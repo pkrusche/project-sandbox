@@ -18,6 +18,8 @@ _CONFIG_DIR_MOUNT_TARGET_MARKER = "/project-sandbox-config/claude"
 _GENERATED_DOCKERFILE_MARKER = "project-sandbox-entrypoint"
 _JJ_IDENTITY_MARKER = "jj config set --user user.name"
 _CLAUDE_CONFIG_DIR_JSON_MARKER = "$HOME/.claude/.claude.json"
+_CLAUDE_SECRETS_MARKER = "/project-sandbox-secrets/claude/.claude.json"
+_CLAUDE_CONFIG_DIR_ENV_MARKER = "CLAUDE_CONFIG_DIR"
 
 
 def render(
@@ -207,5 +209,11 @@ def _stale_entrypoint(path: Path) -> bool:
         "git config --global user.name" in text and _JJ_IDENTITY_MARKER not in text
     ) or (
         "/project-sandbox-config/claude/.claude.json" in text
-        and _CLAUDE_CONFIG_DIR_JSON_MARKER not in text
+    ) or (
+        _CLAUDE_CONFIG_DIR_JSON_MARKER in text
+        and _CLAUDE_SECRETS_MARKER not in text
+    ) or (
+        ".claude.host" in text
+    ) or (
+        _CLAUDE_CONFIG_DIR_ENV_MARKER in text
     )

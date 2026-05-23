@@ -9,7 +9,7 @@ The tool generates a derived image, sanitized agent configs, an egress firewall,
 Given `project-sandbox /path/to/repo python:3.12-slim`:
 
 1. Read host `git config --global` identity.
-2. Render `<project>/.project-sandbox/` — `Dockerfile`, `entrypoint.sh`, `init-firewall.sh`, sanitized `claude/settings.json` and `codex/config.toml`, a devcontainer post-start init script, and generated credential/config staging files.
+2. Render `<project>/.project-sandbox/` — `Dockerfile`, `entrypoint.sh`, `init-firewall.sh`, sanitized `claude/settings.json` and `codex/config.toml`, and a devcontainer post-start init script. Claude credentials are staged separately under `/tmp` with private directory permissions.
 3. Render `<project>/.devcontainer/` with symlinks back into `.project-sandbox/` so the Dockerfile and firewall script remain a single source of truth.
 4. Detect available host agent configs (`~/.claude`, `~/.codex`, `~/.config/opencode`, `~/.copilot`) and install only those agent CLIs into the generated Dockerfile. Bash is always available.
 5. Append `.project-sandbox/` to `<project>/.gitignore` (idempotent).
@@ -77,7 +77,7 @@ uv run project-sandbox --dry-run /absolute/path/to/repo python:3.12-slim
     └── codex               → ../.project-sandbox/codex
 ```
 
-The `.project-sandbox/` directory is generated local state and is ignored as a whole. Re-run `project-sandbox` after cloning, pulling generated config changes, or refreshing credentials.
+The `.project-sandbox/` directory is generated local state and is ignored as a whole. Re-run `project-sandbox` after cloning, pulling generated config changes, or refreshing credentials. Claude credential staging lives outside the project under `/tmp/project-sandbox-<uid>/...`.
 
 ## Devcontainer flow
 
@@ -121,7 +121,7 @@ When the firewall is enabled (default), `init-firewall.sh` runs as root inside t
 
 - Sets `iptables` and `ip6tables` policies to DROP.
 - Pins DNS to the resolver(s) in `/etc/resolv.conf` only (closes the DNS-tunnel exfiltration gap in the upstream Anthropic devcontainer).
-- Allows GitHub's published IP ranges (fetched from `api.github.com/meta`), `registry.npmjs.org`, `api.anthropic.com`, `api.openai.com`, `auth.openai.com`, and `chatgpt.com`.
+- Allows GitHub's published IP ranges (fetched from `api.github.com/meta`), `registry.npmjs.org`, Claude/Anthropic endpoints (`api.anthropic.com`, `claude.ai`, `code.claude.com`, `platform.claude.com`), `api.openai.com`, `auth.openai.com`, and `chatgpt.com`.
 - Allows the host gateway subnet so port-forwarding and IDE attach work.
 - Mirrors the IPv4 allowlist into a parallel IPv6 set; falls back to disabling IPv6 via `sysctl` when `ip6_tables` is unavailable — the script exits with an error if both `ip6tables` and `sysctl` are unavailable.
 
@@ -142,7 +142,7 @@ Customize:
 | Malicious npm post-install scripts | Run as UID 1000 inside the VM; no host access. |
 | Agent updates itself to a malicious version | `autoUpdaterStatus: disabled` (Claude) and `disable_update_check = true` (Codex). |
 | Agent sends telemetry / usage data | `CLAUDE_TELEMETRY_DISABLED=1` (Claude); `analytics.enabled = false` and `feedback.enabled = false` (Codex). |
-| API token leakage to other host processes | The token lives inside the VM, not in the macOS Keychain. |
+| API token leakage via process environment | Tokens are passed through mounted credential files, not environment variables; host staging files are kept under a private `/tmp` directory. |
 
 The tool does **not** protect against:
 
@@ -156,7 +156,7 @@ The tool does **not** protect against:
 - **Build OOM.** The builder VM is separate from run VMs. Bump it: `container builder start --memory 8g --cpus 8`, then re-run with `--rebuild`.
 - **GitHub meta API timeout.** The firewall script falls back to an empty `{web,api,git,ipv6}` set and starts with a partial allowlist. Re-running the agent later (with the firewall flushed and rebuilt at container start) will retry.
 - **`ip6tables` unavailable.** The script attempts `sysctl net.ipv6.conf.all.disable_ipv6=1` first. If that also fails, the script aborts with an error.
-- **Credentials look stale.** Credential files are bind-mounted into the container; refreshing tokens inside a container writes them back to the host credential file automatically.
+- **Credentials look stale.** Re-run `project-sandbox` on the host to refresh the `/tmp` credential staging directory from the host agent config or macOS Keychain.
 - **Env vars in `vminitd.log`.** apple/container [logs the full process environment](https://github.com/apple/container/discussions/1153). Tokens are passed through mounted credential files only; identity env vars are low-sensitivity.
 
 ## Limitations

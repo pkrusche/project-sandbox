@@ -19,8 +19,8 @@ class ContainerCliTests(TestCase):
                 image="project-sandbox:test",
                 project_abs=root / "workspace",
                 claude_cfg=root / "claude/settings.json",
+                claude_credentials_dir=root / "claude-secrets",
                 codex_cfg=root / "codex/config.toml",
-                claude_home_host=root / "missing-claude",
                 codex_home_host=root / "missing-codex",
                 identity=GitIdentity("Ada Lovelace", "ada@example.com"),
                 memory="8g",
@@ -38,10 +38,14 @@ class ContainerCliTests(TestCase):
         self.assertIn("--cap-add", cmd)
         self.assertIn("NET_ADMIN", cmd)
         self.assertIn("PROJECT_SANDBOX_PROMPT=fix the tests", cmd)
-        self.assertIn("CLAUDE_CONFIG_DIR=/home/agent/.claude", cmd)
+        self.assertNotIn("CLAUDE_CONFIG_DIR=/home/agent/.claude", cmd)
         self.assertIn("CLAUDE_SECURESTORAGE_CONFIG_DIR=/home/agent/.claude", cmd)
         self.assertIn(
             f"type=bind,source={root / 'claude'},target=/project-sandbox-config/claude,readonly",
+            cmd,
+        )
+        self.assertIn(
+            f"type=bind,source={(root / 'claude-secrets').resolve(strict=False)},target=/project-sandbox-secrets/claude,readonly",
             cmd,
         )
         self.assertIn(
@@ -68,8 +72,8 @@ class ContainerCliTests(TestCase):
                 image="project-sandbox:test",
                 project_abs=root / "workspace",
                 claude_cfg=root / "claude/settings.json",
+                claude_credentials_dir=root / "claude-secrets",
                 codex_cfg=root / "codex/config.toml",
-                claude_home_host=None,
                 codex_home_host=None,
                 opencode_home_host=opencode_home,
                 copilot_home_host=copilot_home,

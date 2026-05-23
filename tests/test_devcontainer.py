@@ -42,7 +42,7 @@ class DevcontainerTests(TestCase):
             )
 
             self.assertEqual(spec["remoteUser"], "agent")
-            self.assertEqual(spec["containerEnv"]["CLAUDE_CONFIG_DIR"], "/home/agent/.claude")
+            self.assertNotIn("CLAUDE_CONFIG_DIR", spec["containerEnv"])
             self.assertEqual(
                 spec["containerEnv"]["CLAUDE_SECURESTORAGE_CONFIG_DIR"],
                 "/home/agent/.claude",
@@ -61,10 +61,15 @@ class DevcontainerTests(TestCase):
                 mounts,
             )
             self.assertIn(
+                "target=/project-sandbox-secrets/claude,type=bind,readonly",
+                mounts,
+            )
+            self.assertIn(
                 "source=${localWorkspaceFolder}/.project-sandbox/codex,target=/project-sandbox-config/codex,type=bind,readonly",
                 mounts,
             )
             self.assertNotIn("/home/agent/.claude/settings.json", mounts)
+            self.assertNotIn("/home/agent/.claude.host", mounts)
 
     def test_render_creates_relative_symlinks_into_project_sandbox(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -91,6 +96,61 @@ class DevcontainerTests(TestCase):
 
             _render(project)
             self.assertEqual(spec_path.stat().st_mtime_ns, mtime)
+
+    def test_render_refreshes_stale_claude_host_mount(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            dc_dir = project / ".devcontainer"
+            (project / ".project-sandbox").mkdir()
+            dc_dir.mkdir()
+            spec_path = dc_dir / "devcontainer.json"
+            spec_path.write_text(
+                '{"mounts":["source=${localEnv:HOME}/.claude,target=/home/agent/.claude.host,type=bind,readonly"]}\n',
+                encoding="utf-8",
+            )
+
+            _render(project)
+
+            self.assertNotIn(
+                "/home/agent/.claude.host",
+                spec_path.read_text(encoding="utf-8"),
+            )
+
+    def test_render_refreshes_missing_claude_secrets_mount(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            dc_dir = project / ".devcontainer"
+            (project / ".project-sandbox").mkdir()
+            dc_dir.mkdir()
+            spec_path = dc_dir / "devcontainer.json"
+            spec_path.write_text(
+                '{"mounts":["source=${localWorkspaceFolder}/.project-sandbox/claude,target=/project-sandbox-config/claude,type=bind,readonly"]}\n',
+                encoding="utf-8",
+            )
+
+            _render(project)
+
+            self.assertIn(
+                "/project-sandbox-secrets/claude",
+                spec_path.read_text(encoding="utf-8"),
+            )
+
+    def test_render_refreshes_stale_claude_config_dir_env(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            dc_dir = project / ".devcontainer"
+            (project / ".project-sandbox").mkdir()
+            dc_dir.mkdir()
+            spec_path = dc_dir / "devcontainer.json"
+            spec_path.write_text(
+                '{"containerEnv":{"CLAUDE_CONFIG_DIR":"/home/agent/.claude"}}\n',
+                encoding="utf-8",
+            )
+
+            _render(project)
+
+            spec = json.loads(spec_path.read_text(encoding="utf-8"))
+            self.assertNotIn("CLAUDE_CONFIG_DIR", spec["containerEnv"])
 
     def test_render_omits_capabilities_when_firewall_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

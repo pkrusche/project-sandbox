@@ -134,6 +134,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     claude_cfg = config_claude.render(context_dir, refresh=args.refresh_config)
+    claude_credentials_dir = config_claude.credentials_dir(context_dir)
     config_claude.sync_credentials(context_dir)
     codex_cfg = config_codex.render(context_dir, refresh=args.refresh_config)
 
@@ -147,6 +148,7 @@ def main(argv: list[str] | None = None) -> int:
         memory=args.memory,
         cpus=args.cpus,
         extra_mounts=args.extra_mounts,
+        claude_credentials_dir=claude_credentials_dir,
         build_context=build_context,
         refresh=args.refresh_config or args.rebuild,
     )
@@ -186,6 +188,7 @@ def main(argv: list[str] | None = None) -> int:
         available_agents=available_agents,
         host_paths=host_paths,
         claude_cfg=claude_cfg,
+        claude_credentials_dir=claude_credentials_dir,
         codex_cfg=codex_cfg,
         create_prompt_files=True,
     )
@@ -233,6 +236,7 @@ def _dry_run(
 ) -> int:
     context_dir = project / ".project-sandbox"
     claude_cfg = context_dir / "claude" / "settings.json"
+    claude_credentials_dir = config_claude.credentials_dir(context_dir)
     codex_cfg = context_dir / "codex" / "config.toml"
     run_agent = _requested_agent(args)
 
@@ -277,6 +281,7 @@ def _dry_run(
         available_agents=available_agents,
         host_paths=_agent_host_paths(),
         claude_cfg=claude_cfg,
+        claude_credentials_dir=claude_credentials_dir,
         codex_cfg=codex_cfg,
         create_prompt_files=False,
     )
@@ -364,6 +369,7 @@ def _build_session_command(
     available_agents: tuple[str, ...],
     host_paths: dict[str, Path],
     claude_cfg: Path,
+    claude_credentials_dir: Path,
     codex_cfg: Path,
     create_prompt_files: bool,
 ) -> tuple[list[str], Path | None, bool]:
@@ -431,8 +437,8 @@ def _build_session_command(
             image=args.image_tag,
             project_abs=workspace,
             claude_cfg=claude_cfg,
+            claude_credentials_dir=claude_credentials_dir,
             codex_cfg=codex_cfg,
-            claude_home_host=host_paths["claude"] if "claude" in available_agents else None,
             codex_home_host=host_paths["codex"] if "codex" in available_agents else None,
             opencode_home_host=host_paths["opencode"] if "opencode" in available_agents else None,
             copilot_home_host=host_paths["copilot"] if "copilot" in available_agents else None,

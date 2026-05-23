@@ -10,8 +10,8 @@ def build_run_argv(
     image: str,
     project_abs: Path,
     claude_cfg: Path,
+    claude_credentials_dir: Path,
     codex_cfg: Path,
-    claude_home_host: Path | None,
     codex_home_host: Path | None,
     identity: GitIdentity,
     memory: str,
@@ -45,13 +45,10 @@ def build_run_argv(
         "--mount",
         f"type=bind,source={claude_cfg.parent},target=/project-sandbox-config/claude,readonly",
         "--mount",
+        f"type=bind,source={claude_credentials_dir.resolve(strict=False)},target=/project-sandbox-secrets/claude,readonly",
+        "--mount",
         f"type=bind,source={codex_cfg.parent},target=/project-sandbox-config/codex,readonly",
     ]
-    if claude_home_host and claude_home_host.exists():
-        argv += [
-            "--mount",
-            f"type=bind,source={claude_home_host},target=/home/agent/.claude.host,readonly",
-        ]
     if codex_home_host and codex_home_host.exists():
         argv += [
             "--mount",
@@ -86,8 +83,6 @@ def build_run_argv(
             f"GIT_COMMITTER_EMAIL={identity.email}",
         ]
     argv += [
-        "--env",
-        "CLAUDE_CONFIG_DIR=/home/agent/.claude",
         "--env",
         "CLAUDE_SECURESTORAGE_CONFIG_DIR=/home/agent/.claude",
         "--env",

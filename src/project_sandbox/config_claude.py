@@ -13,8 +13,8 @@ CONTAINER_CONFIG_STATE = {
     "autoUpdaterStatus": "disabled",
     "autoUpdates": False,
     "bypassPermissionsModeAccepted": True,
+    "hasCompletedOnboarding": True,
     "installMethod": "npm",
-    "theme": "auto",
     "projects": {"/workspace": {"hasTrustDialogAccepted": True}},
     "permissions": {
         "defaultMode": "bypassPermissions",
@@ -22,30 +22,52 @@ CONTAINER_CONFIG_STATE = {
     },
 }
 
+CLAUDE_CREDENTIAL_STATE_KEYS = frozenset(
+    (
+        "claudeAiOauth",
+        "lastOnboardingVersion",
+        "oauthAccount",
+        "token",
+        "userID",
+    )
+)
 
-def render(project_sandbox_dir: Path, *, refresh: bool = False) -> Path:
+CREDENTIALS_ROOT = Path("/tmp")
+
+
+def render(
+    project_sandbox_dir: Path,
+    *,
+    refresh: bool = False,
+) -> Path:
     out_dir = project_sandbox_dir / "claude"
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / "settings.json"
-    if out.exists() and not refresh:
+    if out.exists() and not refresh and not _stale_settings(out):
         return out
     env = Environment(loader=PackageLoader("project_sandbox", "templates"))
     tmpl = env.get_template("claude-settings.json.j2")
-    out.write_text(tmpl.render() + "\n", encoding="utf-8")
+    out.write_text(
+        tmpl.render() + "\n",
+        encoding="utf-8",
+    )
     return out
 
 
-def sync_credentials(project_sandbox_dir: Path, *, home: Path | None = None) -> None:
-    """Stage Claude auth files for directory-only container mounts."""
+def sync_credentials(project_sandbox_dir: Path, *, home: Path | None = None) -> Path:
+    """Stage Claude auth files outside the generated project directory."""
     use_host_keychain = home is None
     home = home or Path.home()
-    out_dir = project_sandbox_dir / "claude"
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = credentials_dir(project_sandbox_dir)
+    _ensure_private_dir(out_dir)
+    _remove_stale_project_credentials(project_sandbox_dir)
     if not (use_host_keychain and _stage_macos_keychain_credentials(out_dir)):
-        _copy_if_file(
+        copied = _copy_if_file(
             home / ".claude" / ".credentials.json",
             out_dir / ".credentials.json",
         )
+        if not copied:
+            _remove_if_exists(out_dir / ".credentials.json")
     _stage_config_state(
         (
             home / ".claude.json",
@@ -53,10 +75,41 @@ def sync_credentials(project_sandbox_dir: Path, *, home: Path | None = None) -> 
         ),
         out_dir / ".claude.json",
     )
+    return out_dir
+
+
+def credentials_dir(project_sandbox_dir: Path) -> Path:
+    key = str(project_sandbox_dir.resolve(strict=False))
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+    uid = os.getuid() if hasattr(os, "getuid") else "user"
+    return CREDENTIALS_ROOT / f"project-sandbox-{uid}" / digest / "claude"
+
+
+def _ensure_private_dir(path: Path) -> None:
+    for directory in (path.parent.parent, path.parent, path):
+        if directory.is_symlink():
+            raise RuntimeError(
+                f"Refusing to use symlinked credential directory: {directory}"
+            )
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        directory.chmod(0o700)
+
+
+def _remove_stale_project_credentials(project_sandbox_dir: Path) -> None:
+    project_claude_dir = project_sandbox_dir / "claude"
+    for name in (".credentials.json", ".claude.json"):
+        _remove_if_exists(project_claude_dir / name)
+
+
+def _remove_if_exists(path: Path) -> None:
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
 
 
 def _copy_if_file(source: Path, target: Path) -> bool:
-    if not source.is_file():
+    if not source.is_file() or source.stat().st_size == 0:
         return False
     shutil.copyfile(source, target)
     target.chmod(0o600)
@@ -73,10 +126,26 @@ def _stage_config_state(sources: tuple[Path, ...], target: Path) -> None:
         except json.JSONDecodeError:
             existing = None
         if isinstance(existing, dict):
-            state.update(existing)
+            state.update(_credential_state(existing))
         break
     state.update(CONTAINER_CONFIG_STATE)
     _write_secure_text(target, json.dumps(state, indent=2, sort_keys=True))
+
+
+def _credential_state(existing: dict[str, object]) -> dict[str, object]:
+    return {
+        key: value
+        for key, value in existing.items()
+        if key in CLAUDE_CREDENTIAL_STATE_KEYS
+    }
+
+
+def _stale_settings(path: Path) -> bool:
+    try:
+        existing = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return True
+    return not isinstance(existing, dict) or existing.get("theme") != "auto"
 
 
 def _stage_macos_keychain_credentials(out_dir: Path) -> bool:
