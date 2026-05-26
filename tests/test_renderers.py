@@ -64,6 +64,8 @@ class RendererTests(TestCase):
             self.assertIn('"chatgpt.com"', firewall_text)
             self.assertNotIn("statsig", firewall_text)
             self.assertIn('"internal.example.com"', firewall_text)
+            self.assertNotIn("--dport 22", firewall_text)
+            self.assertNotIn("--sport 22", firewall_text)
 
     def test_claude_credentials_are_staged_for_directory_mounts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

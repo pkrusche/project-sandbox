@@ -43,8 +43,6 @@ iptables -A OUTPUT -p udp --dport 53 -d "$DNS4" -j ACCEPT
 iptables -A OUTPUT -p tcp --dport 53 -d "$DNS4" -j ACCEPT
 iptables -A INPUT -p udp --sport 53 -s "$DNS4" -j ACCEPT
 iptables -A INPUT -p tcp --sport 53 -s "$DNS4" -j ACCEPT
-iptables -A OUTPUT -p tcp --dport 22 -j ACCEPT
-iptables -A INPUT -p tcp --sport 22 -j ACCEPT
 
 if [ "$IPV6_FW" = "1" ]; then
   ip6tables -A INPUT -i lo -j ACCEPT
@@ -57,8 +55,6 @@ if [ "$IPV6_FW" = "1" ]; then
     ip6tables -A INPUT -p udp --sport 53 -s "$DNS6" -j ACCEPT
     ip6tables -A INPUT -p tcp --sport 53 -s "$DNS6" -j ACCEPT
   fi
-  ip6tables -A OUTPUT -p tcp --dport 22 -j ACCEPT
-  ip6tables -A INPUT -p tcp --sport 22 -j ACCEPT
 fi
 
 ipset create allowed-ipv4 hash:net family inet
