@@ -45,6 +45,7 @@ class DevcontainerTests(TestCase):
                 spec["containerEnv"]["CLAUDE_SECURESTORAGE_CONFIG_DIR"],
                 "/home/agent/.claude",
             )
+            self.assertEqual(spec["containerEnv"]["COPILOT_HOME"], "/home/agent/.copilot")
             self.assertEqual(spec["build"]["dockerfile"], "../.project-sandbox/Dockerfile")
             self.assertEqual(spec["build"]["context"], "../.project-sandbox")
             self.assertIn("--cap-add=NET_ADMIN", spec["runArgs"])
@@ -165,29 +166,51 @@ class DevcontainerTests(TestCase):
             self.assertNotIn("--cap-add=NET_ADMIN", spec["runArgs"])
             self.assertNotIn("project-sandbox-init-firewall", spec["postStartCommand"])
 
-    def test_render_mounts_opencode_and_copilot_hosts_when_present(self) -> None:
+    def test_render_mounts_staged_agent_credentials_when_hosts_present(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             fake_home = Path(tmp) / "home"
             project = Path(tmp) / "project"
             (project / ".project-sandbox").mkdir(parents=True)
+            (fake_home / ".codex").mkdir(parents=True)
             (fake_home / ".config" / "opencode").mkdir(parents=True)
             (fake_home / ".copilot").mkdir(parents=True)
+            credentials = {
+                "claude": Path(tmp) / "secrets" / "claude",
+                "codex": Path(tmp) / "secrets" / "codex",
+                "opencode": Path(tmp) / "secrets" / "opencode",
+                "copilot": Path(tmp) / "secrets" / "copilot",
+            }
 
             with patch.object(devcontainer.Path, "home", return_value=fake_home):
-                _render(project)
+                devcontainer.render(
+                    project,
+                    identity=GitIdentity("Ada", "ada@example.com"),
+                    firewall_enabled=True,
+                    memory="8g",
+                    cpus=4,
+                    extra_mounts=[],
+                    credential_dirs=credentials,
+                )
 
             spec = json.loads(
                 (project / ".devcontainer" / "devcontainer.json").read_text()
             )
             mounts = "\n".join(spec["mounts"])
             self.assertIn(
-                "source=${localEnv:HOME}/.config/opencode,target=/home/agent/.config/opencode.host,type=bind,readonly",
+                f"source={credentials['codex'].resolve(strict=False)},target=/project-sandbox-secrets/codex,type=bind,readonly",
                 mounts,
             )
             self.assertIn(
-                "source=${localEnv:HOME}/.copilot,target=/home/agent/.copilot.host,type=bind,readonly",
+                f"source={credentials['opencode'].resolve(strict=False)},target=/project-sandbox-secrets/opencode,type=bind,readonly",
                 mounts,
             )
+            self.assertIn(
+                f"source={credentials['copilot'].resolve(strict=False)},target=/project-sandbox-secrets/copilot,type=bind,readonly",
+                mounts,
+            )
+            self.assertNotIn("${localEnv:HOME}/.codex", mounts)
+            self.assertNotIn("${localEnv:HOME}/.config/opencode", mounts)
+            self.assertNotIn("${localEnv:HOME}/.copilot", mounts)
 
     def test_render_can_use_project_root_build_context(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

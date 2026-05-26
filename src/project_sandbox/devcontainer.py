@@ -15,7 +15,7 @@ def render(
     memory: str | None,
     cpus: int | None,
     extra_mounts: list[str],
-    claude_credentials_dir: Path | None = None,
+    credential_dirs: dict[str, Path] | None = None,
     build_context: Path | None = None,
 ) -> Path:
     dc_dir = project / ".devcontainer"
@@ -31,8 +31,19 @@ def render(
     tmpl = env.get_template("devcontainer.json.j2")
     generated_dockerfile = project / ".project-sandbox" / "Dockerfile"
     build_context = build_context or project / ".project-sandbox"
-    claude_credentials_dir = claude_credentials_dir or config_claude.credentials_dir(
-        project / ".project-sandbox"
+    use_provided_credential_dirs = credential_dirs is not None
+    credential_dirs = credential_dirs or _credential_dirs(project / ".project-sandbox")
+    host_home = Path.home()
+    if use_provided_credential_dirs:
+        mount_codex_secrets = "codex" in credential_dirs
+        mount_opencode_secrets = "opencode" in credential_dirs
+        mount_copilot_secrets = "copilot" in credential_dirs
+    else:
+        mount_codex_secrets = host_home.joinpath(".codex").exists()
+        mount_opencode_secrets = host_home.joinpath(".config/opencode").exists()
+        mount_copilot_secrets = host_home.joinpath(".copilot").exists()
+    claude_credentials_dir = credential_dirs.get(
+        "claude", config_claude.credentials_dir(project / ".project-sandbox")
     )
     out.write_text(
         tmpl.render(
@@ -42,12 +53,30 @@ def render(
             firewall_enabled=firewall_enabled,
             memory=memory,
             cpus=cpus,
-            mount_codex_host=Path.home().joinpath(".codex").exists(),
-            mount_opencode_host=Path.home().joinpath(".config/opencode").exists(),
-            mount_copilot_host=Path.home().joinpath(".copilot").exists(),
+            mount_codex_secrets=mount_codex_secrets,
+            mount_opencode_secrets=mount_opencode_secrets,
+            mount_copilot_secrets=mount_copilot_secrets,
             claude_config_mount="${localWorkspaceFolder}/.project-sandbox/claude",
             claude_credentials_mount=claude_credentials_dir.resolve(strict=False).as_posix(),
             codex_config_mount="${localWorkspaceFolder}/.project-sandbox/codex",
+            codex_credentials_mount=credential_dirs.get(
+                "codex",
+                config_claude.credentials_dir(project / ".project-sandbox", "codex"),
+            )
+            .resolve(strict=False)
+            .as_posix(),
+            opencode_credentials_mount=credential_dirs.get(
+                "opencode",
+                config_claude.credentials_dir(project / ".project-sandbox", "opencode"),
+            )
+            .resolve(strict=False)
+            .as_posix(),
+            copilot_credentials_mount=credential_dirs.get(
+                "copilot",
+                config_claude.credentials_dir(project / ".project-sandbox", "copilot"),
+            )
+            .resolve(strict=False)
+            .as_posix(),
             extra_mounts=extra_mounts,
             user_name=identity.name or "",
             user_email=identity.email or "",
@@ -56,6 +85,13 @@ def render(
         encoding="utf-8",
     )
     return dc_dir
+
+
+def _credential_dirs(context_dir: Path) -> dict[str, Path]:
+    return {
+        agent: config_claude.credentials_dir(context_dir, agent)
+        for agent in ("claude", "codex", "opencode", "copilot")
+    }
 
 
 def _symlink(link: Path, target: Path) -> None:

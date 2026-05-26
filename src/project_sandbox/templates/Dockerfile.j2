@@ -36,7 +36,9 @@ RUN set -eux; \
     groupadd -g 1000 agent; \
     useradd -m -u 1000 -g agent -s /bin/bash agent
 
-RUN install -d /project-sandbox-config/claude /project-sandbox-config/codex && \
+RUN install -d /project-sandbox-config/claude /project-sandbox-config/codex \
+        /project-sandbox-secrets/claude /project-sandbox-secrets/codex \
+        /project-sandbox-secrets/opencode /project-sandbox-secrets/copilot && \
     install -d -o agent -g agent /home/agent/.claude /home/agent/.codex /home/agent/.copilot /home/agent/.config && \
     install -m 0644 -o agent -g agent /dev/null /home/agent/.claude/settings.json && \
     install -m 0644 -o agent -g agent /dev/null /home/agent/.codex/config.toml

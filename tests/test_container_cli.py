@@ -21,7 +21,7 @@ class ContainerCliTests(TestCase):
                 claude_cfg=root / "claude/settings.json",
                 claude_credentials_dir=root / "claude-secrets",
                 codex_cfg=root / "codex/config.toml",
-                codex_home_host=root / "missing-codex",
+                codex_credentials_dir=None,
                 identity=GitIdentity("Ada Lovelace", "ada@example.com"),
                 memory="8g",
                 cpus=4,
@@ -40,6 +40,7 @@ class ContainerCliTests(TestCase):
         self.assertIn("PROJECT_SANDBOX_PROMPT=fix the tests", cmd)
         self.assertNotIn("CLAUDE_CONFIG_DIR=/home/agent/.claude", cmd)
         self.assertIn("CLAUDE_SECURESTORAGE_CONFIG_DIR=/home/agent/.claude", cmd)
+        self.assertIn("COPILOT_HOME=/home/agent/.copilot", cmd)
         self.assertIn(
             f"type=bind,source={root / 'claude'},target=/project-sandbox-config/claude,readonly",
             cmd,
@@ -60,13 +61,12 @@ class ContainerCliTests(TestCase):
             cmd[-3:], ["project-sandbox:test", "project-sandbox-run", "claude-headless"]
         )
 
-    def test_build_run_argv_mounts_opencode_and_copilot_homes_when_present(self) -> None:
+    def test_build_run_argv_mounts_staged_agent_credentials_when_present(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            opencode_home = root / ".config" / "opencode"
-            copilot_home = root / ".copilot"
-            opencode_home.mkdir(parents=True)
-            copilot_home.mkdir(parents=True)
+            codex_secrets = root / "secrets" / "codex"
+            opencode_secrets = root / "secrets" / "opencode"
+            copilot_secrets = root / "secrets" / "copilot"
 
             cmd = build_run_argv(
                 image="project-sandbox:test",
@@ -74,9 +74,9 @@ class ContainerCliTests(TestCase):
                 claude_cfg=root / "claude/settings.json",
                 claude_credentials_dir=root / "claude-secrets",
                 codex_cfg=root / "codex/config.toml",
-                codex_home_host=None,
-                opencode_home_host=opencode_home,
-                copilot_home_host=copilot_home,
+                codex_credentials_dir=codex_secrets,
+                opencode_credentials_dir=opencode_secrets,
+                copilot_credentials_dir=copilot_secrets,
                 identity=GitIdentity("Ada Lovelace", "ada@example.com"),
                 memory="8g",
                 cpus=4,
@@ -87,11 +87,15 @@ class ContainerCliTests(TestCase):
             )
 
         self.assertIn(
-            f"type=bind,source={opencode_home},target=/home/agent/.config/opencode.host,readonly",
+            f"type=bind,source={codex_secrets.resolve(strict=False)},target=/project-sandbox-secrets/codex,readonly",
             cmd,
         )
         self.assertIn(
-            f"type=bind,source={copilot_home},target=/home/agent/.copilot.host,readonly",
+            f"type=bind,source={opencode_secrets.resolve(strict=False)},target=/project-sandbox-secrets/opencode,readonly",
+            cmd,
+        )
+        self.assertIn(
+            f"type=bind,source={copilot_secrets.resolve(strict=False)},target=/project-sandbox-secrets/copilot,readonly",
             cmd,
         )
 

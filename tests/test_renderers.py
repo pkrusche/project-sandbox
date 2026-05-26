@@ -53,6 +53,7 @@ class RendererTests(TestCase):
             self.assertIn(
                 'approval_policy = "never"', codex_text
             )
+            self.assertIn('[projects."/workspace"]\ntrust_level = "trusted"', codex_text)
             self.assertIn("[analytics]\nenabled = false", codex_text)
             self.assertIn("[feedback]\nenabled = false", codex_text)
             firewall_text = fw.read_text(encoding="utf-8")
@@ -158,6 +159,146 @@ class RendererTests(TestCase):
                 },
             )
             self.assertEqual(staged_home_credentials.stat().st_mode & 0o777, 0o600)
+
+    def test_non_claude_credentials_are_staged_outside_project_sandbox(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            context = root / ".project-sandbox"
+            home = root / "home"
+            codex_home = root / "home" / ".codex"
+            opencode_home = root / "home" / ".config" / "opencode"
+            codex_home.mkdir(parents=True)
+            opencode_home.mkdir(parents=True)
+            (opencode_home / "node_modules" / ".bin").mkdir(parents=True)
+            (opencode_home / "node_modules" / "tool.js").write_text(
+                "tool\n",
+                encoding="utf-8",
+            )
+            (opencode_home / "node_modules" / ".bin" / "tool").symlink_to(
+                opencode_home / "node_modules" / "tool.js"
+            )
+            (opencode_home / "opencode.jsonc").write_text(
+                '{"model":"test"}\n',
+                encoding="utf-8",
+            )
+            (home / ".local" / "share" / "opencode").mkdir(parents=True)
+            (home / ".local" / "state" / "opencode").mkdir(parents=True)
+            (home / ".local" / "share" / "opencode" / "opencode.db").write_text(
+                "db\n",
+                encoding="utf-8",
+            )
+            (home / ".local" / "state" / "opencode" / "model.json").write_text(
+                '{"model":"test"}\n',
+                encoding="utf-8",
+            )
+            (context / "codex").mkdir(parents=True)
+            (context / "opencode").mkdir(parents=True)
+            (context / "codex" / "auth.json").write_text("stale\n", encoding="utf-8")
+            (context / "codex" / "config.toml").write_text(
+                "sandbox = true\n",
+                encoding="utf-8",
+            )
+            (context / "opencode" / "auth.json").write_text("stale\n", encoding="utf-8")
+            (codex_home / "auth.json").write_text('{"token":"codex"}\n', encoding="utf-8")
+            (codex_home / "config.toml").write_text("secret = true\n", encoding="utf-8")
+
+            with _credentials_root(root):
+                codex_staged = config_claude.sync_agent_credentials(
+                    context,
+                    "codex",
+                    codex_home,
+                    include_files=("auth.json",),
+                )
+                opencode_staged = config_claude.sync_opencode_credentials(
+                    context,
+                    home=home,
+                )
+
+            self.assertFalse((context / "codex" / "auth.json").exists())
+            self.assertTrue((context / "codex" / "config.toml").exists())
+            self.assertFalse((context / "opencode").exists())
+            self.assertEqual(
+                (codex_staged / "auth.json").read_text(encoding="utf-8"),
+                '{"token":"codex"}\n',
+            )
+            self.assertFalse((codex_staged / "config.toml").exists())
+            self.assertEqual(
+                (
+                    opencode_staged / ".config" / "opencode" / "opencode.jsonc"
+                ).read_text(encoding="utf-8"),
+                '{"model":"test"}\n',
+            )
+            self.assertFalse(
+                (opencode_staged / ".config" / "opencode" / "node_modules").exists()
+            )
+            self.assertEqual(
+                (
+                    opencode_staged / ".local" / "share" / "opencode" / "opencode.db"
+                ).read_text(encoding="utf-8"),
+                "db\n",
+            )
+            self.assertEqual(
+                (
+                    opencode_staged / ".local" / "state" / "opencode" / "model.json"
+                ).read_text(encoding="utf-8"),
+                '{"model":"test"}\n',
+            )
+            for staged in (codex_staged, opencode_staged):
+                self.assertEqual(staged.stat().st_mode & 0o777, 0o700)
+
+    def test_copilot_credentials_include_auth_db_and_workspace_trust(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            context = root / ".project-sandbox"
+            copilot_home = home / ".copilot"
+            copilot_auth = home / ".config" / "github-copilot"
+            copilot_home.mkdir(parents=True)
+            copilot_auth.mkdir(parents=True)
+            (context / "copilot").mkdir(parents=True)
+            (context / "copilot" / "config.json").write_text(
+                "stale\n",
+                encoding="utf-8",
+            )
+            (copilot_home / "config.json").write_text(
+                '{"trustedFolders":["/existing"],"theme":"dark"}\n',
+                encoding="utf-8",
+            )
+            (copilot_auth / "auth.db").write_text("db\n", encoding="utf-8")
+            (copilot_auth / "auth.db-wal").write_text("wal\n", encoding="utf-8")
+            (copilot_auth / "apps.json").write_text('{"app":"copilot"}\n', encoding="utf-8")
+
+            with _credentials_root(root):
+                copilot_staged = config_claude.sync_copilot_credentials(
+                    context,
+                    home=home,
+                )
+
+            self.assertFalse((context / "copilot").exists())
+            config = json.loads(
+                (copilot_staged / ".copilot" / "config.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(config["theme"], "dark")
+            self.assertIn("/existing", config["trustedFolders"])
+            self.assertIn("/workspace", config["trustedFolders"])
+            self.assertEqual(
+                (copilot_staged / ".config" / "github-copilot" / "auth.db").read_text(
+                    encoding="utf-8"
+                ),
+                "db\n",
+            )
+            self.assertEqual(
+                (
+                    copilot_staged
+                    / ".config"
+                    / "github-copilot"
+                    / "auth.db-wal"
+                ).read_text(encoding="utf-8"),
+                "wal\n",
+            )
+            self.assertEqual(copilot_staged.stat().st_mode & 0o777, 0o700)
 
     def test_claude_config_state_is_created_to_accept_bypass_warning(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -455,6 +596,15 @@ class RendererTests(TestCase):
             self.assertNotIn("CLAUDE_CONFIG_DIR", text)
             self.assertNotIn(".claude.host", text)
             self.assertIn("/project-sandbox-config/codex/config.toml", text)
+            self.assertIn("/project-sandbox-secrets/codex/auth.json", text)
+            self.assertIn("/project-sandbox-secrets/opencode/.config/opencode", text)
+            self.assertIn("/project-sandbox-secrets/opencode/.local/share/opencode", text)
+            self.assertIn("/project-sandbox-secrets/opencode/.local/state/opencode", text)
+            self.assertIn("/project-sandbox-secrets/copilot/.copilot", text)
+            self.assertIn("/project-sandbox-secrets/copilot/.config/github-copilot", text)
+            self.assertNotIn(".codex.host", text)
+            self.assertNotIn("opencode.host", text)
+            self.assertNotIn(".copilot.host", text)
             self.assertIn("sudo -n /usr/local/bin/project-sandbox-init-firewall", text)
             self.assertNotIn("sudo chown", text)
             self.assertIn('jj config set --user user.name "$NAME"', text)
@@ -518,6 +668,15 @@ class RendererTests(TestCase):
             self.assertIn("re-run 'project-sandbox <project> <base_image>'", text)
             self.assertNotIn(".claude.host", text)
             self.assertIn("/project-sandbox-config/codex/config.toml", text)
+            self.assertIn("/project-sandbox-secrets/codex/auth.json", text)
+            self.assertIn("/project-sandbox-secrets/opencode/.config/opencode", text)
+            self.assertIn("/project-sandbox-secrets/opencode/.local/share/opencode", text)
+            self.assertIn("/project-sandbox-secrets/opencode/.local/state/opencode", text)
+            self.assertIn("/project-sandbox-secrets/copilot/.copilot", text)
+            self.assertIn("/project-sandbox-secrets/copilot/.config/github-copilot", text)
+            self.assertNotIn(".codex.host", text)
+            self.assertNotIn("opencode.host", text)
+            self.assertNotIn(".copilot.host", text)
             self.assertIn('jj config set --user user.name "$NAME"', text)
             self.assertIn('jj config set --user user.email "$EMAIL"', text)
 

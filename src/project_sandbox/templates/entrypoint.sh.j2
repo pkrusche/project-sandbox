@@ -33,15 +33,27 @@ fi
 if [ -f "/project-sandbox-config/codex/config.toml" ]; then
   cp "/project-sandbox-config/codex/config.toml" "$HOME/.codex/config.toml"
 fi
-if [ -f "$HOME/.codex.host/auth.json" ]; then
-  cp "$HOME/.codex.host/auth.json" "$HOME/.codex/auth.json"
+if [ -f "/project-sandbox-secrets/codex/auth.json" ]; then
+  cp "/project-sandbox-secrets/codex/auth.json" "$HOME/.codex/auth.json"
   chmod 600 "$HOME/.codex/auth.json"
 fi
-if [ -d "$HOME/.copilot.host" ]; then
-  cp -R "$HOME/.copilot.host/." "$HOME/.copilot/"
+if [ -d "/project-sandbox-secrets/copilot/.copilot" ]; then
+  cp -R "/project-sandbox-secrets/copilot/.copilot/." "$HOME/.copilot/"
 fi
-if [ -d "$HOME/.config/opencode.host" ]; then
-  cp -R "$HOME/.config/opencode.host/." "$HOME/.config/opencode/"
+if [ -d "/project-sandbox-secrets/copilot/.config/github-copilot" ]; then
+  mkdir -p "$HOME/.config/github-copilot"
+  cp -R "/project-sandbox-secrets/copilot/.config/github-copilot/." "$HOME/.config/github-copilot/"
+fi
+if [ -d "/project-sandbox-secrets/opencode/.config/opencode" ]; then
+  cp -R "/project-sandbox-secrets/opencode/.config/opencode/." "$HOME/.config/opencode/"
+fi
+if [ -d "/project-sandbox-secrets/opencode/.local/share/opencode" ]; then
+  mkdir -p "$HOME/.local/share/opencode"
+  cp -R "/project-sandbox-secrets/opencode/.local/share/opencode/." "$HOME/.local/share/opencode/"
+fi
+if [ -d "/project-sandbox-secrets/opencode/.local/state/opencode" ]; then
+  mkdir -p "$HOME/.local/state/opencode"
+  cp -R "/project-sandbox-secrets/opencode/.local/state/opencode/." "$HOME/.local/state/opencode/"
 fi
 
 if [ "${PROJECT_SANDBOX_NO_FIREWALL:-0}" != "1" ]; then

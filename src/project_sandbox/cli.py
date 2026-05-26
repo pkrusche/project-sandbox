@@ -138,8 +138,11 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     claude_cfg = config_claude.render(context_dir)
-    claude_credentials_dir = config_claude.credentials_dir(context_dir)
-    config_claude.sync_credentials(context_dir)
+    credential_dirs = _sync_agent_credentials(
+        context_dir,
+        available_agents=available_agents,
+        host_paths=host_paths,
+    )
     codex_cfg = config_codex.render(context_dir)
 
     _write_project_sandbox_gitignore(context_dir)
@@ -152,7 +155,7 @@ def main(argv: list[str] | None = None) -> int:
         memory=args.memory,
         cpus=args.cpus,
         extra_mounts=args.extra_mounts,
-        claude_credentials_dir=claude_credentials_dir,
+        credential_dirs=credential_dirs,
         build_context=build_context,
     )
 
@@ -191,7 +194,7 @@ def main(argv: list[str] | None = None) -> int:
         available_agents=available_agents,
         host_paths=host_paths,
         claude_cfg=claude_cfg,
-        claude_credentials_dir=claude_credentials_dir,
+        credential_dirs=credential_dirs,
         codex_cfg=codex_cfg,
         create_prompt_files=True,
     )
@@ -249,7 +252,7 @@ def _dry_run(
 ) -> int:
     context_dir = project / ".project-sandbox"
     claude_cfg = context_dir / "claude" / "settings.json"
-    claude_credentials_dir = config_claude.credentials_dir(context_dir)
+    credential_dirs = _agent_credential_dirs(context_dir, available_agents)
     codex_cfg = context_dir / "codex" / "config.toml"
     run_agent = _requested_agent(args)
 
@@ -294,7 +297,7 @@ def _dry_run(
         available_agents=available_agents,
         host_paths=host_paths,
         claude_cfg=claude_cfg,
-        claude_credentials_dir=claude_credentials_dir,
+        credential_dirs=credential_dirs,
         codex_cfg=codex_cfg,
         create_prompt_files=False,
     )
@@ -404,7 +407,7 @@ def _build_session_command(
     available_agents: tuple[str, ...],
     host_paths: dict[str, Path],
     claude_cfg: Path,
-    claude_credentials_dir: Path,
+    credential_dirs: dict[str, Path],
     codex_cfg: Path,
     create_prompt_files: bool,
 ) -> tuple[list[str], Path | None, bool]:
@@ -468,11 +471,11 @@ def _build_session_command(
             image=args.image_tag,
             project_abs=workspace,
             claude_cfg=claude_cfg,
-            claude_credentials_dir=claude_credentials_dir,
+            claude_credentials_dir=credential_dirs["claude"],
             codex_cfg=codex_cfg,
-            codex_home_host=host_paths["codex"] if "codex" in available_agents else None,
-            opencode_home_host=host_paths["opencode"] if "opencode" in available_agents else None,
-            copilot_home_host=host_paths["copilot"] if "copilot" in available_agents else None,
+            codex_credentials_dir=credential_dirs.get("codex"),
+            opencode_credentials_dir=credential_dirs.get("opencode"),
+            copilot_credentials_dir=credential_dirs.get("copilot"),
             identity=identity,
             memory=args.memory,
             cpus=args.cpus,
@@ -485,6 +488,45 @@ def _build_session_command(
         log_path,
         unsupervised,
     )
+
+
+def _agent_credential_dirs(
+    context_dir: Path, available_agents: tuple[str, ...]
+) -> dict[str, Path]:
+    return {
+        agent: config_claude.credentials_dir(context_dir, agent)
+        for agent in CONFIGURED_AGENTS
+        if agent == "claude" or agent in available_agents
+    }
+
+
+def _sync_agent_credentials(
+    context_dir: Path,
+    *,
+    available_agents: tuple[str, ...],
+    host_paths: dict[str, Path],
+) -> dict[str, Path]:
+    credential_dirs = _agent_credential_dirs(context_dir, available_agents)
+    config_claude.sync_credentials(context_dir)
+    credential_dirs["claude"] = config_claude.credentials_dir(context_dir)
+    if "codex" in available_agents:
+        credential_dirs["codex"] = config_claude.sync_agent_credentials(
+            context_dir,
+            "codex",
+            host_paths["codex"],
+            include_files=("auth.json",),
+        )
+    if "opencode" in available_agents:
+        credential_dirs["opencode"] = config_claude.sync_opencode_credentials(
+            context_dir,
+            home=host_paths["opencode"].parents[1],
+        )
+    if "copilot" in available_agents:
+        credential_dirs["copilot"] = config_claude.sync_copilot_credentials(
+            context_dir,
+            home=host_paths["copilot"].parent,
+        )
+    return credential_dirs
 
 
 def _print_next_steps(

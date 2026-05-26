@@ -74,11 +74,82 @@ def sync_credentials(project_sandbox_dir: Path, *, home: Path | None = None) -> 
     return out_dir
 
 
-def credentials_dir(project_sandbox_dir: Path) -> Path:
+def sync_agent_credentials(
+    project_sandbox_dir: Path,
+    agent: str,
+    source_dir: Path,
+    *,
+    include_files: tuple[str, ...] | None = None,
+) -> Path:
+    """Stage non-Claude agent credentials outside the generated project directory."""
+    out_dir = credentials_dir(project_sandbox_dir, agent)
+    _ensure_private_dir(out_dir)
+    _remove_stale_project_agent_credentials(project_sandbox_dir, agent, include_files)
+    _clear_dir(out_dir)
+    if not source_dir.is_dir():
+        return out_dir
+    if include_files is None:
+        for child in source_dir.iterdir():
+            _copy_path(child, out_dir / child.name)
+        return out_dir
+    for name in include_files:
+        _copy_path(source_dir / name, out_dir / name)
+    return out_dir
+
+
+def sync_copilot_credentials(
+    project_sandbox_dir: Path,
+    *,
+    home: Path | None = None,
+) -> Path:
+    """Stage GitHub Copilot CLI state and OAuth storage for container use."""
+    home = home or Path.home()
+    out_dir = credentials_dir(project_sandbox_dir, "copilot")
+    _ensure_private_dir(out_dir)
+    _remove_stale_project_agent_credentials(project_sandbox_dir, "copilot", None)
+    _clear_dir(out_dir)
+    _copy_dir_contents(home / ".copilot", out_dir / ".copilot")
+    _copy_dir_contents(
+        home / ".config" / "github-copilot",
+        out_dir / ".config" / "github-copilot",
+    )
+    _stage_copilot_workspace_trust(out_dir / ".copilot" / "config.json")
+    return out_dir
+
+
+def sync_opencode_credentials(
+    project_sandbox_dir: Path,
+    *,
+    home: Path | None = None,
+) -> Path:
+    """Stage OpenCode config and state without copying package installs."""
+    home = home or Path.home()
+    out_dir = credentials_dir(project_sandbox_dir, "opencode")
+    _ensure_private_dir(out_dir)
+    _remove_stale_project_agent_credentials(project_sandbox_dir, "opencode", None)
+    _clear_dir(out_dir)
+    source_config = home / ".config" / "opencode"
+    target_config = out_dir / ".config" / "opencode"
+    for name in ("opencode.json", "opencode.jsonc"):
+        _copy_path(source_config / name, target_config / name)
+    _copy_dir_contents(
+        home / ".local" / "share" / "opencode",
+        out_dir / ".local" / "share" / "opencode",
+    )
+    _copy_dir_contents(
+        home / ".local" / "state" / "opencode",
+        out_dir / ".local" / "state" / "opencode",
+    )
+    return out_dir
+
+
+def credentials_dir(project_sandbox_dir: Path, agent: str = "claude") -> Path:
+    if not all(c.isalnum() or c in "._-" for c in agent):
+        raise ValueError(f"Invalid credential agent name: {agent}")
     key = str(project_sandbox_dir.resolve(strict=False))
     digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
     uid = os.getuid() if hasattr(os, "getuid") else "user"
-    return CREDENTIALS_ROOT / f"project-sandbox-{uid}" / digest / "claude"
+    return CREDENTIALS_ROOT / f"project-sandbox-{uid}" / digest / agent
 
 
 def _ensure_private_dir(path: Path) -> None:
@@ -97,11 +168,66 @@ def _remove_stale_project_credentials(project_sandbox_dir: Path) -> None:
         _remove_if_exists(project_claude_dir / name)
 
 
+def _remove_stale_project_agent_credentials(
+    project_sandbox_dir: Path,
+    agent: str,
+    include_files: tuple[str, ...] | None,
+) -> None:
+    project_agent_dir = project_sandbox_dir / agent
+    if include_files is None:
+        _remove_path_if_exists(project_agent_dir)
+        return
+    for name in include_files:
+        _remove_path_if_exists(project_agent_dir / name)
+
+
 def _remove_if_exists(path: Path) -> None:
     try:
         path.unlink()
     except FileNotFoundError:
         pass
+
+
+def _remove_path_if_exists(path: Path) -> None:
+    try:
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def _clear_dir(path: Path) -> None:
+    for child in path.iterdir():
+        if child.is_dir() and not child.is_symlink():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
+
+
+def _copy_path(source: Path, target: Path) -> None:
+    if not source.exists():
+        return
+    if source.is_symlink():
+        raise RuntimeError(f"Refusing to stage symlinked credential path: {source}")
+    if source.is_dir():
+        target.mkdir(mode=0o700, parents=True, exist_ok=True)
+        for child in source.iterdir():
+            _copy_path(child, target / child.name)
+        return
+    if source.is_file() and source.stat().st_size > 0:
+        target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+        target.chmod(0o600)
+
+
+def _copy_dir_contents(source: Path, target: Path) -> None:
+    if not source.is_dir():
+        return
+    target.mkdir(mode=0o700, parents=True, exist_ok=True)
+    for child in source.iterdir():
+        _copy_path(child, target / child.name)
 
 
 def _copy_if_file(source: Path, target: Path) -> bool:
@@ -110,6 +236,23 @@ def _copy_if_file(source: Path, target: Path) -> bool:
     shutil.copyfile(source, target)
     target.chmod(0o600)
     return True
+
+
+def _stage_copilot_workspace_trust(target: Path) -> None:
+    config: dict[str, object] = {}
+    if target.is_file():
+        try:
+            existing = json.loads(target.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            existing = None
+        if isinstance(existing, dict):
+            config = existing
+    folders = config.get("trustedFolders")
+    trusted = [item for item in folders if isinstance(item, str)] if isinstance(folders, list) else []
+    if "/workspace" not in trusted:
+        trusted.append("/workspace")
+    config["trustedFolders"] = trusted
+    _write_secure_text(target, json.dumps(config, indent=2, sort_keys=True))
 
 
 def _stage_config_state(sources: tuple[Path, ...], target: Path) -> None:
