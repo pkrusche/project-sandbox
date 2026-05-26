@@ -38,8 +38,8 @@ RUN set -eux; \
 
 RUN install -d /project-sandbox-config/claude /project-sandbox-config/codex \
         /project-sandbox-secrets/claude /project-sandbox-secrets/codex \
-        /project-sandbox-secrets/opencode /project-sandbox-secrets/copilot && \
-    install -d -o agent -g agent /home/agent/.claude /home/agent/.codex /home/agent/.copilot /home/agent/.config && \
+        /project-sandbox-secrets/opencode && \
+    install -d -o agent -g agent /home/agent/.claude /home/agent/.codex /home/agent/.config && \
     install -m 0644 -o agent -g agent /dev/null /home/agent/.claude/settings.json && \
     install -m 0644 -o agent -g agent /dev/null /home/agent/.codex/config.toml
 
@@ -69,9 +69,6 @@ RUN npm install -g @openai/codex
 {% endif %}
 {% if install_opencode %}
 RUN npm install -g opencode-ai
-{% endif %}
-{% if install_copilot %}
-RUN npm install -g @github/copilot
 {% endif %}
 
 COPY {{ sandbox_copy_prefix }}init-firewall.sh /usr/local/bin/project-sandbox-init-firewall

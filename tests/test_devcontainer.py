@@ -45,7 +45,6 @@ class DevcontainerTests(TestCase):
                 spec["containerEnv"]["CLAUDE_SECURESTORAGE_CONFIG_DIR"],
                 "/home/agent/.claude",
             )
-            self.assertEqual(spec["containerEnv"]["COPILOT_HOME"], "/home/agent/.copilot")
             self.assertEqual(spec["build"]["dockerfile"], "../.project-sandbox/Dockerfile")
             self.assertEqual(spec["build"]["context"], "../.project-sandbox")
             self.assertIn("--cap-add=NET_ADMIN", spec["runArgs"])
@@ -173,12 +172,10 @@ class DevcontainerTests(TestCase):
             (project / ".project-sandbox").mkdir(parents=True)
             (fake_home / ".codex").mkdir(parents=True)
             (fake_home / ".config" / "opencode").mkdir(parents=True)
-            (fake_home / ".copilot").mkdir(parents=True)
             credentials = {
                 "claude": Path(tmp) / "secrets" / "claude",
                 "codex": Path(tmp) / "secrets" / "codex",
                 "opencode": Path(tmp) / "secrets" / "opencode",
-                "copilot": Path(tmp) / "secrets" / "copilot",
             }
 
             with patch.object(devcontainer.Path, "home", return_value=fake_home):
@@ -204,13 +201,8 @@ class DevcontainerTests(TestCase):
                 f"source={credentials['opencode'].resolve(strict=False)},target=/project-sandbox-secrets/opencode,type=bind,readonly",
                 mounts,
             )
-            self.assertIn(
-                f"source={credentials['copilot'].resolve(strict=False)},target=/project-sandbox-secrets/copilot,type=bind,readonly",
-                mounts,
-            )
             self.assertNotIn("${localEnv:HOME}/.codex", mounts)
             self.assertNotIn("${localEnv:HOME}/.config/opencode", mounts)
-            self.assertNotIn("${localEnv:HOME}/.copilot", mounts)
 
     def test_render_can_use_project_root_build_context(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

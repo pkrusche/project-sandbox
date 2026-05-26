@@ -3,7 +3,7 @@ from pathlib import Path
 
 from jinja2 import Environment, PackageLoader
 
-from . import config_claude
+from . import config_agents
 from .git_identity import GitIdentity
 
 
@@ -37,13 +37,11 @@ def render(
     if use_provided_credential_dirs:
         mount_codex_secrets = "codex" in credential_dirs
         mount_opencode_secrets = "opencode" in credential_dirs
-        mount_copilot_secrets = "copilot" in credential_dirs
     else:
         mount_codex_secrets = host_home.joinpath(".codex").exists()
         mount_opencode_secrets = host_home.joinpath(".config/opencode").exists()
-        mount_copilot_secrets = host_home.joinpath(".copilot").exists()
     claude_credentials_dir = credential_dirs.get(
-        "claude", config_claude.credentials_dir(project / ".project-sandbox")
+        "claude", config_agents.credentials_dir(project / ".project-sandbox")
     )
     out.write_text(
         tmpl.render(
@@ -55,25 +53,18 @@ def render(
             cpus=cpus,
             mount_codex_secrets=mount_codex_secrets,
             mount_opencode_secrets=mount_opencode_secrets,
-            mount_copilot_secrets=mount_copilot_secrets,
             claude_config_mount="${localWorkspaceFolder}/.project-sandbox/claude",
             claude_credentials_mount=claude_credentials_dir.resolve(strict=False).as_posix(),
             codex_config_mount="${localWorkspaceFolder}/.project-sandbox/codex",
             codex_credentials_mount=credential_dirs.get(
                 "codex",
-                config_claude.credentials_dir(project / ".project-sandbox", "codex"),
+                config_agents.credentials_dir(project / ".project-sandbox", "codex"),
             )
             .resolve(strict=False)
             .as_posix(),
             opencode_credentials_mount=credential_dirs.get(
                 "opencode",
-                config_claude.credentials_dir(project / ".project-sandbox", "opencode"),
-            )
-            .resolve(strict=False)
-            .as_posix(),
-            copilot_credentials_mount=credential_dirs.get(
-                "copilot",
-                config_claude.credentials_dir(project / ".project-sandbox", "copilot"),
+                config_agents.credentials_dir(project / ".project-sandbox", "opencode"),
             )
             .resolve(strict=False)
             .as_posix(),
@@ -89,8 +80,8 @@ def render(
 
 def _credential_dirs(context_dir: Path) -> dict[str, Path]:
     return {
-        agent: config_claude.credentials_dir(context_dir, agent)
-        for agent in ("claude", "codex", "opencode", "copilot")
+        agent: config_agents.credentials_dir(context_dir, agent)
+        for agent in ("claude", "codex", "opencode")
     }
 
 

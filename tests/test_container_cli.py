@@ -40,7 +40,6 @@ class ContainerCliTests(TestCase):
         self.assertIn("PROJECT_SANDBOX_PROMPT=fix the tests", cmd)
         self.assertNotIn("CLAUDE_CONFIG_DIR=/home/agent/.claude", cmd)
         self.assertIn("CLAUDE_SECURESTORAGE_CONFIG_DIR=/home/agent/.claude", cmd)
-        self.assertIn("COPILOT_HOME=/home/agent/.copilot", cmd)
         self.assertIn(
             f"type=bind,source={root / 'claude'},target=/project-sandbox-config/claude,readonly",
             cmd,
@@ -66,7 +65,6 @@ class ContainerCliTests(TestCase):
             root = Path(tmp)
             codex_secrets = root / "secrets" / "codex"
             opencode_secrets = root / "secrets" / "opencode"
-            copilot_secrets = root / "secrets" / "copilot"
 
             cmd = build_run_argv(
                 image="project-sandbox:test",
@@ -76,12 +74,11 @@ class ContainerCliTests(TestCase):
                 codex_cfg=root / "codex/config.toml",
                 codex_credentials_dir=codex_secrets,
                 opencode_credentials_dir=opencode_secrets,
-                copilot_credentials_dir=copilot_secrets,
                 identity=GitIdentity("Ada Lovelace", "ada@example.com"),
                 memory="8g",
                 cpus=4,
                 extra_mounts=[],
-                agent="copilot",
+                agent="opencode",
                 firewall_enabled=False,
                 interactive=True,
             )
@@ -92,10 +89,6 @@ class ContainerCliTests(TestCase):
         )
         self.assertIn(
             f"type=bind,source={opencode_secrets.resolve(strict=False)},target=/project-sandbox-secrets/opencode,readonly",
-            cmd,
-        )
-        self.assertIn(
-            f"type=bind,source={copilot_secrets.resolve(strict=False)},target=/project-sandbox-secrets/copilot,readonly",
             cmd,
         )
 

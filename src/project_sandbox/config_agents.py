@@ -35,7 +35,7 @@ CLAUDE_CREDENTIAL_STATE_KEYS = frozenset(
 CREDENTIALS_ROOT = Path("/tmp")
 
 
-def render(
+def render_claude(
     project_sandbox_dir: Path,
 ) -> Path:
     out_dir = project_sandbox_dir / "claude"
@@ -47,6 +47,16 @@ def render(
         tmpl.render() + "\n",
         encoding="utf-8",
     )
+    return out
+
+
+def render_codex(project_sandbox_dir: Path) -> Path:
+    out_dir = project_sandbox_dir / "codex"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / "config.toml"
+    env = Environment(loader=PackageLoader("project_sandbox", "templates"))
+    tmpl = env.get_template("codex-config.toml.j2")
+    out.write_text(tmpl.render() + "\n", encoding="utf-8")
     return out
 
 
@@ -94,26 +104,6 @@ def sync_agent_credentials(
         return out_dir
     for name in include_files:
         _copy_path(source_dir / name, out_dir / name)
-    return out_dir
-
-
-def sync_copilot_credentials(
-    project_sandbox_dir: Path,
-    *,
-    home: Path | None = None,
-) -> Path:
-    """Stage GitHub Copilot CLI state and OAuth storage for container use."""
-    home = home or Path.home()
-    out_dir = credentials_dir(project_sandbox_dir, "copilot")
-    _ensure_private_dir(out_dir)
-    _remove_stale_project_agent_credentials(project_sandbox_dir, "copilot", None)
-    _clear_dir(out_dir)
-    _copy_dir_contents(home / ".copilot", out_dir / ".copilot")
-    _copy_dir_contents(
-        home / ".config" / "github-copilot",
-        out_dir / ".config" / "github-copilot",
-    )
-    _stage_copilot_workspace_trust(out_dir / ".copilot" / "config.json")
     return out_dir
 
 
@@ -236,23 +226,6 @@ def _copy_if_file(source: Path, target: Path) -> bool:
     shutil.copyfile(source, target)
     target.chmod(0o600)
     return True
-
-
-def _stage_copilot_workspace_trust(target: Path) -> None:
-    config: dict[str, object] = {}
-    if target.is_file():
-        try:
-            existing = json.loads(target.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            existing = None
-        if isinstance(existing, dict):
-            config = existing
-    folders = config.get("trustedFolders")
-    trusted = [item for item in folders if isinstance(item, str)] if isinstance(folders, list) else []
-    if "/workspace" not in trusted:
-        trusted.append("/workspace")
-    config["trustedFolders"] = trusted
-    _write_secure_text(target, json.dumps(config, indent=2, sort_keys=True))
 
 
 def _stage_config_state(sources: tuple[Path, ...], target: Path) -> None:

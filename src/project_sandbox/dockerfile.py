@@ -15,7 +15,7 @@ def render(
     base_image: str | None = None,
     base_dockerfile: Path | None = None,
     build_context: Path | None = None,
-    install_agents: tuple[str, ...] = ("claude", "codex", "opencode", "copilot"),
+    install_agents: tuple[str, ...] = ("claude", "codex", "opencode"),
     warn: Callable[[str], None] | None = None,
 ) -> Path:
     if (base_image is None) == (base_dockerfile is None):
@@ -46,7 +46,6 @@ def render(
             install_claude="claude" in install_agents,
             install_codex="codex" in install_agents,
             install_opencode="opencode" in install_agents,
-            install_copilot="copilot" in install_agents,
         )
         + "\n",
         encoding="utf-8",

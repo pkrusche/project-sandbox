@@ -8,11 +8,11 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from project_sandbox import config_claude, config_codex, dockerfile, firewall
+from project_sandbox import config_agents, dockerfile, firewall
 
 
 def _credentials_root(root: Path):
-    return patch("project_sandbox.config_claude.CREDENTIALS_ROOT", root / "tmp")
+    return patch("project_sandbox.config_agents.CREDENTIALS_ROOT", root / "tmp")
 
 
 class RendererTests(TestCase):
@@ -24,8 +24,8 @@ class RendererTests(TestCase):
                 context,
                 base_image="python:3.12-slim",
             )
-            claude = config_claude.render(context)
-            codex = config_codex.render(context)
+            claude = config_agents.render_claude(context)
+            codex = config_agents.render_codex(context)
             fw = firewall.render(
                 context,
                 extra_domains=["internal.example.com"],
@@ -36,7 +36,6 @@ class RendererTests(TestCase):
             self.assertIn("npm install -g @anthropic-ai/claude-code", docker_text)
             self.assertIn("npm install -g @openai/codex", docker_text)
             self.assertIn("npm install -g opencode-ai", docker_text)
-            self.assertIn("npm install -g @github/copilot", docker_text)
             self.assertIn("/home/agent/.claude/settings.json", docker_text)
             self.assertIn("/home/agent/.codex/config.toml", docker_text)
             self.assertIn("https://api.github.com/repos/jj-vcs/jj/releases/latest", docker_text)
@@ -88,9 +87,9 @@ class RendererTests(TestCase):
                 encoding="utf-8",
             )
 
-            config = config_claude.render(context)
+            config = config_agents.render_claude(context)
             with _credentials_root(root):
-                staged_dir = config_claude.sync_credentials(context, home=home)
+                staged_dir = config_agents.sync_credentials(context, home=home)
 
             staged_credentials = staged_dir / ".credentials.json"
             staged_home_credentials = staged_dir / ".claude.json"
@@ -139,7 +138,7 @@ class RendererTests(TestCase):
             )
 
             with _credentials_root(root):
-                staged_dir = config_claude.sync_credentials(context, home=home)
+                staged_dir = config_agents.sync_credentials(context, home=home)
 
             staged_home_credentials = staged_dir / ".claude.json"
             self.assertEqual(
@@ -203,13 +202,13 @@ class RendererTests(TestCase):
             (codex_home / "config.toml").write_text("secret = true\n", encoding="utf-8")
 
             with _credentials_root(root):
-                codex_staged = config_claude.sync_agent_credentials(
+                codex_staged = config_agents.sync_agent_credentials(
                     context,
                     "codex",
                     codex_home,
                     include_files=("auth.json",),
                 )
-                opencode_staged = config_claude.sync_opencode_credentials(
+                opencode_staged = config_agents.sync_opencode_credentials(
                     context,
                     home=home,
                 )
@@ -246,60 +245,6 @@ class RendererTests(TestCase):
             for staged in (codex_staged, opencode_staged):
                 self.assertEqual(staged.stat().st_mode & 0o777, 0o700)
 
-    def test_copilot_credentials_include_auth_db_and_workspace_trust(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            home = root / "home"
-            context = root / ".project-sandbox"
-            copilot_home = home / ".copilot"
-            copilot_auth = home / ".config" / "github-copilot"
-            copilot_home.mkdir(parents=True)
-            copilot_auth.mkdir(parents=True)
-            (context / "copilot").mkdir(parents=True)
-            (context / "copilot" / "config.json").write_text(
-                "stale\n",
-                encoding="utf-8",
-            )
-            (copilot_home / "config.json").write_text(
-                '{"trustedFolders":["/existing"],"theme":"dark"}\n',
-                encoding="utf-8",
-            )
-            (copilot_auth / "auth.db").write_text("db\n", encoding="utf-8")
-            (copilot_auth / "auth.db-wal").write_text("wal\n", encoding="utf-8")
-            (copilot_auth / "apps.json").write_text('{"app":"copilot"}\n', encoding="utf-8")
-
-            with _credentials_root(root):
-                copilot_staged = config_claude.sync_copilot_credentials(
-                    context,
-                    home=home,
-                )
-
-            self.assertFalse((context / "copilot").exists())
-            config = json.loads(
-                (copilot_staged / ".copilot" / "config.json").read_text(
-                    encoding="utf-8"
-                )
-            )
-            self.assertEqual(config["theme"], "dark")
-            self.assertIn("/existing", config["trustedFolders"])
-            self.assertIn("/workspace", config["trustedFolders"])
-            self.assertEqual(
-                (copilot_staged / ".config" / "github-copilot" / "auth.db").read_text(
-                    encoding="utf-8"
-                ),
-                "db\n",
-            )
-            self.assertEqual(
-                (
-                    copilot_staged
-                    / ".config"
-                    / "github-copilot"
-                    / "auth.db-wal"
-                ).read_text(encoding="utf-8"),
-                "wal\n",
-            )
-            self.assertEqual(copilot_staged.stat().st_mode & 0o777, 0o700)
-
     def test_claude_config_state_is_created_to_accept_bypass_warning(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -308,7 +253,7 @@ class RendererTests(TestCase):
             home.mkdir()
 
             with _credentials_root(root):
-                staged_dir = config_claude.sync_credentials(context, home=home)
+                staged_dir = config_agents.sync_credentials(context, home=home)
 
             staged_home_credentials = staged_dir / ".claude.json"
             self.assertEqual(
@@ -340,7 +285,7 @@ class RendererTests(TestCase):
             )
 
             with _credentials_root(root):
-                staged_dir = config_claude.sync_credentials(context, home=home)
+                staged_dir = config_agents.sync_credentials(context, home=home)
 
             staged_home_credentials = staged_dir / ".claude.json"
             self.assertEqual(
@@ -366,7 +311,7 @@ class RendererTests(TestCase):
             settings.parent.mkdir(parents=True)
             settings.write_text('{"theme":"dark"}\n', encoding="utf-8")
 
-            config_claude.render(context)
+            config_agents.render_claude(context)
 
             self.assertEqual(
                 json.loads(settings.read_text(encoding="utf-8"))["theme"],
@@ -382,13 +327,13 @@ class RendererTests(TestCase):
             )
 
             with (
-                patch("project_sandbox.config_claude.sys.platform", "darwin"),
-                patch("project_sandbox.config_claude.shutil.which", return_value="/usr/bin/security"),
+                patch("project_sandbox.config_agents.sys.platform", "darwin"),
+                patch("project_sandbox.config_agents.shutil.which", return_value="/usr/bin/security"),
                 patch(
-                    "project_sandbox.config_claude._keychain_account",
+                    "project_sandbox.config_agents._keychain_account",
                     return_value="test-user",
                 ),
-                patch("project_sandbox.config_claude.subprocess.run") as run,
+                patch("project_sandbox.config_agents.subprocess.run") as run,
             ):
                 run.return_value = subprocess.CompletedProcess(
                     args=[],
@@ -398,7 +343,7 @@ class RendererTests(TestCase):
                 )
 
                 with _credentials_root(Path(tmp)):
-                    staged_dir = config_claude.sync_credentials(context)
+                    staged_dir = config_agents.sync_credentials(context)
 
             staged_credentials = staged_dir / ".credentials.json"
             self.assertEqual(
@@ -431,7 +376,6 @@ class RendererTests(TestCase):
             self.assertNotIn("@anthropic-ai/claude-code", text)
             self.assertIn("@openai/codex", text)
             self.assertNotIn("opencode-ai", text)
-            self.assertNotIn("@github/copilot", text)
 
     def test_dockerfile_renderer_overwrites_existing_agent_uid_setup(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -600,11 +544,8 @@ class RendererTests(TestCase):
             self.assertIn("/project-sandbox-secrets/opencode/.config/opencode", text)
             self.assertIn("/project-sandbox-secrets/opencode/.local/share/opencode", text)
             self.assertIn("/project-sandbox-secrets/opencode/.local/state/opencode", text)
-            self.assertIn("/project-sandbox-secrets/copilot/.copilot", text)
-            self.assertIn("/project-sandbox-secrets/copilot/.config/github-copilot", text)
             self.assertNotIn(".codex.host", text)
             self.assertNotIn("opencode.host", text)
-            self.assertNotIn(".copilot.host", text)
             self.assertIn("sudo -n /usr/local/bin/project-sandbox-init-firewall", text)
             self.assertNotIn("sudo chown", text)
             self.assertIn('jj config set --user user.name "$NAME"', text)
@@ -612,7 +553,6 @@ class RendererTests(TestCase):
             self.assertIn("claude-headless", text)
             self.assertIn("codex-headless", text)
             self.assertIn("opencode-headless", text)
-            self.assertIn("copilot-headless", text)
             self.assertIn("bash-headless", text)
             self.assertIn('exec bash -lc "$PROMPT"', text)
 
@@ -672,11 +612,8 @@ class RendererTests(TestCase):
             self.assertIn("/project-sandbox-secrets/opencode/.config/opencode", text)
             self.assertIn("/project-sandbox-secrets/opencode/.local/share/opencode", text)
             self.assertIn("/project-sandbox-secrets/opencode/.local/state/opencode", text)
-            self.assertIn("/project-sandbox-secrets/copilot/.copilot", text)
-            self.assertIn("/project-sandbox-secrets/copilot/.config/github-copilot", text)
             self.assertNotIn(".codex.host", text)
             self.assertNotIn("opencode.host", text)
-            self.assertNotIn(".copilot.host", text)
             self.assertIn('jj config set --user user.name "$NAME"', text)
             self.assertIn('jj config set --user user.email "$EMAIL"', text)
 

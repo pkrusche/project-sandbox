@@ -1,6 +1,6 @@
 # project-sandbox
 
-`project-sandbox` runs Claude Code, Codex CLI, OpenCode, GitHub Copilot CLI, or a plain Bash shell inside per-project Linux containers managed by Apple's [`container`](https://github.com/apple/container) runtime. Each container runs in its own VM with hardware-enforced isolation, so the box itself is the security boundary — the agents are configured to operate freely inside it.
+`project-sandbox` runs Claude Code, Codex CLI, OpenCode, or a plain Bash shell inside per-project Linux containers managed by Apple's [`container`](https://github.com/apple/container) runtime. Each container runs in its own VM with hardware-enforced isolation, so the box itself is the security boundary — the agents are configured to operate freely inside it.
 
 The tool generates a derived image, sanitized agent configs, an egress firewall, and a parallel devcontainer specification so the same sandbox is reachable from the Python CLI or from local devcontainer clients.
 
@@ -11,7 +11,7 @@ Given `project-sandbox /path/to/repo python:3.12-slim`:
 1. Read host `git config --global` identity.
 2. Render `<project>/.project-sandbox/` — `Dockerfile`, `entrypoint.sh`, `init-firewall.sh`, sanitized `claude/settings.json` and `codex/config.toml`, and a devcontainer post-start init script. Agent credentials are staged separately under `/tmp` with private directory permissions to reduce the chance of accidentally committing them.
 3. Render `<project>/.devcontainer/` with symlinks back into `.project-sandbox/` so the Dockerfile and firewall script remain a single source of truth.
-4. Detect available host agent configs (`~/.claude`, `~/.codex`, `~/.config/opencode`, `~/.copilot`) and install only those agent CLIs into the generated Dockerfile. Bash is always available.
+4. Detect available host agent configs (`~/.claude`, `~/.codex`, `~/.config/opencode`) and install only those agent CLIs into the generated Dockerfile. Bash is always available.
 5. Append `.project-sandbox/` to `<project>/.gitignore` (idempotent).
 
 Given `project-sandbox --agent claude /path/to/repo python:3.12-slim`, it additionally:
@@ -106,12 +106,12 @@ uv run project-sandbox \
 
 - `--prompt FILE` bind-mounts the file at `/workspace/.project-sandbox-prompt`.
 - `--prompt-text "…"` passes the prompt via env var (or via a temp file if longer than 4096 chars).
-- `--agent {claude,codex,opencode,copilot,bash}` selects which agent to run. If omitted, the CLI only initializes generated config files unless a prompt is supplied. Claude, Codex, OpenCode, and Copilot require their host config directories; Bash is always available.
+- `--agent {claude,codex,opencode,bash}` selects which agent to run. If omitted, the CLI only initializes generated config files unless a prompt is supplied. Claude, Codex, and OpenCode require their host config directories; Bash is always available.
 - `--log FILE` overrides the default log path under `.project-sandbox/sessions/<agent>-main-<timestamp>.log`.
 - `--timeout SECONDS` kills the container if the agent runs too long; the CLI returns exit code `124` on timeout.
 - The agent's exit code is propagated, so CI pipelines can detect failures.
 
-Unsupervised sessions skip the interactive `-it` flags and switch dispatch to `<agent>-headless` for all supported agents. Claude runs with `--dangerously-skip-permissions`, Codex uses `approval_policy = "never"`, OpenCode runs via `opencode run`, Copilot runs with `copilot --headless --prompt ...`, and Bash runs with `bash -lc`. The container is still the sandbox boundary; review the diff before integrating.
+Unsupervised sessions skip the interactive `-it` flags and switch dispatch to `<agent>-headless` for all supported agents. Claude runs with `--dangerously-skip-permissions`, Codex uses `approval_policy = "never"`, OpenCode runs via `opencode run`, and Bash runs with `bash -lc`. The container is still the sandbox boundary; review the diff before integrating.
 
 A maliciously crafted file in the workspace (e.g. a prompt-injection in a README) can still steer an unsupervised agent. Use narrow prompts and inspect the diff before merging.
 
@@ -187,6 +187,26 @@ The test prints the temp project path on success so the generated files can be i
 
 ## References
 
- - [agentbox](https://github.com/fletchgqc/agentbox/tree/main)
- - [Claude Code devcontainer](https://github.com/anthropics/claude-code/tree/main/.devcontainer)
- - [Jarek Hartman: Codex in the jail](https://jhartman.pl/posts/macos/2026-02-02-codex-in-the-jail/)
+**Prior art and direct inspiration**
+- [agentbox (fletchgqc)](https://github.com/fletchgqc/agentbox/tree/main) — ephemeral per-project Docker containers for Claude/OpenCode/Gemini
+- [Claude Code devcontainer](https://github.com/anthropics/claude-code/tree/main/.devcontainer) — reference `init-firewall.sh` and devcontainer layout
+- [Jarek Hartman: Codex in the jail](https://jhartman.pl/posts/macos/2026-02-02-codex-in-the-jail/) — why `sandbox-exec` falls short and apple/container fills the gap
+
+**Similar projects using apple/container**
+- [instavm/coderunner](https://github.com/instavm/coderunner) — MCP-server-based sandbox for Claude Code, Codex, Gemini, OpenCode, Kiro
+- [banksean/sand](https://github.com/banksean/sand) — per-project disposable microVMs with APFS CoW workspace cloning
+- [emarc/claude-contained](https://github.com/emarc/claude-contained) — minimal wrapper image for Claude Code/Codex/Gemini/Vibe in apple/container or Docker
+
+**Docker/Incus-based alternatives with egress filtering**
+- [mattolson/agent-sandbox](https://github.com/mattolson/agent-sandbox) — per-project Docker containers with iptables + mitmproxy allowlist and proxy-injected credentials
+- [pvillega/sandbox-claude](https://github.com/pvillega/sandbox-claude) — per-project Incus containers on OrbStack with domain-filtered egress
+- [mensfeld/code-on-incus](https://github.com/mensfeld/code-on-incus) — multi-slot Incus sandboxes with real-time network threat detection
+- [trailofbits/claude-code-devcontainer](https://github.com/trailofbits/claude-code-devcontainer) — hardened devcontainer for Claude Code with immutable firewall and IPC-socket mitigations
+
+**Worktree-per-agent pattern**
+- [dagger/container-use](https://github.com/dagger/container-use) — MCP server that gives agents isolated Docker environments backed by Git branches/worktrees
+
+**Container-free / kernel-enforced sandboxing**
+- [anthropic-experimental/sandbox-runtime](https://github.com/anthropic-experimental/sandbox-runtime) — OS-level filesystem and network restrictions without a container (Bubblewrap/seccomp on Linux, Seatbelt on macOS)
+- [Use-Tusk/fence](https://github.com/Use-Tusk/fence) — Go tool for container-free agent sandboxing, inspired by sandbox-runtime
+- [GreyhavenHQ/greywall](https://github.com/GreyhavenHQ/greywall) — deny-by-default kernel-syscall sandbox with built-in profiles for 14+ coding agents

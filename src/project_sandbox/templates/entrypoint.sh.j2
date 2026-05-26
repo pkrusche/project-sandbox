@@ -15,7 +15,7 @@ if command -v jj >/dev/null 2>&1 && { [ -n "$NAME" ] || [ -n "$EMAIL" ]; }; then
   [ -n "$EMAIL" ] && (cd "$HOME" && jj config set --user user.email "$EMAIL")
 fi
 
-mkdir -p "$HOME/.claude" "$HOME/.codex" "$HOME/.copilot" "$HOME/.config/opencode"
+mkdir -p "$HOME/.claude" "$HOME/.codex" "$HOME/.config/opencode"
 export CLAUDE_SECURESTORAGE_CONFIG_DIR="${CLAUDE_SECURESTORAGE_CONFIG_DIR:-$HOME/.claude}"
 if [ -f "/project-sandbox-config/claude/settings.json" ]; then
   cp "/project-sandbox-config/claude/settings.json" "$HOME/.claude/settings.json"
@@ -36,13 +36,6 @@ fi
 if [ -f "/project-sandbox-secrets/codex/auth.json" ]; then
   cp "/project-sandbox-secrets/codex/auth.json" "$HOME/.codex/auth.json"
   chmod 600 "$HOME/.codex/auth.json"
-fi
-if [ -d "/project-sandbox-secrets/copilot/.copilot" ]; then
-  cp -R "/project-sandbox-secrets/copilot/.copilot/." "$HOME/.copilot/"
-fi
-if [ -d "/project-sandbox-secrets/copilot/.config/github-copilot" ]; then
-  mkdir -p "$HOME/.config/github-copilot"
-  cp -R "/project-sandbox-secrets/copilot/.config/github-copilot/." "$HOME/.config/github-copilot/"
 fi
 if [ -d "/project-sandbox-secrets/opencode/.config/opencode" ]; then
   cp -R "/project-sandbox-secrets/opencode/.config/opencode/." "$HOME/.config/opencode/"
@@ -83,7 +76,6 @@ case "${1:-bash}" in
       claude) shift; exec claude "$@" ;;
       codex) shift; exec codex "$@" ;;
       opencode) shift; exec opencode "$@" ;;
-      copilot) shift; exec copilot "$@" ;;
       bash) shift; exec bash "$@" ;;
       claude-headless)
         shift
@@ -99,11 +91,6 @@ case "${1:-bash}" in
         shift
         load_project_sandbox_prompt opencode-headless || exit $?
         exec opencode run "$PROMPT"
-        ;;
-      copilot-headless)
-        shift
-        load_project_sandbox_prompt copilot-headless || exit $?
-        exec copilot --headless --prompt "$PROMPT"
         ;;
       bash-headless)
         shift

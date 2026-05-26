@@ -2,8 +2,7 @@ from argparse import ArgumentParser
 from pathlib import Path
 
 from . import (
-    config_claude,
-    config_codex,
+    config_agents,
     container_cli,
     devcontainer,
     dockerfile,
@@ -16,7 +15,7 @@ from . import (
 from .git_identity import read as read_identity
 from .paths import ensure_dir, resolve_strict
 
-CONFIGURED_AGENTS = ("claude", "codex", "opencode", "copilot")
+CONFIGURED_AGENTS = ("claude", "codex", "opencode")
 SUPPORTED_AGENTS = (*CONFIGURED_AGENTS, "bash")
 
 
@@ -26,7 +25,6 @@ def _agent_host_paths() -> dict[str, Path]:
         "claude": home / ".claude",
         "codex": home / ".codex",
         "opencode": home / ".config" / "opencode",
-        "copilot": home / ".copilot",
     }
 
 
@@ -137,13 +135,13 @@ def main(argv: list[str] | None = None) -> int:
         extra_domains=args.extra_domain,
     )
 
-    claude_cfg = config_claude.render(context_dir)
+    claude_cfg = config_agents.render_claude(context_dir)
     credential_dirs = _sync_agent_credentials(
         context_dir,
         available_agents=available_agents,
         host_paths=host_paths,
     )
-    codex_cfg = config_codex.render(context_dir)
+    codex_cfg = config_agents.render_codex(context_dir)
 
     _write_project_sandbox_gitignore(context_dir)
     _update_project_gitignore(project)
@@ -475,7 +473,6 @@ def _build_session_command(
             codex_cfg=codex_cfg,
             codex_credentials_dir=credential_dirs.get("codex"),
             opencode_credentials_dir=credential_dirs.get("opencode"),
-            copilot_credentials_dir=credential_dirs.get("copilot"),
             identity=identity,
             memory=args.memory,
             cpus=args.cpus,
@@ -494,7 +491,7 @@ def _agent_credential_dirs(
     context_dir: Path, available_agents: tuple[str, ...]
 ) -> dict[str, Path]:
     return {
-        agent: config_claude.credentials_dir(context_dir, agent)
+        agent: config_agents.credentials_dir(context_dir, agent)
         for agent in CONFIGURED_AGENTS
         if agent == "claude" or agent in available_agents
     }
@@ -507,24 +504,19 @@ def _sync_agent_credentials(
     host_paths: dict[str, Path],
 ) -> dict[str, Path]:
     credential_dirs = _agent_credential_dirs(context_dir, available_agents)
-    config_claude.sync_credentials(context_dir)
-    credential_dirs["claude"] = config_claude.credentials_dir(context_dir)
+    config_agents.sync_credentials(context_dir)
+    credential_dirs["claude"] = config_agents.credentials_dir(context_dir)
     if "codex" in available_agents:
-        credential_dirs["codex"] = config_claude.sync_agent_credentials(
+        credential_dirs["codex"] = config_agents.sync_agent_credentials(
             context_dir,
             "codex",
             host_paths["codex"],
             include_files=("auth.json",),
         )
     if "opencode" in available_agents:
-        credential_dirs["opencode"] = config_claude.sync_opencode_credentials(
+        credential_dirs["opencode"] = config_agents.sync_opencode_credentials(
             context_dir,
             home=host_paths["opencode"].parents[1],
-        )
-    if "copilot" in available_agents:
-        credential_dirs["copilot"] = config_claude.sync_copilot_credentials(
-            context_dir,
-            home=host_paths["copilot"].parent,
         )
     return credential_dirs
 

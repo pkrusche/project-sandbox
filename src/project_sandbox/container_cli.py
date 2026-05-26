@@ -22,7 +22,6 @@ def build_run_argv(
     interactive: bool,
     extra_env: Sequence[str] = (),
     opencode_credentials_dir: Path | None = None,
-    copilot_credentials_dir: Path | None = None,
 ) -> list[str]:
     argv = [
         "container",
@@ -59,11 +58,6 @@ def build_run_argv(
             "--mount",
             f"type=bind,source={opencode_credentials_dir.resolve(strict=False)},target=/project-sandbox-secrets/opencode,readonly",
         ]
-    if copilot_credentials_dir is not None:
-        argv += [
-            "--mount",
-            f"type=bind,source={copilot_credentials_dir.resolve(strict=False)},target=/project-sandbox-secrets/copilot,readonly",
-        ]
     if identity.name:
         argv += [
             "--env",
@@ -87,8 +81,6 @@ def build_run_argv(
         "CLAUDE_SECURESTORAGE_CONFIG_DIR=/home/agent/.claude",
         "--env",
         "CODEX_HOME=/home/agent/.codex",
-        "--env",
-        "COPILOT_HOME=/home/agent/.copilot",
     ]
     if not firewall_enabled:
         argv += ["--env", "PROJECT_SANDBOX_NO_FIREWALL=1"]

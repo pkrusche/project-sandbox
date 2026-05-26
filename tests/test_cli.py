@@ -19,7 +19,6 @@ def _agent_paths(home: Path) -> dict[str, Path]:
         "claude": home / ".claude",
         "codex": home / ".codex",
         "opencode": home / ".config" / "opencode",
-        "copilot": home / ".copilot",
     }
 
 
@@ -88,7 +87,7 @@ class CliTests(TestCase):
             with (
                 patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
                 patch.object(cli, "_agent_host_paths", return_value=paths),
-                patch.object(cli.config_claude, "sync_credentials"),
+                patch.object(cli.config_agents, "sync_credentials"),
                 patch.object(cli.container_cli, "ensure_system_started") as ensure_system_started,
                 patch.object(cli.container_cli, "build_image") as build_image,
                 patch.object(cli.container_cli, "run") as run,
@@ -142,7 +141,7 @@ class CliTests(TestCase):
             with (
                 patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
                 patch.object(cli, "_agent_host_paths", return_value=paths),
-                patch.object(cli.config_claude, "sync_credentials"),
+                patch.object(cli.config_agents, "sync_credentials"),
             ):
                 rc = cli.main([str(project), "python:3.12-slim"])
 
@@ -448,34 +447,6 @@ class CliTests(TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("opencode-headless", out.getvalue())
 
-    def test_unsupervised_copilot_uses_headless_dispatch_when_available(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            project = Path(tmp)
-            (project / "README.md").write_text("# demo\n", encoding="utf-8")
-            host_home = project / "home"
-            paths = _agent_paths(host_home)
-            paths["copilot"].mkdir(parents=True)
-            out = io.StringIO()
-
-            with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
-                patch.object(cli, "_agent_host_paths", return_value=paths),
-                contextlib.redirect_stdout(out),
-            ):
-                rc = cli.main([
-                    "--dry-run",
-                    "--no-build",
-                    "--agent",
-                    "copilot",
-                    "--prompt-text",
-                    "fix this",
-                    str(project),
-                    "python:3.12-slim",
-                ])
-
-        self.assertEqual(rc, 0)
-        self.assertIn("copilot-headless", out.getvalue())
-
     def test_unsupervised_bash_uses_headless_dispatch_without_host_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
@@ -518,7 +489,7 @@ class CliTests(TestCase):
                         "--dry-run",
                         "--no-build",
                         "--agent",
-                        "copilot",
+                        "opencode",
                         str(project),
                         "python:3.12-slim",
                     ])
