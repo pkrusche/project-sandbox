@@ -22,8 +22,9 @@ def render(
     dc_dir.mkdir(exist_ok=True)
 
     _symlink(dc_dir / "Dockerfile", Path("../.project-sandbox/Dockerfile"))
-    _symlink(dc_dir / "init-firewall.sh", Path("../.project-sandbox/init-firewall.sh"))
+    _symlink(dc_dir / "init-firewall.sh", Path("../.project-sandbox/init-firewall-devcontainer.sh"))
     _symlink(dc_dir / "claude", Path("../.project-sandbox/claude"))
+    _symlink(dc_dir / "claude-devcontainer", Path("../.project-sandbox/claude-devcontainer"))
     _symlink(dc_dir / "codex", Path("../.project-sandbox/codex"))
 
     out = dc_dir / "devcontainer.json"
@@ -40,8 +41,9 @@ def render(
     else:
         mount_codex_secrets = host_home.joinpath(".codex").exists()
         mount_opencode_secrets = host_home.joinpath(".config/opencode").exists()
-    claude_credentials_dir = credential_dirs.get(
-        "claude", config_agents.credentials_dir(project / ".project-sandbox")
+    claude_devcontainer_credentials_dir = credential_dirs.get(
+        "claude-devcontainer",
+        config_agents.credentials_dir(project / ".project-sandbox", "claude-devcontainer"),
     )
     out.write_text(
         tmpl.render(
@@ -53,8 +55,8 @@ def render(
             cpus=cpus,
             mount_codex_secrets=mount_codex_secrets,
             mount_opencode_secrets=mount_opencode_secrets,
-            claude_config_mount="${localWorkspaceFolder}/.project-sandbox/claude",
-            claude_credentials_mount=claude_credentials_dir.resolve(strict=False).as_posix(),
+            claude_config_mount="${localWorkspaceFolder}/.project-sandbox/claude-devcontainer",
+            claude_credentials_mount=claude_devcontainer_credentials_dir.resolve(strict=False).as_posix(),
             codex_config_mount="${localWorkspaceFolder}/.project-sandbox/codex",
             codex_credentials_mount=credential_dirs.get(
                 "codex",

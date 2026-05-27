@@ -668,3 +668,74 @@ class RendererTests(TestCase):
 
             self.assertIn('jj config set --user user.name "$NAME"', text)
             self.assertIn('jj config set --user user.email "$EMAIL"', text)
+
+    def test_firewall_render_writes_both_container_and_devcontainer_scripts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            fw = firewall.render(context, extra_domains=[])
+            container_text = (context / "init-firewall.sh").read_text(encoding="utf-8")
+            devcontainer_text = (context / "init-firewall-devcontainer.sh").read_text(encoding="utf-8")
+
+            self.assertEqual(fw, context / "init-firewall.sh")
+            self.assertNotIn("HOST_NET4", container_text)
+            self.assertNotIn("HOST_GW6", container_text)
+            self.assertNotIn("Host gateway", container_text)
+            self.assertIn("HOST_NET4", devcontainer_text)
+            self.assertIn("HOST_GW6", devcontainer_text)
+            self.assertIn("Host gateway", devcontainer_text)
+            for text in (container_text, devcontainer_text):
+                self.assertIn('"api.anthropic.com"', text)
+                self.assertIn('"claude.ai"', text)
+
+    def test_render_claude_devcontainer_uses_auto_permission_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            out = config_agents.render_claude_devcontainer(context)
+            settings = json.loads(out.read_text(encoding="utf-8"))
+            self.assertEqual(settings["permissions"]["defaultMode"], "auto")
+            self.assertNotIn("bypassPermissions", out.read_text(encoding="utf-8"))
+            self.assertEqual(out, context / "claude-devcontainer" / "settings.json")
+
+    def test_render_claude_container_uses_bypass_permission_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            out = config_agents.render_claude(context)
+            settings = json.loads(out.read_text(encoding="utf-8"))
+            self.assertEqual(settings["permissions"]["defaultMode"], "bypassPermissions")
+
+    def test_sync_credentials_devcontainer_uses_auto_permission_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            context = root / ".project-sandbox"
+            home.mkdir()
+            with _credentials_root(root):
+                staged_dir = config_agents.sync_credentials_devcontainer(context, home=home)
+            state = json.loads((staged_dir / ".claude.json").read_text(encoding="utf-8"))
+            self.assertEqual(state["permissions"]["defaultMode"], "auto")
+            self.assertNotIn("bypassPermissionsModeAccepted", state)
+            self.assertNotIn("skipDangerousModePermissionPrompt", state.get("permissions", {}))
+            self.assertEqual(staged_dir.stat().st_mode & 0o777, 0o700)
+
+    def test_dockerfile_renderer_copies_devcontainer_firewall_script(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            context = project / ".project-sandbox"
+            context.mkdir()
+            source = project / "Dockerfile"
+            source.write_text("FROM ubuntu:24.04\n", encoding="utf-8")
+            dockerfile.render(
+                context,
+                base_dockerfile=source,
+                build_context=project,
+                install_agents=("claude",),
+            )
+            text = (context / "Dockerfile").read_text(encoding="utf-8")
+            self.assertIn(
+                "COPY .project-sandbox/init-firewall-devcontainer.sh /usr/local/bin/project-sandbox-devcontainer-init-firewall",
+                text,
+            )
+            self.assertIn(
+                "NOPASSWD: /usr/local/bin/project-sandbox-devcontainer-init-firewall",
+                text,
+            )

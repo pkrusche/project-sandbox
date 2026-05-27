@@ -22,6 +22,17 @@ CONTAINER_CONFIG_STATE = {
     },
 }
 
+DEVCONTAINER_CONFIG_STATE = {
+    "autoUpdaterStatus": "disabled",
+    "autoUpdates": False,
+    "hasCompletedOnboarding": True,
+    "installMethod": "npm",
+    "projects": {"/workspace": {"hasTrustDialogAccepted": True}},
+    "permissions": {
+        "defaultMode": "auto",
+    },
+}
+
 CLAUDE_CREDENTIAL_STATE_KEYS = frozenset(
     (
         "claudeAiOauth",
@@ -38,13 +49,22 @@ CREDENTIALS_ROOT = Path("/tmp")
 def render_claude(
     project_sandbox_dir: Path,
 ) -> Path:
-    out_dir = project_sandbox_dir / "claude"
+    return _render_claude_settings(project_sandbox_dir / "claude", permission_mode="bypassPermissions")
+
+
+def render_claude_devcontainer(
+    project_sandbox_dir: Path,
+) -> Path:
+    return _render_claude_settings(project_sandbox_dir / "claude-devcontainer", permission_mode="auto")
+
+
+def _render_claude_settings(out_dir: Path, *, permission_mode: str) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / "settings.json"
     env = Environment(loader=PackageLoader("project_sandbox", "templates"))
     tmpl = env.get_template("claude-settings.json.j2")
     out.write_text(
-        tmpl.render() + "\n",
+        tmpl.render(permission_mode=permission_mode) + "\n",
         encoding="utf-8",
     )
     return out
@@ -62,11 +82,37 @@ def render_codex(project_sandbox_dir: Path) -> Path:
 
 def sync_credentials(project_sandbox_dir: Path, *, home: Path | None = None) -> Path:
     """Stage Claude auth files outside the generated project directory."""
+    return _sync_claude_credentials(
+        project_sandbox_dir,
+        agent="claude",
+        config_state=CONTAINER_CONFIG_STATE,
+        home=home,
+    )
+
+
+def sync_credentials_devcontainer(project_sandbox_dir: Path, *, home: Path | None = None) -> Path:
+    """Stage Claude auth files for devcontainer use (auto permission mode)."""
+    return _sync_claude_credentials(
+        project_sandbox_dir,
+        agent="claude-devcontainer",
+        config_state=DEVCONTAINER_CONFIG_STATE,
+        home=home,
+    )
+
+
+def _sync_claude_credentials(
+    project_sandbox_dir: Path,
+    *,
+    agent: str,
+    config_state: dict,
+    home: Path | None,
+) -> Path:
     use_host_keychain = home is None
     home = home or Path.home()
-    out_dir = credentials_dir(project_sandbox_dir)
+    out_dir = credentials_dir(project_sandbox_dir, agent)
     _ensure_private_dir(out_dir)
-    _remove_stale_project_credentials(project_sandbox_dir)
+    if agent == "claude":
+        _remove_stale_project_credentials(project_sandbox_dir)
     if not (use_host_keychain and _stage_macos_keychain_credentials(out_dir)):
         copied = _copy_if_file(
             home / ".claude" / ".credentials.json",
@@ -80,6 +126,7 @@ def sync_credentials(project_sandbox_dir: Path, *, home: Path | None = None) -> 
             home / ".claude" / ".claude.json",
         ),
         out_dir / ".claude.json",
+        config_state=config_state,
     )
     return out_dir
 
@@ -228,7 +275,7 @@ def _copy_if_file(source: Path, target: Path) -> bool:
     return True
 
 
-def _stage_config_state(sources: tuple[Path, ...], target: Path) -> None:
+def _stage_config_state(sources: tuple[Path, ...], target: Path, *, config_state: dict) -> None:
     state: dict[str, object] = {}
     for source in sources:
         if not source.is_file():
@@ -240,7 +287,7 @@ def _stage_config_state(sources: tuple[Path, ...], target: Path) -> None:
         if isinstance(existing, dict):
             state.update(_credential_state(existing))
         break
-    state.update(CONTAINER_CONFIG_STATE)
+    state.update(config_state)
     _write_secure_text(target, json.dumps(state, indent=2, sort_keys=True))
 
 

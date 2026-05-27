@@ -101,6 +101,7 @@ for domain in "${DOMAINS[@]}"; do
   fi
 done
 
+{% if allow_host_network %}
 # ============================================================
 # Host gateway (port-forwarding / IDE attach)
 # ============================================================
@@ -123,6 +124,7 @@ if [ "$IPV6_FW" = "1" ]; then
     ip6tables -A INPUT  -s "$HOST_GW6" -i "${HOST_IF6:-eth0}" -j ACCEPT
   fi
 fi
+{% endif %}
 
 iptables -P INPUT DROP; iptables -P FORWARD DROP; iptables -P OUTPUT DROP
 if [ "$IPV6_FW" = "1" ]; then

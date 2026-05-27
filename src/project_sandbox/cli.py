@@ -136,6 +136,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     claude_cfg = config_agents.render_claude(context_dir)
+    config_agents.render_claude_devcontainer(context_dir)
     credential_dirs = _sync_agent_credentials(
         context_dir,
         available_agents=available_agents,
@@ -506,6 +507,7 @@ def _sync_agent_credentials(
     credential_dirs = _agent_credential_dirs(context_dir, available_agents)
     config_agents.sync_credentials(context_dir)
     credential_dirs["claude"] = config_agents.credentials_dir(context_dir)
+    credential_dirs["claude-devcontainer"] = config_agents.sync_credentials_devcontainer(context_dir)
     if "codex" in available_agents:
         credential_dirs["codex"] = config_agents.sync_agent_credentials(
             context_dir,
@@ -566,9 +568,12 @@ def _write_project_sandbox_gitignore(context_dir: Path) -> None:
 !.gitignore
 !claude/
 !claude/settings.json
+!claude-devcontainer/
+!claude-devcontainer/settings.json
 !codex/
 !codex/config.toml
 !init-firewall.sh
+!init-firewall-devcontainer.sh
 !Dockerfile
 !entrypoint.sh
 !project-sandbox-devcontainer-init

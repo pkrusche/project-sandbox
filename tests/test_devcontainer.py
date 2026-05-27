@@ -50,12 +50,12 @@ class DevcontainerTests(TestCase):
             self.assertIn("--cap-add=NET_ADMIN", spec["runArgs"])
             self.assertIn("--cap-add=NET_RAW", spec["runArgs"])
             self.assertIn(
-                "sudo -n /usr/local/bin/project-sandbox-init-firewall",
+                "sudo -n /usr/local/bin/project-sandbox-devcontainer-init-firewall",
                 spec["postStartCommand"],
             )
             mounts = "\n".join(spec["mounts"])
             self.assertIn(
-                "source=${localWorkspaceFolder}/.project-sandbox/claude,target=/project-sandbox-config/claude,type=bind,readonly",
+                "source=${localWorkspaceFolder}/.project-sandbox/claude-devcontainer,target=/project-sandbox-config/claude,type=bind,readonly",
                 mounts,
             )
             self.assertIn(
@@ -77,7 +77,7 @@ class DevcontainerTests(TestCase):
             _render(project)
             dc_dir = project / ".devcontainer"
 
-            for name in ("Dockerfile", "init-firewall.sh", "claude", "codex"):
+            for name in ("Dockerfile", "init-firewall.sh", "claude", "claude-devcontainer", "codex"):
                 link = dc_dir / name
                 self.assertTrue(link.is_symlink(), f"{name} is not a symlink")
                 target = link.readlink()
