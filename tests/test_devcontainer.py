@@ -45,12 +45,12 @@ class DevcontainerTests(TestCase):
                 spec["containerEnv"]["CLAUDE_SECURESTORAGE_CONFIG_DIR"],
                 "/home/agent/.claude",
             )
-            self.assertEqual(spec["build"]["dockerfile"], "../.project-sandbox/Dockerfile")
+            self.assertEqual(spec["build"]["dockerfile"], "../.project-sandbox/Dockerfile.devcontainer")
             self.assertEqual(spec["build"]["context"], "../.project-sandbox")
             self.assertIn("--cap-add=NET_ADMIN", spec["runArgs"])
             self.assertIn("--cap-add=NET_RAW", spec["runArgs"])
             self.assertIn(
-                "sudo -n /usr/local/bin/project-sandbox-devcontainer-init-firewall",
+                "sudo -n /usr/local/bin/project-sandbox-init-firewall",
                 spec["postStartCommand"],
             )
             mounts = "\n".join(spec["mounts"])
@@ -214,5 +214,5 @@ class DevcontainerTests(TestCase):
                 (project / ".devcontainer" / "devcontainer.json").read_text()
             )
 
-            self.assertEqual(spec["build"]["dockerfile"], "../.project-sandbox/Dockerfile")
+            self.assertEqual(spec["build"]["dockerfile"], "../.project-sandbox/Dockerfile.devcontainer")
             self.assertEqual(spec["build"]["context"], "..")

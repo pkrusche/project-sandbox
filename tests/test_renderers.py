@@ -717,7 +717,7 @@ class RendererTests(TestCase):
             self.assertNotIn("skipDangerousModePermissionPrompt", state.get("permissions", {}))
             self.assertEqual(staged_dir.stat().st_mode & 0o777, 0o700)
 
-    def test_dockerfile_renderer_copies_devcontainer_firewall_script(self) -> None:
+    def test_dockerfile_renderer_produces_separate_container_and_devcontainer_dockerfiles(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
             context = project / ".project-sandbox"
@@ -730,12 +730,21 @@ class RendererTests(TestCase):
                 build_context=project,
                 install_agents=("claude",),
             )
-            text = (context / "Dockerfile").read_text(encoding="utf-8")
+            container_text = (context / "Dockerfile").read_text(encoding="utf-8")
+            devcontainer_text = (context / "Dockerfile.devcontainer").read_text(encoding="utf-8")
+
             self.assertIn(
-                "COPY .project-sandbox/init-firewall-devcontainer.sh /usr/local/bin/project-sandbox-devcontainer-init-firewall",
-                text,
+                "COPY .project-sandbox/init-firewall.sh /usr/local/bin/project-sandbox-init-firewall",
+                container_text,
             )
+            self.assertNotIn("init-firewall-devcontainer", container_text)
             self.assertIn(
-                "NOPASSWD: /usr/local/bin/project-sandbox-devcontainer-init-firewall",
-                text,
+                "COPY .project-sandbox/init-firewall-devcontainer.sh /usr/local/bin/project-sandbox-init-firewall",
+                devcontainer_text,
             )
+            self.assertNotIn("init-firewall.sh", devcontainer_text.replace("init-firewall-devcontainer.sh", ""))
+            # Both Dockerfiles have the same binary name — only one sudoers entry each
+            self.assertEqual(container_text.count("NOPASSWD"), 1)
+            self.assertEqual(devcontainer_text.count("NOPASSWD"), 1)
+            self.assertIn("NOPASSWD: /usr/local/bin/project-sandbox-init-firewall", container_text)
+            self.assertIn("NOPASSWD: /usr/local/bin/project-sandbox-init-firewall", devcontainer_text)

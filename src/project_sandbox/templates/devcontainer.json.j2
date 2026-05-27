@@ -36,7 +36,7 @@
     "source={{ opencode_credentials_mount }},target=/project-sandbox-secrets/opencode,type=bind,readonly"{% endif %}{% for m in extra_mounts %},
     "{{ m }}"{% endfor %}
   ],
-  "postStartCommand": "{% if firewall_enabled %}sudo -n /usr/local/bin/project-sandbox-devcontainer-init-firewall && {% endif %}/usr/local/bin/project-sandbox-devcontainer-init",
+  "postStartCommand": "{% if firewall_enabled %}sudo -n /usr/local/bin/project-sandbox-init-firewall && {% endif %}/usr/local/bin/project-sandbox-devcontainer-init",
   "waitFor": "postStartCommand",
   "customizations": {
     "vscode": {

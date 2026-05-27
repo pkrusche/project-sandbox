@@ -575,6 +575,7 @@ def _write_project_sandbox_gitignore(context_dir: Path) -> None:
 !init-firewall.sh
 !init-firewall-devcontainer.sh
 !Dockerfile
+!Dockerfile.devcontainer
 !entrypoint.sh
 !project-sandbox-devcontainer-init
 """

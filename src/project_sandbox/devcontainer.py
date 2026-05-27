@@ -21,7 +21,7 @@ def render(
     dc_dir = project / ".devcontainer"
     dc_dir.mkdir(exist_ok=True)
 
-    _symlink(dc_dir / "Dockerfile", Path("../.project-sandbox/Dockerfile"))
+    _symlink(dc_dir / "Dockerfile", Path("../.project-sandbox/Dockerfile.devcontainer"))
     _symlink(dc_dir / "init-firewall.sh", Path("../.project-sandbox/init-firewall-devcontainer.sh"))
     _symlink(dc_dir / "claude", Path("../.project-sandbox/claude"))
     _symlink(dc_dir / "claude-devcontainer", Path("../.project-sandbox/claude-devcontainer"))
@@ -30,7 +30,7 @@ def render(
     out = dc_dir / "devcontainer.json"
     env = Environment(loader=PackageLoader("project_sandbox", "templates"))
     tmpl = env.get_template("devcontainer.json.j2")
-    generated_dockerfile = project / ".project-sandbox" / "Dockerfile"
+    generated_dockerfile = project / ".project-sandbox" / "Dockerfile.devcontainer"
     build_context = build_context or project / ".project-sandbox"
     use_provided_credential_dirs = credential_dirs is not None
     credential_dirs = credential_dirs or _credential_dirs(project / ".project-sandbox")

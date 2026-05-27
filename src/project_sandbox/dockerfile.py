@@ -21,7 +21,6 @@ def render(
     if (base_image is None) == (base_dockerfile is None):
         raise ValueError("Provide exactly one of base_image or base_dockerfile")
 
-    out = context_dir / "Dockerfile"
     source_dockerfile_text = ""
     if base_dockerfile is not None:
         source_dockerfile_text, warnings = _read_source_dockerfile(base_dockerfile)
@@ -38,18 +37,21 @@ def render(
 
     env = Environment(loader=PackageLoader("project_sandbox", "templates"))
     tmpl = env.get_template("Dockerfile.j2")
-    out.write_text(
-        tmpl.render(
-            base_image=base_image,
-            source_dockerfile_text=source_dockerfile_text,
-            sandbox_copy_prefix=copy_prefix,
-            install_claude="claude" in install_agents,
-            install_codex="codex" in install_agents,
-            install_opencode="opencode" in install_agents,
-        )
-        + "\n",
-        encoding="utf-8",
+    shared = dict(
+        base_image=base_image,
+        source_dockerfile_text=source_dockerfile_text,
+        sandbox_copy_prefix=copy_prefix,
+        install_claude="claude" in install_agents,
+        install_codex="codex" in install_agents,
+        install_opencode="opencode" in install_agents,
     )
+    container = _write_dockerfile(tmpl, context_dir / "Dockerfile", **shared, firewall_src_filename="init-firewall.sh")
+    _write_dockerfile(tmpl, context_dir / "Dockerfile.devcontainer", **shared, firewall_src_filename="init-firewall-devcontainer.sh")
+    return container
+
+
+def _write_dockerfile(tmpl, out: Path, *, firewall_src_filename: str, **kwargs) -> Path:
+    out.write_text(tmpl.render(firewall_src_filename=firewall_src_filename, **kwargs) + "\n", encoding="utf-8")
     return out
 
 
