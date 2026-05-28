@@ -67,7 +67,7 @@ class CliTests(TestCase):
 
             with (
                 patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
-                patch.object(cli, "_agent_host_paths", return_value=paths),
+                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
             ):
                 rc = cli.main(["--dry-run", "--no-build", str(project), "python:3.12-slim"])
 
@@ -86,7 +86,7 @@ class CliTests(TestCase):
 
             with (
                 patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
-                patch.object(cli, "_agent_host_paths", return_value=paths),
+                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
                 patch.object(cli.config_agents, "sync_credentials"),
                 patch.object(cli.container_cli, "ensure_system_started") as ensure_system_started,
                 patch.object(cli.container_cli, "build_image") as build_image,
@@ -140,7 +140,7 @@ class CliTests(TestCase):
 
             with (
                 patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
-                patch.object(cli, "_agent_host_paths", return_value=paths),
+                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
                 patch.object(cli.config_agents, "sync_credentials"),
             ):
                 rc = cli.main([str(project), "python:3.12-slim"])
@@ -181,7 +181,7 @@ class CliTests(TestCase):
 
             with (
                 patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
-                patch.object(cli, "_agent_host_paths", return_value=_agent_paths(project / "home")),
+                patch.object(cli.config_agents, "_agent_host_paths", return_value=_agent_paths(project / "home")),
                 contextlib.redirect_stdout(out),
             ):
                 rc = cli.main([
@@ -212,7 +212,7 @@ class CliTests(TestCase):
 
             with (
                 patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
-                patch.object(cli, "_agent_host_paths", return_value=paths),
+                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
                 contextlib.redirect_stdout(out),
             ):
                 rc = cli.main([
@@ -250,7 +250,7 @@ class CliTests(TestCase):
 
             with (
                 patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
-                patch.object(cli, "_agent_host_paths", return_value=paths),
+                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
                 contextlib.redirect_stdout(out),
             ):
                 rc = cli.main([
@@ -290,7 +290,7 @@ class CliTests(TestCase):
             (project / ".jj").mkdir()
             with (
                 patch.object(cli, "read_identity", return_value=GitIdentity("A", "a@b.com")),
-                patch.object(cli, "_agent_host_paths", return_value=_agent_paths(project / "home")),
+                patch.object(cli.config_agents, "_agent_host_paths", return_value=_agent_paths(project / "home")),
             ):
                 with self.assertRaises(SystemExit) as raised:
                     cli.main([
@@ -309,7 +309,7 @@ class CliTests(TestCase):
             (project / ".git").write_text("gitdir: ../some/.git/worktrees/x\n", encoding="utf-8")
             with (
                 patch.object(cli, "read_identity", return_value=GitIdentity("A", "a@b.com")),
-                patch.object(cli, "_agent_host_paths", return_value=_agent_paths(project / "home")),
+                patch.object(cli.config_agents, "_agent_host_paths", return_value=_agent_paths(project / "home")),
             ):
                 with self.assertRaises(SystemExit) as raised:
                     cli.main([
@@ -336,7 +336,7 @@ class CliTests(TestCase):
             with (
                 patch.object(cli, "read_identity", return_value=GitIdentity("A", "a@b.com")),
                 patch.object(cli.worktree_mod, "setup") as setup_worktree,
-                patch.object(cli, "_agent_host_paths", return_value=paths),
+                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
                 contextlib.redirect_stdout(stdout_buf),
             ):
                 rc = cli.main([
@@ -372,7 +372,7 @@ class CliTests(TestCase):
             with (
                 patch.object(cli, "read_identity", return_value=GitIdentity("A", "a@b.com")),
                 patch.object(cli.worktree_mod, "setup") as setup_worktree,
-                patch.object(cli, "_agent_host_paths", return_value=paths),
+                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
                 contextlib.redirect_stdout(stdout_buf),
             ):
                 cli.main([
@@ -395,7 +395,7 @@ class CliTests(TestCase):
 
             with (
                 patch.object(cli, "read_identity", return_value=GitIdentity("A", "a@b.com")),
-                patch.object(cli, "_agent_host_paths", return_value=_agent_paths(project / "home")),
+                patch.object(cli.config_agents, "_agent_host_paths", return_value=_agent_paths(project / "home")),
             ):
                 with self.assertRaises(SystemExit) as raised:
                     cli.main([
@@ -430,7 +430,7 @@ class CliTests(TestCase):
 
             with (
                 patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
-                patch.object(cli, "_agent_host_paths", return_value=paths),
+                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
                 contextlib.redirect_stdout(out),
             ):
                 rc = cli.main([
@@ -455,7 +455,7 @@ class CliTests(TestCase):
 
             with (
                 patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
-                patch.object(cli, "_agent_host_paths", return_value=_agent_paths(project / "home")),
+                patch.object(cli.config_agents, "_agent_host_paths", return_value=_agent_paths(project / "home")),
                 contextlib.redirect_stdout(out),
             ):
                 rc = cli.main([
@@ -482,7 +482,7 @@ class CliTests(TestCase):
 
             with (
                 patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
-                patch.object(cli, "_agent_host_paths", return_value=paths),
+                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
             ):
                 with self.assertRaises(SystemExit) as raised:
                     cli.main([

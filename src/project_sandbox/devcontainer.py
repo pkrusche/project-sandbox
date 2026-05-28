@@ -26,6 +26,7 @@ def render(
     _symlink(dc_dir / "claude", Path("../.project-sandbox/claude"))
     _symlink(dc_dir / "claude-devcontainer", Path("../.project-sandbox/claude-devcontainer"))
     _symlink(dc_dir / "codex", Path("../.project-sandbox/codex"))
+    _symlink(dc_dir / "codex-devcontainer", Path("../.project-sandbox/codex-devcontainer"))
 
     out = dc_dir / "devcontainer.json"
     env = Environment(loader=PackageLoader("project_sandbox", "templates"))
@@ -57,7 +58,7 @@ def render(
             mount_opencode_secrets=mount_opencode_secrets,
             claude_config_mount="${localWorkspaceFolder}/.project-sandbox/claude-devcontainer",
             claude_credentials_mount=claude_devcontainer_credentials_dir.resolve(strict=False).as_posix(),
-            codex_config_mount="${localWorkspaceFolder}/.project-sandbox/codex",
+            codex_config_mount="${localWorkspaceFolder}/.project-sandbox/codex-devcontainer",
             codex_credentials_mount=credential_dirs.get(
                 "codex",
                 config_agents.credentials_dir(project / ".project-sandbox", "codex"),

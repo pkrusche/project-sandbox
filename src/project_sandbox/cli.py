@@ -15,17 +15,7 @@ from . import (
 from .git_identity import read as read_identity
 from .paths import ensure_dir, resolve_strict
 
-CONFIGURED_AGENTS = ("claude", "codex", "opencode")
-SUPPORTED_AGENTS = (*CONFIGURED_AGENTS, "bash")
-
-
-def _agent_host_paths() -> dict[str, Path]:
-    home = Path.home()
-    return {
-        "claude": home / ".claude",
-        "codex": home / ".codex",
-        "opencode": home / ".config" / "opencode",
-    }
+SUPPORTED_AGENTS = ("claude", "codex", "opencode", "bash")
 
 
 def build_parser() -> ArgumentParser:
@@ -91,8 +81,7 @@ def main(argv: list[str] | None = None) -> int:
 
     project = resolve_strict(args.project)
     identity = read_identity()
-    host_paths = _agent_host_paths()
-    available_agents = _available_agents(host_paths)
+    available_agents = config_agents.available_agents()
 
     if run_agent is not None and args.branch:
         _validate_worktree_project(project)
@@ -108,7 +97,6 @@ def main(argv: list[str] | None = None) -> int:
             worktree=wt,
             identity=identity,
             available_agents=available_agents,
-            host_paths=host_paths,
         )
 
     wt, workspace = _setup_worktree(args, project) if run_agent else (None, project)
@@ -135,14 +123,8 @@ def main(argv: list[str] | None = None) -> int:
         extra_domains=args.extra_domain,
     )
 
-    claude_cfg = config_agents.render_claude(context_dir)
-    config_agents.render_claude_devcontainer(context_dir)
-    credential_dirs = _sync_agent_credentials(
-        context_dir,
-        available_agents=available_agents,
-        host_paths=host_paths,
-    )
-    codex_cfg = config_agents.render_codex(context_dir)
+    cfg = config_agents.render(context_dir)
+    credential_dirs = config_agents.sync_credentials(context_dir)
 
     _write_project_sandbox_gitignore(context_dir)
     _update_project_gitignore(project)
@@ -191,10 +173,9 @@ def main(argv: list[str] | None = None) -> int:
         identity=identity,
         run_agent=run_agent,
         available_agents=available_agents,
-        host_paths=host_paths,
-        claude_cfg=claude_cfg,
+        claude_cfg=cfg["claude"],
         credential_dirs=credential_dirs,
-        codex_cfg=codex_cfg,
+        codex_cfg=cfg["codex"],
         create_prompt_files=True,
     )
 
@@ -215,11 +196,6 @@ def main(argv: list[str] | None = None) -> int:
         _teardown_worktree(args, project=project, wt=wt, exit_code=exit_code)
 
     return exit_code
-
-
-def _available_agents(host_paths: dict[str, Path]) -> tuple[str, ...]:
-    configured = tuple(agent for agent in CONFIGURED_AGENTS if host_paths[agent].exists())
-    return (*configured, "bash")
 
 
 def _requested_agent(args) -> str | None:
@@ -247,12 +223,19 @@ def _dry_run(
     worktree,
     identity,
     available_agents: tuple[str, ...],
-    host_paths: dict[str, Path],
 ) -> int:
     context_dir = project / ".project-sandbox"
     claude_cfg = context_dir / "claude" / "settings.json"
-    credential_dirs = _agent_credential_dirs(context_dir, available_agents)
     codex_cfg = context_dir / "codex" / "config.toml"
+    credential_dirs = {
+        "claude": config_agents.credentials_dir(context_dir, "claude"),
+        "claude-devcontainer": config_agents.credentials_dir(context_dir, "claude-devcontainer"),
+        **{
+            agent: config_agents.credentials_dir(context_dir, agent)
+            for agent in ("codex", "opencode")
+            if agent in available_agents
+        },
+    }
     run_agent = _requested_agent(args)
 
     print("DRY RUN: no files, worktrees, images, or containers will be created.")
@@ -294,7 +277,6 @@ def _dry_run(
         identity=identity,
         run_agent=run_agent,
         available_agents=available_agents,
-        host_paths=host_paths,
         claude_cfg=claude_cfg,
         credential_dirs=credential_dirs,
         codex_cfg=codex_cfg,
@@ -404,7 +386,6 @@ def _build_session_command(
     identity,
     run_agent: str,
     available_agents: tuple[str, ...],
-    host_paths: dict[str, Path],
     claude_cfg: Path,
     credential_dirs: dict[str, Path],
     codex_cfg: Path,
@@ -488,41 +469,6 @@ def _build_session_command(
     )
 
 
-def _agent_credential_dirs(
-    context_dir: Path, available_agents: tuple[str, ...]
-) -> dict[str, Path]:
-    return {
-        agent: config_agents.credentials_dir(context_dir, agent)
-        for agent in CONFIGURED_AGENTS
-        if agent == "claude" or agent in available_agents
-    }
-
-
-def _sync_agent_credentials(
-    context_dir: Path,
-    *,
-    available_agents: tuple[str, ...],
-    host_paths: dict[str, Path],
-) -> dict[str, Path]:
-    credential_dirs = _agent_credential_dirs(context_dir, available_agents)
-    config_agents.sync_credentials(context_dir)
-    credential_dirs["claude"] = config_agents.credentials_dir(context_dir)
-    credential_dirs["claude-devcontainer"] = config_agents.sync_credentials_devcontainer(context_dir)
-    if "codex" in available_agents:
-        credential_dirs["codex"] = config_agents.sync_agent_credentials(
-            context_dir,
-            "codex",
-            host_paths["codex"],
-            include_files=("auth.json",),
-        )
-    if "opencode" in available_agents:
-        credential_dirs["opencode"] = config_agents.sync_opencode_credentials(
-            context_dir,
-            home=host_paths["opencode"].parents[1],
-        )
-    return credential_dirs
-
-
 def _print_next_steps(
     *,
     context_dir: Path,
@@ -572,6 +518,8 @@ def _write_project_sandbox_gitignore(context_dir: Path) -> None:
 !claude-devcontainer/settings.json
 !codex/
 !codex/config.toml
+!codex-devcontainer/
+!codex-devcontainer/config.toml
 !init-firewall.sh
 !init-firewall-devcontainer.sh
 !Dockerfile

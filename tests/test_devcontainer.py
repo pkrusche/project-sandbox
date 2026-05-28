@@ -63,7 +63,7 @@ class DevcontainerTests(TestCase):
                 mounts,
             )
             self.assertIn(
-                "source=${localWorkspaceFolder}/.project-sandbox/codex,target=/project-sandbox-config/codex,type=bind,readonly",
+                "source=${localWorkspaceFolder}/.project-sandbox/codex-devcontainer,target=/project-sandbox-config/codex,type=bind,readonly",
                 mounts,
             )
             self.assertNotIn("/home/agent/.claude/settings.json", mounts)
@@ -77,7 +77,7 @@ class DevcontainerTests(TestCase):
             _render(project)
             dc_dir = project / ".devcontainer"
 
-            for name in ("Dockerfile", "init-firewall.sh", "claude", "claude-devcontainer", "codex"):
+            for name in ("Dockerfile", "init-firewall.sh", "claude", "claude-devcontainer", "codex", "codex-devcontainer"):
                 link = dc_dir / name
                 self.assertTrue(link.is_symlink(), f"{name} is not a symlink")
                 target = link.readlink()

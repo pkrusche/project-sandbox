@@ -7,8 +7,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-from jinja2 import Environment, PackageLoader
-
 CONTAINER_CONFIG_STATE = {
     "autoUpdaterStatus": "disabled",
     "autoUpdates": False,
@@ -45,58 +43,139 @@ CLAUDE_CREDENTIAL_STATE_KEYS = frozenset(
 
 CREDENTIALS_ROOT = Path("/tmp")
 
+_CONFIGURED_AGENTS = ("claude", "codex", "opencode")
 
-def render_claude(
+
+def _agent_host_paths(home: Path) -> dict[str, Path]:
+    return {
+        "claude": home / ".claude",
+        "codex": home / ".codex",
+        "opencode": home / ".config" / "opencode",
+    }
+
+
+def available_agents(home: Path | None = None) -> tuple[str, ...]:
+    """Return agents present on this host. Always includes 'bash'."""
+    _home = home or Path.home()
+    present = tuple(a for a in _CONFIGURED_AGENTS if _agent_host_paths(_home)[a].exists())
+    return (*present, "bash")
+
+
+def render(context_dir: Path) -> dict[str, Path]:
+    """Render all agent config files and return a dict of written paths."""
+    paths: dict[str, Path] = {}
+    for key, permission_mode in (
+        ("claude", "bypassPermissions"),
+        ("claude-devcontainer", "auto"),
+    ):
+        out_dir = context_dir / key
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out = out_dir / "settings.json"
+        out.write_text(_claude_settings_json(permission_mode), encoding="utf-8")
+        paths[key] = out
+    for key, approval_policy in (
+        ("codex", "never"),
+        ("codex-devcontainer", "on-request"),
+    ):
+        out_dir = context_dir / key
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out = out_dir / "config.toml"
+        out.write_text(_codex_config_toml(approval_policy), encoding="utf-8")
+        paths[key] = out
+    return paths
+
+
+def sync_credentials(
     project_sandbox_dir: Path,
-) -> Path:
-    return _render_claude_settings(project_sandbox_dir / "claude", permission_mode="bypassPermissions")
+    *,
+    home: Path | None = None,
+) -> dict[str, Path]:
+    """Stage credentials for all agents present on this host.
 
-
-def render_claude_devcontainer(
-    project_sandbox_dir: Path,
-) -> Path:
-    return _render_claude_settings(project_sandbox_dir / "claude-devcontainer", permission_mode="auto")
-
-
-def _render_claude_settings(out_dir: Path, *, permission_mode: str) -> Path:
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out = out_dir / "settings.json"
-    env = Environment(loader=PackageLoader("project_sandbox", "templates"))
-    tmpl = env.get_template("claude-settings.json.j2")
-    out.write_text(
-        tmpl.render(permission_mode=permission_mode) + "\n",
-        encoding="utf-8",
-    )
-    return out
-
-
-def render_codex(project_sandbox_dir: Path) -> Path:
-    out_dir = project_sandbox_dir / "codex"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out = out_dir / "config.toml"
-    env = Environment(loader=PackageLoader("project_sandbox", "templates"))
-    tmpl = env.get_template("codex-config.toml.j2")
-    out.write_text(tmpl.render() + "\n", encoding="utf-8")
-    return out
-
-
-def sync_credentials(project_sandbox_dir: Path, *, home: Path | None = None) -> Path:
-    """Stage Claude auth files outside the generated project directory."""
-    return _sync_claude_credentials(
+    Returns a dict keyed by agent name:
+      "claude", "claude-devcontainer" — always present
+      "codex", "opencode"             — present only if the agent is installed
+    """
+    _home = home or Path.home()
+    host_paths = _agent_host_paths(_home)
+    result: dict[str, Path] = {}
+    result["claude"] = _sync_claude_credentials(
         project_sandbox_dir,
         agent="claude",
         config_state=CONTAINER_CONFIG_STATE,
         home=home,
     )
-
-
-def sync_credentials_devcontainer(project_sandbox_dir: Path, *, home: Path | None = None) -> Path:
-    """Stage Claude auth files for devcontainer use (auto permission mode)."""
-    return _sync_claude_credentials(
+    result["claude-devcontainer"] = _sync_claude_credentials(
         project_sandbox_dir,
         agent="claude-devcontainer",
         config_state=DEVCONTAINER_CONFIG_STATE,
         home=home,
+    )
+    if host_paths["codex"].exists():
+        result["codex"] = _sync_generic_credentials(
+            project_sandbox_dir,
+            "codex",
+            host_paths["codex"],
+            include_files=("auth.json",),
+        )
+    if host_paths["opencode"].exists():
+        result["opencode"] = _sync_opencode_credentials(
+            project_sandbox_dir,
+            home=_home,
+        )
+    return result
+
+
+def credentials_dir(project_sandbox_dir: Path, agent: str = "claude") -> Path:
+    if not all(c.isalnum() or c in "._-" for c in agent):
+        raise ValueError(f"Invalid credential agent name: {agent}")
+    key = str(project_sandbox_dir.resolve(strict=False))
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+    uid = os.getuid() if hasattr(os, "getuid") else "user"
+    return CREDENTIALS_ROOT / f"project-sandbox-{uid}" / digest / agent
+
+
+def _claude_settings_json(permission_mode: str) -> str:
+    settings = {
+        "$schema": "https://json.schemastore.org/claude-code-settings.json",
+        "permissions": {
+            "defaultMode": permission_mode,
+            "allow": [],
+            "deny": [],
+            "ask": [],
+        },
+        "sandbox": {"enabled": False},
+        "env": {
+            "IS_SANDBOX": "1",
+            "CLAUDE_TELEMETRY_DISABLED": "1",
+        },
+        "theme": "auto",
+        "autoUpdaterStatus": "disabled",
+        "includeCoAuthoredBy": False,
+    }
+    return json.dumps(settings, indent=2) + "\n"
+
+
+def _codex_config_toml(approval_policy: str) -> str:
+    return (
+        f'approval_policy = "{approval_policy}"\n'
+        'sandbox_mode = "danger-full-access"\n'
+        "disable_update_check = true\n"
+        "\n"
+        "[sandbox_workspace_write]\n"
+        "network_access = true\n"
+        "\n"
+        '[projects."/workspace"]\n'
+        'trust_level = "trusted"\n'
+        "\n"
+        "[shell_environment_policy]\n"
+        'inherit = "core"\n'
+        "\n"
+        "[analytics]\n"
+        "enabled = false\n"
+        "\n"
+        "[feedback]\n"
+        "enabled = false\n"
     )
 
 
@@ -131,14 +210,13 @@ def _sync_claude_credentials(
     return out_dir
 
 
-def sync_agent_credentials(
+def _sync_generic_credentials(
     project_sandbox_dir: Path,
     agent: str,
     source_dir: Path,
     *,
     include_files: tuple[str, ...] | None = None,
 ) -> Path:
-    """Stage non-Claude agent credentials outside the generated project directory."""
     out_dir = credentials_dir(project_sandbox_dir, agent)
     _ensure_private_dir(out_dir)
     _remove_stale_project_agent_credentials(project_sandbox_dir, agent, include_files)
@@ -154,13 +232,11 @@ def sync_agent_credentials(
     return out_dir
 
 
-def sync_opencode_credentials(
+def _sync_opencode_credentials(
     project_sandbox_dir: Path,
     *,
-    home: Path | None = None,
+    home: Path,
 ) -> Path:
-    """Stage OpenCode config and state without copying package installs."""
-    home = home or Path.home()
     out_dir = credentials_dir(project_sandbox_dir, "opencode")
     _ensure_private_dir(out_dir)
     _remove_stale_project_agent_credentials(project_sandbox_dir, "opencode", None)
@@ -178,15 +254,6 @@ def sync_opencode_credentials(
         out_dir / ".local" / "state" / "opencode",
     )
     return out_dir
-
-
-def credentials_dir(project_sandbox_dir: Path, agent: str = "claude") -> Path:
-    if not all(c.isalnum() or c in "._-" for c in agent):
-        raise ValueError(f"Invalid credential agent name: {agent}")
-    key = str(project_sandbox_dir.resolve(strict=False))
-    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
-    uid = os.getuid() if hasattr(os, "getuid") else "user"
-    return CREDENTIALS_ROOT / f"project-sandbox-{uid}" / digest / agent
 
 
 def _ensure_private_dir(path: Path) -> None:

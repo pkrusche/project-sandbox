@@ -24,8 +24,9 @@ class RendererTests(TestCase):
                 context,
                 base_image="python:3.12-slim",
             )
-            claude = config_agents.render_claude(context)
-            codex = config_agents.render_codex(context)
+            cfg = config_agents.render(context)
+            claude = cfg["claude"]
+            codex = cfg["codex"]
             fw = firewall.render(
                 context,
                 extra_domains=["internal.example.com"],
@@ -87,9 +88,9 @@ class RendererTests(TestCase):
                 encoding="utf-8",
             )
 
-            config = config_agents.render_claude(context)
+            config = config_agents.render(context)["claude"]
             with _credentials_root(root):
-                staged_dir = config_agents.sync_credentials(context, home=home)
+                staged_dir = config_agents.sync_credentials(context, home=home)["claude"]
 
             staged_credentials = staged_dir / ".credentials.json"
             staged_home_credentials = staged_dir / ".claude.json"
@@ -138,7 +139,7 @@ class RendererTests(TestCase):
             )
 
             with _credentials_root(root):
-                staged_dir = config_agents.sync_credentials(context, home=home)
+                staged_dir = config_agents.sync_credentials(context, home=home)["claude"]
 
             staged_home_credentials = staged_dir / ".claude.json"
             self.assertEqual(
@@ -202,16 +203,9 @@ class RendererTests(TestCase):
             (codex_home / "config.toml").write_text("secret = true\n", encoding="utf-8")
 
             with _credentials_root(root):
-                codex_staged = config_agents.sync_agent_credentials(
-                    context,
-                    "codex",
-                    codex_home,
-                    include_files=("auth.json",),
-                )
-                opencode_staged = config_agents.sync_opencode_credentials(
-                    context,
-                    home=home,
-                )
+                result = config_agents.sync_credentials(context, home=home)
+                codex_staged = result["codex"]
+                opencode_staged = result["opencode"]
 
             self.assertFalse((context / "codex" / "auth.json").exists())
             self.assertTrue((context / "codex" / "config.toml").exists())
@@ -253,7 +247,7 @@ class RendererTests(TestCase):
             home.mkdir()
 
             with _credentials_root(root):
-                staged_dir = config_agents.sync_credentials(context, home=home)
+                staged_dir = config_agents.sync_credentials(context, home=home)["claude"]
 
             staged_home_credentials = staged_dir / ".claude.json"
             self.assertEqual(
@@ -285,7 +279,7 @@ class RendererTests(TestCase):
             )
 
             with _credentials_root(root):
-                staged_dir = config_agents.sync_credentials(context, home=home)
+                staged_dir = config_agents.sync_credentials(context, home=home)["claude"]
 
             staged_home_credentials = staged_dir / ".claude.json"
             self.assertEqual(
@@ -311,7 +305,7 @@ class RendererTests(TestCase):
             settings.parent.mkdir(parents=True)
             settings.write_text('{"theme":"dark"}\n', encoding="utf-8")
 
-            config_agents.render_claude(context)
+            config_agents.render(context)
 
             self.assertEqual(
                 json.loads(settings.read_text(encoding="utf-8"))["theme"],
@@ -343,7 +337,7 @@ class RendererTests(TestCase):
                 )
 
                 with _credentials_root(Path(tmp)):
-                    staged_dir = config_agents.sync_credentials(context)
+                    staged_dir = config_agents.sync_credentials(context)["claude"]
 
             staged_credentials = staged_dir / ".credentials.json"
             self.assertEqual(
@@ -687,21 +681,42 @@ class RendererTests(TestCase):
                 self.assertIn('"api.anthropic.com"', text)
                 self.assertIn('"claude.ai"', text)
 
+    def test_render_returns_all_four_config_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            cfg = config_agents.render(context)
+            self.assertEqual(cfg["claude"], context / "claude" / "settings.json")
+            self.assertEqual(cfg["claude-devcontainer"], context / "claude-devcontainer" / "settings.json")
+            self.assertEqual(cfg["codex"], context / "codex" / "config.toml")
+            self.assertEqual(cfg["codex-devcontainer"], context / "codex-devcontainer" / "config.toml")
+
     def test_render_claude_devcontainer_uses_auto_permission_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             context = Path(tmp)
-            out = config_agents.render_claude_devcontainer(context)
+            cfg = config_agents.render(context)
+            out = cfg["claude-devcontainer"]
             settings = json.loads(out.read_text(encoding="utf-8"))
             self.assertEqual(settings["permissions"]["defaultMode"], "auto")
             self.assertNotIn("bypassPermissions", out.read_text(encoding="utf-8"))
-            self.assertEqual(out, context / "claude-devcontainer" / "settings.json")
 
     def test_render_claude_container_uses_bypass_permission_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             context = Path(tmp)
-            out = config_agents.render_claude(context)
+            out = config_agents.render(context)["claude"]
             settings = json.loads(out.read_text(encoding="utf-8"))
             self.assertEqual(settings["permissions"]["defaultMode"], "bypassPermissions")
+
+    def test_render_codex_devcontainer_uses_on_request_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            out = config_agents.render(context)["codex-devcontainer"]
+            self.assertIn('approval_policy = "on-request"', out.read_text(encoding="utf-8"))
+
+    def test_render_codex_container_uses_never_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            out = config_agents.render(context)["codex"]
+            self.assertIn('approval_policy = "never"', out.read_text(encoding="utf-8"))
 
     def test_sync_credentials_devcontainer_uses_auto_permission_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -710,7 +725,7 @@ class RendererTests(TestCase):
             context = root / ".project-sandbox"
             home.mkdir()
             with _credentials_root(root):
-                staged_dir = config_agents.sync_credentials_devcontainer(context, home=home)
+                staged_dir = config_agents.sync_credentials(context, home=home)["claude-devcontainer"]
             state = json.loads((staged_dir / ".claude.json").read_text(encoding="utf-8"))
             self.assertEqual(state["permissions"]["defaultMode"], "auto")
             self.assertNotIn("bypassPermissionsModeAccepted", state)
