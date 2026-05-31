@@ -61,20 +61,26 @@ uv run project-sandbox --dry-run /absolute/path/to/repo python:3.12-slim
 <project>/
 ├── .gitignore                       # appended (idempotent): .project-sandbox/
 ├── .project-sandbox/
-│   ├── .gitignore                   # local safeguard; parent .gitignore ignores the whole directory
-│   ├── Dockerfile                   # generated
-│   ├── entrypoint.sh                # container PID 1
-│   ├── init-firewall.sh             # iptables/ipset egress allowlist
+│   ├── .gitignore                       # local safeguard; parent .gitignore ignores the whole directory
+│   ├── Dockerfile                       # generated (Apple container CLI runs)
+│   ├── Dockerfile.devcontainer          # generated (devcontainer build)
+│   ├── entrypoint.sh                    # container PID 1
+│   ├── init-firewall.sh                 # iptables/ipset egress allowlist (CLI variant)
+│   ├── init-firewall-devcontainer.sh    # firewall variant that also allows the host gateway
 │   ├── project-sandbox-devcontainer-init  # devcontainer postStart helper
-│   ├── claude/settings.json         # sanitized Claude config
-│   ├── codex/config.toml            # sanitized Codex config
-│   └── sessions/                    # unsupervised-mode logs (gitignored)
+│   ├── claude/settings.json             # sanitized Claude config (CLI: bypassPermissions)
+│   ├── claude-devcontainer/settings.json  # sanitized Claude config (devcontainer: auto)
+│   ├── codex/config.toml                # sanitized Codex config (CLI: approval never)
+│   ├── codex-devcontainer/config.toml   # sanitized Codex config (devcontainer: on-request)
+│   └── sessions/                        # unsupervised-mode logs (gitignored)
 └── .devcontainer/
-    ├── devcontainer.json            # generated
-    ├── Dockerfile          → ../.project-sandbox/Dockerfile
-    ├── init-firewall.sh    → ../.project-sandbox/init-firewall.sh
-    ├── claude              → ../.project-sandbox/claude
-    └── codex               → ../.project-sandbox/codex
+    ├── devcontainer.json                # generated
+    ├── Dockerfile              → ../.project-sandbox/Dockerfile.devcontainer
+    ├── init-firewall.sh        → ../.project-sandbox/init-firewall-devcontainer.sh
+    ├── claude                  → ../.project-sandbox/claude
+    ├── claude-devcontainer     → ../.project-sandbox/claude-devcontainer
+    ├── codex                   → ../.project-sandbox/codex
+    └── codex-devcontainer      → ../.project-sandbox/codex-devcontainer
 ```
 
 The `.project-sandbox/` directory is generated local state and is ignored as a whole. Re-run `project-sandbox` after cloning, pulling generated config changes, or refreshing credentials. Agent credential staging lives outside the project under `/tmp/project-sandbox-<uid>/...`.
@@ -120,9 +126,9 @@ A maliciously crafted file in the workspace (e.g. a prompt-injection in a README
 When the firewall is enabled (default), `init-firewall.sh` runs as root inside the container and:
 
 - Sets `iptables` and `ip6tables` policies to DROP.
-- Pins DNS to the resolver(s) in `/etc/resolv.conf` only (closes the DNS-tunnel exfiltration gap in the upstream Anthropic devcontainer).
+- Pins DNS to the first resolver listed in `/etc/resolv.conf` (closes the DNS-tunnel exfiltration gap in the upstream Anthropic devcontainer).
 - Allows GitHub's published IP ranges (fetched from `api.github.com/meta`), `registry.npmjs.org`, Claude/Anthropic endpoints (`api.anthropic.com`, `claude.ai`, `code.claude.com`, `platform.claude.com`), `api.openai.com`, `auth.openai.com`, and `chatgpt.com`.
-- Allows the host gateway subnet so port-forwarding and IDE attach work.
+- In the devcontainer firewall variant only, allows the host gateway subnet so port-forwarding and IDE attach work. Direct Apple `container` CLI runs do not need host-network access and omit it.
 - Mirrors the IPv4 allowlist into a parallel IPv6 set; falls back to disabling IPv6 via `sysctl` when `ip6_tables` is unavailable — the script exits with an error if both `ip6tables` and `sysctl` are unavailable.
 
 Customize:

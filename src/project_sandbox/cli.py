@@ -191,6 +191,7 @@ def main(argv: list[str] | None = None) -> int:
                 context_dir=context_dir,
                 project=project,
                 available_agents=available_agents,
+                launching=True,
             )
 
         agent_ran = True
@@ -238,9 +239,11 @@ def _dry_run(
     context_dir = project / ".project-sandbox"
     claude_cfg = context_dir / "claude" / "settings.json"
     codex_cfg = context_dir / "codex" / "config.toml"
+    # Only the keys _build_session_command consumes ("claude", and optionally
+    # "codex"/"opencode" when available); the devcontainer-specific dirs are not
+    # used on the CLI run path.
     credential_dirs = {
         "claude": config_agents.credentials_dir(context_dir, "claude"),
-        "claude-devcontainer": config_agents.credentials_dir(context_dir, "claude-devcontainer"),
         **{
             agent: config_agents.credentials_dir(context_dir, agent)
             for agent in ("codex", "opencode")
@@ -485,6 +488,7 @@ def _print_next_steps(
     context_dir: Path,
     project: Path,
     available_agents: tuple[str, ...],
+    launching: bool = False,
 ) -> None:
     print("\n=== project-sandbox ready ===")
     print(f"  Project:  {project}")
@@ -494,10 +498,12 @@ def _print_next_steps(
     print(f"    {project / '.devcontainer' / 'devcontainer.json'}")
     print("  → Open this project in VS Code / Cursor and choose 'Reopen in Container'.")
     print()
-    print("  To run an agent from the CLI:")
-    for agent in available_agents:
-        print(f"    project-sandbox --agent {agent} ...")
-    print()
+    if not launching:
+        # When an agent is about to start, this hint is redundant noise.
+        print("  To run an agent from the CLI:")
+        for agent in available_agents:
+            print(f"    project-sandbox --agent {agent} ...")
+        print()
 
 
 def _update_project_gitignore(project: Path) -> None:

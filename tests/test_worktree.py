@@ -135,7 +135,7 @@ class WorktreeTeardownTests(TestCase):
         ).stdout
         self.assertIn("feat/work", out)
 
-    def test_teardown_merge_fast_forwards_main(self) -> None:
+    def test_teardown_merge_brings_branch_into_main(self) -> None:
         worktree_mod.teardown(self.repo, self.wt, after="merge")
 
         log = subprocess.run(

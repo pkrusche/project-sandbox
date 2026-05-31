@@ -398,8 +398,13 @@ def _stage_macos_keychain_credentials(out_dir: Path) -> bool:
 
 
 def _keychain_account() -> str:
-    username = os.environ.get("USER") or getpass.getuser() or "claude-code-user"
-    if all(c.isalnum() or c in "._-" for c in username):
+    username = os.environ.get("USER")
+    if not username:
+        try:
+            username = getpass.getuser()
+        except (OSError, KeyError, ImportError):
+            username = None
+    if username and all(c.isalnum() or c in "._-" for c in username):
         return username
     return "claude-code-user"
 

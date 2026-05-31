@@ -56,7 +56,14 @@ def teardown(repo: Path, wt: Worktree, *, after: str) -> None:
         )
         _git(repo, ["merge", "--ff-only", wt.branch])
     elif after == "pr":
-        _git(repo, ["push", "-u", "origin", wt.branch])
+        try:
+            _git(repo, ["push", "-u", "origin", wt.branch])
+        except subprocess.CalledProcessError:
+            print(
+                f"  Could not push '{wt.branch}' to 'origin' (is a remote configured?). "
+                f"Worktree left in place at {wt.path}."
+            )
+            return
         subprocess.run(["gh", "pr", "create", "--head", wt.branch, "--fill"], check=False)
 
     if after in ("merge", "rebase"):

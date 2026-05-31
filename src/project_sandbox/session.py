@@ -1,5 +1,6 @@
 import datetime as dt
 import os
+import shlex
 import signal
 from pathlib import Path
 import subprocess
@@ -17,7 +18,7 @@ def default_log_path(project: Path, branch: str | None, agent: str, *, create: b
 
 def run(argv: list[str], *, log_path: Path, timeout: int | None = None, dry_run: bool = False) -> int:
     if dry_run:
-        print(" ".join(argv), "2>&1 | tee", str(log_path))
+        print(shlex.join(argv), "2>&1 | tee", shlex.quote(str(log_path)))
         if timeout:
             print(f"# timeout: {timeout}s")
         return 0

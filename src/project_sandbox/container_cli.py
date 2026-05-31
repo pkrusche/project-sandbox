@@ -1,3 +1,4 @@
+import shlex
 import subprocess
 from collections.abc import Sequence
 from pathlib import Path
@@ -108,7 +109,7 @@ def build_image(
         cmd += ["-f", str(dockerfile_path)]
     cmd.append(str(build_context))
     if dry_run:
-        print(" ".join(cmd))
+        print(shlex.join(cmd))
         return 0
     return subprocess.run(cmd, check=False).returncode
 
@@ -116,13 +117,13 @@ def build_image(
 def ensure_system_started(*, dry_run: bool = False) -> int:
     cmd = ["container", "system", "start"]
     if dry_run:
-        print(" ".join(cmd))
+        print(shlex.join(cmd))
         return 0
     return subprocess.run(cmd, check=False).returncode
 
 
 def run(argv: list[str], *, dry_run: bool = False) -> int:
     if dry_run:
-        print(" ".join(argv))
+        print(shlex.join(argv))
         return 0
     return subprocess.run(argv, check=False).returncode
