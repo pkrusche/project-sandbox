@@ -7,29 +7,36 @@ import subprocess
 import sys
 from pathlib import Path
 
-CONTAINER_CONFIG_STATE = {
-    "autoUpdaterStatus": "disabled",
-    "autoUpdates": False,
-    "bypassPermissionsModeAccepted": True,
-    "hasCompletedOnboarding": True,
-    "installMethod": "npm",
-    "projects": {"/workspace": {"hasTrustDialogAccepted": True}},
-    "permissions": {
-        "defaultMode": "bypassPermissions",
-        "skipDangerousModePermissionPrompt": True,
-    },
+# Claude profiles: a profile's settings.json defaultMode IS its .claude.json
+# permission posture, so both the rendered settings file and the staged config
+# state derive from a single value per profile. This is the one place that
+# encodes Claude's permission posture.
+CLAUDE_PROFILES = {
+    "claude": "bypassPermissions",
+    "claude-devcontainer": "auto",
 }
 
-DEVCONTAINER_CONFIG_STATE = {
+_CLAUDE_CONFIG_BASE = {
     "autoUpdaterStatus": "disabled",
     "autoUpdates": False,
     "hasCompletedOnboarding": True,
     "installMethod": "npm",
     "projects": {"/workspace": {"hasTrustDialogAccepted": True}},
-    "permissions": {
-        "defaultMode": "auto",
-    },
 }
+
+
+def _claude_config_state(permission_mode: str) -> dict:
+    """Build the .claude.json config state for a profile's permission mode."""
+    state = dict(_CLAUDE_CONFIG_BASE)
+    if permission_mode == "bypassPermissions":
+        state["bypassPermissionsModeAccepted"] = True
+        state["permissions"] = {
+            "defaultMode": "bypassPermissions",
+            "skipDangerousModePermissionPrompt": True,
+        }
+    else:
+        state["permissions"] = {"defaultMode": permission_mode}
+    return state
 
 CLAUDE_CREDENTIAL_STATE_KEYS = frozenset(
     (
@@ -64,10 +71,7 @@ def available_agents(home: Path | None = None) -> tuple[str, ...]:
 def render(context_dir: Path) -> dict[str, Path]:
     """Render all agent config files and return a dict of written paths."""
     paths: dict[str, Path] = {}
-    for key, permission_mode in (
-        ("claude", "bypassPermissions"),
-        ("claude-devcontainer", "auto"),
-    ):
+    for key, permission_mode in CLAUDE_PROFILES.items():
         out_dir = context_dir / key
         out_dir.mkdir(parents=True, exist_ok=True)
         out = out_dir / "settings.json"
@@ -99,18 +103,13 @@ def sync_credentials(
     _home = home or Path.home()
     host_paths = _agent_host_paths(_home)
     result: dict[str, Path] = {}
-    result["claude"] = _sync_claude_credentials(
-        project_sandbox_dir,
-        agent="claude",
-        config_state=CONTAINER_CONFIG_STATE,
-        home=home,
-    )
-    result["claude-devcontainer"] = _sync_claude_credentials(
-        project_sandbox_dir,
-        agent="claude-devcontainer",
-        config_state=DEVCONTAINER_CONFIG_STATE,
-        home=home,
-    )
+    for profile, permission_mode in CLAUDE_PROFILES.items():
+        result[profile] = _sync_claude_credentials(
+            project_sandbox_dir,
+            agent=profile,
+            config_state=_claude_config_state(permission_mode),
+            home=home,
+        )
     if host_paths["codex"].exists():
         result["codex"] = _sync_generic_credentials(
             project_sandbox_dir,

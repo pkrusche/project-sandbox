@@ -2,9 +2,7 @@ import os
 import re
 from pathlib import Path
 
-from jinja2 import Environment, PackageLoader
-
-from . import config_agents
+from . import config_agents, templating
 from .git_identity import GitIdentity
 
 _MEMORY_RE = re.compile(r"(\d+)\s*([gm])b?", re.IGNORECASE)
@@ -45,8 +43,7 @@ def render(
     _symlink(dc_dir / "codex-devcontainer", Path("../.project-sandbox/codex-devcontainer"))
 
     out = dc_dir / "devcontainer.json"
-    env = Environment(loader=PackageLoader("project_sandbox", "templates"))
-    tmpl = env.get_template("devcontainer.json.j2")
+    tmpl = templating.get_template("devcontainer.json.j2")
     generated_dockerfile = project / ".project-sandbox" / "Dockerfile.devcontainer"
     build_context = build_context or project / ".project-sandbox"
     use_provided_credential_dirs = credential_dirs is not None

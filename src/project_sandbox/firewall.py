@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from jinja2 import Environment, PackageLoader
+from . import templating
 
 
 def render(
@@ -8,8 +8,7 @@ def render(
     *,
     extra_domains: list[str],
 ) -> Path:
-    env = Environment(loader=PackageLoader("project_sandbox", "templates"))
-    tmpl = env.get_template("init-firewall.sh.j2")
+    tmpl = templating.get_template("init-firewall.sh.j2")
     container = _write(
         tmpl,
         context_dir / "init-firewall.sh",

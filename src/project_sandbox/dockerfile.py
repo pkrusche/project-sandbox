@@ -2,7 +2,7 @@ import re
 from collections.abc import Callable
 from pathlib import Path
 
-from jinja2 import Environment, PackageLoader
+from . import templating
 
 _USER_SETUP_COMMAND_RE = re.compile(
     r"(?<![\w.-])(addgroup|adduser|groupadd|groupmod|useradd|usermod)(?![\w.-])"
@@ -35,8 +35,7 @@ def render(
             build_context=build_context,
         )
 
-    env = Environment(loader=PackageLoader("project_sandbox", "templates"))
-    tmpl = env.get_template("Dockerfile.j2")
+    tmpl = templating.get_template("Dockerfile.j2")
     shared = dict(
         base_image=base_image,
         source_dockerfile_text=source_dockerfile_text,
@@ -138,8 +137,7 @@ def _sandbox_copy_prefix(*, context_dir: Path, build_context: Path) -> str:
 
 def render_entrypoint(context_dir: Path) -> Path:
     out = context_dir / "entrypoint.sh"
-    env = Environment(loader=PackageLoader("project_sandbox", "templates"))
-    tmpl = env.get_template("entrypoint.sh.j2")
+    tmpl = templating.get_template("entrypoint.sh.j2")
     out.write_text(tmpl.render() + "\n", encoding="utf-8")
     out.chmod(0o755)
     return out
@@ -147,8 +145,7 @@ def render_entrypoint(context_dir: Path) -> Path:
 
 def render_devcontainer_entrypoint(context_dir: Path) -> Path:
     out = context_dir / "project-sandbox-devcontainer-init"
-    env = Environment(loader=PackageLoader("project_sandbox", "templates"))
-    tmpl = env.get_template("devcontainer-entrypoint.sh.j2")
+    tmpl = templating.get_template("devcontainer-entrypoint.sh.j2")
     out.write_text(tmpl.render() + "\n", encoding="utf-8")
     out.chmod(0o755)
     return out

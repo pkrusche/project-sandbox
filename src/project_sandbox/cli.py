@@ -179,7 +179,6 @@ def main(argv: list[str] | None = None) -> int:
             worktree=wt,
             identity=identity,
             run_agent=run_agent,
-            available_agents=available_agents,
             claude_cfg=cfg["claude"],
             credential_dirs=credential_dirs,
             codex_cfg=cfg["codex"],
@@ -290,7 +289,6 @@ def _dry_run(
         worktree=worktree,
         identity=identity,
         run_agent=run_agent,
-        available_agents=available_agents,
         claude_cfg=claude_cfg,
         credential_dirs=credential_dirs,
         codex_cfg=codex_cfg,
@@ -338,11 +336,9 @@ def _resolve_build_source(
 
 
 def _setup_worktree(args, project: Path):
-    """Return (Worktree | None, workspace_path)."""
+    """Return (Worktree | None, workspace_path). main() validates the project first."""
     if not args.branch:
         return None, project
-
-    _validate_worktree_project(project)
 
     wt = worktree_mod.setup(
         repo=project,
@@ -358,7 +354,6 @@ def _plan_worktree(args, project: Path):
     if not args.branch:
         return None, project
 
-    _validate_worktree_project(project)
     wt_path = worktree_mod.path_for(
         project,
         args.branch,
@@ -399,18 +394,12 @@ def _build_session_command(
     worktree,
     identity,
     run_agent: str,
-    available_agents: tuple[str, ...],
     claude_cfg: Path,
     credential_dirs: dict[str, Path],
     codex_cfg: Path,
     create_prompt_files: bool,
 ) -> tuple[list[str], Path | None, bool]:
-    if run_agent not in available_agents:
-        available = ", ".join(available_agents)
-        raise SystemExit(
-            f"--agent={run_agent} is unavailable on this host; available agents: {available}"
-        )
-
+    # Agent availability is validated up front in main() via _ensure_agent_available.
     extra_mounts = list(args.extra_mounts)
     if worktree is not None:
         git_dir_host = (project / ".git").resolve()

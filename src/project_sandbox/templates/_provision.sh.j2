@@ -1,0 +1,48 @@
+{#- Shared provisioning block for entrypoint.sh and devcontainer-entrypoint.sh.
+    The parent must set $NAME and $EMAIL before including. Applies the git/jj
+    identity, then copies generated configs and staged secrets into the agent
+    home. Keep this the single source of truth for credential staging. -#}
+if [ -n "$NAME" ] || [ -n "$EMAIL" ]; then
+  : > "$HOME/.gitconfig"
+  [ -n "$NAME" ] && git config --global user.name "$NAME"
+  [ -n "$EMAIL" ] && git config --global user.email "$EMAIL"
+fi
+
+if command -v jj >/dev/null 2>&1 && { [ -n "$NAME" ] || [ -n "$EMAIL" ]; }; then
+  [ -n "$NAME" ] && (cd "$HOME" && jj config set --user user.name "$NAME")
+  [ -n "$EMAIL" ] && (cd "$HOME" && jj config set --user user.email "$EMAIL")
+fi
+
+mkdir -p "$HOME/.claude" "$HOME/.codex" "$HOME/.config/opencode"
+export CLAUDE_SECURESTORAGE_CONFIG_DIR="${CLAUDE_SECURESTORAGE_CONFIG_DIR:-$HOME/.claude}"
+if [ -f "/project-sandbox-config/claude/settings.json" ]; then
+  cp "/project-sandbox-config/claude/settings.json" "$HOME/.claude/settings.json"
+fi
+if [ -s "/project-sandbox-secrets/claude/.credentials.json" ]; then
+  cp "/project-sandbox-secrets/claude/.credentials.json" "$HOME/.claude/.credentials.json"
+  chmod 600 "$HOME/.claude/.credentials.json"
+fi
+if [ -f "/project-sandbox-secrets/claude/.claude.json" ]; then
+  cp "/project-sandbox-secrets/claude/.claude.json" "$HOME/.claude.json"
+  cp "/project-sandbox-secrets/claude/.claude.json" "$HOME/.claude/.claude.json"
+  chmod 600 "$HOME/.claude.json"
+  chmod 600 "$HOME/.claude/.claude.json"
+fi
+if [ -f "/project-sandbox-config/codex/config.toml" ]; then
+  cp "/project-sandbox-config/codex/config.toml" "$HOME/.codex/config.toml"
+fi
+if [ -f "/project-sandbox-secrets/codex/auth.json" ]; then
+  cp "/project-sandbox-secrets/codex/auth.json" "$HOME/.codex/auth.json"
+  chmod 600 "$HOME/.codex/auth.json"
+fi
+if [ -d "/project-sandbox-secrets/opencode/.config/opencode" ]; then
+  cp -R "/project-sandbox-secrets/opencode/.config/opencode/." "$HOME/.config/opencode/"
+fi
+if [ -d "/project-sandbox-secrets/opencode/.local/share/opencode" ]; then
+  mkdir -p "$HOME/.local/share/opencode"
+  cp -R "/project-sandbox-secrets/opencode/.local/share/opencode/." "$HOME/.local/share/opencode/"
+fi
+if [ -d "/project-sandbox-secrets/opencode/.local/state/opencode" ]; then
+  mkdir -p "$HOME/.local/state/opencode"
+  cp -R "/project-sandbox-secrets/opencode/.local/state/opencode/." "$HOME/.local/state/opencode/"
+fi
