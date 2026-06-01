@@ -28,6 +28,39 @@ def _render(
     )
 
 
+class HostMemoryTests(TestCase):
+    def test_normalizes_units(self) -> None:
+        self.assertEqual(devcontainer._host_memory("8g"), "8gb")
+        self.assertEqual(devcontainer._host_memory("8gb"), "8gb")
+        self.assertEqual(devcontainer._host_memory("512m"), "512mb")
+        self.assertEqual(devcontainer._host_memory("512mb"), "512mb")
+
+    def test_returns_none_for_empty_or_unrecognized(self) -> None:
+        self.assertIsNone(devcontainer._host_memory(None))
+        self.assertIsNone(devcontainer._host_memory(""))
+        self.assertIsNone(devcontainer._host_memory("lots"))
+
+    def test_megabyte_memory_renders_valid_hostrequirements(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / ".project-sandbox").mkdir()
+
+            devcontainer.render(
+                project,
+                identity=GitIdentity("Ada", "ada@example.com"),
+                firewall_enabled=True,
+                memory="512m",
+                cpus=4,
+                extra_mounts=[],
+            )
+            spec = json.loads(
+                (project / ".devcontainer" / "devcontainer.json").read_text()
+            )
+
+            self.assertIn("--memory=512m", spec["runArgs"])
+            self.assertEqual(spec["hostRequirements"]["memory"], "512mb")
+
+
 class DevcontainerTests(TestCase):
     def test_render_writes_valid_devcontainer_json_with_capabilities(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

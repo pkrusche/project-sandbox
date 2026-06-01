@@ -58,6 +58,16 @@ class WorktreeSetupTests(TestCase):
 
         self.assertEqual(wt1.path, wt2.path)
 
+    def test_list_worktrees_handles_paths_with_spaces(self) -> None:
+        custom = self.root / "work trees with spaces"
+        wt1 = worktree_mod.setup(self.repo, "feat/x", worktree_dir=custom)
+        listed = worktree_mod._list_worktrees(self.repo)
+
+        self.assertIn(str(wt1.path.resolve()), listed)
+        # Idempotent reuse must recognize the spaced path and not re-add it.
+        wt2 = worktree_mod.setup(self.repo, "feat/x", worktree_dir=custom)
+        self.assertEqual(wt1.path, wt2.path)
+
     def test_setup_existing_branch(self) -> None:
         subprocess.run(
             ["git", "-C", str(self.repo), "branch", "existing-branch"],

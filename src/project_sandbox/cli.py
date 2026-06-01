@@ -101,101 +101,112 @@ def main(argv: list[str] | None = None) -> int:
 
     wt, workspace = _setup_worktree(args, project) if run_agent else (None, project)
 
-    context_dir = ensure_dir(project / ".project-sandbox")
-    base_image, base_dockerfile, build_context = _resolve_build_source(
-        args,
-        project=project,
-        context_dir=context_dir,
-    )
-
-    dockerfile.render(
-        context_dir,
-        base_image=base_image,
-        base_dockerfile=base_dockerfile,
-        build_context=build_context,
-        install_agents=available_agents,
-        warn=print,
-    )
-    dockerfile.render_entrypoint(context_dir)
-    dockerfile.render_devcontainer_entrypoint(context_dir)
-    firewall.render(
-        context_dir,
-        extra_domains=args.extra_domain,
-    )
-
-    cfg = config_agents.render(context_dir)
-    credential_dirs = config_agents.sync_credentials(context_dir)
-
-    _write_project_sandbox_gitignore(context_dir)
-    _update_project_gitignore(project)
-
-    devcontainer.render(
-        project,
-        identity=identity,
-        firewall_enabled=not args.no_firewall,
-        memory=args.memory,
-        cpus=args.cpus,
-        extra_mounts=args.extra_mounts,
-        credential_dirs=credential_dirs,
-        build_context=build_context,
-    )
-
-    if run_agent is None:
-        _print_next_steps(
-            context_dir=context_dir,
+    # Once a worktree exists, every exit path must run teardown so a failed build
+    # or early return does not orphan the worktree (and its branch). agent_ran
+    # distinguishes a genuine session (honor --after-session) from a setup/build
+    # failure before the agent ran (never integrate — just leave it in place).
+    agent_ran = False
+    exit_code = 1
+    try:
+        context_dir = ensure_dir(project / ".project-sandbox")
+        base_image, base_dockerfile, build_context = _resolve_build_source(
+            args,
             project=project,
-            available_agents=available_agents,
-        )
-        return 0
-
-    rc = container_cli.ensure_system_started()
-    if rc != 0:
-        print(
-            "[W] Apple container system not running - if you're on a Mac, you may need to install or start it. Otherwise, you can still work with the devcontainer setup."
-        )
-
-    if not args.no_build:
-        rc = container_cli.build_image(
             context_dir=context_dir,
-            image_tag=args.image_tag,
+        )
+
+        dockerfile.render(
+            context_dir,
+            base_image=base_image,
+            base_dockerfile=base_dockerfile,
             build_context=build_context,
-            dockerfile_path=context_dir / "Dockerfile",
+            install_agents=available_agents,
+            warn=print,
         )
+        dockerfile.render_entrypoint(context_dir)
+        dockerfile.render_devcontainer_entrypoint(context_dir)
+        firewall.render(
+            context_dir,
+            extra_domains=args.extra_domain,
+        )
+
+        cfg = config_agents.render(context_dir)
+        credential_dirs = config_agents.sync_credentials(context_dir)
+
+        _write_project_sandbox_gitignore(context_dir)
+        _update_project_gitignore(project)
+
+        devcontainer.render(
+            project,
+            identity=identity,
+            firewall_enabled=not args.no_firewall,
+            memory=args.memory,
+            cpus=args.cpus,
+            extra_mounts=args.extra_mounts,
+            credential_dirs=credential_dirs,
+            build_context=build_context,
+        )
+
+        if run_agent is None:
+            _print_next_steps(
+                context_dir=context_dir,
+                project=project,
+                available_agents=available_agents,
+            )
+            return 0
+
+        rc = container_cli.ensure_system_started()
         if rc != 0:
-            return rc
+            print(
+                "[W] Apple container system not running - if you're on a Mac, you may need to install or start it. Otherwise, you can still work with the devcontainer setup."
+            )
 
-    cmd, log_path, unsupervised = _build_session_command(
-        args,
-        project=project,
-        context_dir=context_dir,
-        workspace=workspace,
-        worktree=wt,
-        identity=identity,
-        run_agent=run_agent,
-        available_agents=available_agents,
-        claude_cfg=cfg["claude"],
-        credential_dirs=credential_dirs,
-        codex_cfg=cfg["codex"],
-        create_prompt_files=True,
-    )
+        if not args.no_build:
+            rc = container_cli.build_image(
+                context_dir=context_dir,
+                image_tag=args.image_tag,
+                build_context=build_context,
+                dockerfile_path=context_dir / "Dockerfile",
+            )
+            if rc != 0:
+                return rc
 
-    if not unsupervised:
-        _print_next_steps(
-            context_dir=context_dir,
+        cmd, log_path, unsupervised = _build_session_command(
+            args,
             project=project,
+            context_dir=context_dir,
+            workspace=workspace,
+            worktree=wt,
+            identity=identity,
+            run_agent=run_agent,
             available_agents=available_agents,
+            claude_cfg=cfg["claude"],
+            credential_dirs=credential_dirs,
+            codex_cfg=cfg["codex"],
+            create_prompt_files=True,
         )
 
-    if unsupervised:
-        assert log_path is not None
-        exit_code = session.run(cmd, log_path=log_path, timeout=args.timeout)
-    else:
-        exit_code = container_cli.run(cmd)
+        if not unsupervised:
+            _print_next_steps(
+                context_dir=context_dir,
+                project=project,
+                available_agents=available_agents,
+            )
 
-    if wt is not None:
-        _teardown_worktree(args, project=project, wt=wt, exit_code=exit_code)
+        agent_ran = True
+        if unsupervised:
+            assert log_path is not None
+            exit_code = session.run(cmd, log_path=log_path, timeout=args.timeout)
+        else:
+            exit_code = container_cli.run(cmd)
 
-    return exit_code
+        return exit_code
+    finally:
+        if wt is not None:
+            if agent_ran:
+                _teardown_worktree(args, project=project, wt=wt, exit_code=exit_code)
+            else:
+                worktree_mod.teardown(project, wt, after="nothing")
 
 
 def _requested_agent(args) -> str | None:
@@ -499,14 +510,14 @@ def _update_project_gitignore(project: Path) -> None:
     gi = project / ".gitignore"
     existing = gi.read_text(encoding="utf-8") if gi.exists() else ""
     existing_lines = set(existing.splitlines())
-    if marker in existing:
-        missing = [line for line in lines_to_add if line not in existing_lines]
-        if missing:
-            sep = "\n" if existing and not existing.endswith("\n") else ""
-            gi.write_text(existing + sep + "\n".join(missing) + "\n", encoding="utf-8")
+    # Append only entries that are not already present anywhere in the file, so a
+    # project that already ignores .project-sandbox/ (without our marker) does not
+    # get a duplicate line. The marker is itself an entry, so it is added only once.
+    missing = [line for line in lines_to_add if line not in existing_lines]
+    if not missing:
         return
     sep = "\n" if existing and not existing.endswith("\n") else ""
-    gi.write_text(existing + sep + "\n".join(lines_to_add) + "\n", encoding="utf-8")
+    gi.write_text(existing + sep + "\n".join(missing) + "\n", encoding="utf-8")
 
 
 def _write_project_sandbox_gitignore(context_dir: Path) -> None:

@@ -16,7 +16,9 @@ def setup(repo: Path, branch: str, base: str | None = None, worktree_dir: Path |
     if wt_path.exists():
         _git(repo, ["worktree", "prune"])
         existing = _list_worktrees(repo)
-        if str(wt_path) in existing:
+        # git reports resolved absolute paths; wt_path may still contain symlinks
+        # (e.g. /tmp -> /private/tmp on macOS), so compare both forms.
+        if str(wt_path) in existing or str(wt_path.resolve()) in existing:
             return Worktree(path=wt_path, branch=branch)
 
     branches = _git(repo, ["branch", "--list", branch], capture=True)
@@ -71,9 +73,18 @@ def _git(repo: Path, args: list[str], capture: bool = False) -> str:
     return result.stdout if capture else ""
 
 
+_WORKTREE_PREFIX = "worktree "
+
+
 def _list_worktrees(repo: Path) -> list[str]:
     out = _git(repo, ["worktree", "list", "--porcelain"], capture=True)
-    return [line.split()[-1] for line in out.splitlines() if line.startswith("worktree")]
+    # Porcelain lines look like "worktree <path>"; the path may contain spaces, so
+    # strip the fixed prefix rather than splitting on whitespace.
+    return [
+        line[len(_WORKTREE_PREFIX):]
+        for line in out.splitlines()
+        if line.startswith(_WORKTREE_PREFIX)
+    ]
 
 
 def _clear_stale_index_lock(repo: Path, wt: Worktree) -> None:

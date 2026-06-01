@@ -108,7 +108,7 @@ uv run project-sandbox \
 - `--prompt-text "…"` passes the prompt via env var (or via a temp file if longer than 4096 chars).
 - `--agent {claude,codex,opencode,bash}` selects which agent to run. If omitted, the CLI only initializes generated config files unless a prompt is supplied. Claude, Codex, and OpenCode require their host config directories; Bash is always available.
 - `--log FILE` overrides the default log path under `.project-sandbox/sessions/<agent>-main-<timestamp>.log`.
-- `--timeout SECONDS` kills the container if the agent runs too long; the CLI returns exit code `124` on timeout.
+- `--timeout SECONDS` stops the session if the agent runs too long: the `container run` process group is terminated (SIGTERM, then SIGKILL), which tears down the `--rm` container, and the CLI returns exit code `124`.
 - The agent's exit code is propagated, so CI pipelines can detect failures.
 
 Unsupervised sessions skip the interactive `-it` flags and switch dispatch to `<agent>-headless` for all supported agents. Claude runs with `--dangerously-skip-permissions`, Codex uses `approval_policy = "never"`, OpenCode runs via `opencode run`, and Bash runs with `bash -lc`. The container is still the sandbox boundary; review the diff before integrating.

@@ -43,6 +43,19 @@ class UpdateProjectGitignoreTests(TestCase):
             self.assertTrue(content.startswith(existing))
             self.assertIn(".project-sandbox/", content)
 
+    def test_does_not_duplicate_preexisting_project_sandbox_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            # Project already ignores .project-sandbox/ but without our marker.
+            (project / ".gitignore").write_text(
+                "node_modules/\n.project-sandbox/\n", encoding="utf-8"
+            )
+
+            cli._update_project_gitignore(project)
+            content = (project / ".gitignore").read_text(encoding="utf-8")
+
+            self.assertEqual(content.count(".project-sandbox/\n"), 1)
+
     def test_adds_missing_project_sandbox_path_to_existing_block(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)

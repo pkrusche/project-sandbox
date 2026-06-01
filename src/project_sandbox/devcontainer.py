@@ -1,10 +1,26 @@
 import os
+import re
 from pathlib import Path
 
 from jinja2 import Environment, PackageLoader
 
 from . import config_agents
 from .git_identity import GitIdentity
+
+_MEMORY_RE = re.compile(r"(\d+)\s*([gm])b?", re.IGNORECASE)
+
+
+def _host_memory(memory: str | None) -> str | None:
+    """Normalize a container memory string (e.g. "8g", "512m", "8gb") to the
+    devcontainer hostRequirements form ("8gb", "512mb"). Returns None when the
+    value is empty or not in a recognized unit, so the field can be omitted."""
+    if not memory:
+        return None
+    match = _MEMORY_RE.fullmatch(memory.strip())
+    if match is None:
+        return None
+    value, unit = match.groups()
+    return f"{value}{unit.lower()}b"
 
 
 def render(
@@ -53,6 +69,7 @@ def render(
             build_context_ref=_devcontainer_ref(dc_dir, build_context),
             firewall_enabled=firewall_enabled,
             memory=memory,
+            memory_hostreq=_host_memory(memory),
             cpus=cpus,
             mount_codex_secrets=mount_codex_secrets,
             mount_opencode_secrets=mount_opencode_secrets,

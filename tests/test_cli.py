@@ -407,6 +407,46 @@ class CliTests(TestCase):
 
         self.assertIn("--branch requires", str(raised.exception))
 
+    def test_failed_build_tears_down_worktree_without_integrating(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            _make_git_repo(project)
+            host_home = project / "home"
+            paths = _agent_paths(host_home)
+            paths["claude"].mkdir(parents=True)
+
+            fake_wt = cli.worktree_mod.Worktree(
+                path=project.parent / f"{project.name}-worktrees" / "feat-x",
+                branch="feat/x",
+            )
+
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("A", "a@b.com")),
+                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                patch.object(cli.config_agents, "sync_credentials", return_value={
+                    "claude": host_home / "c", "claude-devcontainer": host_home / "cd",
+                }),
+                patch.object(cli.worktree_mod, "setup", return_value=fake_wt),
+                patch.object(cli.worktree_mod, "teardown") as teardown,
+                patch.object(cli.container_cli, "ensure_system_started", return_value=0),
+                patch.object(cli.container_cli, "build_image", return_value=1),
+                patch.object(cli.container_cli, "run") as run,
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                rc = cli.main([
+                    "--no-firewall",
+                    "--agent", "claude",
+                    "--branch", "feat/x", "--after-session", "merge",
+                    str(project), "python:3.12-slim",
+                ])
+
+            self.assertEqual(rc, 1)
+            run.assert_not_called()
+            # Build failed before the agent ran: teardown must NOT integrate
+            # (no merge of an empty/failed session), regardless of --after-session.
+            teardown.assert_called_once()
+            self.assertEqual(teardown.call_args.kwargs.get("after"), "nothing")
+
     def test_after_session_ask_unsupervised_raises(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             # Validation fires before resolve_strict, so no git repo needed.

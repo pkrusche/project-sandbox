@@ -13,6 +13,3 @@ dist/
 .pycache-test
 .pytest_cache
 .uv-python
-
-# project-sandbox — do not commit agent secrets
-.project-sandbox/
