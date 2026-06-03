@@ -37,7 +37,7 @@ case "${1:-bash}" in
       claude-headless)
         shift
         load_project_sandbox_prompt claude-headless || exit $?
-        exec claude -p "$PROMPT" --output-format stream-json --dangerously-skip-permissions
+        exec claude -p "$PROMPT" --output-format stream-json --verbose --dangerously-skip-permissions
         ;;
       codex-headless)
         shift

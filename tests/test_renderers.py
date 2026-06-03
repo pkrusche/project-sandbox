@@ -545,6 +545,11 @@ class RendererTests(TestCase):
             self.assertIn('jj config set --user user.name "$NAME"', text)
             self.assertIn('jj config set --user user.email "$EMAIL"', text)
             self.assertIn("claude-headless", text)
+            self.assertIn(
+                'exec claude -p "$PROMPT" --output-format stream-json '
+                "--verbose --dangerously-skip-permissions",
+                text,
+            )
             self.assertIn("codex-headless", text)
             self.assertIn("opencode-headless", text)
             self.assertIn("bash-headless", text)

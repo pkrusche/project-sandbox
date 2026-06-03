@@ -1,9 +1,5 @@
 # TODO — outstanding items
 
-Tracked follow-ups from the codebase review. The P0 correctness bugs, the
-actionable P2 polish items, and the P1 de-duplication refactors are already
-done; what remains below was deliberately deferred, with the reason.
-
 ## Needs a Linux / `apt` + iptables environment to validate
 
 ### Firewall: allow all `resolv.conf` resolvers, not just the first
