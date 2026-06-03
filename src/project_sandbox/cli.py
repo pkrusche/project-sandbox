@@ -8,6 +8,7 @@ from . import (
     dockerfile,
     firewall,
     session,
+    transcript,
 )
 from . import (
     worktree as worktree_mod,
@@ -197,6 +198,8 @@ def main(argv: list[str] | None = None) -> int:
         if unsupervised:
             assert log_path is not None
             exit_code = session.run(cmd, log_path=log_path, timeout=args.timeout)
+            if run_agent == "claude":
+                _write_transcript_markdown(log_path)
         else:
             exit_code = container_cli.run(cmd)
 
@@ -207,6 +210,21 @@ def main(argv: list[str] | None = None) -> int:
                 _teardown_worktree(args, project=project, wt=wt, exit_code=exit_code)
             else:
                 worktree_mod.teardown(project, wt, after="nothing")
+
+
+def _write_transcript_markdown(log_path: Path) -> None:
+    """Best-effort: render a markdown transcript beside the JSON session log.
+
+    Transcript generation must never fail the run, so any parsing/IO error is
+    reported and swallowed.
+    """
+    try:
+        md_path = transcript.log_to_markdown(log_path)
+    except Exception as exc:  # noqa: BLE001 - best-effort sidecar, never fatal
+        print(f"[W] Could not write markdown transcript: {exc}")
+        return
+    if md_path is not None:
+        print(f"Transcript: {md_path}")
 
 
 def _requested_agent(args) -> str | None:
