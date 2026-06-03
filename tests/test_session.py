@@ -1,3 +1,5 @@
+import contextlib
+import io
 import sys
 import tempfile
 from pathlib import Path
@@ -29,3 +31,38 @@ class SessionTests(TestCase):
 
             self.assertEqual(path.parent, project / ".project-sandbox" / "sessions")
             self.assertFalse(path.parent.exists())
+
+    def test_non_verbose_run_writes_log_without_echoing_to_terminal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "session.log"
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = session.run(
+                    [sys.executable, "-c", "print('hello from agent')"],
+                    log_path=log_path,
+                    verbose=False,
+                )
+
+            self.assertEqual(rc, 0)
+            self.assertIn("hello from agent", log_path.read_text(encoding="utf-8"))
+            self.assertNotIn("hello from agent", out.getvalue())
+
+    def test_verbose_run_echoes_to_terminal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "session.log"
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                session.run(
+                    [sys.executable, "-c", "print('streamed line')"],
+                    log_path=log_path,
+                    verbose=True,
+                )
+
+            self.assertIn("streamed line", out.getvalue())
+
+    def test_count_lines(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "f.log"
+            path.write_text("a\nb\nc\n", encoding="utf-8")
+            self.assertEqual(session.count_lines(path), 3)
+            self.assertEqual(session.count_lines(Path(tmp) / "missing.log"), 0)

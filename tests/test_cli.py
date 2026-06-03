@@ -512,6 +512,41 @@ class CliTests(TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("bash-headless", out.getvalue())
 
+    def _headless_dry_run(self, *extra_args: str) -> str:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            out = io.StringIO()
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(
+                    cli.config_agents,
+                    "_agent_host_paths",
+                    return_value=_agent_paths(project / "home"),
+                ),
+                contextlib.redirect_stdout(out),
+            ):
+                rc = cli.main([
+                    "--dry-run", "--no-build", "--agent", "bash",
+                    "--prompt-text", "echo ok",
+                    *extra_args,
+                    str(project), "python:3.12-slim",
+                ])
+            self.assertEqual(rc, 0)
+            return out.getvalue()
+
+    def test_non_verbose_headless_quiets_startup_and_log_redirect(self) -> None:
+        out = self._headless_dry_run()
+        # Quiet startup is requested in-container and stdout is redirected to the
+        # log only (no tee to the terminal).
+        self.assertIn("PROJECT_SANDBOX_QUIET=1", out)
+        self.assertNotIn("| tee", out)
+
+    def test_verbose_headless_streams_and_skips_quiet(self) -> None:
+        out = self._headless_dry_run("--verbose")
+        self.assertNotIn("PROJECT_SANDBOX_QUIET", out)
+        self.assertIn("| tee", out)
+
     def test_unavailable_agent_raises_with_available_list(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)

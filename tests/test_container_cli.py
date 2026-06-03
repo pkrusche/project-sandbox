@@ -7,7 +7,7 @@ import io
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from project_sandbox.container_cli import build_image, build_run_argv
+from project_sandbox.container_cli import _run_quietable, build_image, build_run_argv
 from project_sandbox.git_identity import GitIdentity
 
 
@@ -113,3 +113,20 @@ class ContainerCliTests(TestCase):
             out.getvalue().strip(),
             f"container build -t project-sandbox:test -f {context / 'Dockerfile'} {root}",
         )
+
+    def test_run_quietable_swallows_output_on_success(self) -> None:
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = _run_quietable(["sh", "-c", "echo hello"], verbose=False)
+        self.assertEqual(rc, 0)
+        self.assertEqual(out.getvalue(), "")
+        self.assertEqual(err.getvalue(), "")
+
+    def test_run_quietable_surfaces_output_on_failure(self) -> None:
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = _run_quietable(
+                ["sh", "-c", "echo oops >&2; exit 7"], verbose=False
+            )
+        self.assertEqual(rc, 7)
+        self.assertIn("oops", err.getvalue())

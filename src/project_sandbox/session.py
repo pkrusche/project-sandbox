@@ -16,9 +16,17 @@ def default_log_path(project: Path, branch: str | None, agent: str, *, create: b
     return log_dir / f"{stem}.log"
 
 
-def run(argv: list[str], *, log_path: Path, timeout: int | None = None, dry_run: bool = False) -> int:
+def run(
+    argv: list[str],
+    *,
+    log_path: Path,
+    timeout: int | None = None,
+    dry_run: bool = False,
+    verbose: bool = False,
+) -> int:
     if dry_run:
-        print(shlex.join(argv), "2>&1 | tee", shlex.quote(str(log_path)))
+        redirect = "2>&1 | tee" if verbose else "> "
+        print(shlex.join(argv), redirect, shlex.quote(str(log_path)))
         if timeout:
             print(f"# timeout: {timeout}s")
         return 0
@@ -35,7 +43,9 @@ def run(argv: list[str], *, log_path: Path, timeout: int | None = None, dry_run:
             start_new_session=True,
         )
         assert proc.stdout is not None
-        output_thread = threading.Thread(target=_tee_output, args=(proc.stdout, handle), daemon=True)
+        output_thread = threading.Thread(
+            target=_tee_output, args=(proc.stdout, handle, verbose), daemon=True
+        )
         output_thread.start()
         try:
             return proc.wait(timeout=timeout)
@@ -78,8 +88,18 @@ def _signal_group_or_child(proc: "subprocess.Popen", pgid: int | None, sig: int)
         pass
 
 
-def _tee_output(stream, handle) -> None:
+def _tee_output(stream, handle, verbose: bool = True) -> None:
     for line in stream:
-        print(line, end="")
+        if verbose:
+            print(line, end="")
         handle.write(line)
         handle.flush()
+
+
+def count_lines(path: Path) -> int:
+    """Count newlines in a file without loading it all into memory."""
+    try:
+        with path.open("rb") as fh:
+            return sum(1 for _ in fh)
+    except OSError:
+        return 0

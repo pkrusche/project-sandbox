@@ -1,5 +1,6 @@
 import shlex
 import subprocess
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -100,6 +101,7 @@ def build_image(
     build_context: Path | None = None,
     dockerfile_path: Path | None = None,
     dry_run: bool = False,
+    verbose: bool = True,
 ) -> int:
     build_context = build_context or context_dir
     dockerfile_path = dockerfile_path or context_dir / "Dockerfile"
@@ -111,15 +113,28 @@ def build_image(
     if dry_run:
         print(shlex.join(cmd))
         return 0
-    return subprocess.run(cmd, check=False).returncode
+    return _run_quietable(cmd, verbose=verbose)
 
 
-def ensure_system_started(*, dry_run: bool = False) -> int:
+def ensure_system_started(*, dry_run: bool = False, verbose: bool = True) -> int:
     cmd = ["container", "system", "start"]
     if dry_run:
         print(shlex.join(cmd))
         return 0
-    return subprocess.run(cmd, check=False).returncode
+    return _run_quietable(cmd, verbose=verbose)
+
+
+def _run_quietable(cmd: list[str], *, verbose: bool) -> int:
+    """Run cmd, streaming its output when verbose. When quiet, capture output and
+    surface it only if the command fails, so success stays silent but failures
+    remain debuggable."""
+    if verbose:
+        return subprocess.run(cmd, check=False).returncode
+    proc = subprocess.run(cmd, check=False, capture_output=True, text=True)
+    if proc.returncode != 0:
+        sys.stdout.write(proc.stdout)
+        sys.stderr.write(proc.stderr)
+    return proc.returncode
 
 
 def run(argv: list[str], *, dry_run: bool = False) -> int:

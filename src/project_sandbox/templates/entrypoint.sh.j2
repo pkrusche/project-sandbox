@@ -7,7 +7,16 @@ EMAIL="${PROJECT_SANDBOX_USER_EMAIL:-}"
 {% include "_provision.sh.j2" %}
 
 if [ "${PROJECT_SANDBOX_NO_FIREWALL:-0}" != "1" ]; then
-  sudo -n /usr/local/bin/project-sandbox-init-firewall
+  if [ "${PROJECT_SANDBOX_QUIET:-0}" = "1" ]; then
+    # Suppress the firewall banner, but capture output so a failure is still
+    # visible (then abort, since the firewall is the sandbox boundary).
+    if ! fw_out="$(sudo -n /usr/local/bin/project-sandbox-init-firewall 2>&1)"; then
+      printf '%s\n' "$fw_out" >&2
+      exit 1
+    fi
+  else
+    sudo -n /usr/local/bin/project-sandbox-init-firewall
+  fi
 fi
 
 load_project_sandbox_prompt() {

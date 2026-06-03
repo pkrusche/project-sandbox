@@ -541,6 +541,10 @@ class RendererTests(TestCase):
             self.assertNotIn(".codex.host", text)
             self.assertNotIn("opencode.host", text)
             self.assertIn("sudo -n /usr/local/bin/project-sandbox-init-firewall", text)
+            # Quiet mode suppresses the firewall banner but re-surfaces output on
+            # failure (then aborts, since the firewall is the sandbox boundary).
+            self.assertIn('"${PROJECT_SANDBOX_QUIET:-0}" = "1"', text)
+            self.assertIn('printf \'%s\\n\' "$fw_out" >&2', text)
             self.assertNotIn("sudo chown", text)
             self.assertIn('jj config set --user user.name "$NAME"', text)
             self.assertIn('jj config set --user user.email "$EMAIL"', text)

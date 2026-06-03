@@ -156,18 +156,21 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 0
 
-        rc = container_cli.ensure_system_started()
+        rc = container_cli.ensure_system_started(verbose=args.verbose)
         if rc != 0:
             print(
                 "[W] Apple container system not running - if you're on a Mac, you may need to install or start it. Otherwise, you can still work with the devcontainer setup."
             )
 
         if not args.no_build:
+            if not args.verbose:
+                print("Building container image…")
             rc = container_cli.build_image(
                 context_dir=context_dir,
                 image_tag=args.image_tag,
                 build_context=build_context,
                 dockerfile_path=context_dir / "Dockerfile",
+                verbose=args.verbose,
             )
             if rc != 0:
                 return rc
@@ -187,17 +190,26 @@ def main(argv: list[str] | None = None) -> int:
         )
 
         if not unsupervised:
-            _print_next_steps(
-                context_dir=context_dir,
-                project=project,
-                available_agents=available_agents,
-                launching=True,
-            )
+            if args.verbose:
+                _print_next_steps(
+                    context_dir=context_dir,
+                    project=project,
+                    available_agents=available_agents,
+                    launching=True,
+                )
+            else:
+                print("Starting container…")
 
         agent_ran = True
         if unsupervised:
             assert log_path is not None
-            exit_code = session.run(cmd, log_path=log_path, timeout=args.timeout)
+            if not args.verbose:
+                print(f"Running {run_agent} (headless); streaming to {log_path}")
+            exit_code = session.run(
+                cmd, log_path=log_path, timeout=args.timeout, verbose=args.verbose
+            )
+            if not args.verbose:
+                print(f"Wrote {session.count_lines(log_path)} lines to {log_path}")
             if run_agent == "claude":
                 _write_transcript_markdown(log_path)
         else:
@@ -290,7 +302,7 @@ def _dry_run(
         print("Would initialize config files only; no agent container would be started.")
         return 0
 
-    container_cli.ensure_system_started(dry_run=True)
+    container_cli.ensure_system_started(dry_run=True, verbose=args.verbose)
     if not args.no_build:
         container_cli.build_image(
             context_dir=context_dir,
@@ -298,6 +310,7 @@ def _dry_run(
             build_context=build_context,
             dockerfile_path=context_dir / "Dockerfile",
             dry_run=True,
+            verbose=args.verbose,
         )
     cmd, log_path, unsupervised = _build_session_command(
         args,
@@ -314,7 +327,9 @@ def _dry_run(
     )
     if unsupervised:
         assert log_path is not None
-        session.run(cmd, log_path=log_path, timeout=args.timeout, dry_run=True)
+        session.run(
+            cmd, log_path=log_path, timeout=args.timeout, dry_run=True, verbose=args.verbose
+        )
     else:
         container_cli.run(cmd, dry_run=True)
     return 0
@@ -428,6 +443,10 @@ def _build_session_command(
             )
         extra_mounts.append(f"type=bind,source={git_dir_str},target={git_dir_str}")
     extra_env: list[str] = []
+    if not args.verbose:
+        # Silence the in-container firewall/startup banner; the entrypoint still
+        # surfaces firewall errors on failure.
+        extra_env.append("PROJECT_SANDBOX_QUIET=1")
     run_mode_agent = run_agent
     unsupervised = bool(args.prompt or args.prompt_text)
     log_path: Path | None = None
