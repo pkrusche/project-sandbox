@@ -7,7 +7,9 @@ import io
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from project_sandbox.container_cli import _run_quietable, build_image, build_run_argv
+from unittest.mock import patch
+
+from project_sandbox.container_cli import _run_quietable, build_image, build_run_argv, run
 from project_sandbox.git_identity import GitIdentity
 
 
@@ -130,3 +132,27 @@ class ContainerCliTests(TestCase):
             )
         self.assertEqual(rc, 7)
         self.assertIn("oops", err.getvalue())
+
+    def test_run_quietable_returns_127_when_container_not_on_path_verbose(self) -> None:
+        out = io.StringIO()
+        with patch("subprocess.run", side_effect=FileNotFoundError):
+            with contextlib.redirect_stdout(out):
+                rc = _run_quietable(["container", "system", "start"], verbose=True)
+        self.assertEqual(rc, 127)
+        self.assertIn("container CLI not found on PATH", out.getvalue())
+
+    def test_run_quietable_returns_127_when_container_not_on_path_quiet(self) -> None:
+        out = io.StringIO()
+        with patch("subprocess.run", side_effect=FileNotFoundError):
+            with contextlib.redirect_stdout(out):
+                rc = _run_quietable(["container", "build", "-t", "x", "."], verbose=False)
+        self.assertEqual(rc, 127)
+        self.assertIn("container CLI not found on PATH", out.getvalue())
+
+    def test_run_returns_127_when_container_not_on_path(self) -> None:
+        out = io.StringIO()
+        with patch("subprocess.run", side_effect=FileNotFoundError):
+            with contextlib.redirect_stdout(out):
+                rc = run(["container", "run", "--rm", "some-image", "cmd"])
+        self.assertEqual(rc, 127)
+        self.assertIn("container CLI not found on PATH", out.getvalue())

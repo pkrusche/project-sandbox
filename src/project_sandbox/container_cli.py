@@ -128,17 +128,25 @@ def _run_quietable(cmd: list[str], *, verbose: bool) -> int:
     """Run cmd, streaming its output when verbose. When quiet, capture output and
     surface it only if the command fails, so success stays silent but failures
     remain debuggable."""
-    if verbose:
-        return subprocess.run(cmd, check=False).returncode
-    proc = subprocess.run(cmd, check=False, capture_output=True, text=True)
-    if proc.returncode != 0:
-        sys.stdout.write(proc.stdout)
-        sys.stderr.write(proc.stderr)
-    return proc.returncode
+    try:
+        if verbose:
+            return subprocess.run(cmd, check=False).returncode
+        proc = subprocess.run(cmd, check=False, capture_output=True, text=True)
+        if proc.returncode != 0:
+            sys.stdout.write(proc.stdout)
+            sys.stderr.write(proc.stderr)
+        return proc.returncode
+    except FileNotFoundError:
+        print("container CLI not found on PATH")
+        return 127
 
 
 def run(argv: list[str], *, dry_run: bool = False) -> int:
     if dry_run:
         print(shlex.join(argv))
         return 0
-    return subprocess.run(argv, check=False).returncode
+    try:
+        return subprocess.run(argv, check=False).returncode
+    except FileNotFoundError:
+        print("container CLI not found on PATH")
+        return 127
