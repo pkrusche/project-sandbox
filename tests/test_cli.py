@@ -572,3 +572,92 @@ class CliTests(TestCase):
         self.assertIn("unavailable", str(raised.exception).lower())
         self.assertIn("claude", str(raised.exception).lower())
         self.assertIn("bash", str(raised.exception).lower())
+
+
+class TeardownWorktreeOnFailureTests(TestCase):
+    """_teardown_worktree must skip integration for all modes on nonzero exit."""
+
+    def _run_teardown(self, exit_code: int, after_session: str) -> tuple[str, str]:
+        import argparse
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            _make_git_repo(project)
+            fake_wt = cli.worktree_mod.Worktree(
+                path=project.parent / "wt" / "feat-x",
+                branch="feat/x",
+            )
+            args = argparse.Namespace(after_session=after_session)
+            out, err = io.StringIO(), io.StringIO()
+            with (
+                patch.object(cli.worktree_mod, "teardown") as teardown,
+                contextlib.redirect_stdout(out),
+                contextlib.redirect_stderr(err),
+            ):
+                cli._teardown_worktree(args, project=project, wt=fake_wt, exit_code=exit_code)
+            return out.getvalue(), teardown.call_args.kwargs.get("after")
+
+    def test_merge_skipped_on_nonzero_exit(self) -> None:
+        output, after = self._run_teardown(exit_code=124, after_session="merge")
+        self.assertEqual(after, "nothing")
+        self.assertIn("124", output)
+        self.assertIn("merge", output)
+
+    def test_rebase_skipped_on_nonzero_exit(self) -> None:
+        output, after = self._run_teardown(exit_code=1, after_session="rebase")
+        self.assertEqual(after, "nothing")
+        self.assertIn("1", output)
+        self.assertIn("rebase", output)
+
+    def test_pr_skipped_on_nonzero_exit(self) -> None:
+        output, after = self._run_teardown(exit_code=1, after_session="pr")
+        self.assertEqual(after, "nothing")
+        self.assertIn("pr", output)
+
+    def test_nothing_silent_on_nonzero_exit(self) -> None:
+        output, after = self._run_teardown(exit_code=1, after_session="nothing")
+        self.assertEqual(after, "nothing")
+        self.assertEqual(output, "")
+
+    def test_proceeds_on_zero_exit(self) -> None:
+        _, after = self._run_teardown(exit_code=0, after_session="merge")
+        self.assertEqual(after, "merge")
+
+
+class DefaultImageTagTests(TestCase):
+    def test_differs_per_project(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp1, tempfile.TemporaryDirectory() as tmp2:
+            tag1 = cli._default_image_tag(Path(tmp1))
+            tag2 = cli._default_image_tag(Path(tmp2))
+        self.assertNotEqual(tag1, tag2)
+
+    def test_format(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tag = cli._default_image_tag(Path(tmp))
+        self.assertRegex(tag, r"^project-sandbox-[a-z0-9._-]+-[0-9a-f]{8}:latest$")
+
+    def test_explicit_image_tag_overrides_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            host_home = project / "home"
+            paths = _agent_paths(host_home)
+            paths["claude"].mkdir(parents=True)
+            out = io.StringIO()
+
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                patch.object(cli.config_agents, "sync_credentials"),
+                patch.object(cli.container_cli, "ensure_system_started", return_value=0),
+                patch.object(cli.container_cli, "build_image", return_value=0) as build_image,
+                patch.object(cli.container_cli, "run", return_value=0),
+                contextlib.redirect_stdout(out),
+            ):
+                cli.main([
+                    "--image-tag", "my-custom:v1",
+                    "--agent", "claude",
+                    str(project), "python:3.12-slim",
+                ])
+
+            call_kwargs = build_image.call_args.kwargs
+            self.assertEqual(call_kwargs["image_tag"], "my-custom:v1")

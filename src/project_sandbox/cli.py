@@ -1,3 +1,5 @@
+import hashlib
+import re
 from argparse import ArgumentParser
 from pathlib import Path
 
@@ -19,6 +21,14 @@ from .paths import ensure_dir, resolve_strict
 SUPPORTED_AGENTS = ("claude", "codex", "opencode", "bash")
 
 
+def _default_image_tag(project: Path) -> str:
+    resolved = project.resolve()
+    name = re.sub(r"[^a-z0-9._-]", "-", resolved.name.lower())
+    name = re.sub(r"-{2,}", "-", name).strip("-") or "project"
+    path_hash = hashlib.sha256(str(resolved).encode()).hexdigest()[:8]
+    return f"project-sandbox-{name}-{path_hash}:latest"
+
+
 def build_parser() -> ArgumentParser:
     p = ArgumentParser(prog="project-sandbox")
     p.add_argument("project")
@@ -31,7 +41,7 @@ def build_parser() -> ArgumentParser:
         "--docker-context",
         help="Build context to use with --dockerfile (default: project root).",
     )
-    p.add_argument("--image-tag", default="project-sandbox:latest")
+    p.add_argument("--image-tag", default=None)
     p.add_argument("--no-build", action="store_true")
     p.add_argument("--memory", default="8g")
     p.add_argument("--cpus", type=int, default=4)
@@ -81,6 +91,8 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     project = resolve_strict(args.project)
+    if args.image_tag is None:
+        args.image_tag = _default_image_tag(project)
     identity = read_identity()
     available_agents = config_agents.available_agents()
 
@@ -413,7 +425,9 @@ def _validate_worktree_project(project: Path) -> None:
 
 def _teardown_worktree(args, *, project: Path, wt, exit_code: int) -> None:
     after = args.after_session
-    if exit_code != 0 and after == "ask":
+    if exit_code != 0:
+        if after != "nothing":
+            print(f"session exited {exit_code}; skipping {after} — worktree left at {wt.path}")
         after = "nothing"
     worktree_mod.teardown(project, wt, after=after)
 
