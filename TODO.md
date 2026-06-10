@@ -1,5 +1,96 @@
 # TODO — outstanding items
 
+## Correctness fixes (host-side, unit-testable now)
+
+Found in a code review on 2026-06-10. All of these are reproducible without
+apple/container and should come with regression tests.
+
+### Missing `container` binary crashes with a traceback instead of the friendly fallback
+- **Where:** `src/project_sandbox/container_cli.py` — `ensure_system_started`,
+  `build_image` (via `_run_quietable`), and `run` all call
+  `subprocess.run(["container", ...])` directly.
+- **Problem:** when apple/container is not installed, `subprocess.run` raises
+  `FileNotFoundError` rather than returning a nonzero exit code. The
+  `rc != 0` fallback in `cli.main` ("Apple container system not running …
+  you can still work with the devcontainer setup") is therefore unreachable in
+  exactly the situation it was written for; the user gets a raw traceback.
+- **To do:** wrap the `subprocess.run` calls in `container_cli` with
+  `try/except FileNotFoundError` and return a sentinel exit code (127), printing
+  one line like `container CLI not found on PATH`. Verify `cli.main` then takes
+  the existing warning path for `ensure_system_started` and aborts cleanly for
+  `build_image`/`run`. Add a unit test that monkeypatches `subprocess.run` to
+  raise `FileNotFoundError` and asserts the return code and message.
+
+### Worktree integration failures escape `cli.main`'s `finally` as tracebacks
+- **Where:** `src/project_sandbox/worktree.py` (`teardown`) and the `finally`
+  block in `src/project_sandbox/cli.py` (`main`).
+- **Problem:** `teardown` runs `git merge`, `git rebase`, and
+  `git merge --ff-only` with `check=True`. Only the `pr` push path catches
+  `CalledProcessError`. A merge/rebase conflict, or a dirty checkout in the main
+  repo, raises out of the `finally` block — the session's real exit code is
+  replaced by a traceback, and a conflicted rebase is left in progress inside
+  the worktree.
+- **To do:** in `teardown`, catch `CalledProcessError` around the merge and
+  rebase paths; on failure run `git merge --abort` / `git rebase --abort`
+  (best-effort), print a short message ("merge conflict — worktree left in
+  place at <path>; integrate manually"), and return without removing the
+  worktree. `cli.main` should then still return the agent's exit code. Add
+  tests: teardown with a conflicting merge and a conflicting rebase (the
+  existing test repo fixtures in `tests/test_worktree.py` make this cheap).
+
+### Explicit `--after-session=merge|rebase|pr` integrates even when the session failed
+- **Where:** `src/project_sandbox/cli.py` (`_teardown_worktree`).
+- **Problem:** only `after == "ask"` is downgraded to `nothing` on a nonzero
+  exit code. An unsupervised run that timed out (exit 124), or whose agent
+  crashed (the `finally` runs with the default `exit_code = 1` if `session.run`
+  raised, e.g. on Ctrl-C), is still merged/rebased/pushed — half-finished or
+  broken work gets integrated unattended.
+- **To do:** skip integration for *all* `--after-session` modes when
+  `exit_code != 0`, print why ("session exited 124; skipping merge — worktree
+  left at <path>"), and leave the worktree in place. Add unit tests covering
+  timeout (124) and generic failure with `--after-session=merge` asserting no
+  merge happened.
+
+### `worktree.setup` fails ungracefully on a stale, unregistered worktree directory
+- **Where:** `src/project_sandbox/worktree.py` (`setup`).
+- **Problem:** if `wt_path` exists on disk but is not a registered worktree
+  (leftover from a crash, a manual `rm -rf` of `.git/worktrees/<name>`, or a
+  user-created directory at the same path), the code falls through to
+  `git worktree add`, which refuses to use an existing non-empty directory and
+  raises a `CalledProcessError` traceback.
+- **To do:** after the prune-and-check, if the path still exists but is not in
+  `git worktree list`, raise `SystemExit` with a clear message telling the user
+  to remove or rename the directory (do not delete user data automatically).
+  Add a test with a pre-existing non-worktree directory at the computed path.
+
+### Default `--image-tag project-sandbox:latest` collides across projects
+- **Where:** `src/project_sandbox/cli.py` (`build_parser`,
+  default `--image-tag`).
+- **Problem:** every project builds and runs the same tag. Image content is
+  per-project (firewall extra-domains, installed agents, base image/Dockerfile
+  layers), so running the tool in project A and then project B silently
+  replaces A's image; concurrent runs (the multi-agent workflow the proxy plan
+  targets) can race build-vs-run and start an agent on the wrong project's
+  image.
+- **To do:** derive the default tag from the project, e.g.
+  `project-sandbox-<project-name>-<8-char sha256 of resolved project path>:latest`,
+  keeping `--image-tag` as the override. Update README and the argv-construction
+  tests. Sanitize the project name for the image-reference charset.
+
+## Low priority correctness / simplification
+
+### `--prompt-text` with newlines or shell-hostile content rides an env var
+- **Where:** `src/project_sandbox/cli.py` (`_build_session_command`) — prompts
+  ≤ 4096 chars go through `container run --env PROJECT_SANDBOX_PROMPT=<text>`.
+- **Problem:** multi-line or otherwise unusual prompt text depends on the
+  `container` CLI and guest init faithfully round-tripping arbitrary env-var
+  bytes (apple/container also logs full process environments to `vminitd.log`,
+  see README troubleshooting — prompts may be sensitive). The long-prompt path
+  already writes `.project-sandbox/prompts/prompt.txt` and bind-mounts it.
+- **To do:** drop the env-var path entirely and always use the prompt-file
+  mount for `--prompt-text` (one code path, no length threshold, nothing in the
+  VM's environment/logs). Update entrypoint docs/tests accordingly.
+
 ## Needs a Linux / `apt` + iptables environment to validate
 
 ### Firewall: allow all `resolv.conf` resolvers, not just the first
@@ -32,13 +123,21 @@
   via `branch.replace("/", "-")`, so `feat/x` and `feat-x` resolve to the same
   worktree directory.
 - **To do:** add a disambiguating suffix (e.g. a short branch-name hash) if this
-  ever bites. Deferred as low-probability; not worth the churn now.
+  ever bites. Deferred as low-probability; not worth the churn now. (Note: the
+  stale-directory `setup` fix above makes this collision fail loudly instead of
+  silently reusing the wrong worktree, which removes most of the risk.)
 
-### Remove stale `.pycache-test/` directory
-- **Where:** repo root. Leftover from an old manual `PYTHONPYCACHEPREFIX` compile
-  run; it references modules that no longer exist (`config_claude`, `config_codex`,
-  `launcher`). It is gitignored and nothing in the repo writes it.
-- **To do:** `rm -rf .pycache-test` (pure cleanup; no code change needed).
+### Firewall allowlist pins IPs resolved once at container start
+- **Where:** `src/project_sandbox/templates/init-firewall.sh.j2` — `dig` resolves
+  each allowlisted domain once and pins those IPs in the ipset.
+- **Problem:** CDN-backed endpoints (`api.anthropic.com`, `claude.ai`, npm)
+  rotate IPs; a long-lived session can lose access mid-run when DNS answers
+  drift away from the pinned set. Inherited from the upstream Anthropic
+  devcontainer firewall; not currently documented in README.
+- **To do:** document the limitation in the README firewall section now. The
+  real fix is the credential-filtering proxy below (L7 host allowlisting makes
+  IP pinning unnecessary), so do not build periodic re-resolution into the
+  iptables script — note it and move on.
 
 ## Canary token tripwires
 

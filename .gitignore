@@ -13,3 +13,4 @@ dist/
 .pycache-test
 .pytest_cache
 .uv-python
+.claude/worktrees
