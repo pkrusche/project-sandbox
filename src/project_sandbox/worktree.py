@@ -20,6 +20,10 @@ def setup(repo: Path, branch: str, base: str | None = None, worktree_dir: Path |
         # (e.g. /tmp -> /private/tmp on macOS), so compare both forms.
         if str(wt_path) in existing or str(wt_path.resolve()) in existing:
             return Worktree(path=wt_path, branch=branch)
+        raise SystemExit(
+            f"worktree directory already exists but is not registered: {wt_path}\n"
+            f"  Remove or rename it, then retry."
+        )
 
     branches = _git(repo, ["branch", "--list", branch], capture=True)
     branch_exists = branch.strip() in branches
@@ -47,14 +51,24 @@ def teardown(repo: Path, wt: Worktree, *, after: str) -> None:
         _clear_stale_index_lock(repo, wt)
 
     if after == "merge":
-        _git(repo, ["merge", "--no-ff", wt.branch, "-m", f"Merge agent session: {wt.branch}"])
+        try:
+            _git(repo, ["merge", "--no-ff", wt.branch, "-m", f"Merge agent session: {wt.branch}"])
+        except subprocess.CalledProcessError:
+            subprocess.run(["git", "-C", str(repo), "merge", "--abort"], check=False, capture_output=True)
+            print(f"merge conflict — worktree left in place at {wt.path}; integrate manually")
+            return
     elif after == "rebase":
         current = _git(repo, ["rev-parse", "--abbrev-ref", "HEAD"], capture=True).strip()
-        subprocess.run(
-            ["git", "-C", str(wt.path), "rebase", current],
-            check=True,
-        )
-        _git(repo, ["merge", "--ff-only", wt.branch])
+        try:
+            subprocess.run(
+                ["git", "-C", str(wt.path), "rebase", current],
+                check=True,
+            )
+            _git(repo, ["merge", "--ff-only", wt.branch])
+        except subprocess.CalledProcessError:
+            subprocess.run(["git", "-C", str(wt.path), "rebase", "--abort"], check=False, capture_output=True)
+            print(f"merge conflict — worktree left in place at {wt.path}; integrate manually")
+            return
     elif after == "pr":
         try:
             _git(repo, ["push", "-u", "origin", wt.branch])

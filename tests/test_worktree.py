@@ -1,7 +1,10 @@
+import contextlib
+import io
 import subprocess
 import sys
 from pathlib import Path
 from unittest import TestCase
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -164,6 +167,41 @@ class WorktreeTeardownTests(TestCase):
         self.assertIn("main commit", log)
         self.assertFalse(self.wt.path.exists())
 
+    def test_teardown_merge_conflict_leaves_worktree_and_prints_message(self) -> None:
+        out = io.StringIO()
+        with (
+            patch.object(worktree_mod, "_git", side_effect=subprocess.CalledProcessError(1, "git merge")),
+            contextlib.redirect_stdout(out),
+        ):
+            # Should not raise
+            worktree_mod.teardown(self.repo, self.wt, after="merge")
+
+        self.assertTrue(self.wt.path.is_dir(), "worktree must remain after conflict")
+        message = out.getvalue()
+        self.assertIn("merge conflict", message)
+        self.assertIn(str(self.wt.path), message)
+
+    def test_teardown_rebase_conflict_leaves_worktree_and_prints_message(self) -> None:
+        out = io.StringIO()
+        real_run = subprocess.run
+
+        def mock_run(cmd, **kwargs):
+            # Match the direct rebase call (not --abort) by checking element membership.
+            if "rebase" in cmd and "--abort" not in cmd:
+                raise subprocess.CalledProcessError(1, cmd)
+            return real_run(["true"], **{k: v for k, v in kwargs.items() if k != "check"})
+
+        with (
+            patch("subprocess.run", side_effect=mock_run),
+            contextlib.redirect_stdout(out),
+        ):
+            worktree_mod.teardown(self.repo, self.wt, after="rebase")
+
+        self.assertTrue(self.wt.path.is_dir(), "worktree must remain after conflict")
+        message = out.getvalue()
+        self.assertIn("merge conflict", message)
+        self.assertIn(str(self.wt.path), message)
+
     def test_teardown_clears_stale_index_lock(self) -> None:
         # Simulate a stale lock left by a crashed container.
         git_dir = self.repo.resolve() / ".git"
@@ -180,3 +218,31 @@ class WorktreeTeardownTests(TestCase):
             capture_output=True, text=True, check=True,
         ).stdout
         self.assertIn("agent work", log)
+
+
+class WorktreeSetupStaleDirectoryTests(TestCase):
+    def setUp(self) -> None:
+        import tempfile
+        self._td = tempfile.TemporaryDirectory()
+        self.root = Path(self._td.name)
+        self.repo = self.root / "repo"
+        self.repo.mkdir()
+        _make_repo(self.repo)
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def test_setup_stale_unregistered_directory_raises_system_exit(self) -> None:
+        # Create the directory that setup would use, but do NOT register it as a worktree.
+        wt_path = worktree_mod.path_for(self.repo, "feat/stale")
+        wt_path.mkdir(parents=True)
+        (wt_path / "stray.txt").write_text("leftover\n", encoding="utf-8")
+
+        with self.assertRaises(SystemExit) as raised:
+            worktree_mod.setup(self.repo, "feat/stale")
+
+        msg = str(raised.exception)
+        self.assertIn(str(wt_path), msg)
+        self.assertIn("not registered", msg)
+        # Directory must NOT be deleted automatically
+        self.assertTrue(wt_path.is_dir())
