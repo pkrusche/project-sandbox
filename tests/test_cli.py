@@ -42,6 +42,7 @@ class CliTests(TestCase):
         self.assertIn("--dry-run", help_text)
         self.assertIn("--branch", help_text)
         self.assertIn("--dockerfile", help_text)
+        self.assertIn("--runtime", help_text)
         self.assertNotIn("--rebuild", help_text)
         self.assertNotIn("--refresh-config", help_text)
         self.assertIn("bash", help_text)
@@ -198,6 +199,56 @@ class CliTests(TestCase):
             output = out.getvalue()
             self.assertIn("project-sandbox-run bash", output)
             self.assertNotIn("Would write launcher scripts", output)
+
+    def test_dry_run_uses_explicit_docker_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            out = io.StringIO()
+
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(cli.config_agents, "_agent_host_paths", return_value=_agent_paths(project / "home")),
+                contextlib.redirect_stdout(out),
+            ):
+                rc = cli.main([
+                    "--dry-run",
+                    "--no-build",
+                    "--runtime",
+                    "docker",
+                    "--agent",
+                    "bash",
+                    str(project),
+                    "python:3.12-slim",
+                ])
+
+            self.assertEqual(rc, 0)
+            self.assertIn("docker run", out.getvalue())
+            self.assertNotIn("container system start", out.getvalue())
+
+    def test_missing_explicit_runtime_fails_before_writing_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(cli.config_agents, "_agent_host_paths", return_value=_agent_paths(project / "home")),
+                patch("project_sandbox.container_cli.shutil.which", return_value=None),
+            ):
+                with self.assertRaises(SystemExit) as raised:
+                    cli.main([
+                        "--runtime",
+                        "docker",
+                        "--agent",
+                        "bash",
+                        str(project),
+                        "python:3.12-slim",
+                    ])
+
+            self.assertIn("docker CLI not found", str(raised.exception))
+            self.assertFalse((project / ".project-sandbox").exists())
+            self.assertFalse((project / ".devcontainer").exists())
 
     def test_dry_run_accepts_dockerfile_without_base_image(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -428,6 +479,7 @@ class CliTests(TestCase):
                 }),
                 patch.object(cli.worktree_mod, "setup", return_value=fake_wt),
                 patch.object(cli.worktree_mod, "teardown") as teardown,
+                patch.object(cli.container_cli, "select_runtime", return_value=cli.container_cli.DOCKER),
                 patch.object(cli.container_cli, "ensure_system_started", return_value=0),
                 patch.object(cli.container_cli, "build_image", return_value=1),
                 patch.object(cli.container_cli, "run") as run,
@@ -648,6 +700,7 @@ class DefaultImageTagTests(TestCase):
                 patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
                 patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
                 patch.object(cli.config_agents, "sync_credentials"),
+                patch.object(cli.container_cli, "select_runtime", return_value=cli.container_cli.DOCKER),
                 patch.object(cli.container_cli, "ensure_system_started", return_value=0),
                 patch.object(cli.container_cli, "build_image", return_value=0) as build_image,
                 patch.object(cli.container_cli, "run", return_value=0),

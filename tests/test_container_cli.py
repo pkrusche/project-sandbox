@@ -9,7 +9,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from unittest.mock import patch
 
-from project_sandbox.container_cli import _run_quietable, build_image, build_run_argv, run
+from project_sandbox.container_cli import (
+    DOCKER,
+    PODMAN,
+    _run_quietable,
+    build_image,
+    build_run_argv,
+    ensure_system_started,
+    run,
+    select_runtime,
+)
 from project_sandbox.git_identity import GitIdentity
 
 
@@ -115,6 +124,83 @@ class ContainerCliTests(TestCase):
             out.getvalue().strip(),
             f"container build -t project-sandbox:test -f {context / 'Dockerfile'} {root}",
         )
+
+    def test_build_image_uses_selected_docker_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            context = root / ".project-sandbox"
+            context.mkdir()
+            out = io.StringIO()
+
+            with contextlib.redirect_stdout(out):
+                rc = build_image(
+                    runtime=DOCKER,
+                    context_dir=context,
+                    image_tag="project-sandbox:test",
+                    build_context=root,
+                    dockerfile_path=context / "Dockerfile",
+                    dry_run=True,
+                )
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            out.getvalue().strip(),
+            f"docker build -t project-sandbox:test -f {context / 'Dockerfile'} {root}",
+        )
+
+    def test_build_run_argv_uses_selected_podman_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cmd = build_run_argv(
+                runtime=PODMAN,
+                image="project-sandbox:test",
+                project_abs=root / "workspace",
+                claude_cfg=root / "claude/settings.json",
+                claude_credentials_dir=root / "claude-secrets",
+                codex_cfg=root / "codex/config.toml",
+                codex_credentials_dir=None,
+                identity=GitIdentity(None, None),
+                memory="8g",
+                cpus=4,
+                extra_mounts=[],
+                agent="bash",
+                firewall_enabled=False,
+                interactive=True,
+            )
+
+        self.assertEqual(cmd[:2], ["podman", "run"])
+        self.assertIn("-it", cmd)
+        self.assertNotIn("--cap-add", cmd)
+
+    def test_docker_runtime_does_not_start_apple_system_service(self) -> None:
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = ensure_system_started(runtime=DOCKER, dry_run=True)
+        self.assertEqual(rc, 0)
+        self.assertEqual(out.getvalue(), "")
+
+    def test_select_runtime_prefers_docker_on_linux_auto(self) -> None:
+        def fake_which(binary: str) -> str | None:
+            return f"/usr/bin/{binary}" if binary == "docker" else None
+
+        with (
+            patch("project_sandbox.container_cli.sys.platform", "linux"),
+            patch("project_sandbox.container_cli.shutil.which", side_effect=fake_which),
+        ):
+            runtime = select_runtime("auto")
+
+        self.assertEqual(runtime, DOCKER)
+
+    def test_select_runtime_dry_run_does_not_require_binary(self) -> None:
+        with patch("project_sandbox.container_cli.shutil.which", return_value=None):
+            runtime = select_runtime("podman", dry_run=True)
+        self.assertEqual(runtime, PODMAN)
+
+    def test_select_runtime_explicit_missing_binary_raises(self) -> None:
+        with patch("project_sandbox.container_cli.shutil.which", return_value=None):
+            with self.assertRaises(SystemExit) as raised:
+                select_runtime("docker")
+        self.assertIn("docker CLI not found", str(raised.exception))
 
     def test_run_quietable_swallows_output_on_success(self) -> None:
         out, err = io.StringIO(), io.StringIO()

@@ -1,14 +1,65 @@
 import shlex
+import shutil
 import subprocess
 import sys
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from .git_identity import GitIdentity
 
+RUNTIME_CHOICES = ("auto", "apple-container", "docker", "podman")
+
+
+@dataclass(frozen=True)
+class Runtime:
+    name: str
+    binary: str
+
+
+APPLE_CONTAINER = Runtime("apple-container", "container")
+DOCKER = Runtime("docker", "docker")
+PODMAN = Runtime("podman", "podman")
+
+_RUNTIMES = {
+    APPLE_CONTAINER.name: APPLE_CONTAINER,
+    DOCKER.name: DOCKER,
+    PODMAN.name: PODMAN,
+}
+
+
+def select_runtime(requested: str, *, dry_run: bool = False) -> Runtime:
+    if requested not in RUNTIME_CHOICES:
+        raise SystemExit(f"Unsupported runtime: {requested}")
+
+    if requested != "auto":
+        runtime = _RUNTIMES[requested]
+        if not dry_run and shutil.which(runtime.binary) is None:
+            raise SystemExit(f"{runtime.binary} CLI not found on PATH")
+        return runtime
+
+    if dry_run:
+        return APPLE_CONTAINER if sys.platform == "darwin" else DOCKER
+
+    candidates = (
+        (APPLE_CONTAINER, DOCKER, PODMAN)
+        if sys.platform == "darwin"
+        else (DOCKER, PODMAN)
+    )
+    for runtime in candidates:
+        if shutil.which(runtime.binary) is not None:
+            return runtime
+
+    names = ", ".join(runtime.name for runtime in candidates)
+    raise SystemExit(
+        f"No supported container runtime found on PATH for {sys.platform}; "
+        f"install one of: {names}, or pass --runtime explicitly."
+    )
+
 
 def build_run_argv(
     *,
+    runtime: Runtime = APPLE_CONTAINER,
     image: str,
     project_abs: Path,
     claude_cfg: Path,
@@ -26,7 +77,7 @@ def build_run_argv(
     opencode_credentials_dir: Path | None = None,
 ) -> list[str]:
     argv = [
-        "container",
+        runtime.binary,
         "run",
         "--rm",
         "--memory",
@@ -96,6 +147,7 @@ def build_run_argv(
 
 def build_image(
     *,
+    runtime: Runtime = APPLE_CONTAINER,
     context_dir: Path,
     image_tag: str,
     build_context: Path | None = None,
@@ -105,7 +157,7 @@ def build_image(
 ) -> int:
     build_context = build_context or context_dir
     dockerfile_path = dockerfile_path or context_dir / "Dockerfile"
-    cmd = ["container", "build", "-t", image_tag]
+    cmd = [runtime.binary, "build", "-t", image_tag]
     default_dockerfile = build_context / "Dockerfile"
     if dockerfile_path.resolve(strict=False) != default_dockerfile.resolve(strict=False):
         cmd += ["-f", str(dockerfile_path)]
@@ -116,8 +168,12 @@ def build_image(
     return _run_quietable(cmd, verbose=verbose)
 
 
-def ensure_system_started(*, dry_run: bool = False, verbose: bool = True) -> int:
-    cmd = ["container", "system", "start"]
+def ensure_system_started(
+    *, runtime: Runtime = APPLE_CONTAINER, dry_run: bool = False, verbose: bool = True
+) -> int:
+    if runtime.name != APPLE_CONTAINER.name:
+        return 0
+    cmd = [runtime.binary, "system", "start"]
     if dry_run:
         print(shlex.join(cmd))
         return 0
@@ -137,7 +193,7 @@ def _run_quietable(cmd: list[str], *, verbose: bool) -> int:
             sys.stderr.write(proc.stderr)
         return proc.returncode
     except FileNotFoundError:
-        print("container CLI not found on PATH")
+        print(f"{cmd[0]} CLI not found on PATH")
         return 127
 
 
@@ -148,5 +204,5 @@ def run(argv: list[str], *, dry_run: bool = False) -> int:
     try:
         return subprocess.run(argv, check=False).returncode
     except FileNotFoundError:
-        print("container CLI not found on PATH")
+        print(f"{argv[0]} CLI not found on PATH")
         return 127

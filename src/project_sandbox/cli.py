@@ -42,6 +42,12 @@ def build_parser() -> ArgumentParser:
         help="Build context to use with --dockerfile (default: project root).",
     )
     p.add_argument("--image-tag", default=None)
+    p.add_argument(
+        "--runtime",
+        choices=list(container_cli.RUNTIME_CHOICES),
+        default="auto",
+        help="Container runtime for direct CLI runs (default: auto).",
+    )
     p.add_argument("--no-build", action="store_true")
     p.add_argument("--memory", default="8g")
     p.add_argument("--cpus", type=int, default=4)
@@ -100,6 +106,11 @@ def main(argv: list[str] | None = None) -> int:
         _validate_worktree_project(project)
     if run_agent is not None:
         _ensure_agent_available(run_agent, available_agents)
+    runtime = (
+        container_cli.select_runtime(args.runtime)
+        if run_agent is not None and not args.dry_run
+        else None
+    )
 
     if args.dry_run:
         wt, workspace = _plan_worktree(args, project) if run_agent else (None, project)
@@ -168,7 +179,8 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 0
 
-        rc = container_cli.ensure_system_started(verbose=args.verbose)
+        assert runtime is not None
+        rc = container_cli.ensure_system_started(runtime=runtime, verbose=args.verbose)
         if rc != 0:
             print(
                 "[W] Apple container system not running - if you're on a Mac, you may need to install or start it. Otherwise, you can still work with the devcontainer setup."
@@ -178,6 +190,7 @@ def main(argv: list[str] | None = None) -> int:
             if not args.verbose:
                 print("Building container image…")
             rc = container_cli.build_image(
+                runtime=runtime,
                 context_dir=context_dir,
                 image_tag=args.image_tag,
                 build_context=build_context,
@@ -198,6 +211,7 @@ def main(argv: list[str] | None = None) -> int:
             claude_cfg=cfg["claude"],
             credential_dirs=credential_dirs,
             codex_cfg=cfg["codex"],
+            runtime=runtime,
             create_prompt_files=True,
         )
 
@@ -314,9 +328,13 @@ def _dry_run(
         print("Would initialize config files only; no agent container would be started.")
         return 0
 
-    container_cli.ensure_system_started(dry_run=True, verbose=args.verbose)
+    runtime = container_cli.select_runtime(args.runtime, dry_run=True)
+    container_cli.ensure_system_started(
+        runtime=runtime, dry_run=True, verbose=args.verbose
+    )
     if not args.no_build:
         container_cli.build_image(
+            runtime=runtime,
             context_dir=context_dir,
             image_tag=args.image_tag,
             build_context=build_context,
@@ -335,6 +353,7 @@ def _dry_run(
         claude_cfg=claude_cfg,
         credential_dirs=credential_dirs,
         codex_cfg=codex_cfg,
+        runtime=runtime,
         create_prompt_files=False,
     )
     if unsupervised:
@@ -444,6 +463,7 @@ def _build_session_command(
     claude_cfg: Path,
     credential_dirs: dict[str, Path],
     codex_cfg: Path,
+    runtime: container_cli.Runtime,
     create_prompt_files: bool,
 ) -> tuple[list[str], Path | None, bool]:
     # Agent availability is validated up front in main() via _ensure_agent_available.
@@ -502,6 +522,7 @@ def _build_session_command(
 
     return (
         container_cli.build_run_argv(
+            runtime=runtime,
             image=args.image_tag,
             project_abs=workspace,
             claude_cfg=claude_cfg,
@@ -552,6 +573,7 @@ def _update_project_gitignore(project: Path) -> None:
     lines_to_add = [
         marker,
         ".project-sandbox/",
+        ".devcontainer/",
     ]
     gi = project / ".gitignore"
     existing = gi.read_text(encoding="utf-8") if gi.exists() else ""

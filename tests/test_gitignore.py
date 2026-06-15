@@ -19,6 +19,7 @@ class UpdateProjectGitignoreTests(TestCase):
 
             self.assertIn("# project-sandbox — do not commit agent secrets", content)
             self.assertIn(".project-sandbox/", content)
+            self.assertIn(".devcontainer/", content)
 
     def test_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -42,6 +43,7 @@ class UpdateProjectGitignoreTests(TestCase):
 
             self.assertTrue(content.startswith(existing))
             self.assertIn(".project-sandbox/", content)
+            self.assertIn(".devcontainer/", content)
 
     def test_does_not_duplicate_preexisting_project_sandbox_entry(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -69,6 +71,20 @@ class UpdateProjectGitignoreTests(TestCase):
             content = (project / ".gitignore").read_text(encoding="utf-8")
 
             self.assertIn(".project-sandbox/", content)
+
+    def test_adds_missing_devcontainer_path_to_existing_block(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            existing = (
+                "# project-sandbox — do not commit agent secrets\n"
+                ".project-sandbox/\n"
+            )
+            (project / ".gitignore").write_text(existing, encoding="utf-8")
+
+            cli._update_project_gitignore(project)
+            content = (project / ".gitignore").read_text(encoding="utf-8")
+
+            self.assertIn(".devcontainer/", content)
 
 
 class WriteProjectSandboxGitignoreTests(TestCase):
