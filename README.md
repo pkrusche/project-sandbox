@@ -28,6 +28,12 @@ From a published package:
 uvx project-sandbox --help
 ```
 
+Directly from GitHub:
+
+```bash
+uvx --from git+https://github.com/pkrusche/project-sandbox.git project-sandbox --help
+```
+
 From a checkout:
 
 ```bash

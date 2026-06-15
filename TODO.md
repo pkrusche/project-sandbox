@@ -1,83 +1,13 @@
 # TODO — outstanding items
 
-## Correctness fixes (host-side, unit-testable now)
+Review state: refreshed after code and documentation review on 2026-06-15.
+`uv run python -m compileall src tests` and `uv run pytest -q` pass
+(`109 passed, 2 subtests passed`). Previously listed fixes for missing
+`container` handling, worktree conflict teardown, failed-session integration
+skips, stale worktree directories, and per-project default image tags are now
+implemented and covered by tests, so they are no longer active TODOs.
 
-Found in a code review on 2026-06-10. All of these are reproducible without
-apple/container and should come with regression tests.
-
-### Missing `container` binary crashes with a traceback instead of the friendly fallback
-- **Where:** `src/project_sandbox/container_cli.py` — `ensure_system_started`,
-  `build_image` (via `_run_quietable`), and `run` all call
-  `subprocess.run(["container", ...])` directly.
-- **Problem:** when apple/container is not installed, `subprocess.run` raises
-  `FileNotFoundError` rather than returning a nonzero exit code. The
-  `rc != 0` fallback in `cli.main` ("Apple container system not running …
-  you can still work with the devcontainer setup") is therefore unreachable in
-  exactly the situation it was written for; the user gets a raw traceback.
-- **To do:** wrap the `subprocess.run` calls in `container_cli` with
-  `try/except FileNotFoundError` and return a sentinel exit code (127), printing
-  one line like `container CLI not found on PATH`. Verify `cli.main` then takes
-  the existing warning path for `ensure_system_started` and aborts cleanly for
-  `build_image`/`run`. Add a unit test that monkeypatches `subprocess.run` to
-  raise `FileNotFoundError` and asserts the return code and message.
-
-### Worktree integration failures escape `cli.main`'s `finally` as tracebacks
-- **Where:** `src/project_sandbox/worktree.py` (`teardown`) and the `finally`
-  block in `src/project_sandbox/cli.py` (`main`).
-- **Problem:** `teardown` runs `git merge`, `git rebase`, and
-  `git merge --ff-only` with `check=True`. Only the `pr` push path catches
-  `CalledProcessError`. A merge/rebase conflict, or a dirty checkout in the main
-  repo, raises out of the `finally` block — the session's real exit code is
-  replaced by a traceback, and a conflicted rebase is left in progress inside
-  the worktree.
-- **To do:** in `teardown`, catch `CalledProcessError` around the merge and
-  rebase paths; on failure run `git merge --abort` / `git rebase --abort`
-  (best-effort), print a short message ("merge conflict — worktree left in
-  place at <path>; integrate manually"), and return without removing the
-  worktree. `cli.main` should then still return the agent's exit code. Add
-  tests: teardown with a conflicting merge and a conflicting rebase (the
-  existing test repo fixtures in `tests/test_worktree.py` make this cheap).
-
-### Explicit `--after-session=merge|rebase|pr` integrates even when the session failed
-- **Where:** `src/project_sandbox/cli.py` (`_teardown_worktree`).
-- **Problem:** only `after == "ask"` is downgraded to `nothing` on a nonzero
-  exit code. An unsupervised run that timed out (exit 124), or whose agent
-  crashed (the `finally` runs with the default `exit_code = 1` if `session.run`
-  raised, e.g. on Ctrl-C), is still merged/rebased/pushed — half-finished or
-  broken work gets integrated unattended.
-- **To do:** skip integration for *all* `--after-session` modes when
-  `exit_code != 0`, print why ("session exited 124; skipping merge — worktree
-  left at <path>"), and leave the worktree in place. Add unit tests covering
-  timeout (124) and generic failure with `--after-session=merge` asserting no
-  merge happened.
-
-### `worktree.setup` fails ungracefully on a stale, unregistered worktree directory
-- **Where:** `src/project_sandbox/worktree.py` (`setup`).
-- **Problem:** if `wt_path` exists on disk but is not a registered worktree
-  (leftover from a crash, a manual `rm -rf` of `.git/worktrees/<name>`, or a
-  user-created directory at the same path), the code falls through to
-  `git worktree add`, which refuses to use an existing non-empty directory and
-  raises a `CalledProcessError` traceback.
-- **To do:** after the prune-and-check, if the path still exists but is not in
-  `git worktree list`, raise `SystemExit` with a clear message telling the user
-  to remove or rename the directory (do not delete user data automatically).
-  Add a test with a pre-existing non-worktree directory at the computed path.
-
-### Default `--image-tag project-sandbox:latest` collides across projects
-- **Where:** `src/project_sandbox/cli.py` (`build_parser`,
-  default `--image-tag`).
-- **Problem:** every project builds and runs the same tag. Image content is
-  per-project (firewall extra-domains, installed agents, base image/Dockerfile
-  layers), so running the tool in project A and then project B silently
-  replaces A's image; concurrent runs (the multi-agent workflow the proxy plan
-  targets) can race build-vs-run and start an agent on the wrong project's
-  image.
-- **To do:** derive the default tag from the project, e.g.
-  `project-sandbox-<project-name>-<8-char sha256 of resolved project path>:latest`,
-  keeping `--image-tag` as the override. Update README and the argv-construction
-  tests. Sanitize the project name for the image-reference charset.
-
-## Low priority correctness / simplification
+## Immediate correctness and documentation
 
 ### `--prompt-text` with newlines or shell-hostile content rides an env var
 - **Where:** `src/project_sandbox/cli.py` (`_build_session_command`) — prompts
@@ -91,7 +21,46 @@ apple/container and should come with regression tests.
   mount for `--prompt-text` (one code path, no length threshold, nothing in the
   VM's environment/logs). Update entrypoint docs/tests accordingly.
 
-## Needs a Linux / `apt` + iptables environment to validate
+### Document the generated default image tag
+- **Where:** `src/project_sandbox/cli.py` (`_default_image_tag`) and
+  `README.md`.
+- **Problem:** the code now derives per-project tags of the form
+  `project-sandbox-<project-name>-<8-char sha256>:latest`, but the README does
+  not explain the default or when to use `--image-tag`.
+- **To do:** add a short README note near the CLI options or build section
+  documenting the generated tag format, the path-hash collision protection, and
+  the `--image-tag` override.
+
+### Document OpenSpec installation without implying project initialization
+- **Where:** `README.md` and `src/project_sandbox/templates/Dockerfile.j2`.
+- **Problem:** the README says OpenSpec is available, but it does not name the
+  installed npm package or make clear that `openspec init` is not run
+  automatically in user workspaces.
+- **To do:** add a concise README note that generated images install
+  `@fission-ai/openspec@latest` on `PATH`; users/projects must explicitly run
+  OpenSpec initialization commands when they want workspace files.
+
+### Extend the e2e smoke test for recently added generated assets
+- **Where:** `scripts/e2e-test.sh`.
+- **Problem:** renderer tests assert OpenSpec is installed, and unit tests cover
+  devcontainer symlinks, but the portable e2e smoke test does not check
+  `@fission-ai/openspec@latest` or the `claude-devcontainer` /
+  `codex-devcontainer` symlinks.
+- **To do:** add content checks for the OpenSpec install line and include the
+  devcontainer-specific agent config symlinks in the e2e `SYMLINKS` list.
+
+### Document firewall DNS/IP pinning limitations
+- **Where:** `README.md` firewall section.
+- **Problem:** the firewall resolves allowlisted domains only once at container
+  start and pins those IPs in ipsets. CDN-backed endpoints
+  (`api.anthropic.com`, `claude.ai`, npm, etc.) can rotate IPs during long-lived
+  sessions, causing allowed services to fail later. This is not currently
+  documented.
+- **To do:** add a short limitation note explaining one-time DNS resolution and
+  IP drift. Do not add periodic re-resolution to the iptables script; the
+  longer-term fix is the credential-filtering proxy below.
+
+## Host / container validation
 
 ### Firewall: allow all `resolv.conf` resolvers, not just the first
 - **Where:** `src/project_sandbox/templates/init-firewall.sh.j2` — the `DNS4`/`DNS6`
@@ -116,7 +85,7 @@ apple/container and should come with regression tests.
   after a timeout. If the VM lingers, give the run a known name/id and
   `container stop`/`kill` it explicitly in the timeout path.
 
-## Low priority / nice to have
+## Deferred cleanup
 
 ### Worktree directory name collision
 - **Where:** `src/project_sandbox/worktree.py` (`path_for`) maps a branch to a dir
@@ -127,19 +96,9 @@ apple/container and should come with regression tests.
   stale-directory `setup` fix above makes this collision fail loudly instead of
   silently reusing the wrong worktree, which removes most of the risk.)
 
-### Firewall allowlist pins IPs resolved once at container start
-- **Where:** `src/project_sandbox/templates/init-firewall.sh.j2` — `dig` resolves
-  each allowlisted domain once and pins those IPs in the ipset.
-- **Problem:** CDN-backed endpoints (`api.anthropic.com`, `claude.ai`, npm)
-  rotate IPs; a long-lived session can lose access mid-run when DNS answers
-  drift away from the pinned set. Inherited from the upstream Anthropic
-  devcontainer firewall; not currently documented in README.
-- **To do:** document the limitation in the README firewall section now. The
-  real fix is the credential-filtering proxy below (L7 host allowlisting makes
-  IP pinning unnecessary), so do not build periodic re-resolution into the
-  iptables script — note it and move on.
+## Security roadmap
 
-## Canary token tripwires
+### Canary token tripwires
 
 A standalone detection layer, independent of the proxy's inline policy below. The
 proxy prevents exfiltration in real time; canary tokens tell you *after the fact*
@@ -164,7 +123,7 @@ if something got out and was used anywhere in the world.
   the canary does **not** fire; a negative control (allowlist disabled) confirms
   it *would* fire.
 
-## project-sandbox Credential-Filtering Sidecar Proxy
+### project-sandbox Credential-Filtering Sidecar Proxy
 
 **Recommendation in one sentence:** Build the sidecar as a second `apple/container`
 VM running **mitmproxy 12 (`mitmdump`) with a Python addon**, attached to a
@@ -175,7 +134,7 @@ IP on 8080 (everything else DROP), explicit `HTTPS_PROXY` env vars in the agent
 image at build time, and a YAML policy on the host that injects credentials drawn
 from a single host `.env` file into outbound requests on allowlisted hosts.
 
-### TL;DR
+#### TL;DR
 
 - **Run mitmproxy in a second `apple/container` VM** on a user-defined network
   (macOS 26+), force the agent VM through it via iptables-only-ALLOW-proxy-IP +
@@ -196,7 +155,7 @@ from a single host `.env` file into outbound requests on allowlisted hosts.
 
 ---
 
-### Credentials live in a single `.env` file
+#### Credentials live in a single `.env` file
 
 Instead of per-secret files, use **one `.env` file on the host** holding every
 environment variable and secret the agent stack needs:
@@ -241,7 +200,7 @@ the **full `.env` read-only into the proxy VM only**, never the agent VM.
 
 ---
 
-### Architecture Diagram
+#### Architecture Diagram
 
 ```
                  macOS host (Apple Silicon, macOS 26+)
@@ -299,9 +258,9 @@ Trust boundary 2: proxy VM ↔ host. Proxy VM mounts only secrets.env +
 
 ---
 
-### Details
+#### Details
 
-#### A. Architecture Recommendation
+##### A. Architecture Recommendation
 
 ##### A.1 Topology between two `apple/container` VMs
 
@@ -384,7 +343,7 @@ coarse domain-pinned iptables on the *proxy* VM as a first filter.
 
 ---
 
-#### B. Proxy Engine: mitmproxy
+##### B. Proxy Engine: mitmproxy
 
 mitmproxy 12 (`mitmdump`) is the chosen engine. It provides:
 
@@ -432,7 +391,7 @@ mitmproxy 12 (`mitmdump`) is the chosen engine. It provides:
 
 ---
 
-#### C. Policy / Rule Format
+##### C. Policy / Rule Format
 
 We adopt agent-sandbox's `services:`/`domains:` schema for request-enforcement and
 credential injection (so projects can share policies between the two tools). The file
@@ -552,7 +511,7 @@ on_proxy_failure: fail_closed
 
 ---
 
-#### D. Secret Material and Root CA Management
+##### D. Secret Material and Root CA Management
 
 ##### Where credentials live on the host
 
@@ -628,7 +587,7 @@ host and explaining the loss of credential injection for it.
 
 ---
 
-#### E. Endpoints That Don't Fit MITM
+##### E. Endpoints That Don't Fit MITM
 
 - **Certificate-pinned endpoints:** add to `passthrough:`. The agent must hold the
   real credential for these (we cannot inject), so **cert-pinned endpoints
@@ -649,7 +608,7 @@ host and explaining the loss of credential injection for it.
 
 ---
 
-#### F. Integration with `project-sandbox` CLI
+##### F. Integration with `project-sandbox` CLI
 
 ##### New flags
 
@@ -710,7 +669,7 @@ sequence and polls a proxy health endpoint until 200.
 
 ---
 
-#### G. Testing and Validation Strategy
+##### G. Testing and Validation Strategy
 
 1. **`test_raw_secret_never_in_agent_vm`** — run a session with a real Anthropic key
    in `secrets.env`. `container exec agent-<id> sh -c 'env | grep -i ANTH'` must show
@@ -738,7 +697,7 @@ sequence and polls a proxy health endpoint until 200.
 
 ---
 
-#### H. Related Work (Citations)
+##### H. Related Work (Citations)
 
 - **`mattolson/agent-sandbox`** (https://github.com/mattolson/agent-sandbox) —
   closest design twin: mitmproxy sidecar, `services:` + `domains:` two-key policy with
@@ -765,7 +724,7 @@ sequence and polls a proxy health endpoint until 200.
 
 ---
 
-### Worked Example: anthropic.messages.create() Through the Stack
+#### Worked Example: anthropic.messages.create() Through the Stack
 
 User runs:
 
@@ -830,7 +789,7 @@ creds) in memory, env, filesystem, or `/proc`. A malicious npm package reading
 
 ---
 
-### Recommendations (plan)
+#### Recommendations (plan)
 
 **Stage 1 — Minimum viable:**
 1. Single `.env` ingestion: CLI reads `secrets.env`, partitions config vs secret per
@@ -869,7 +828,7 @@ creds) in memory, env, filesystem, or `/proc`. A malicious npm package reading
 
 ---
 
-### Caveats
+#### Caveats
 
 1. **macOS 15 not supported.** Inter-container networking requires macOS 26.
    `project-sandbox` must hard-fail with a clear message on macOS 15.
