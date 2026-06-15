@@ -70,6 +70,18 @@ uv run project-sandbox --runtime podman --agent bash /absolute/path/to/repo pyth
 uv run project-sandbox --runtime apple-container --agent bash /absolute/path/to/repo python:3.12-slim
 ```
 
+When `--image-tag` is omitted, the generated image tag is
+`project-sandbox-<project-name>-<8-char sha256>:latest`. The project name is
+sanitized from the resolved project directory name, and the hash is derived from
+the resolved absolute path so two projects with the same directory name do not
+collide. Use `--image-tag` when you need a stable external tag, want to share a
+prebuilt image, or need to align with local image cleanup scripts.
+
+Generated images install `@fission-ai/openspec@latest`, which puts `openspec` on
+`PATH`. project-sandbox does not run `openspec init` or create OpenSpec workspace
+files automatically; run OpenSpec initialization commands inside the project only
+when that project should own those files.
+
 ## File layout
 
 ```
@@ -148,6 +160,11 @@ When the firewall is enabled (default), `init-firewall.sh` runs as root inside t
 - Allows GitHub's published IP ranges (fetched from `api.github.com/meta`), `registry.npmjs.org`, Claude/Anthropic endpoints (`api.anthropic.com`, `claude.ai`, `code.claude.com`, `platform.claude.com`), `api.openai.com`, `auth.openai.com`, and `chatgpt.com`.
 - In the devcontainer firewall variant only, allows the host gateway subnet so port-forwarding and IDE attach work. Direct CLI runs omit this host-network allowlist.
 - Mirrors the IPv4 allowlist into a parallel IPv6 set; falls back to disabling IPv6 via `sysctl` when `ip6_tables` is unavailable — the script exits with an error if both `ip6tables` and `sysctl` are unavailable.
+
+Domain allowlists are resolved once when the container starts, then pinned as IP
+addresses in `ipset`. CDN-backed services can rotate IPs during long sessions; if
+an allowlisted service starts failing after it initially worked, restart the
+container or devcontainer so the firewall resolves fresh addresses.
 
 Customize:
 
