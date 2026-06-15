@@ -599,6 +599,67 @@ class CliTests(TestCase):
         self.assertNotIn("PROJECT_SANDBOX_QUIET", out)
         self.assertIn("| tee", out)
 
+    def test_prompt_text_dry_run_uses_prompt_file_not_environment(self) -> None:
+        out = self._headless_dry_run()
+        self.assertIn("Would write prompt to:", out)
+        self.assertIn(
+            "PROJECT_SANDBOX_PROMPT_FILE=/workspace/.project-sandbox-prompt",
+            out,
+        )
+        self.assertIn("target=/workspace/.project-sandbox-prompt,readonly", out)
+        self.assertNotIn("PROJECT_SANDBOX_PROMPT=echo ok", out)
+
+    def test_prompt_text_writes_prompt_file_for_short_prompt(self) -> None:
+        import argparse
+
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            context_dir = project / ".project-sandbox"
+            claude_cfg = context_dir / "claude" / "settings.json"
+            codex_cfg = context_dir / "codex" / "config.toml"
+            credential_dirs = {"claude": context_dir / "claude-secrets"}
+            args = argparse.Namespace(
+                branch=None,
+                cpus=4,
+                extra_mounts=[],
+                image_tag="project-sandbox:test",
+                log=None,
+                memory="8g",
+                no_firewall=True,
+                prompt=None,
+                prompt_text="echo ok",
+                verbose=False,
+            )
+
+            cmd, log_path, unsupervised = cli._build_session_command(
+                args,
+                project=project,
+                context_dir=context_dir,
+                workspace=project,
+                worktree=None,
+                identity=GitIdentity(None, None),
+                run_agent="bash",
+                claude_cfg=claude_cfg,
+                credential_dirs=credential_dirs,
+                codex_cfg=codex_cfg,
+                runtime=cli.container_cli.DOCKER,
+                create_prompt_files=True,
+            )
+
+            prompt_file = context_dir / "prompts" / "prompt.txt"
+            self.assertTrue(unsupervised)
+            self.assertIsNotNone(log_path)
+            self.assertEqual(prompt_file.read_text(encoding="utf-8"), "echo ok")
+            self.assertIn(
+                f"type=bind,source={prompt_file.resolve()},target=/workspace/.project-sandbox-prompt,readonly",
+                cmd,
+            )
+            self.assertIn(
+                "PROJECT_SANDBOX_PROMPT_FILE=/workspace/.project-sandbox-prompt",
+                cmd,
+            )
+            self.assertNotIn("PROJECT_SANDBOX_PROMPT=echo ok", cmd)
+
     def test_unavailable_agent_raises_with_available_list(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)

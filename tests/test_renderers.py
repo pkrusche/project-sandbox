@@ -69,6 +69,17 @@ class RendererTests(TestCase):
             self.assertNotIn("--dport 22", firewall_text)
             self.assertNotIn("--sport 22", firewall_text)
 
+    def test_entrypoint_requires_prompt_file_for_headless_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+
+            entrypoint = dockerfile.render_entrypoint(context)
+
+            text = entrypoint.read_text(encoding="utf-8")
+            self.assertIn("No prompt file provided", text)
+            self.assertIn("PROJECT_SANDBOX_PROMPT_FILE", text)
+            self.assertNotIn("PROJECT_SANDBOX_PROMPT:-", text)
+
     def test_claude_credentials_are_staged_for_directory_mounts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

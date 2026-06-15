@@ -42,13 +42,13 @@ class ContainerCliTests(TestCase):
                 agent="claude-headless",
                 firewall_enabled=True,
                 interactive=False,
-                extra_env=["PROJECT_SANDBOX_PROMPT=fix the tests"],
+                extra_env=["PROJECT_SANDBOX_QUIET=1"],
             )
 
         self.assertNotIn("-it", cmd)
         self.assertIn("--cap-add", cmd)
         self.assertIn("NET_ADMIN", cmd)
-        self.assertIn("PROJECT_SANDBOX_PROMPT=fix the tests", cmd)
+        self.assertIn("PROJECT_SANDBOX_QUIET=1", cmd)
         self.assertNotIn("CLAUDE_CONFIG_DIR=/home/agent/.claude", cmd)
         self.assertIn("CLAUDE_SECURESTORAGE_CONFIG_DIR=/home/agent/.claude", cmd)
         self.assertIn(

@@ -503,22 +503,19 @@ def _build_session_command(
                 "PROJECT_SANDBOX_PROMPT_FILE=/workspace/.project-sandbox-prompt"
             )
         elif args.prompt_text:
-            if len(args.prompt_text) <= 4096:
-                extra_env.append(f"PROJECT_SANDBOX_PROMPT={args.prompt_text}")
+            prompts_dir = context_dir / "prompts"
+            prompt_file = prompts_dir / "prompt.txt"
+            if create_prompt_files:
+                ensure_dir(prompts_dir)
+                prompt_file.write_text(args.prompt_text, encoding="utf-8")
             else:
-                prompts_dir = context_dir / "prompts"
-                long_prompt = prompts_dir / "prompt.txt"
-                if create_prompt_files:
-                    ensure_dir(prompts_dir)
-                    long_prompt.write_text(args.prompt_text, encoding="utf-8")
-                else:
-                    print(f"Would write long prompt to: {long_prompt}")
-                extra_mounts.append(
-                    f"type=bind,source={long_prompt.resolve()},target=/workspace/.project-sandbox-prompt,readonly"
-                )
-                extra_env.append(
-                    "PROJECT_SANDBOX_PROMPT_FILE=/workspace/.project-sandbox-prompt"
-                )
+                print(f"Would write prompt to: {prompt_file}")
+            extra_mounts.append(
+                f"type=bind,source={prompt_file.resolve()},target=/workspace/.project-sandbox-prompt,readonly"
+            )
+            extra_env.append(
+                "PROJECT_SANDBOX_PROMPT_FILE=/workspace/.project-sandbox-prompt"
+            )
 
     return (
         container_cli.build_run_argv(
