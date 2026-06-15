@@ -1,64 +1,13 @@
 # TODO — outstanding items
 
-Review state: refreshed after code and documentation review on 2026-06-15.
-`uv run python -m compileall src tests` and `uv run pytest -q` pass
-(`109 passed, 2 subtests passed`). Previously listed fixes for missing
+Review state: refreshed after immediate correctness and documentation work on
+2026-06-15. `uv run python -m compileall src tests` and `uv run pytest -q` pass
+(`121 passed, 2 subtests passed`). Previously listed fixes for missing
 `container` handling, worktree conflict teardown, failed-session integration
-skips, stale worktree directories, and per-project default image tags are now
-implemented and covered by tests, so they are no longer active TODOs.
-
-## Immediate correctness and documentation
-
-### `--prompt-text` with newlines or shell-hostile content rides an env var
-- **Where:** `src/project_sandbox/cli.py` (`_build_session_command`) — prompts
-  ≤ 4096 chars go through `container run --env PROJECT_SANDBOX_PROMPT=<text>`.
-- **Problem:** multi-line or otherwise unusual prompt text depends on the
-  `container` CLI and guest init faithfully round-tripping arbitrary env-var
-  bytes (apple/container also logs full process environments to `vminitd.log`,
-  see README troubleshooting — prompts may be sensitive). The long-prompt path
-  already writes `.project-sandbox/prompts/prompt.txt` and bind-mounts it.
-- **To do:** drop the env-var path entirely and always use the prompt-file
-  mount for `--prompt-text` (one code path, no length threshold, nothing in the
-  VM's environment/logs). Update entrypoint docs/tests accordingly.
-
-### Document the generated default image tag
-- **Where:** `src/project_sandbox/cli.py` (`_default_image_tag`) and
-  `README.md`.
-- **Problem:** the code now derives per-project tags of the form
-  `project-sandbox-<project-name>-<8-char sha256>:latest`, but the README does
-  not explain the default or when to use `--image-tag`.
-- **To do:** add a short README note near the CLI options or build section
-  documenting the generated tag format, the path-hash collision protection, and
-  the `--image-tag` override.
-
-### Document OpenSpec installation without implying project initialization
-- **Where:** `README.md` and `src/project_sandbox/templates/Dockerfile.j2`.
-- **Problem:** the README says OpenSpec is available, but it does not name the
-  installed npm package or make clear that `openspec init` is not run
-  automatically in user workspaces.
-- **To do:** add a concise README note that generated images install
-  `@fission-ai/openspec@latest` on `PATH`; users/projects must explicitly run
-  OpenSpec initialization commands when they want workspace files.
-
-### Extend the e2e smoke test for recently added generated assets
-- **Where:** `scripts/e2e-test.sh`.
-- **Problem:** renderer tests assert OpenSpec is installed, and unit tests cover
-  devcontainer symlinks, but the portable e2e smoke test does not check
-  `@fission-ai/openspec@latest` or the `claude-devcontainer` /
-  `codex-devcontainer` symlinks.
-- **To do:** add content checks for the OpenSpec install line and include the
-  devcontainer-specific agent config symlinks in the e2e `SYMLINKS` list.
-
-### Document firewall DNS/IP pinning limitations
-- **Where:** `README.md` firewall section.
-- **Problem:** the firewall resolves allowlisted domains only once at container
-  start and pins those IPs in ipsets. CDN-backed endpoints
-  (`api.anthropic.com`, `claude.ai`, npm, etc.) can rotate IPs during long-lived
-  sessions, causing allowed services to fail later. This is not currently
-  documented.
-- **To do:** add a short limitation note explaining one-time DNS resolution and
-  IP drift. Do not add periodic re-resolution to the iptables script; the
-  longer-term fix is the credential-filtering proxy below.
+skips, stale worktree directories, per-project default image tags, prompt-file
+handling for `--prompt-text`, generated-asset e2e checks, OpenSpec docs, and
+firewall DNS/IP pinning docs are now implemented and covered by tests or smoke
+checks, so they are no longer active TODOs.
 
 ## Host / container validation
 
