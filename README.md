@@ -23,12 +23,6 @@ Given `project-sandbox --agent claude /path/to/repo python:3.12-slim`, it additi
 
 ## Install
 
-From a published package:
-
-```bash
-uvx project-sandbox --help
-```
-
 Directly from GitHub:
 
 ```bash
