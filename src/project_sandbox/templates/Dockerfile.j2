@@ -61,6 +61,8 @@ RUN set -eux; \
     install -m 0755 "$jj_tmp/jj" /usr/local/bin/jj; \
     rm -rf "$jj_tmp"
 
+RUN npm install -g @fission-ai/openspec@latest
+
 {% if install_claude %}
 RUN npm install -g @anthropic-ai/claude-code
 {% endif %}

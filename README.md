@@ -2,7 +2,7 @@
 
 `project-sandbox` runs Claude Code, Codex CLI, OpenCode, or a plain Bash shell inside per-project Linux containers managed by Apple's [`container`](https://github.com/apple/container) runtime. Each container runs in its own VM with hardware-enforced isolation, so the box itself is the security boundary — the agents are configured to operate freely inside it.
 
-The tool generates a derived image, sanitized agent configs, an egress firewall, and a parallel devcontainer specification so the same sandbox is reachable from the Python CLI or from local devcontainer clients.
+The tool generates a derived image with OpenSpec and detected agent CLIs, sanitized agent configs, an egress firewall, and a parallel devcontainer specification so the same sandbox is reachable from the Python CLI or from local devcontainer clients.
 
 ## What it does end-to-end
 
@@ -11,7 +11,7 @@ Given `project-sandbox /path/to/repo python:3.12-slim`:
 1. Read host `git config --global` identity.
 2. Render `<project>/.project-sandbox/` — `Dockerfile`, `entrypoint.sh`, `init-firewall.sh`, sanitized `claude/settings.json` and `codex/config.toml`, and a devcontainer post-start init script. Agent credentials are staged separately under `/tmp` with private directory permissions to reduce the chance of accidentally committing them.
 3. Render `<project>/.devcontainer/` with symlinks back into `.project-sandbox/` so the Dockerfile and firewall script remain a single source of truth.
-4. Detect available host agent configs (`~/.claude`, `~/.codex`, `~/.config/opencode`) and install only those agent CLIs into the generated Dockerfile. Bash is always available.
+4. Detect available host agent configs (`~/.claude`, `~/.codex`, `~/.config/opencode`) and install only those agent CLIs into the generated Dockerfile. OpenSpec and Bash are always available.
 5. Append `.project-sandbox/` to `<project>/.gitignore` (idempotent).
 
 Given `project-sandbox --agent claude /path/to/repo python:3.12-slim`, it additionally:
@@ -47,7 +47,7 @@ To build on top of a repo's existing Dockerfile instead of a base image tag:
 uv run project-sandbox /absolute/path/to/repo --dockerfile /absolute/path/to/repo/Dockerfile
 ```
 
-In this mode, `.project-sandbox/Dockerfile` starts with the existing Dockerfile contents and appends the sandbox runtime, firewall, and installed coding agents. The build context defaults to the project root so existing `COPY` instructions keep working; use `--docker-context` if that Dockerfile expects a different context. If the source Dockerfile defines its own non-root user or UID/GID setup, project-sandbox removes those instructions, prints a warning, and creates its own `agent` user with UID 1000.
+In this mode, `.project-sandbox/Dockerfile` starts with the existing Dockerfile contents and appends the sandbox runtime, firewall, OpenSpec, and installed coding agents. The build context defaults to the project root so existing `COPY` instructions keep working; use `--docker-context` if that Dockerfile expects a different context. If the source Dockerfile defines its own non-root user or UID/GID setup, project-sandbox removes those instructions, prints a warning, and creates its own `agent` user with UID 1000.
 
 Use `--dry-run` to preview every action without writing files or starting the runtime:
 
