@@ -1,9 +1,12 @@
 import contextlib
 import io
+import signal
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
 from unittest import TestCase
+from unittest.mock import Mock, patch
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -66,3 +69,24 @@ class SessionTests(TestCase):
             path.write_text("a\nb\nc\n", encoding="utf-8")
             self.assertEqual(session.count_lines(path), 3)
             self.assertEqual(session.count_lines(Path(tmp) / "missing.log"), 0)
+
+    def test_timeout_terminates_process_group_then_kills_on_grace_timeout(self) -> None:
+        proc = Mock()
+        proc.pid = 1234
+        proc.wait.side_effect = [subprocess.TimeoutExpired(["cmd"], timeout=30), 0]
+
+        with (
+            patch("project_sandbox.session.os.getpgid", return_value=5678),
+            patch("project_sandbox.session.os.killpg") as killpg,
+        ):
+            session._terminate_process_group(proc)
+
+        self.assertEqual(
+            killpg.call_args_list,
+            [
+                ((5678, signal.SIGTERM),),
+                ((5678, signal.SIGKILL),),
+            ],
+        )
+        proc.send_signal.assert_not_called()
+        self.assertEqual(proc.wait.call_args_list[0].kwargs["timeout"], 30)

@@ -370,6 +370,55 @@ class RendererTests(TestCase):
                 ],
             )
 
+    def test_credentials_dir_rejects_invalid_agent_name(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(ValueError) as raised:
+                config_agents.credentials_dir(Path(tmp) / ".project-sandbox", "../bad")
+
+        self.assertIn("Invalid credential agent name", str(raised.exception))
+
+    def test_staging_refuses_symlinked_credential_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            symlink = root / "link"
+            symlink.symlink_to(root)
+
+            with self.assertRaises(RuntimeError) as raised:
+                config_agents._ensure_private_dir(symlink / "agent")
+
+        self.assertIn("symlinked credential directory", str(raised.exception))
+
+    def test_invalid_claude_json_is_replaced_with_sanitized_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            context = root / ".project-sandbox"
+            home.mkdir()
+            (home / ".claude.json").write_text("{not json\n", encoding="utf-8")
+
+            with _credentials_root(root):
+                staged_dir = config_agents.sync_credentials(context, home=home)["claude"]
+
+            state = json.loads((staged_dir / ".claude.json").read_text(encoding="utf-8"))
+            self.assertEqual(state["permissions"]["defaultMode"], "bypassPermissions")
+            self.assertEqual(state["installMethod"], "npm")
+            self.assertNotIn("not json", json.dumps(state))
+
+    def test_macos_keychain_failures_do_not_stage_credentials(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            with (
+                patch("project_sandbox.config_agents.sys.platform", "darwin"),
+                patch("project_sandbox.config_agents.shutil.which", return_value="/usr/bin/security"),
+                patch(
+                    "project_sandbox.config_agents.subprocess.run",
+                    side_effect=subprocess.TimeoutExpired(["security"], timeout=2),
+                ),
+            ):
+                self.assertFalse(config_agents._stage_macos_keychain_credentials(out_dir))
+
+            self.assertFalse((out_dir / ".credentials.json").exists())
+
     def test_dockerfile_renderer_can_skip_agent_installs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             context = Path(tmp)

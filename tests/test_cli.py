@@ -335,6 +335,115 @@ class CliTests(TestCase):
 
             self.assertIn("either base_image or --dockerfile", str(raised.exception))
 
+    def test_docker_context_requires_dockerfile(self) -> None:
+        import argparse
+
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            context_dir = project / ".project-sandbox"
+            args = argparse.Namespace(
+                docker_context=str(project),
+                dockerfile=None,
+                base_image="python:3.12-slim",
+            )
+
+            with self.assertRaises(SystemExit) as raised:
+                cli._resolve_build_source(args, project=project, context_dir=context_dir)
+
+        self.assertIn("--docker-context requires --dockerfile", str(raised.exception))
+
+    def test_dockerfile_must_point_to_file(self) -> None:
+        import argparse
+
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            dockerfile_dir = project / "Dockerfile"
+            dockerfile_dir.mkdir()
+            args = argparse.Namespace(
+                docker_context=None,
+                dockerfile=str(dockerfile_dir),
+                base_image=None,
+            )
+
+            with self.assertRaises(SystemExit) as raised:
+                cli._resolve_build_source(
+                    args,
+                    project=project,
+                    context_dir=project / ".project-sandbox",
+                )
+
+        self.assertIn("--dockerfile must point to a file", str(raised.exception))
+
+    def test_docker_context_must_point_to_directory(self) -> None:
+        import argparse
+
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            source = project / "Dockerfile"
+            source.write_text("FROM python:3.12-slim\n", encoding="utf-8")
+            context_file = project / "context.txt"
+            context_file.write_text("not a directory\n", encoding="utf-8")
+            args = argparse.Namespace(
+                docker_context=str(context_file),
+                dockerfile=str(source),
+                base_image=None,
+            )
+
+            with self.assertRaises(SystemExit) as raised:
+                cli._resolve_build_source(
+                    args,
+                    project=project,
+                    context_dir=project / ".project-sandbox",
+                )
+
+        self.assertIn("--docker-context must point to a directory", str(raised.exception))
+
+    def test_docker_context_must_contain_generated_sandbox_dir(self) -> None:
+        import argparse
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project = root / "project"
+            project.mkdir()
+            source = project / "Dockerfile"
+            source.write_text("FROM python:3.12-slim\n", encoding="utf-8")
+            outside_context = root / "context"
+            outside_context.mkdir()
+            args = argparse.Namespace(
+                docker_context=str(outside_context),
+                dockerfile=str(source),
+                base_image=None,
+            )
+
+            with self.assertRaises(SystemExit) as raised:
+                cli._resolve_build_source(
+                    args,
+                    project=project,
+                    context_dir=project / ".project-sandbox",
+                )
+
+        self.assertIn("must contain the generated .project-sandbox", str(raised.exception))
+
+    def test_base_image_is_required_without_dockerfile(self) -> None:
+        import argparse
+
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            args = argparse.Namespace(
+                docker_context=None,
+                dockerfile=None,
+                base_image=None,
+            )
+
+            with self.assertRaises(SystemExit) as raised:
+                cli._resolve_build_source(
+                    args,
+                    project=project,
+                    context_dir=project / ".project-sandbox",
+                )
+
+        self.assertIn("base_image is required", str(raised.exception))
+
     def test_branch_jj_repo_raises(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
@@ -438,6 +547,32 @@ class CliTests(TestCase):
         self.assertFalse(wt_path.exists())
         self.assertIn("Would use worktree at:", output)
         self.assertIn("Would mount .git metadata:", output)
+
+    def test_branch_mount_conflicting_with_git_metadata_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            _make_git_repo(project)
+            host_home = project / "home"
+            paths = _agent_paths(host_home)
+            paths["claude"].mkdir(parents=True)
+            git_dir = (project / ".git").resolve()
+
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("A", "a@b.com")),
+                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                with self.assertRaises(SystemExit) as raised:
+                    cli.main([
+                        "--dry-run", "--no-build", "--no-firewall",
+                        "--agent", "claude",
+                        "--branch", "feat/x", "--after-session", "nothing",
+                        "--mount", f"type=bind,source={git_dir},target=/git",
+                        str(project), "python:3.12-slim",
+                    ])
+
+        self.assertIn("--mount conflicts", str(raised.exception))
+        self.assertIn(str(git_dir), str(raised.exception))
 
     def test_branch_without_agent_or_prompt_raises(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

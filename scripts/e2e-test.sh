@@ -4,8 +4,9 @@
 # Creates a throwaway Python hello-world project, runs the tool against it,
 # and verifies that every expected artefact was written. By default this passes
 # --no-build so the test is portable to hosts without apple/container installed;
-# pass --with-container to additionally exercise the image build (requires the
-# `container` CLI on PATH and a running container system).
+# pass --with-container to additionally exercise direct Apple container runs,
+# including the timeout path (requires the `container` CLI on PATH and a running
+# container system).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -139,6 +140,41 @@ if command -v python3 >/dev/null 2>&1; then
     echo "  ok    $DC/devcontainer.json parses as JSON"
   else
     echo "  BAD   $DC/devcontainer.json is not valid JSON"
+    fail=1
+  fi
+fi
+
+if [ "$WITH_CONTAINER" = 1 ]; then
+  echo
+  echo "Checking direct Apple container runtime:"
+  if uv run project-sandbox \
+    --runtime apple-container \
+    --agent bash \
+    --prompt-text "printf direct-runtime-ok" \
+    --timeout 30 \
+    "$TMP_PROJECT" \
+    python:3.12-slim; then
+    echo "  ok    direct bash agent run completed"
+  else
+    echo "  BAD   direct bash agent run failed"
+    fail=1
+  fi
+
+  set +e
+  uv run project-sandbox \
+    --runtime apple-container \
+    --no-build \
+    --agent bash \
+    --prompt-text "sleep 10" \
+    --timeout 1 \
+    "$TMP_PROJECT" \
+    python:3.12-slim
+  timeout_rc=$?
+  set -e
+  if [ "$timeout_rc" = 124 ]; then
+    echo "  ok    direct runtime timeout returned 124"
+  else
+    echo "  BAD   direct runtime timeout returned $timeout_rc (expected 124)"
     fail=1
   fi
 fi
