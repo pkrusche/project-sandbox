@@ -17,3 +17,5 @@ uv.lock
 .claude/worktrees
 .agents
 .claude/skills
+# project-sandbox — do not commit agent secrets
+.devcontainer/
