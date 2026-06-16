@@ -20,6 +20,37 @@ def _make_repo(path: Path) -> None:
     subprocess.run(["git", "-C", str(path), "commit", "-m", "init"], check=True, capture_output=True)
 
 
+class PathForCollisionTests(TestCase):
+    """Unit tests for path_for() disambiguation — no real git repo required."""
+
+    def _fake_repo(self) -> Path:
+        return Path("/tmp/fake/repo")
+
+    def test_slash_and_dash_branch_get_different_paths(self) -> None:
+        p_slash = worktree_mod.path_for(self._fake_repo(), "feat/x")
+        p_dash = worktree_mod.path_for(self._fake_repo(), "feat-x")
+        self.assertNotEqual(p_slash, p_dash)
+
+    def test_plain_branch_has_no_suffix(self) -> None:
+        p = worktree_mod.path_for(self._fake_repo(), "main")
+        self.assertEqual(p.name, "main")
+
+    def test_plain_dash_branch_has_no_suffix(self) -> None:
+        p = worktree_mod.path_for(self._fake_repo(), "my-feature")
+        self.assertEqual(p.name, "my-feature")
+
+    def test_slash_branch_ends_with_six_char_hex_suffix(self) -> None:
+        import re
+        p = worktree_mod.path_for(self._fake_repo(), "feat/x")
+        # Expected: "feat-x-<6 hex chars>"
+        self.assertRegex(p.name, r"^feat-x-[0-9a-f]{6}$")
+
+    def test_slash_branch_suffix_is_deterministic(self) -> None:
+        p1 = worktree_mod.path_for(self._fake_repo(), "feat/x")
+        p2 = worktree_mod.path_for(self._fake_repo(), "feat/x")
+        self.assertEqual(p1, p2)
+
+
 class WorktreeSetupTests(TestCase):
     def setUp(self) -> None:
         import tempfile
@@ -46,13 +77,13 @@ class WorktreeSetupTests(TestCase):
         wt = worktree_mod.setup(self.repo, "feat/hello")
 
         expected_root = self.repo.resolve().parent / f"{self.repo.name}-worktrees"
-        self.assertEqual(wt.path.resolve(), expected_root / "feat-hello")
+        self.assertEqual(wt.path.resolve(), expected_root / "feat-hello-b316b9")
 
     def test_setup_custom_worktree_dir(self) -> None:
         custom = self.root / "custom-wts"
         wt = worktree_mod.setup(self.repo, "feat/x", worktree_dir=custom)
 
-        self.assertEqual(wt.path, custom / "feat-x")
+        self.assertEqual(wt.path, custom / "feat-x-79b4cc")
         self.assertTrue(wt.path.is_dir())
 
     def test_setup_idempotent_reuse(self) -> None:

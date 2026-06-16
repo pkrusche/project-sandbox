@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import hashlib
 from pathlib import Path
 import subprocess
 
@@ -40,7 +41,11 @@ def setup(repo: Path, branch: str, base: str | None = None, worktree_dir: Path |
 def path_for(repo: Path, branch: str, worktree_dir: Path | None = None) -> Path:
     repo = repo.resolve()
     wt_root = worktree_dir or (repo.parent / f"{repo.name}-worktrees")
-    return wt_root / branch.replace("/", "-")
+    safe = branch.replace("/", "-")
+    if "/" in branch:
+        suffix = hashlib.sha256(branch.encode()).hexdigest()[:6]
+        safe = f"{safe}-{suffix}"
+    return wt_root / safe
 
 
 def teardown(repo: Path, wt: Worktree, *, after: str) -> None:

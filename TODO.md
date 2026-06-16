@@ -48,12 +48,3 @@ in the project.
 - **To do:** confirm on a host with apple/container that the guest VM is gone
   after a timeout. If the VM lingers, give the run a known name/id and
   `container stop`/`kill` it explicitly in the timeout path.
-
-## Worktree directory name collision
-- **Where:** `src/project_sandbox/worktree.py` (`path_for`) maps a branch to a dir
-  via `branch.replace("/", "-")`, so `feat/x` and `feat-x` resolve to the same
-  worktree directory.
-- **To do:** add a disambiguating suffix (e.g. a short branch-name hash) if this
-  ever bites. Deferred as low-probability; not worth the churn now. (Note: the
-  stale-directory `setup` fix above makes this collision fail loudly instead of
-  silently reusing the wrong worktree, which removes most of the risk.)
