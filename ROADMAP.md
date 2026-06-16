@@ -5,31 +5,6 @@ via <TODO.md>.
 
 ## Security roadmap
 
-### Canary token tripwires
-
-A standalone detection layer, independent of the proxy's inline policy below. The
-proxy prevents exfiltration in real time; canary tokens tell you *after the fact*
-if something got out and was used anywhere in the world.
-
-- **Plant Thinkst Canarytokens** (free at `canarytokens.org`; the AWS API Key
-  canary is the gold-standard tripwire) inside the agent VM at the locations a
-  thief would actually grab: `/workspace/.env`, `/workspace/.aws/credentials`,
-  `~/.bash_history`. If an attacker exfiltrates and *uses* one, an out-of-band
-  alert fires at `canarytokens.org` — TruffleHog-style `sts:GetCallerIdentity`
-  verification calls trip the AWS canary, which is how Grafana Labs detected a
-  real 2025 GitHub Actions breach (their public write-up, 25 Aug 2025).
-- **Custom sentinel string**: plant a fixed string (e.g.
-  `SENTINEL_PROJECT_SANDBOX = "ps-sentinel-7H3kQ9wPxL"`) alongside the canaries.
-  The proxy does a plain **exact-match** on outbound request bodies for this
-  string (no entropy/detector scanning); if seen, it logs at FATAL and force-kills
-  the agent session. This is a cheap last-ditch tripwire, not DLP.
-- **To do:** token-provisioning UX (how a user mints/registers a canary), where to
-  plant them per agent image, and the hook in the proxy addon for the sentinel
-  exact-match kill-switch. Add an E2E test that plants an AWS canary, prompts the
-  agent toward a `git push`, and asserts the proxy's allowlist blocks the push so
-  the canary does **not** fire; a negative control (allowlist disabled) confirms
-  it *would* fire.
-
 ### project-sandbox Credential-Filtering Sidecar Proxy
 
 **Recommendation in one sentence:** Build the sidecar as a second `apple/container`
