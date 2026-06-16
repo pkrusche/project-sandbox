@@ -789,6 +789,162 @@ class RendererTests(TestCase):
             out = config_agents.render(context)["codex"]
             self.assertIn('approval_policy = "never"', out.read_text(encoding="utf-8"))
 
+    def test_dockerfile_source_warns_on_alpine_base(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            context = project / ".project-sandbox"
+            context.mkdir()
+            source = project / "Dockerfile"
+            source.write_text("FROM alpine:3.19\nRUN echo hello\n", encoding="utf-8")
+            warnings: list[str] = []
+            dockerfile.render(
+                context, base_dockerfile=source, build_context=project, warn=warnings.append
+            )
+            self.assertEqual(len(warnings), 1)
+            self.assertIn("alpine", warnings[0])
+            self.assertIn("apt-get", warnings[0])
+
+    def test_dockerfile_source_warns_on_distroless_base(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            context = project / ".project-sandbox"
+            context.mkdir()
+            source = project / "Dockerfile"
+            source.write_text(
+                "FROM gcr.io/distroless/python3:latest\nRUN echo hello\n", encoding="utf-8"
+            )
+            warnings: list[str] = []
+            dockerfile.render(
+                context, base_dockerfile=source, build_context=project, warn=warnings.append
+            )
+            self.assertEqual(len(warnings), 1)
+            self.assertIn("distroless", warnings[0])
+            self.assertIn("apt-get", warnings[0])
+
+    def test_dockerfile_source_no_warning_for_debian_base(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            context = project / ".project-sandbox"
+            context.mkdir()
+            source = project / "Dockerfile"
+            source.write_text("FROM debian:bookworm-slim\nRUN echo hello\n", encoding="utf-8")
+            warnings: list[str] = []
+            dockerfile.render(
+                context, base_dockerfile=source, build_context=project, warn=warnings.append
+            )
+            self.assertEqual(warnings, [])
+
+    def test_dockerfile_source_warns_on_workdir_and_uv_sync(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            context = project / ".project-sandbox"
+            context.mkdir()
+            source = project / "Dockerfile"
+            source.write_text(
+                "FROM python:3.11-slim\nWORKDIR /app\nRUN uv sync --frozen\n",
+                encoding="utf-8",
+            )
+            warnings: list[str] = []
+            dockerfile.render(
+                context, base_dockerfile=source, build_context=project, warn=warnings.append
+            )
+            self.assertEqual(len(warnings), 1)
+            self.assertIn("/app", warnings[0])
+            self.assertIn("/workspace", warnings[0])
+
+    def test_dockerfile_source_warns_on_workdir_and_pip_install_dot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            context = project / ".project-sandbox"
+            context.mkdir()
+            source = project / "Dockerfile"
+            source.write_text(
+                "FROM python:3.11-slim\nWORKDIR /code\nRUN pip install -e .\n",
+                encoding="utf-8",
+            )
+            warnings: list[str] = []
+            dockerfile.render(
+                context, base_dockerfile=source, build_context=project, warn=warnings.append
+            )
+            self.assertEqual(len(warnings), 1)
+            self.assertIn("/code", warnings[0])
+
+    def test_dockerfile_source_warns_on_workdir_and_npm_install(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            context = project / ".project-sandbox"
+            context.mkdir()
+            source = project / "Dockerfile"
+            source.write_text(
+                "FROM node:20\nWORKDIR /app\nRUN npm install\n", encoding="utf-8"
+            )
+            warnings: list[str] = []
+            dockerfile.render(
+                context, base_dockerfile=source, build_context=project, warn=warnings.append
+            )
+            self.assertEqual(len(warnings), 1)
+            self.assertIn("/workspace", warnings[0])
+
+    def test_dockerfile_source_no_warning_for_global_npm_install(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            context = project / ".project-sandbox"
+            context.mkdir()
+            source = project / "Dockerfile"
+            source.write_text(
+                "FROM node:20\nWORKDIR /app\nRUN npm install -g @anthropic-ai/claude-code\n",
+                encoding="utf-8",
+            )
+            warnings: list[str] = []
+            dockerfile.render(
+                context, base_dockerfile=source, build_context=project, warn=warnings.append
+            )
+            self.assertEqual(warnings, [])
+
+    def test_dockerfile_source_no_warning_when_workdir_is_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            context = project / ".project-sandbox"
+            context.mkdir()
+            source = project / "Dockerfile"
+            source.write_text(
+                "FROM python:3.11-slim\nWORKDIR /workspace\nRUN uv sync --frozen\n",
+                encoding="utf-8",
+            )
+            warnings: list[str] = []
+            dockerfile.render(
+                context, base_dockerfile=source, build_context=project, warn=warnings.append
+            )
+            self.assertEqual(warnings, [])
+
+    def test_dockerfile_source_multiple_warnings_combined(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            context = project / ".project-sandbox"
+            context.mkdir()
+            source = project / "Dockerfile"
+            source.write_text(
+                "FROM alpine:3.19\nWORKDIR /app\nRUN uv sync --frozen\n", encoding="utf-8"
+            )
+            warnings: list[str] = []
+            dockerfile.render(
+                context, base_dockerfile=source, build_context=project, warn=warnings.append
+            )
+            self.assertEqual(len(warnings), 2)
+            self.assertTrue(any("apt-get" in w for w in warnings))
+            self.assertTrue(any("/workspace" in w for w in warnings))
+
+    def test_dockerfile_source_warnings_available_in_dry_run_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "Dockerfile"
+            source.write_text(
+                "FROM alpine:3.19\nWORKDIR /app\nRUN uv sync\n", encoding="utf-8"
+            )
+            warnings = dockerfile.source_warnings(source)
+            self.assertEqual(len(warnings), 2)
+            self.assertTrue(any("apt-get" in w for w in warnings))
+            self.assertTrue(any("/workspace" in w for w in warnings))
+
     def test_sync_credentials_devcontainer_uses_auto_permission_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

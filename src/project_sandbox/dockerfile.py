@@ -8,6 +8,22 @@ _USER_SETUP_COMMAND_RE = re.compile(
     r"(?<![\w.-])(addgroup|adduser|groupadd|groupmod|useradd|usermod)(?![\w.-])"
 )
 
+_NON_APT_IMAGE_FRAGMENTS = (
+    "alpine", "scratch", "distroless", "centos", "rhel", "fedora",
+    "rocky", "almalinux", "opensuse", "suse", "busybox", "wolfi", "chainguard",
+)
+
+_LOCAL_INSTALL_RE = re.compile(
+    r"uv\s+sync"
+    r"|pip3?\s+install\s+(-e\s+)?\."
+    r"|poetry\s+install"
+    r"|pipenv\s+install"
+    r"|npm\s+install(?!\s+(-g|--global)\b)"
+    r"|yarn\s+install"
+    r"|pnpm\s+install",
+    re.IGNORECASE,
+)
+
 
 def render(
     context_dir: Path,
@@ -59,18 +75,66 @@ def source_warnings(base_dockerfile: Path) -> tuple[str, ...]:
     return warnings
 
 
+def _extract_last_from(blocks: list[list[str]]) -> str | None:
+    result = None
+    for block in blocks:
+        if block:
+            m = re.match(r"\s*FROM\s+(\S+)", block[0], re.IGNORECASE)
+            if m:
+                result = m.group(1)
+    return result
+
+
+def _is_non_apt_image(image: str) -> bool:
+    lower = image.lower()
+    return any(frag in lower for frag in _NON_APT_IMAGE_FRAGMENTS)
+
+
+def _extract_final_workdir(blocks: list[list[str]]) -> str | None:
+    result = None
+    for block in blocks:
+        if block:
+            m = re.match(r"\s*WORKDIR\s+(\S+)", block[0], re.IGNORECASE)
+            if m:
+                result = m.group(1)
+    return result
+
+
+def _has_local_install_commands(blocks: list[list[str]]) -> bool:
+    for block in blocks:
+        if block and re.match(r"\s*RUN\b", block[0], re.IGNORECASE):
+            command = " ".join(line.strip().rstrip("\\") for line in block)
+            if _LOCAL_INSTALL_RE.search(command):
+                return True
+    return False
+
+
 def _read_source_dockerfile(base_dockerfile: Path) -> tuple[str, tuple[str, ...]]:
     text = base_dockerfile.read_text(encoding="utf-8")
     sanitized, removed = _remove_restricted_user_setup(text)
-    warnings = ()
+    warnings: list[str] = []
     if removed:
         suffix = "s" if removed != 1 else ""
-        warnings = (
+        warnings.append(
             "WARNING: Removed "
             f"{removed} restricted user setup instruction{suffix} from {base_dockerfile}; "
-            "project-sandbox will create its own agent user with UID 1000.",
+            "project-sandbox will create its own agent user with UID 1000."
         )
-    return sanitized.rstrip() + "\n", warnings
+    blocks = _dockerfile_blocks(text)
+    base = _extract_last_from(blocks)
+    if base is not None and _is_non_apt_image(base):
+        warnings.append(
+            f"WARNING: Base image '{base}' may not support apt-get; "
+            "project-sandbox requires a Debian/Ubuntu-based image."
+        )
+    workdir = _extract_final_workdir(blocks)
+    if workdir and workdir != "/workspace" and _has_local_install_commands(blocks):
+        warnings.append(
+            f"WARNING: WORKDIR is set to '{workdir}' but the agent runs in /workspace; "
+            "packages installed during the image build will not be accessible. "
+            "Remove install steps from the Dockerfile and run them inside the container instead."
+        )
+    return sanitized.rstrip() + "\n", tuple(warnings)
 
 
 def _remove_restricted_user_setup(text: str) -> tuple[str, int]:
