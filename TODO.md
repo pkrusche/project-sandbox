@@ -22,10 +22,13 @@ Code is **complete**: `container run` is launched with `start_new_session=True`
 (`session.py:38-44`) and on timeout `_terminate_process_group`
 (`session.py:60-88`) SIGTERMs then SIGKILLs the whole process group; tests in
 `tests/test_session.py` cover the group-signalling logic. This cannot be
-verified without apple/container. Outstanding: confirm on an apple/container
-host that the guest VM is gone after a timeout. If the VM lingers despite
-`--rm` + group kill, give the run a known `--name`/id and `container stop`/`kill`
-it explicitly in the timeout path (not currently implemented).
+verified without apple/container. Outstanding: run
+`scripts/verify-timeout-teardown.sh` on an apple/container host — it times out a
+sleeping run and asserts no new container/VM survives (by diffing the running
+set before/after). If the VM lingers despite `--rm` + group kill, give the run a
+known `--name`/id and `container stop`/`kill` it explicitly in the timeout path
+(not currently implemented); the script prints the exact `container stop`
+command for any leaked VM it finds.
 
 ---
 
