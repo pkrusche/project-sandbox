@@ -50,6 +50,47 @@ uv run project-sandbox /absolute/path/to/repo --dockerfile /absolute/path/to/rep
 
 In this mode, `.project-sandbox/Dockerfile` starts with the existing Dockerfile contents and appends the sandbox runtime, firewall, OpenSpec, and installed coding agents. The build context defaults to the project root so existing `COPY` instructions keep working; use `--docker-context` if that Dockerfile expects a different context. If the source Dockerfile defines its own non-root user or UID/GID setup, project-sandbox removes those instructions, prints a warning, and creates its own `agent` user with UID 1000.
 
+### Python + uv projects
+
+For a Python project managed with uv, create a `Dockerfile` at the project root that
+installs uv and pre-populates the package cache so the agent can run `uv sync` /
+`uv run` inside the sandbox without reaching PyPI (which the firewall blocks at
+runtime):
+
+```dockerfile
+FROM python:3.11-slim
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+# Pre-populate the uv package cache with all project dependencies so the agent
+# can run `uv sync` / `uv run` inside the sandbox without reaching PyPI.
+# UID 1000 is the agent user created by the sandbox layers that follow.
+COPY pyproject.toml uv.lock README.md /tmp/project-setup/
+COPY src/ /tmp/project-setup/src/
+RUN UV_CACHE_DIR=/opt/uv-cache uv sync \
+        --frozen \
+        --project /tmp/project-setup \
+    && chown -R 1000:1000 /opt/uv-cache \
+    && rm -rf /tmp/project-setup
+
+ENV UV_CACHE_DIR=/opt/uv-cache
+```
+
+Key points:
+- Copy all files referenced by `pyproject.toml` metadata (including `README.md` if
+  declared as `readme =`) so the build backend can validate the project during the
+  cache-warming step.
+- The `chown -R 1000:1000` gives the sandbox's `agent` user (UID 1000, created by
+  the layers that follow) full access to the pre-warmed cache.
+- `ENV UV_CACHE_DIR=/opt/uv-cache` persists into the running container so the agent's
+  `uv sync` reads from the cache instead of PyPI.
+
+Then run:
+
+```bash
+uv run project-sandbox /absolute/path/to/repo --dockerfile /absolute/path/to/repo/Dockerfile
+```
+
 Use `--dry-run` to preview every action without writing files or starting the runtime:
 
 ```bash

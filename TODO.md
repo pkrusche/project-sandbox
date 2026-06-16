@@ -1,5 +1,24 @@
 # TODO — outstanding items
 
+## CLI option to generate a uv + Python Dockerfile automatically
+
+Add a `--python-uv` flag (or similar) that generates a suitable base `Dockerfile`
+for a Python/uv project without requiring one to be present in the repo.
+
+- **Behaviour:** when passed, project-sandbox synthesises a `Dockerfile` equivalent
+  to the pattern documented in `README.md` (Python slim base, uv binary copied from
+  the official image, dependency-cache warming step, `ENV UV_CACHE_DIR`). The
+  synthesised file is written to `.project-sandbox/Dockerfile.base` and passed
+  internally as `--dockerfile`.
+- **Inputs:** accept `--python VERSION` (default `3.11`) to control the base image
+  tag so the user does not have to write the file just to change the Python version.
+- **Edge cases:** warn (don't fail) if `pyproject.toml` / `uv.lock` are absent — the
+  cache-warming step is skipped and only Python + uv are installed.
+- **Why deferred:** the current `--dockerfile` path already covers the use case; the
+  synthesised variant is a convenience shortcut that needs its own tests and a
+  decision on how it interacts with `--dockerfile` and `base_image`.
+
+
 ## Keep persistent bash and session history
 
 In the devcontainer & interactive (but not the unsupervised / batch) sessions, we 
