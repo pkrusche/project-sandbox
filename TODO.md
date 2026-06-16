@@ -1,50 +1,73 @@
 # TODO — outstanding items
 
-## CLI option to generate a uv + Python Dockerfile automatically
+> Reviewed 2026-06-16 against the code. Commits f128643 (`--python-uv`),
+> ae2d582 (persistent history) and 821a248 (firewall resolvers) landed the bulk
+> of three earlier items; the remaining work below is what verification turned
+> up as still open.
 
-Add a `--python-uv` flag (or similar) that generates a suitable base `Dockerfile`
-for a Python/uv project without requiring one to be present in the repo.
+## `--python-uv`: synthesised Dockerfile does not actually persist the uv cache
 
-- **Behaviour:** when passed, project-sandbox synthesises a `Dockerfile` equivalent
-  to the pattern documented in `README.md` (Python slim base, uv binary copied from
-  the official image, dependency-cache warming step, `ENV UV_CACHE_DIR`). The
-  synthesised file is written to `.project-sandbox/Dockerfile.base` and passed
-  internally as `--dockerfile`.
-- **Inputs:** accept `--python VERSION` (default `3.11`) to control the base image
-  tag so the user does not have to write the file just to change the Python version.
-- **Edge cases:** warn (don't fail) if `pyproject.toml` / `uv.lock` are absent — the
-  cache-warming step is skipped and only Python + uv are installed.
-- **Why deferred:** the current `--dockerfile` path already covers the use case; the
-  synthesised variant is a convenience shortcut that needs its own tests and a
-  decision on how it interacts with `--dockerfile` and `base_image`.
+The `--python-uv` / `--python VERSION` flags are implemented and tested
+(`cli.py:44-58`, `_resolve_build_source` at `cli.py:398-433`, renderer at
+`dockerfile.py:204-231`, tests in `tests/test_cli.py` `PythonUvFlagTests`). The
+flag, the `3.11` default, the missing-`pyproject.toml`/`uv.lock` warning, and
+the `--dockerfile` mutual-exclusion all work. Two correctness gaps remain:
 
+- **Cache-warming step is a no-op at runtime (functional).** The synthesised
+  warm step is `RUN --mount=type=cache,target=/opt/uv-cache uv sync --frozen
+  --no-install-project` (`dockerfile.py:227`). A BuildKit `type=cache` mount is
+  **ephemeral and is not baked into the final image**, so `/opt/uv-cache` is
+  empty when the agent runs — which defeats the documented purpose of letting
+  the agent run `uv sync` offline behind the firewall. The README pattern
+  (`README.md:60-77`) deliberately warms the cache **without** a cache mount and
+  then `chown -R 1000:1000 /opt/uv-cache`. The synthesised version should drop
+  the `type=cache` mount (so the cache lands in a layer) and add the
+  `chown` to UID 1000 — the sandbox agent runs as UID 1000.
+- **Filename differs from earlier spec (cosmetic, decide and align).** The file
+  is written to `.project-sandbox/Dockerfile.python-uv` (`dockerfile.py:229`),
+  not the `.project-sandbox/Dockerfile.base` originally specced. Either is fine;
+  pick one and keep the README/spec consistent.
 
-## Keep persistent bash and session history
+## Persistent history: mounted to the wrong user, and devcontainer not covered
 
-In the devcontainer & interactive (but not the unsupervised / batch) sessions, we 
-should retain bash & prompt history for our agents. This can be accomplished by
-mounting the corresponding files to a location in the .project-sandbox folder 
-in the project.
+The interactive-vs-unsupervised scoping, the `.project-sandbox/history/`
+location, and the gitignore exclusion are in place for the CLI run path
+(`cli.py:577-591`, tests in `tests/test_cli.py`). Two gaps remain:
 
-## Firewall: allow all `resolv.conf` resolvers, not just the first
-- **Where:** `src/project_sandbox/templates/init-firewall.sh.j2` — the `DNS4`/`DNS6`
-  `awk` lines use `... {print $2; exit}`, so only the first IPv4 and first IPv6
-  nameserver are pinned; the NAT-preservation `grep` and the `ACCEPT` rules use
-  those single values.
-- **Current state:** the docs (`README.md`) were updated to say "the first
-  resolver" so they match the script. If a VM's `resolv.conf` lists multiple
-  resolvers, the others are dropped (rare in the apple/container & devcontainer
-  VMs, which typically have one).
-- **To do:** collect all `nameserver` entries into lists and emit NAT/ACCEPT
-  rules for each, then revert the README wording to "resolver(s)". This touches
-  the network security boundary, so it must be exercised on a machine with
-  iptables — do **not** ship it unverified.
+- **Mount targets are `/root/...` but the container runs as `USER agent`.** The
+  mounts target `/root/.bash_history` and `/root/.claude/projects`
+  (`cli.py:587-590`), but the container user is `agent` (UID 1000, home
+  `/home/agent` — `Dockerfile.j2:86`), and Claude's config dir is
+  `/home/agent/.claude` (`container_cli.py`). As `agent`, bash writes to
+  `/home/agent/.bash_history` and cannot write to root-owned `/root` anyway, so
+  the persisted files are mounted where the process never uses them. Targets
+  should be `/home/agent/.bash_history` and `/home/agent/.claude/projects`. The
+  existing tests assert the (wrong) `/root` strings, so they pass without
+  catching this — update them to assert the agent-home targets.
+- **Devcontainer is not covered.** The TODO calls for devcontainer *and*
+  interactive sessions, but `devcontainer.render(...)` (`cli.py:178-187`) gets
+  only the user's `--mount` values; neither `devcontainer.json.j2` nor the
+  devcontainer entrypoint touches history. Add the history mounts there too.
+
+## Firewall: verify multi-resolver rules on a real iptables host
+
+Code is **complete**: `init-firewall.sh.j2` now collects all IPv4/IPv6
+nameservers via `mapfile` and emits NAT/ACCEPT rules per resolver (no more
+`{print $2; exit}` for DNS), with a `127.0.0.11` fallback; README says
+"resolver(s)"; `tests/test_renderers.py::test_firewall_collects_all_resolvers_not_just_first`
+covers the rendered script. The unit tests are render-only by policy and do
+**not** exercise live iptables. Outstanding: run the rendered script on a host
+with iptables (multiple `nameserver` entries in `resolv.conf`) and confirm DNS
+to every resolver is permitted and nothing else leaks before treating this as
+shipped — it is the network security boundary.
 
 ## Verify `--timeout` actually tears down the apple/container VM
-- **Where:** `src/project_sandbox/session.py` (`_terminate_process_group`).
-- **Current state:** on timeout we now SIGTERM→SIGKILL the whole `container run`
-  process group (not just the immediate child), which should let `--rm` clean up.
-  README reflects this.
-- **To do:** confirm on a host with apple/container that the guest VM is gone
-  after a timeout. If the VM lingers, give the run a known name/id and
-  `container stop`/`kill` it explicitly in the timeout path.
+
+Code is **complete**: `container run` is launched with `start_new_session=True`
+(`session.py:38-44`) and on timeout `_terminate_process_group`
+(`session.py:60-88`) SIGTERMs then SIGKILLs the whole process group; tests in
+`tests/test_session.py` cover the group-signalling logic. This cannot be
+verified without apple/container. Outstanding: confirm on an apple/container
+host that the guest VM is gone after a timeout. If the VM lingers despite
+`--rm` + group kill, give the run a known `--name`/id and `container stop`/`kill`
+it explicitly in the timeout path (not currently implemented).
