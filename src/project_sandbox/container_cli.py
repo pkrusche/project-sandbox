@@ -155,17 +155,23 @@ def build_image(
     dry_run: bool = False,
     verbose: bool = True,
 ) -> int:
-    build_context = build_context or context_dir
-    dockerfile_path = dockerfile_path or context_dir / "Dockerfile"
-    cmd = [runtime.binary, "build", "-t", image_tag]
-    default_dockerfile = build_context / "Dockerfile"
-    if dockerfile_path.resolve(strict=False) != default_dockerfile.resolve(strict=False):
-        cmd += ["-f", str(dockerfile_path)]
-    cmd.append(str(build_context))
+    build_context = (build_context or context_dir).resolve(strict=False)
+    dockerfile_path = (dockerfile_path or context_dir / "Dockerfile").resolve(strict=False)
+    # Build with the context as "." and run from inside it. apple/container only
+    # reliably honors a current-directory context; an absolute context path is
+    # not mounted into BuildKit correctly, so COPY resolves against the wrong
+    # tree and fails with "<file>: not found". Expressing the Dockerfile relative
+    # to the context keeps -f valid once cwd is the context. docker/podman are
+    # unaffected — "." + cwd is equivalent to an absolute context for them.
+    try:
+        file_arg = str(dockerfile_path.relative_to(build_context))
+    except ValueError:
+        file_arg = str(dockerfile_path)
+    cmd = [runtime.binary, "build", "-t", image_tag, "-f", file_arg, "."]
     if dry_run:
-        print(shlex.join(cmd))
+        print(f"cd {shlex.quote(str(build_context))} && {shlex.join(cmd)}")
         return 0
-    return _run_quietable(cmd, verbose=verbose)
+    return _run_quietable(cmd, verbose=verbose, cwd=str(build_context))
 
 
 def ensure_system_started(
@@ -180,14 +186,14 @@ def ensure_system_started(
     return _run_quietable(cmd, verbose=verbose)
 
 
-def _run_quietable(cmd: list[str], *, verbose: bool) -> int:
+def _run_quietable(cmd: list[str], *, verbose: bool, cwd: str | None = None) -> int:
     """Run cmd, streaming its output when verbose. When quiet, capture output and
     surface it only if the command fails, so success stays silent but failures
     remain debuggable."""
     try:
         if verbose:
-            return subprocess.run(cmd, check=False).returncode
-        proc = subprocess.run(cmd, check=False, capture_output=True, text=True)
+            return subprocess.run(cmd, check=False, cwd=cwd).returncode
+        proc = subprocess.run(cmd, check=False, capture_output=True, text=True, cwd=cwd)
         if proc.returncode != 0:
             sys.stdout.write(proc.stdout)
             sys.stderr.write(proc.stderr)

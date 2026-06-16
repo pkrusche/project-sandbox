@@ -122,7 +122,8 @@ class ContainerCliTests(TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(
             out.getvalue().strip(),
-            f"container build -t project-sandbox:test -f {context / 'Dockerfile'} {root}",
+            f"cd {root.resolve()} && container build -t project-sandbox:test "
+            "-f .project-sandbox/Dockerfile .",
         )
 
     def test_build_image_uses_selected_docker_runtime(self) -> None:
@@ -145,8 +146,34 @@ class ContainerCliTests(TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(
             out.getvalue().strip(),
-            f"docker build -t project-sandbox:test -f {context / 'Dockerfile'} {root}",
+            f"cd {root.resolve()} && docker build -t project-sandbox:test "
+            "-f .project-sandbox/Dockerfile .",
         )
+
+    def test_build_image_runs_from_the_build_context_dir(self) -> None:
+        # apple/container mounts the working directory as the BuildKit context,
+        # so the build must run with cwd set to the build context — otherwise
+        # COPY instructions resolve against whatever cwd the caller happened to
+        # have and fail with "<file>: not found".
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp) / ".project-sandbox"
+            context.mkdir()
+            with patch(
+                "project_sandbox.container_cli.subprocess.run"
+            ) as run_mock:
+                run_mock.return_value.returncode = 0
+                rc = build_image(
+                    context_dir=context,
+                    image_tag="project-sandbox:test",
+                    build_context=context,
+                    dockerfile_path=context / "Dockerfile",
+                    verbose=True,
+                )
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(run_mock.call_args.kwargs["cwd"], str(context.resolve()))
+        # Context must be passed as "." (apple/container ignores absolute paths).
+        self.assertEqual(run_mock.call_args.args[0][-1], ".")
 
     def test_build_run_argv_uses_selected_podman_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
