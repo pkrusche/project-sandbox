@@ -841,14 +841,14 @@ class CliTests(TestCase):
             # history files/dirs must be created
             self.assertTrue(bash_history.exists())
             self.assertTrue(claude_projects.is_dir())
-            # bash_history must be mounted at /root/.bash_history
+            # bash_history must be mounted at /home/agent/.bash_history
             self.assertIn(
-                f"type=bind,source={bash_history.resolve()},target=/root/.bash_history",
+                f"type=bind,source={bash_history.resolve()},target=/home/agent/.bash_history",
                 cmd,
             )
-            # claude_projects dir must be mounted at /root/.claude/projects
+            # claude_projects dir must be mounted at /home/agent/.claude/projects
             self.assertIn(
-                f"type=bind,source={claude_projects.resolve()},target=/root/.claude/projects",
+                f"type=bind,source={claude_projects.resolve()},target=/home/agent/.claude/projects",
                 cmd,
             )
 
@@ -890,8 +890,8 @@ class CliTests(TestCase):
             )
 
             self.assertTrue(unsupervised)
-            self.assertNotIn("/root/.bash_history", " ".join(cmd))
-            self.assertNotIn("/root/.claude/projects", " ".join(cmd))
+            self.assertNotIn("/home/agent/.bash_history", " ".join(cmd))
+            self.assertNotIn("/home/agent/.claude/projects", " ".join(cmd))
 
     def test_project_sandbox_gitignore_excludes_history_dir(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

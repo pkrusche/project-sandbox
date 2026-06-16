@@ -33,7 +33,8 @@
     "source={{ claude_credentials_mount }},target=/project-sandbox-secrets/claude,type=bind,readonly",
     "source={{ codex_config_mount }},target=/project-sandbox-config/codex,type=bind,readonly"{% if mount_codex_secrets %},
     "source={{ codex_credentials_mount }},target=/project-sandbox-secrets/codex,type=bind,readonly"{% endif %}{% if mount_opencode_secrets %},
-    "source={{ opencode_credentials_mount }},target=/project-sandbox-secrets/opencode,type=bind,readonly"{% endif %}{% for m in extra_mounts %},
+    "source={{ opencode_credentials_mount }},target=/project-sandbox-secrets/opencode,type=bind,readonly"{% endif %}{% for m in history_mounts %},
+    "{{ m }}"{% endfor %}{% for m in extra_mounts %},
     "{{ m }}"{% endfor %}
   ],
   "postStartCommand": "{% if firewall_enabled %}sudo -n /usr/local/bin/project-sandbox-init-firewall && {% endif %}/usr/local/bin/project-sandbox-devcontainer-init",
