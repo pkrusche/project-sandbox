@@ -1,9 +1,11 @@
 #!/bin/bash
 set -euo pipefail
 
-DNS4=$(awk '/^nameserver/ && $2 !~ /:/ {print $2; exit}' /etc/resolv.conf)
-DNS6=$(awk '/^nameserver/ && $2 ~ /:/  {print $2; exit}' /etc/resolv.conf)
-DNS4="${DNS4:-127.0.0.11}"
+# Collect all IPv4 and IPv6 nameservers
+mapfile -t DNS4_LIST < <(awk '/^nameserver/ && $2 !~ /:/ {print $2}' /etc/resolv.conf)
+mapfile -t DNS6_LIST < <(awk '/^nameserver/ && $2 ~ /:/  {print $2}' /etc/resolv.conf)
+# Fallback if no IPv4 resolver found
+[ -z "${DNS4_LIST[0]+x}" ] && DNS4_LIST=("127.0.0.11")
 
 IPV6_FW=1
 if ! ip6tables -L >/dev/null 2>&1; then
@@ -18,9 +20,18 @@ if ! ip6tables -L >/dev/null 2>&1; then
   fi
 fi
 
-NAT4=$(iptables-save -t nat 2>/dev/null | grep "$DNS4" || true)
+NAT4=""
+for dns in "${DNS4_LIST[@]}"; do
+  NAT4+=$(iptables-save -t nat 2>/dev/null | grep "$dns" || true)
+  NAT4+=$'\n'
+done
 NAT6=""
-[ "$IPV6_FW" = "1" ] && [ -n "$DNS6" ] && NAT6=$(ip6tables-save -t nat 2>/dev/null | grep "$DNS6" || true)
+if [ "$IPV6_FW" = "1" ]; then
+  for dns6 in "${DNS6_LIST[@]}"; do
+    NAT6+=$(ip6tables-save -t nat 2>/dev/null | grep "$dns6" || true)
+    NAT6+=$'\n'
+  done
+fi
 
 iptables -F; iptables -X
 iptables -t nat -F; iptables -t nat -X
@@ -39,22 +50,24 @@ fi
 
 iptables -A INPUT -i lo -j ACCEPT
 iptables -A OUTPUT -o lo -j ACCEPT
-iptables -A OUTPUT -p udp --dport 53 -d "$DNS4" -j ACCEPT
-iptables -A OUTPUT -p tcp --dport 53 -d "$DNS4" -j ACCEPT
-iptables -A INPUT -p udp --sport 53 -s "$DNS4" -j ACCEPT
-iptables -A INPUT -p tcp --sport 53 -s "$DNS4" -j ACCEPT
+for dns in "${DNS4_LIST[@]}"; do
+  iptables -A OUTPUT -p udp --dport 53 -d "$dns" -j ACCEPT
+  iptables -A OUTPUT -p tcp --dport 53 -d "$dns" -j ACCEPT
+  iptables -A INPUT  -p udp --sport 53 -s "$dns" -j ACCEPT
+  iptables -A INPUT  -p tcp --sport 53 -s "$dns" -j ACCEPT
+done
 
 if [ "$IPV6_FW" = "1" ]; then
   ip6tables -A INPUT -i lo -j ACCEPT
   ip6tables -A OUTPUT -o lo -j ACCEPT
   ip6tables -A INPUT -p ipv6-icmp -j ACCEPT
   ip6tables -A OUTPUT -p ipv6-icmp -j ACCEPT
-  if [ -n "$DNS6" ]; then
-    ip6tables -A OUTPUT -p udp --dport 53 -d "$DNS6" -j ACCEPT
-    ip6tables -A OUTPUT -p tcp --dport 53 -d "$DNS6" -j ACCEPT
-    ip6tables -A INPUT -p udp --sport 53 -s "$DNS6" -j ACCEPT
-    ip6tables -A INPUT -p tcp --sport 53 -s "$DNS6" -j ACCEPT
-  fi
+  for dns6 in "${DNS6_LIST[@]}"; do
+    ip6tables -A OUTPUT -p udp --dport 53 -d "$dns6" -j ACCEPT
+    ip6tables -A OUTPUT -p tcp --dport 53 -d "$dns6" -j ACCEPT
+    ip6tables -A INPUT  -p udp --sport 53 -s "$dns6" -j ACCEPT
+    ip6tables -A INPUT  -p tcp --sport 53 -s "$dns6" -j ACCEPT
+  done
 fi
 
 ipset create allowed-ipv4 hash:net family inet

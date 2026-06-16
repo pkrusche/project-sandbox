@@ -756,6 +756,23 @@ class RendererTests(TestCase):
                 self.assertIn('"api.anthropic.com"', text)
                 self.assertIn('"claude.ai"', text)
 
+    def test_firewall_collects_all_resolvers_not_just_first(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            firewall.render(context, extra_domains=[])
+            for name in ("init-firewall.sh", "init-firewall-devcontainer.sh"):
+                text = (context / name).read_text(encoding="utf-8")
+                # Must NOT use the single-resolver awk pattern
+                self.assertNotIn("{print $2; exit}", text)
+                # Must collect all nameservers via mapfile arrays
+                self.assertIn("mapfile -t DNS4_LIST", text)
+                self.assertIn("mapfile -t DNS6_LIST", text)
+                # Fallback for empty IPv4 list (uses ${var+x} to avoid Jinja2 {# conflict)
+                self.assertIn('DNS4_LIST=("127.0.0.11")', text)
+                # ACCEPT rules must iterate over the list, not reference a scalar
+                self.assertIn('for dns in "${DNS4_LIST[@]}"', text)
+                self.assertIn('for dns6 in "${DNS6_LIST[@]}"', text)
+
     def test_render_returns_all_four_config_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             context = Path(tmp)

