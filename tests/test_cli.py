@@ -1138,6 +1138,11 @@ class PythonUvFlagTests(TestCase):
 
         self.assertIn("COPY pyproject.toml uv.lock", content)
         self.assertIn("uv sync --frozen", content)
+        # The cache must be baked into an image layer and owned by the agent
+        # user (UID 1000); a BuildKit cache mount would be ephemeral.
+        self.assertNotIn("--mount=type=cache", content)
+        self.assertNotIn("type=cache", content)
+        self.assertIn("chown -R 1000:1000 /opt/uv-cache", content)
 
     def test_render_omits_cache_warm_when_pyproject_missing(self) -> None:
         from project_sandbox import dockerfile as df

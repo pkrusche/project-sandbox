@@ -224,7 +224,7 @@ def render_python_uv_dockerfile(
             "",
             "# pre-warm the uv cache",
             "COPY pyproject.toml uv.lock ./",
-            "RUN --mount=type=cache,target=/opt/uv-cache uv sync --frozen --no-install-project",
+            "RUN uv sync --frozen --no-install-project && chown -R 1000:1000 /opt/uv-cache",
         ]
     out = context_dir / "Dockerfile.python-uv"
     out.write_text("\n".join(lines) + "\n", encoding="utf-8")
