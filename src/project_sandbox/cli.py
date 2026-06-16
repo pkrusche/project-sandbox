@@ -41,6 +41,21 @@ def build_parser() -> ArgumentParser:
         "--docker-context",
         help="Build context to use with --dockerfile (default: project root).",
     )
+    p.add_argument(
+        "--python-uv",
+        action="store_true",
+        help=(
+            "Synthesise a Python/uv base Dockerfile instead of supplying one. "
+            "Mutually exclusive with base_image and --dockerfile."
+        ),
+    )
+    p.add_argument(
+        "--python",
+        default=None,
+        dest="python_version",
+        metavar="VERSION",
+        help="Python image tag for --python-uv (default: 3.11). Only valid with --python-uv.",
+    )
     p.add_argument("--image-tag", default=None)
     p.add_argument(
         "--runtime",
@@ -317,12 +332,16 @@ def _dry_run(
         args,
         project=project,
         context_dir=context_dir,
+        write_generated=False,
     )
     if base_dockerfile is not None:
-        print(f"Would append sandbox layers to Dockerfile: {base_dockerfile}")
+        if getattr(args, "python_uv", False):
+            print(f"Would write synthesised Dockerfile: {base_dockerfile}")
+        else:
+            print(f"Would append sandbox layers to Dockerfile: {base_dockerfile}")
+            for warning in dockerfile.source_warnings(base_dockerfile):
+                print(warning)
         print(f"Would use build context: {build_context}")
-        for warning in dockerfile.source_warnings(base_dockerfile):
-            print(warning)
 
     if run_agent is None:
         print("Would initialize config files only; no agent container would be started.")
@@ -371,9 +390,47 @@ def _resolve_build_source(
     *,
     project: Path,
     context_dir: Path,
+    write_generated: bool = True,
 ) -> tuple[str | None, Path | None, Path]:
     if args.docker_context and not args.dockerfile:
         raise SystemExit("--docker-context requires --dockerfile")
+
+    python_uv = getattr(args, "python_uv", False)
+    python_version = getattr(args, "python_version", None)
+
+    if python_version is not None and not python_uv:
+        raise SystemExit("--python is only valid with --python-uv")
+
+    if python_uv:
+        if args.dockerfile:
+            raise SystemExit("--python-uv and --dockerfile are mutually exclusive")
+        if args.base_image:
+            raise SystemExit("--python-uv and base_image are mutually exclusive")
+
+        effective_version = python_version or "3.11"
+        has_pyproject = (project / "pyproject.toml").exists()
+        has_uvlock = (project / "uv.lock").exists()
+
+        if not has_pyproject:
+            print(
+                "[W] --python-uv: pyproject.toml not found — "
+                "cache-warming step will be skipped."
+            )
+        if not has_uvlock:
+            print(
+                "[W] --python-uv: uv.lock not found — "
+                "cache-warming step will be skipped."
+            )
+
+        generated = context_dir / "Dockerfile.python-uv"
+        if write_generated:
+            generated = dockerfile.render_python_uv_dockerfile(
+                context_dir,
+                python_version=effective_version,
+                has_pyproject=has_pyproject,
+                has_uvlock=has_uvlock,
+            )
+        return None, generated, project
 
     if args.dockerfile:
         if args.base_image:

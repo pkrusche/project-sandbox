@@ -199,6 +199,38 @@ def _sandbox_copy_prefix(*, context_dir: Path, build_context: Path) -> str:
     return relative.as_posix().rstrip("/") + "/"
 
 
+def render_python_uv_dockerfile(
+    context_dir: Path,
+    python_version: str,
+    has_pyproject: bool,
+    has_uvlock: bool,
+) -> Path:
+    """Generate a uv+Python base Dockerfile and write it to context_dir.
+
+    The cache-warming COPY/RUN block is included only when both pyproject.toml
+    and uv.lock are present in the project (has_pyproject and has_uvlock both
+    True). Callers are responsible for emitting a warning when either is absent.
+    """
+    lines = [
+        "FROM ghcr.io/astral-sh/uv:latest AS uv-bin",
+        f"FROM python:{python_version}-slim",
+        "",
+        "COPY --from=uv-bin /uv /uvx /usr/local/bin/",
+        "ENV UV_CACHE_DIR=/opt/uv-cache",
+        "WORKDIR /workspace",
+    ]
+    if has_pyproject and has_uvlock:
+        lines += [
+            "",
+            "# pre-warm the uv cache",
+            "COPY pyproject.toml uv.lock ./",
+            "RUN --mount=type=cache,target=/opt/uv-cache uv sync --frozen --no-install-project",
+        ]
+    out = context_dir / "Dockerfile.python-uv"
+    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return out
+
+
 def render_entrypoint(context_dir: Path) -> Path:
     out = context_dir / "entrypoint.sh"
     tmpl = templating.get_template("entrypoint.sh.j2")

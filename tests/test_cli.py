@@ -1015,3 +1015,221 @@ class DefaultImageTagTests(TestCase):
 
             call_kwargs = build_image.call_args.kwargs
             self.assertEqual(call_kwargs["image_tag"], "my-custom:v1")
+
+
+class PythonUvFlagTests(TestCase):
+    """Tests for --python-uv and --python VERSION flags."""
+
+    def _make_project(
+        self,
+        tmp: str,
+        *,
+        with_pyproject: bool = True,
+        with_uvlock: bool = True,
+    ) -> Path:
+        project = Path(tmp)
+        (project / "README.md").write_text("# demo\n", encoding="utf-8")
+        if with_pyproject:
+            (project / "pyproject.toml").write_text(
+                "[project]\nname = 'demo'\n", encoding="utf-8"
+            )
+        if with_uvlock:
+            (project / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+        return project
+
+    def _dry_run_python_uv(self, project: Path, extra_args: list[str] | None = None) -> tuple[int, str]:
+        out = io.StringIO()
+        with (
+            patch.object(cli, "read_identity", return_value=GitIdentity("A", "a@b.com")),
+            patch.object(
+                cli.config_agents,
+                "_agent_host_paths",
+                return_value=_agent_paths(project / "home"),
+            ),
+            contextlib.redirect_stdout(out),
+        ):
+            rc = cli.main(
+                ["--dry-run", "--python-uv", *(extra_args or []), str(project)]
+            )
+        return rc, out.getvalue()
+
+    # --- dry-run output ---
+
+    def test_python_uv_dry_run_shows_synthesised_message(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self._make_project(tmp)
+            rc, output = self._dry_run_python_uv(project)
+
+        self.assertEqual(rc, 0)
+        self.assertIn("Would write synthesised Dockerfile:", output)
+        self.assertIn("Dockerfile.python-uv", output)
+        self.assertIn("Would use build context:", output)
+
+    def test_python_uv_dry_run_does_not_write_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self._make_project(tmp)
+            self._dry_run_python_uv(project)
+
+        self.assertFalse((project / ".project-sandbox").exists())
+
+    # --- --python VERSION ---
+
+    def test_render_python_uv_dockerfile_uses_specified_version(self) -> None:
+        from project_sandbox import dockerfile as df
+
+        with tempfile.TemporaryDirectory() as tmp:
+            context_dir = Path(tmp) / ".project-sandbox"
+            context_dir.mkdir()
+            out_path = df.render_python_uv_dockerfile(
+                context_dir,
+                python_version="3.12",
+                has_pyproject=True,
+                has_uvlock=True,
+            )
+            content = out_path.read_text(encoding="utf-8")
+
+        self.assertIn("python:3.12-slim", content)
+        self.assertNotIn("3.11", content)
+
+    def test_python_version_flag_passes_through_to_dockerfile(self) -> None:
+        """--python 3.12 with --python-uv writes a Dockerfile referencing 3.12."""
+        import argparse
+
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self._make_project(tmp)
+            context_dir = project / ".project-sandbox"
+            context_dir.mkdir()
+
+            args = argparse.Namespace(
+                python_uv=True,
+                python_version="3.12",
+                dockerfile=None,
+                docker_context=None,
+                base_image=None,
+            )
+            _, base_df, build_context = cli._resolve_build_source(
+                args,
+                project=project,
+                context_dir=context_dir,
+                write_generated=True,
+            )
+
+            self.assertIsNotNone(base_df)
+            assert base_df is not None
+            content = base_df.read_text(encoding="utf-8")
+            self.assertIn("python:3.12-slim", content)
+            self.assertEqual(build_context, project)
+
+    # --- cache-warming block presence ---
+
+    def test_render_includes_cache_warm_when_both_files_present(self) -> None:
+        from project_sandbox import dockerfile as df
+
+        with tempfile.TemporaryDirectory() as tmp:
+            context_dir = Path(tmp) / ".project-sandbox"
+            context_dir.mkdir()
+            out_path = df.render_python_uv_dockerfile(
+                context_dir,
+                python_version="3.11",
+                has_pyproject=True,
+                has_uvlock=True,
+            )
+            content = out_path.read_text(encoding="utf-8")
+
+        self.assertIn("COPY pyproject.toml uv.lock", content)
+        self.assertIn("uv sync --frozen", content)
+
+    def test_render_omits_cache_warm_when_pyproject_missing(self) -> None:
+        from project_sandbox import dockerfile as df
+
+        with tempfile.TemporaryDirectory() as tmp:
+            context_dir = Path(tmp) / ".project-sandbox"
+            context_dir.mkdir()
+            out_path = df.render_python_uv_dockerfile(
+                context_dir,
+                python_version="3.11",
+                has_pyproject=False,
+                has_uvlock=True,
+            )
+            content = out_path.read_text(encoding="utf-8")
+
+        self.assertNotIn("COPY pyproject.toml", content)
+        self.assertNotIn("uv sync", content)
+
+    def test_render_omits_cache_warm_when_uvlock_missing(self) -> None:
+        from project_sandbox import dockerfile as df
+
+        with tempfile.TemporaryDirectory() as tmp:
+            context_dir = Path(tmp) / ".project-sandbox"
+            context_dir.mkdir()
+            out_path = df.render_python_uv_dockerfile(
+                context_dir,
+                python_version="3.11",
+                has_pyproject=True,
+                has_uvlock=False,
+            )
+            content = out_path.read_text(encoding="utf-8")
+
+        self.assertNotIn("COPY pyproject.toml", content)
+        self.assertNotIn("uv sync", content)
+
+    # --- warnings for missing project files ---
+
+    def test_python_uv_warns_when_pyproject_absent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self._make_project(tmp, with_pyproject=False, with_uvlock=True)
+            rc, output = self._dry_run_python_uv(project)
+
+        self.assertEqual(rc, 0)
+        self.assertIn("pyproject.toml not found", output)
+        self.assertIn("cache-warming step will be skipped", output)
+
+    def test_python_uv_warns_when_uvlock_absent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self._make_project(tmp, with_pyproject=True, with_uvlock=False)
+            rc, output = self._dry_run_python_uv(project)
+
+        self.assertEqual(rc, 0)
+        self.assertIn("uv.lock not found", output)
+        self.assertIn("cache-warming step will be skipped", output)
+
+    def test_python_uv_warns_when_both_absent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self._make_project(tmp, with_pyproject=False, with_uvlock=False)
+            rc, output = self._dry_run_python_uv(project)
+
+        self.assertEqual(rc, 0)
+        self.assertIn("pyproject.toml not found", output)
+        self.assertIn("uv.lock not found", output)
+
+    # --- mutual-exclusion ---
+
+    def test_python_uv_and_dockerfile_are_mutually_exclusive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            source = project / "Dockerfile"
+            source.write_text("FROM python:3.11-slim\n", encoding="utf-8")
+
+            with self.assertRaises(SystemExit) as raised:
+                cli.main([
+                    "--dry-run",
+                    "--python-uv",
+                    "--dockerfile", str(source),
+                    str(project),
+                ])
+
+        self.assertIn("mutually exclusive", str(raised.exception))
+
+    def test_python_uv_and_base_image_are_mutually_exclusive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+
+            with self.assertRaises(SystemExit) as raised:
+                cli.main([
+                    "--dry-run",
+                    "--python-uv",
+                    str(project),
+                    "python:3.12-slim",
+                ])
+
+        self.assertIn("mutually exclusive", str(raised.exception))
