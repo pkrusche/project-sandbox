@@ -773,6 +773,27 @@ class RendererTests(TestCase):
                 self.assertIn('for dns in "${DNS4_LIST[@]}"', text)
                 self.assertIn('for dns6 in "${DNS6_LIST[@]}"', text)
 
+    def test_firewall_nat_restore_is_valid_and_non_fatal(self) -> None:
+        # Regression: "iptables-restore --noflush -t nat" is invalid (-t is not
+        # an iptables-restore option), so it tried to open a file named "nat"
+        # and failed with "Can't open nat: No such file or directory". Rules must
+        # be wrapped in *nat/COMMIT, and the restore must be non-fatal so a
+        # limited nat table (apple/container) does not abort the firewall.
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            firewall.render(context, extra_domains=[])
+            for name in ("init-firewall.sh", "init-firewall-devcontainer.sh"):
+                text = (context / name).read_text(encoding="utf-8")
+                self.assertNotIn("--noflush -t nat", text)
+                self.assertIn(
+                    "printf '*nat\\n%sCOMMIT\\n' \"$NAT4\" | "
+                    "iptables-restore --noflush 2>/dev/null || true",
+                    text,
+                )
+                # Only append real matches (no bare-newline padding that made
+                # NAT4/NAT6 look non-empty and forced a restore on empty input).
+                self.assertIn('[ -n "$match" ] && NAT4+="$match"', text)
+
     def test_render_returns_all_four_config_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             context = Path(tmp)

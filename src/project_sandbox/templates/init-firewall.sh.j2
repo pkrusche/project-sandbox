@@ -20,16 +20,20 @@ if ! ip6tables -L >/dev/null 2>&1; then
   fi
 fi
 
+# Capture any existing DNS NAT rules (e.g. Docker's embedded resolver redirect)
+# so they can be re-applied after the flush below. Only append real matches:
+# appending a bare newline per resolver made NAT4/NAT6 look non-empty even when
+# nothing matched, which then forced the restore below to run on empty input.
 NAT4=""
 for dns in "${DNS4_LIST[@]}"; do
-  NAT4+=$(iptables-save -t nat 2>/dev/null | grep "$dns" || true)
-  NAT4+=$'\n'
+  match=$(iptables-save -t nat 2>/dev/null | grep -- "$dns" || true)
+  [ -n "$match" ] && NAT4+="$match"$'\n'
 done
 NAT6=""
 if [ "$IPV6_FW" = "1" ]; then
   for dns6 in "${DNS6_LIST[@]}"; do
-    NAT6+=$(ip6tables-save -t nat 2>/dev/null | grep "$dns6" || true)
-    NAT6+=$'\n'
+    match=$(ip6tables-save -t nat 2>/dev/null | grep -- "$dns6" || true)
+    [ -n "$match" ] && NAT6+="$match"$'\n'
   done
 fi
 
@@ -45,8 +49,14 @@ if [ "$IPV6_FW" = "1" ]; then
   ipset destroy allowed-ipv6 2>/dev/null || true
 fi
 
-[ -n "$NAT4" ] && echo "$NAT4" | iptables-restore --noflush -t nat
-[ "$IPV6_FW" = "1" ] && [ -n "$NAT6" ] && echo "$NAT6" | ip6tables-restore --noflush -t nat 2>/dev/null || true
+# Re-apply the preserved NAT rules wrapped in a *nat/COMMIT block so
+# iptables-restore can parse them. The previous "-t nat" is not a valid
+# iptables-restore option (the table flag there is "-T"); it made the tool treat
+# "nat" as an input filename and fail with "Can't open nat: No such file or
+# directory". Kept non-fatal so a missing/limited nat table (e.g. the
+# apple/container guest kernel) never aborts the filter-based egress firewall.
+[ -n "$NAT4" ] && printf '*nat\n%sCOMMIT\n' "$NAT4" | iptables-restore --noflush 2>/dev/null || true
+[ "$IPV6_FW" = "1" ] && [ -n "$NAT6" ] && printf '*nat\n%sCOMMIT\n' "$NAT6" | ip6tables-restore --noflush 2>/dev/null || true
 
 iptables -A INPUT -i lo -j ACCEPT
 iptables -A OUTPUT -o lo -j ACCEPT
