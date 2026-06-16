@@ -738,10 +738,10 @@ class CliTests(TestCase):
         out = self._headless_dry_run()
         self.assertIn("Would write prompt to:", out)
         self.assertIn(
-            "PROJECT_SANDBOX_PROMPT_FILE=/workspace/.project-sandbox-prompt",
+            "PROJECT_SANDBOX_PROMPT_FILE=/project-sandbox-prompt/prompt.txt",
             out,
         )
-        self.assertIn("target=/workspace/.project-sandbox-prompt,readonly", out)
+        self.assertIn("target=/project-sandbox-prompt,readonly", out)
         self.assertNotIn("PROJECT_SANDBOX_PROMPT=echo ok", out)
 
     def test_prompt_text_writes_prompt_file_for_short_prompt(self) -> None:
@@ -786,14 +786,65 @@ class CliTests(TestCase):
             self.assertIsNotNone(log_path)
             self.assertEqual(prompt_file.read_text(encoding="utf-8"), "echo ok")
             self.assertIn(
-                f"type=bind,source={prompt_file.resolve()},target=/workspace/.project-sandbox-prompt,readonly",
+                f"type=bind,source={prompt_file.parent.resolve()},"
+                "target=/project-sandbox-prompt,readonly",
                 cmd,
             )
             self.assertIn(
-                "PROJECT_SANDBOX_PROMPT_FILE=/workspace/.project-sandbox-prompt",
+                "PROJECT_SANDBOX_PROMPT_FILE=/project-sandbox-prompt/prompt.txt",
                 cmd,
             )
             self.assertNotIn("PROJECT_SANDBOX_PROMPT=echo ok", cmd)
+
+    def test_prompt_file_mounts_parent_directory(self) -> None:
+        import argparse
+
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            context_dir = project / ".project-sandbox"
+            prompt_file = project / "prompt.txt"
+            prompt_file.write_text("echo ok", encoding="utf-8")
+            claude_cfg = context_dir / "claude" / "settings.json"
+            codex_cfg = context_dir / "codex" / "config.toml"
+            credential_dirs = {"claude": context_dir / "claude-secrets"}
+            args = argparse.Namespace(
+                branch=None,
+                cpus=4,
+                extra_mounts=[],
+                image_tag="project-sandbox:test",
+                log=None,
+                memory="8g",
+                no_firewall=True,
+                prompt=str(prompt_file),
+                prompt_text=None,
+                verbose=False,
+            )
+
+            cmd, _, unsupervised = cli._build_session_command(
+                args,
+                project=project,
+                context_dir=context_dir,
+                workspace=project,
+                worktree=None,
+                identity=GitIdentity(None, None),
+                run_agent="bash",
+                claude_cfg=claude_cfg,
+                credential_dirs=credential_dirs,
+                codex_cfg=codex_cfg,
+                runtime=cli.container_cli.DOCKER,
+                create_prompt_files=True,
+            )
+
+            self.assertTrue(unsupervised)
+            self.assertIn(
+                f"type=bind,source={prompt_file.parent.resolve()},"
+                "target=/project-sandbox-prompt,readonly",
+                cmd,
+            )
+            self.assertIn(
+                "PROJECT_SANDBOX_PROMPT_FILE=/project-sandbox-prompt/prompt.txt",
+                cmd,
+            )
 
     def test_interactive_session_mounts_history_files(self) -> None:
         import argparse

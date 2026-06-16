@@ -26,6 +26,7 @@ from .paths import (
 )
 
 SUPPORTED_AGENTS = ("claude", "codex", "opencode", "bash")
+PROMPT_MOUNT_TARGET = "/project-sandbox-prompt"
 
 
 def _default_image_tag(project: Path) -> str:
@@ -560,12 +561,12 @@ def _build_session_command(
         run_mode_agent = f"{run_agent}-headless"
         if args.prompt:
             prompt_file = resolve_strict(args.prompt)
+            prompt_target = f"{PROMPT_MOUNT_TARGET}/{prompt_file.name}"
             extra_mounts.append(
-                f"type=bind,source={prompt_file},target=/workspace/.project-sandbox-prompt,readonly"
+                f"type=bind,source={prompt_file.parent},"
+                f"target={PROMPT_MOUNT_TARGET},readonly"
             )
-            extra_env.append(
-                "PROJECT_SANDBOX_PROMPT_FILE=/workspace/.project-sandbox-prompt"
-            )
+            extra_env.append(f"PROJECT_SANDBOX_PROMPT_FILE={prompt_target}")
         elif args.prompt_text:
             prompts_dir = context_dir / "prompts"
             prompt_file = prompts_dir / "prompt.txt"
@@ -575,10 +576,11 @@ def _build_session_command(
             else:
                 print(f"Would write prompt to: {prompt_file}")
             extra_mounts.append(
-                f"type=bind,source={prompt_file.resolve()},target=/workspace/.project-sandbox-prompt,readonly"
+                f"type=bind,source={prompts_dir.resolve()},"
+                f"target={PROMPT_MOUNT_TARGET},readonly"
             )
             extra_env.append(
-                "PROJECT_SANDBOX_PROMPT_FILE=/workspace/.project-sandbox-prompt"
+                f"PROJECT_SANDBOX_PROMPT_FILE={PROMPT_MOUNT_TARGET}/prompt.txt"
             )
 
     if not unsupervised:

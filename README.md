@@ -172,8 +172,11 @@ uv run project-sandbox \
   python:3.12-slim
 ```
 
-- `--prompt FILE` bind-mounts the file at `/workspace/.project-sandbox-prompt`.
-- `--prompt-text "…"` passes the prompt via env var (or via a temp file if longer than 4096 chars).
+- `--prompt FILE` bind-mounts the file's parent directory read-only and reads
+  the prompt from `/project-sandbox-prompt/<name>`.
+- `--prompt-text "..."` writes the prompt under `.project-sandbox/prompts/`,
+  bind-mounts that directory read-only, and reads it from
+  `/project-sandbox-prompt/prompt.txt`.
 - `--agent {claude,codex,opencode,bash}` selects which agent to run. If omitted, the CLI only initializes generated config files unless a prompt is supplied. Claude, Codex, and OpenCode require their host config directories; Bash is always available.
 - `--log FILE` overrides the default log path under `.project-sandbox/sessions/<agent>-main-<timestamp>.log`.
 - For headless `claude` runs, a readable markdown transcript is rendered automatically beside the log (same name, `.md` extension) by parsing the stream-json events. This is best-effort: a parse failure prints a warning but never fails the run.
