@@ -4,6 +4,7 @@ from pathlib import Path
 
 from . import config_agents, templating
 from .git_identity import GitIdentity
+from .paths import ensure_history_paths
 
 _MEMORY_RE = re.compile(r"(\d+)\s*([gm])b?", re.IGNORECASE)
 
@@ -59,6 +60,16 @@ def render(
         "claude-devcontainer",
         config_agents.credentials_dir(project / ".project-sandbox", "claude-devcontainer"),
     )
+    # Persist bash and Claude session history across devcontainer rebuilds, the
+    # same way the interactive CLI run path does. Create the host files so the
+    # bind mounts have something to bind to, and reference them relative to the
+    # workspace folder so the config stays portable.
+    ensure_history_paths(project, create=True)
+    history_root = "${localWorkspaceFolder}/.project-sandbox/history"
+    history_mounts = [
+        f"source={history_root}/bash_history,target=/home/agent/.bash_history,type=bind",
+        f"source={history_root}/claude_projects,target=/home/agent/.claude/projects,type=bind",
+    ]
     out.write_text(
         tmpl.render(
             project_name=project.name,
@@ -85,6 +96,7 @@ def render(
             )
             .resolve(strict=False)
             .as_posix(),
+            history_mounts=history_mounts,
             extra_mounts=extra_mounts,
             user_name=identity.name or "",
             user_email=identity.email or "",

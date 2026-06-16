@@ -16,7 +16,7 @@ from . import (
     worktree as worktree_mod,
 )
 from .git_identity import read as read_identity
-from .paths import ensure_dir, resolve_strict
+from .paths import ensure_dir, ensure_history_paths, resolve_strict
 
 SUPPORTED_AGENTS = ("claude", "codex", "opencode", "bash")
 
@@ -575,19 +575,14 @@ def _build_session_command(
             )
 
     if not unsupervised:
-        history_dir = project / ".project-sandbox" / "history"
-        bash_history = history_dir / "bash_history"
-        claude_projects = history_dir / "claude_projects"
-        if create_prompt_files:
-            ensure_dir(history_dir)
-            if not bash_history.exists():
-                bash_history.touch()
-            ensure_dir(claude_projects)
-        extra_mounts.append(
-            f"type=bind,source={bash_history.resolve()},target=/root/.bash_history"
+        bash_history, claude_projects = ensure_history_paths(
+            project, create=create_prompt_files
         )
         extra_mounts.append(
-            f"type=bind,source={claude_projects.resolve()},target=/root/.claude/projects"
+            f"type=bind,source={bash_history.resolve()},target=/home/agent/.bash_history"
+        )
+        extra_mounts.append(
+            f"type=bind,source={claude_projects.resolve()},target=/home/agent/.claude/projects"
         )
 
     return (

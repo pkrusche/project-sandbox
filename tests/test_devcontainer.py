@@ -102,6 +102,43 @@ class DevcontainerTests(TestCase):
             self.assertNotIn("/home/agent/.claude/settings.json", mounts)
             self.assertNotIn("/home/agent/.claude.host", mounts)
 
+    def test_render_mounts_persistent_history(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / ".project-sandbox").mkdir()
+
+            _render(project)
+            spec = json.loads(
+                (project / ".devcontainer" / "devcontainer.json").read_text()
+            )
+
+            mounts = "\n".join(spec["mounts"])
+            self.assertIn(
+                "source=${localWorkspaceFolder}/.project-sandbox/history/bash_history,target=/home/agent/.bash_history,type=bind",
+                mounts,
+            )
+            self.assertIn(
+                "source=${localWorkspaceFolder}/.project-sandbox/history/claude_projects,target=/home/agent/.claude/projects,type=bind",
+                mounts,
+            )
+
+            # Host targets for the bind mounts must be created.
+            history_dir = project / ".project-sandbox" / "history"
+            self.assertTrue((history_dir / "bash_history").exists())
+            self.assertTrue((history_dir / "claude_projects").is_dir())
+
+    def test_render_history_dir_is_excluded_by_gitignore(self) -> None:
+        import sys as _sys
+
+        _sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+        from project_sandbox import cli
+
+        with tempfile.TemporaryDirectory() as tmp:
+            context_dir = Path(tmp)
+            cli._write_project_sandbox_gitignore(context_dir)
+            content = (context_dir / ".gitignore").read_text(encoding="utf-8")
+            self.assertIn("history/", content)
+
     def test_render_creates_relative_symlinks_into_project_sandbox(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
