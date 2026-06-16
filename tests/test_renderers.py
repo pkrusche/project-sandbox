@@ -340,6 +340,10 @@ class RendererTests(TestCase):
                     return_value="test-user",
                 ),
                 patch("project_sandbox.config_agents.subprocess.run") as run,
+                patch.dict(
+                    "os.environ",
+                    {"CLAUDE_SECURESTORAGE_CONFIG_DIR": "", "CLAUDE_CONFIG_DIR": ""},
+                ),
             ):
                 run.return_value = subprocess.CompletedProcess(
                     args=[],
