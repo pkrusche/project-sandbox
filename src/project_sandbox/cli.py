@@ -517,6 +517,22 @@ def _build_session_command(
                 "PROJECT_SANDBOX_PROMPT_FILE=/workspace/.project-sandbox-prompt"
             )
 
+    if not unsupervised:
+        history_dir = project / ".project-sandbox" / "history"
+        bash_history = history_dir / "bash_history"
+        claude_projects = history_dir / "claude_projects"
+        if create_prompt_files:
+            ensure_dir(history_dir)
+            if not bash_history.exists():
+                bash_history.touch()
+            ensure_dir(claude_projects)
+        extra_mounts.append(
+            f"type=bind,source={bash_history.resolve()},target=/root/.bash_history"
+        )
+        extra_mounts.append(
+            f"type=bind,source={claude_projects.resolve()},target=/root/.claude/projects"
+        )
+
     return (
         container_cli.build_run_argv(
             runtime=runtime,
@@ -602,5 +618,6 @@ def _write_project_sandbox_gitignore(context_dir: Path) -> None:
 !Dockerfile.devcontainer
 !entrypoint.sh
 !project-sandbox-devcontainer-init
+history/
 """
     (context_dir / ".gitignore").write_text(content, encoding="utf-8")

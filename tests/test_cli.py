@@ -795,6 +795,111 @@ class CliTests(TestCase):
             )
             self.assertNotIn("PROJECT_SANDBOX_PROMPT=echo ok", cmd)
 
+    def test_interactive_session_mounts_history_files(self) -> None:
+        import argparse
+
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            context_dir = project / ".project-sandbox"
+            claude_cfg = context_dir / "claude" / "settings.json"
+            codex_cfg = context_dir / "codex" / "config.toml"
+            credential_dirs = {"claude": context_dir / "claude-secrets"}
+            args = argparse.Namespace(
+                branch=None,
+                cpus=4,
+                extra_mounts=[],
+                image_tag="project-sandbox:test",
+                log=None,
+                memory="8g",
+                no_firewall=True,
+                prompt=None,
+                prompt_text=None,
+                verbose=False,
+            )
+
+            cmd, log_path, unsupervised = cli._build_session_command(
+                args,
+                project=project,
+                context_dir=context_dir,
+                workspace=project,
+                worktree=None,
+                identity=GitIdentity(None, None),
+                run_agent="claude",
+                claude_cfg=claude_cfg,
+                credential_dirs=credential_dirs,
+                codex_cfg=codex_cfg,
+                runtime=cli.container_cli.DOCKER,
+                create_prompt_files=True,
+            )
+
+            history_dir = project / ".project-sandbox" / "history"
+            bash_history = history_dir / "bash_history"
+            claude_projects = history_dir / "claude_projects"
+
+            self.assertFalse(unsupervised)
+            self.assertIsNone(log_path)
+            # history files/dirs must be created
+            self.assertTrue(bash_history.exists())
+            self.assertTrue(claude_projects.is_dir())
+            # bash_history must be mounted at /root/.bash_history
+            self.assertIn(
+                f"type=bind,source={bash_history.resolve()},target=/root/.bash_history",
+                cmd,
+            )
+            # claude_projects dir must be mounted at /root/.claude/projects
+            self.assertIn(
+                f"type=bind,source={claude_projects.resolve()},target=/root/.claude/projects",
+                cmd,
+            )
+
+    def test_headless_session_does_not_mount_history_files(self) -> None:
+        import argparse
+
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            context_dir = project / ".project-sandbox"
+            claude_cfg = context_dir / "claude" / "settings.json"
+            codex_cfg = context_dir / "codex" / "config.toml"
+            credential_dirs = {"claude": context_dir / "claude-secrets"}
+            args = argparse.Namespace(
+                branch=None,
+                cpus=4,
+                extra_mounts=[],
+                image_tag="project-sandbox:test",
+                log=None,
+                memory="8g",
+                no_firewall=True,
+                prompt=None,
+                prompt_text="do something",
+                verbose=False,
+            )
+
+            cmd, log_path, unsupervised = cli._build_session_command(
+                args,
+                project=project,
+                context_dir=context_dir,
+                workspace=project,
+                worktree=None,
+                identity=GitIdentity(None, None),
+                run_agent="claude",
+                claude_cfg=claude_cfg,
+                credential_dirs=credential_dirs,
+                codex_cfg=codex_cfg,
+                runtime=cli.container_cli.DOCKER,
+                create_prompt_files=True,
+            )
+
+            self.assertTrue(unsupervised)
+            self.assertNotIn("/root/.bash_history", " ".join(cmd))
+            self.assertNotIn("/root/.claude/projects", " ".join(cmd))
+
+    def test_project_sandbox_gitignore_excludes_history_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context_dir = Path(tmp)
+            cli._write_project_sandbox_gitignore(context_dir)
+            content = (context_dir / ".gitignore").read_text(encoding="utf-8")
+            self.assertIn("history/", content)
+
     def test_unavailable_agent_raises_with_available_list(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
