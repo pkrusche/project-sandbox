@@ -18,11 +18,13 @@
   ],
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=delegated",
   "workspaceFolder": "/workspace",
-  "remoteUser": "agent",
+{% if history_init_command %}  "initializeCommand": "{{ history_init_command }}",
+{% endif %}  "remoteUser": "agent",
   "containerEnv": {
     "CLAUDE_SECURESTORAGE_CONFIG_DIR": "/home/agent/.claude",
     "CODEX_HOME": "/home/agent/.codex",
-    "NODE_OPTIONS": "--max-old-space-size=4096"
+    "NODE_OPTIONS": "--max-old-space-size=4096"{% if history_histfile %},
+    "HISTFILE": "{{ history_histfile }}"{% endif %}
   },
   "remoteEnv": {
     "PROJECT_SANDBOX_USER_NAME": "{{ user_name }}",

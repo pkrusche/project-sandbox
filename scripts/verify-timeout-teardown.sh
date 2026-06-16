@@ -106,6 +106,7 @@ uv run project-sandbox \
   --agent bash \
   --prompt-text "sleep $SLEEP" \
   --timeout "$TIMEOUT" \
+  --verbose \
   "$TMP_PROJECT" \
   python:3.12-slim
 timeout_rc=$?
@@ -117,6 +118,7 @@ if [ "$timeout_rc" = 124 ]; then
   echo "  ok    run returned 124 (timeout) after ${elapsed}s"
 else
   echo "  BAD   run returned $timeout_rc (expected 124) after ${elapsed}s"
+  ls -la "${TMP_PROJECT}"
   fail=1
 fi
 

@@ -16,7 +16,14 @@ from . import (
     worktree as worktree_mod,
 )
 from .git_identity import read as read_identity
-from .paths import ensure_dir, ensure_history_paths, resolve_strict
+from .paths import (
+    HISTORY_CLAUDE_PROJECTS_TARGET,
+    HISTORY_HISTFILE,
+    HISTORY_SHELL_TARGET,
+    ensure_dir,
+    ensure_history_paths,
+    resolve_strict,
+)
 
 SUPPORTED_AGENTS = ("claude", "codex", "opencode", "bash")
 
@@ -575,15 +582,16 @@ def _build_session_command(
             )
 
     if not unsupervised:
-        bash_history, claude_projects = ensure_history_paths(
+        shell_dir, claude_projects = ensure_history_paths(
             project, create=create_prompt_files
         )
         extra_mounts.append(
-            f"type=bind,source={bash_history.resolve()},target=/home/agent/.bash_history"
+            f"type=bind,source={shell_dir.resolve()},target={HISTORY_SHELL_TARGET}"
         )
         extra_mounts.append(
-            f"type=bind,source={claude_projects.resolve()},target=/home/agent/.claude/projects"
+            f"type=bind,source={claude_projects.resolve()},target={HISTORY_CLAUDE_PROJECTS_TARGET}"
         )
+        extra_env.append(f"HISTFILE={HISTORY_HISTFILE}")
 
     return (
         container_cli.build_run_argv(

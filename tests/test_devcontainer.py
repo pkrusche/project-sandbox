@@ -1,4 +1,6 @@
 import json
+import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -113,18 +115,50 @@ class DevcontainerTests(TestCase):
             )
 
             mounts = "\n".join(spec["mounts"])
+            # Both sources are directories (apple/container rejects file mounts).
             self.assertIn(
-                "source=${localWorkspaceFolder}/.project-sandbox/history/bash_history,target=/home/agent/.bash_history,type=bind",
+                "source=${localWorkspaceFolder}/.project-sandbox/history/shell,target=/home/agent/.bash_history.d,type=bind",
                 mounts,
             )
             self.assertIn(
                 "source=${localWorkspaceFolder}/.project-sandbox/history/claude_projects,target=/home/agent/.claude/projects,type=bind",
                 mounts,
             )
+            # HISTFILE redirects bash history into the mounted shell directory.
+            self.assertEqual(
+                spec["containerEnv"]["HISTFILE"],
+                "/home/agent/.bash_history.d/bash_history",
+            )
 
-            # Host targets for the bind mounts must be created.
+            # Host directories for the bind mounts must be created.
             history_dir = project / ".project-sandbox" / "history"
-            self.assertTrue((history_dir / "bash_history").exists())
+            self.assertTrue((history_dir / "shell").is_dir())
+            self.assertTrue((history_dir / "claude_projects").is_dir())
+
+    def test_initialize_command_recreates_missing_history_sources(self) -> None:
+        # The history dir is gitignored, so the bind sources can be missing at
+        # container-create time. initializeCommand runs on the host first and
+        # must recreate them with the right types, or the mounts fail to start.
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / ".project-sandbox").mkdir()
+
+            _render(project)
+            spec = json.loads(
+                (project / ".devcontainer" / "devcontainer.json").read_text()
+            )
+            command = spec["initializeCommand"]
+
+            # Simulate a fresh/cleaned checkout: the gitignored history dir is gone.
+            shutil.rmtree(project / ".project-sandbox" / "history")
+
+            # Run the host command exactly as a devcontainer host would, with the
+            # ${localWorkspaceFolder} variable resolved to the project root.
+            resolved = command.replace("${localWorkspaceFolder}", str(project))
+            subprocess.run(resolved, shell=True, check=True)
+
+            history_dir = project / ".project-sandbox" / "history"
+            self.assertTrue((history_dir / "shell").is_dir())
             self.assertTrue((history_dir / "claude_projects").is_dir())
 
     def test_render_history_dir_is_excluded_by_gitignore(self) -> None:

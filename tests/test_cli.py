@@ -833,19 +833,22 @@ class CliTests(TestCase):
             )
 
             history_dir = project / ".project-sandbox" / "history"
-            bash_history = history_dir / "bash_history"
+            shell_dir = history_dir / "shell"
             claude_projects = history_dir / "claude_projects"
 
             self.assertFalse(unsupervised)
             self.assertIsNone(log_path)
-            # history files/dirs must be created
-            self.assertTrue(bash_history.exists())
+            # history dirs must be created (both sources are directories so the
+            # mounts work on apple/container, which rejects file bind mounts)
+            self.assertTrue(shell_dir.is_dir())
             self.assertTrue(claude_projects.is_dir())
-            # bash_history must be mounted at /home/agent/.bash_history
+            # shell history dir mounted at /home/agent/.bash_history.d ...
             self.assertIn(
-                f"type=bind,source={bash_history.resolve()},target=/home/agent/.bash_history",
+                f"type=bind,source={shell_dir.resolve()},target=/home/agent/.bash_history.d",
                 cmd,
             )
+            # ... with HISTFILE pointing at a file inside it
+            self.assertIn("HISTFILE=/home/agent/.bash_history.d/bash_history", cmd)
             # claude_projects dir must be mounted at /home/agent/.claude/projects
             self.assertIn(
                 f"type=bind,source={claude_projects.resolve()},target=/home/agent/.claude/projects",

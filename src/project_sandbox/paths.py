@@ -13,19 +13,33 @@ def ensure_dir(path: Path) -> Path:
     return path
 
 
-def ensure_history_paths(project: Path, *, create: bool = True) -> tuple[Path, Path]:
-    """Return the persistent history paths for ``project`` and (optionally)
-    create them on the host so bind mounts have something to bind to.
+# Container-side targets for the persisted history bind mounts. apple/container
+# can only bind-mount *directories* — a single-file source is rejected with
+# "path '<file>' is not a directory" — so bash history is persisted by mounting
+# a directory and pointing HISTFILE at a file inside it, rather than mounting
+# ~/.bash_history directly. The Claude projects mount is already a directory.
+HISTORY_SHELL_TARGET = "/home/agent/.bash_history.d"
+HISTORY_HISTFILE = HISTORY_SHELL_TARGET + "/bash_history"
+HISTORY_CLAUDE_PROJECTS_TARGET = "/home/agent/.claude/projects"
 
-    Returns ``(bash_history_file, claude_projects_dir)`` under
-    ``.project-sandbox/history/``.
+
+def ensure_history_paths(project: Path, *, create: bool = True) -> tuple[Path, Path]:
+    """Return the persistent history *directories* for ``project`` and
+    (optionally) create them on the host so the bind mounts have something to
+    bind to.
+
+    Returns ``(shell_history_dir, claude_projects_dir)`` under
+    ``.project-sandbox/history/``. Both are directories so the mounts work on
+    apple/container; bash history lives in ``shell/bash_history`` (see
+    ``HISTORY_HISTFILE``).
     """
     history_dir = project / ".project-sandbox" / "history"
-    bash_history = history_dir / "bash_history"
+    shell_dir = history_dir / "shell"
     claude_projects = history_dir / "claude_projects"
     if create:
-        ensure_dir(history_dir)
-        if not bash_history.exists():
-            bash_history.touch()
+        ensure_dir(shell_dir)
         ensure_dir(claude_projects)
-    return bash_history, claude_projects
+        histfile = shell_dir / "bash_history"
+        if not histfile.exists():
+            histfile.touch()
+    return shell_dir, claude_projects

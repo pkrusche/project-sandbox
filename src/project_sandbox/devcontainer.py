@@ -4,7 +4,12 @@ from pathlib import Path
 
 from . import config_agents, templating
 from .git_identity import GitIdentity
-from .paths import ensure_history_paths
+from .paths import (
+    HISTORY_CLAUDE_PROJECTS_TARGET,
+    HISTORY_HISTFILE,
+    HISTORY_SHELL_TARGET,
+    ensure_history_paths,
+)
 
 _MEMORY_RE = re.compile(r"(\d+)\s*([gm])b?", re.IGNORECASE)
 
@@ -66,10 +71,21 @@ def render(
     # workspace folder so the config stays portable.
     ensure_history_paths(project, create=True)
     history_root = "${localWorkspaceFolder}/.project-sandbox/history"
+    # Both sources are directories: apple/container rejects single-file bind
+    # mounts ("is not a directory"), so bash history is persisted via a directory
+    # mount + HISTFILE rather than mounting ~/.bash_history.
     history_mounts = [
-        f"source={history_root}/bash_history,target=/home/agent/.bash_history,type=bind",
-        f"source={history_root}/claude_projects,target=/home/agent/.claude/projects,type=bind",
+        f"source={history_root}/shell,target={HISTORY_SHELL_TARGET},type=bind",
+        f"source={history_root}/claude_projects,target={HISTORY_CLAUDE_PROJECTS_TARGET},type=bind",
     ]
+    # The history dir is gitignored and ephemeral, so the bind sources can be
+    # absent at container-create time (fresh clone, cleaned .project-sandbox, or
+    # an upgrade that added history mounts). A missing source makes the runtime
+    # fail to start. initializeCommand runs on the host before the container is
+    # created, recreating the directories so the mounts always succeed.
+    history_init_command = (
+        f"mkdir -p '{history_root}/shell' '{history_root}/claude_projects'"
+    )
     out.write_text(
         tmpl.render(
             project_name=project.name,
@@ -97,6 +113,8 @@ def render(
             .resolve(strict=False)
             .as_posix(),
             history_mounts=history_mounts,
+            history_init_command=history_init_command,
+            history_histfile=HISTORY_HISTFILE,
             extra_mounts=extra_mounts,
             user_name=identity.name or "",
             user_email=identity.email or "",
