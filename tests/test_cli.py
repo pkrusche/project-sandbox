@@ -1196,7 +1196,13 @@ class PythonUvFlagTests(TestCase):
         # user (UID 1000); a BuildKit cache mount would be ephemeral.
         self.assertNotIn("--mount=type=cache", content)
         self.assertNotIn("type=cache", content)
-        self.assertIn("chown -R 1000:1000 /opt/uv-cache", content)
+        self.assertIn("chown -R 1000:1000 /opt/uv-cache /opt/venv", content)
+        # venv must live outside /workspace so the host .venv is never touched
+        self.assertIn("UV_PROJECT_ENVIRONMENT=/opt/venv", content)
+        # project must be pre-installed at image build time so 'uv run' works
+        # offline inside the sandbox (avoids fetching build deps behind firewall)
+        self.assertIn("COPY . .", content)
+        self.assertIn("RUN uv sync --frozen &&", content)
 
     def test_render_omits_cache_warm_when_pyproject_missing(self) -> None:
         from project_sandbox import dockerfile as df

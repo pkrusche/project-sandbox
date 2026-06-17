@@ -210,6 +210,13 @@ def render_python_uv_dockerfile(
     The cache-warming COPY/RUN block is included only when both pyproject.toml
     and uv.lock are present in the project (has_pyproject and has_uvlock both
     True). Callers are responsible for emitting a warning when either is absent.
+
+    The project itself is installed during the image build (with network access)
+    so that 'uv run' inside the sandboxed container — which has no network —
+    finds it already present and skips the build step entirely. Two layers are
+    used so that the slower source-copy/project-install layer only rebuilds when
+    source files change, while the faster dep-only layer is cache-stable against
+    lockfile changes.
     """
     lines = [
         "FROM ghcr.io/astral-sh/uv:latest AS uv-bin",
@@ -217,14 +224,19 @@ def render_python_uv_dockerfile(
         "",
         "COPY --from=uv-bin /uv /uvx /usr/local/bin/",
         "ENV UV_CACHE_DIR=/opt/uv-cache",
+        "ENV UV_PROJECT_ENVIRONMENT=/opt/venv",
         "WORKDIR /workspace",
     ]
     if has_pyproject and has_uvlock:
         lines += [
             "",
-            "# pre-warm the uv cache",
+            "# layer 1: install deps only (rebuilds only when pyproject.toml/uv.lock change)",
             "COPY pyproject.toml uv.lock ./",
-            "RUN uv sync --frozen --no-install-project && chown -R 1000:1000 /opt/uv-cache",
+            "RUN uv sync --frozen --no-install-project",
+            "",
+            "# layer 2: install the project so 'uv run' works offline inside the sandbox",
+            "COPY . .",
+            "RUN uv sync --frozen && chown -R 1000:1000 /opt/uv-cache /opt/venv",
         ]
     out = context_dir / "Dockerfile.python-uv"
     out.write_text("\n".join(lines) + "\n", encoding="utf-8")
