@@ -181,7 +181,7 @@ uv run project-sandbox \
 - `--log FILE` overrides the default log path under `.project-sandbox/sessions/<agent>-main-<timestamp>.log`.
 - For headless `claude` runs, a readable markdown transcript is rendered automatically beside the log (same name, `.md` extension) by parsing the stream-json events. This is best-effort: a parse failure prints a warning but never fails the run.
 - `--runtime {auto,apple-container,docker,podman}` selects the direct-run backend. `auto` prefers Apple `container` on macOS and Docker then Podman on Linux.
-- `--timeout SECONDS` stops the session if the agent runs too long: the runtime process group is terminated (SIGTERM, then SIGKILL), which tears down the `--rm` container, and the CLI returns exit code `124`.
+- `--timeout SECONDS` stops the session if the agent runs too long: the container is stopped by name (asking the runtime to send SIGTERM to PID 1, then SIGKILL after a grace period), the CLI process group is also signalled as a fallback, and the CLI returns exit code `124`.
 - `--verbose` controls how much is shown on the terminal. By default it is quiet: image build and Apple `container system start` output is suppressed (shown only if they fail), the in-container firewall banner is silenced, interactive runs just print `Starting container…` before handing off to the agent/shell, and headless runs print the log path up front and a `Wrote N lines to …` summary at the end (the full output still goes to the log file). With `--verbose`, the build output streams, the firewall banner shows, and headless output is teed live to the terminal as well as the log.
 - The agent's exit code is propagated, so CI pipelines can detect failures.
 
@@ -195,7 +195,7 @@ When the firewall is enabled (default), `init-firewall.sh` runs as root inside t
 
 - Sets `iptables` and `ip6tables` policies to DROP.
 - Pins DNS to all resolvers listed in `/etc/resolv.conf` (closes the DNS-tunnel exfiltration gap in the upstream Anthropic devcontainer).
-- Allows GitHub's published IP ranges (fetched from `api.github.com/meta`), `registry.npmjs.org`, Claude/Anthropic endpoints (`api.anthropic.com`, `claude.ai`, `code.claude.com`, `platform.claude.com`), `api.openai.com`, `auth.openai.com`, and `chatgpt.com`.
+- Allows GitHub's published IP ranges (fetched from `api.github.com/meta`), Claude/Anthropic endpoints (`api.anthropic.com`, `claude.ai`, `code.claude.com`, `platform.claude.com`), `api.openai.com`, `auth.openai.com`, and `chatgpt.com`.
 - In the devcontainer firewall variant only, allows the host gateway subnet so port-forwarding and IDE attach work. Direct CLI runs omit this host-network allowlist.
 - Mirrors the IPv4 allowlist into a parallel IPv6 set; falls back to disabling IPv6 via `sysctl` when `ip6_tables` is unavailable — the script exits with an error if both `ip6tables` and `sysctl` are unavailable.
 
@@ -206,7 +206,7 @@ container or devcontainer so the firewall resolves fresh addresses.
 
 Customize:
 
-- `--extra-domain DOMAIN` — append entries to the allowlist (private npm registries, internal APIs, etc.). Repeatable.
+- `--extra-domain DOMAIN` — append entries to the allowlist (`registry.npmjs.org`, private registries, internal APIs, etc.). Repeatable.
 - `--no-firewall` — skip the firewall entirely (trusted-LAN debugging only).
 
 ## Threat model
@@ -245,7 +245,7 @@ The tool does **not** protect against:
 - Base images, including the final stage of a Dockerfile passed with `--dockerfile`, must be Debian or Ubuntu based — the firewall depends on `apt` packages including `aggregate`, which Alpine does not ship.
 - Direct Python CLI runs support Apple `container`, Docker, and Podman. Docker/Podman provide container isolation rather than the Apple MicroVM boundary. Incus is a future backend candidate, but it has a different image/import and launch lifecycle from the generated Dockerfile flow used here.
 - The generated `.devcontainer/` targets local Docker-compatible runtimes such as Docker Desktop or OrbStack; remote services may require rewriting local mounts and relaxing or replacing firewall capability requirements.
-- `--branch` (worktree mode) creates a git worktree on the given branch (creating it if it doesn't exist), mounts the worktree at `/workspace`, and bind-mounts the main repo's `.git/` so `git` works correctly inside the container. After the session, `--after-session` controls whether to merge, rebase, open a PR, or do nothing. Note: jj repos and worktree-of-worktree setups are not yet supported.
+- `--branch` (worktree mode) creates a git worktree on the given branch (creating it if it doesn't exist), mounts the worktree at `/workspace`, and bind-mounts the main repo's `.git/` so `git` works correctly inside the container. After the session, `--after-session` controls whether to ask interactively (default), merge, rebase, open a PR, or do nothing. Note: jj repos and worktree-of-worktree setups are not yet supported.
 - `jj` is installed in the container and configured with the same global name/email identity passed to Git, but jj-native repos are not yet supported by `--branch`.
 
 ## Development
