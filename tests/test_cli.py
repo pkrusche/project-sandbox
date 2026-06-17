@@ -766,7 +766,7 @@ class CliTests(TestCase):
                 verbose=False,
             )
 
-            cmd, log_path, unsupervised = cli._build_session_command(
+            cmd, log_path, unsupervised, _stop_argv = cli._build_session_command(
                 args,
                 project=project,
                 context_dir=context_dir,
@@ -820,7 +820,7 @@ class CliTests(TestCase):
                 verbose=False,
             )
 
-            cmd, _, unsupervised = cli._build_session_command(
+            cmd, _, unsupervised, _stop_argv = cli._build_session_command(
                 args,
                 project=project,
                 context_dir=context_dir,
@@ -868,7 +868,7 @@ class CliTests(TestCase):
                 verbose=False,
             )
 
-            cmd, log_path, unsupervised = cli._build_session_command(
+            cmd, log_path, unsupervised, _stop_argv = cli._build_session_command(
                 args,
                 project=project,
                 context_dir=context_dir,
@@ -928,7 +928,7 @@ class CliTests(TestCase):
                 verbose=False,
             )
 
-            cmd, log_path, unsupervised = cli._build_session_command(
+            cmd, log_path, unsupervised, _stop_argv = cli._build_session_command(
                 args,
                 project=project,
                 context_dir=context_dir,

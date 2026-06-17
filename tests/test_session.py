@@ -90,3 +90,26 @@ class SessionTests(TestCase):
         )
         proc.send_signal.assert_not_called()
         self.assertEqual(proc.wait.call_args_list[0].kwargs["timeout"], 30)
+
+    def test_terminate_process_group_runs_container_stop_before_signalling(self) -> None:
+        proc = Mock()
+        proc.pid = 1234
+        proc.wait.return_value = 0
+
+        stop_argv = ["docker", "stop", "--time", "5", "project-sandbox-abc123"]
+        calls: list[list[str]] = []
+
+        def fake_run(argv, **_kwargs):
+            calls.append(argv)
+            result = Mock()
+            result.returncode = 0
+            return result
+
+        with (
+            patch("project_sandbox.session.os.getpgid", return_value=5678),
+            patch("project_sandbox.session.os.killpg"),
+            patch("project_sandbox.session.subprocess.run", side_effect=fake_run),
+        ):
+            session._terminate_process_group(proc, container_stop_argv=stop_argv)
+
+        self.assertEqual(calls, [stop_argv])

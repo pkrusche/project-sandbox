@@ -21,6 +21,7 @@ def run(
     *,
     log_path: Path,
     timeout: int | None = None,
+    container_stop_argv: list[str] | None = None,
     dry_run: bool = False,
     verbose: bool = False,
 ) -> int:
@@ -50,16 +51,39 @@ def run(
         try:
             return proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
-            _terminate_process_group(proc)
+            _terminate_process_group(proc, container_stop_argv=container_stop_argv)
             return 124
         finally:
             output_thread.join(timeout=5)
             proc.stdout.close()
 
 
-def _terminate_process_group(proc: "subprocess.Popen") -> None:
+def _terminate_process_group(
+    proc: "subprocess.Popen",
+    *,
+    container_stop_argv: list[str] | None = None,
+) -> None:
     """Terminate proc's process group (SIGTERM, then SIGKILL), falling back to
-    signaling just the child if the group lookup or kill fails."""
+    signaling just the child if the group lookup or kill fails.
+
+    When container_stop_argv is given, it is run first to ask the container
+    runtime to stop the named container directly. This is the reliable path:
+    the runtime sends SIGTERM to the container's PID 1 and, after a short
+    grace period, force-kills it — causing the 'container run' / 'docker run'
+    CLI to exit on its own, so the subsequent SIGTERM to the process group
+    is usually a no-op and the 30 s SIGKILL grace is never reached.
+    """
+    if container_stop_argv:
+        try:
+            subprocess.run(
+                container_stop_argv,
+                timeout=15,
+                check=False,
+                capture_output=True,
+            )
+        except Exception:  # noqa: BLE001 — best-effort; fall through to signal path
+            pass
+
     try:
         pgid: int | None = os.getpgid(proc.pid)
     except (ProcessLookupError, OSError):

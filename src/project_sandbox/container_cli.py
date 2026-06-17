@@ -75,6 +75,7 @@ def build_run_argv(
     interactive: bool,
     extra_env: Sequence[str] = (),
     opencode_credentials_dir: Path | None = None,
+    container_name: str | None = None,
 ) -> list[str]:
     argv = [
         runtime.binary,
@@ -87,6 +88,8 @@ def build_run_argv(
         "--workdir",
         "/workspace",
     ]
+    if container_name:
+        argv += ["--name", container_name]
     if interactive:
         argv.append("-it")
     if firewall_enabled:
@@ -143,6 +146,15 @@ def build_run_argv(
         argv += ["--mount", m]
     argv += [image, "project-sandbox-run", agent]
     return argv
+
+
+def build_stop_argv(runtime: Runtime, container_name: str) -> list[str]:
+    """Return an argv that immediately kills a named container via the runtime CLI.
+
+    All three runtimes support `kill`, which sends SIGKILL with no grace period,
+    unlike `stop` which sends SIGTERM and waits (10 s by default) before force-killing.
+    """
+    return [runtime.binary, "kill", container_name]
 
 
 def build_image(

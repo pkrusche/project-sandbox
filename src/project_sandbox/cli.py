@@ -1,5 +1,6 @@
 import hashlib
 import re
+import uuid
 from argparse import ArgumentParser
 from pathlib import Path
 
@@ -223,7 +224,7 @@ def main(argv: list[str] | None = None) -> int:
             if rc != 0:
                 return rc
 
-        cmd, log_path, unsupervised = _build_session_command(
+        cmd, log_path, unsupervised, container_stop_argv = _build_session_command(
             args,
             project=project,
             context_dir=context_dir,
@@ -255,7 +256,11 @@ def main(argv: list[str] | None = None) -> int:
             if not args.verbose:
                 print(f"Running {run_agent} (headless); streaming to {log_path}")
             exit_code = session.run(
-                cmd, log_path=log_path, timeout=args.timeout, verbose=args.verbose
+                cmd,
+                log_path=log_path,
+                timeout=args.timeout,
+                container_stop_argv=container_stop_argv,
+                verbose=args.verbose,
             )
             if not args.verbose:
                 print(f"Wrote {session.count_lines(log_path)} lines to {log_path}")
@@ -369,7 +374,7 @@ def _dry_run(
             dry_run=True,
             verbose=args.verbose,
         )
-    cmd, log_path, unsupervised = _build_session_command(
+    cmd, log_path, unsupervised, container_stop_argv = _build_session_command(
         args,
         project=project,
         context_dir=context_dir,
@@ -386,7 +391,12 @@ def _dry_run(
     if unsupervised:
         assert log_path is not None
         session.run(
-            cmd, log_path=log_path, timeout=args.timeout, dry_run=True, verbose=args.verbose
+            cmd,
+            log_path=log_path,
+            timeout=args.timeout,
+            container_stop_argv=container_stop_argv,
+            dry_run=True,
+            verbose=args.verbose,
         )
     else:
         container_cli.run(cmd, dry_run=True)
@@ -530,7 +540,7 @@ def _build_session_command(
     codex_cfg: Path,
     runtime: container_cli.Runtime,
     create_prompt_files: bool,
-) -> tuple[list[str], Path | None, bool]:
+) -> tuple[list[str], Path | None, bool, list[str] | None]:
     # Agent availability is validated up front in main() via _ensure_agent_available.
     extra_mounts = list(args.extra_mounts)
     if worktree is not None:
@@ -549,6 +559,15 @@ def _build_session_command(
     run_mode_agent = run_agent
     unsupervised = bool(args.prompt or args.prompt_text)
     log_path: Path | None = None
+    # Unsupervised runs get a named container so that on timeout the runtime can
+    # be told to stop it explicitly (rather than relying on SIGKILL to the CLI
+    # process, which does not guarantee the backing VM is reclaimed).
+    container_name = f"project-sandbox-{uuid.uuid4().hex[:12]}" if unsupervised else None
+    container_stop_argv = (
+        container_cli.build_stop_argv(runtime, container_name)
+        if container_name is not None
+        else None
+    )
 
     if unsupervised:
         log_path = (
@@ -613,9 +632,11 @@ def _build_session_command(
             firewall_enabled=not args.no_firewall,
             interactive=not unsupervised,
             extra_env=extra_env,
+            container_name=container_name,
         ),
         log_path,
         unsupervised,
+        container_stop_argv,
     )
 
 
