@@ -47,14 +47,19 @@ RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && \
     apt-get update && apt-get install -y --no-install-recommends nodejs && \
     rm -rf /var/lib/apt/lists/*
 
-RUN set -eux; \
+RUN set -euxo pipefail; \
     JJ_ARCH="$(uname -m)"; \
     case "$JJ_ARCH" in \
         arm64) JJ_ARCH="aarch64" ;; \
         aarch64|x86_64) ;; \
         *) echo "Unsupported architecture for jj: $JJ_ARCH" >&2; exit 1 ;; \
     esac; \
-    JJ_VERSION="$(curl -fsSL https://api.github.com/repos/jj-vcs/jj/releases/latest | jq -r '.tag_name')"; \
+    JJ_LATEST_URL="$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/jj-vcs/jj/releases/latest)"; \
+    JJ_VERSION="${JJ_LATEST_URL##*/}"; \
+    case "$JJ_VERSION" in \
+        v[0-9]*) ;; \
+        *) echo "Unable to resolve latest jj release tag from $JJ_LATEST_URL" >&2; exit 1 ;; \
+    esac; \
     jj_tmp="$(mktemp -d)"; \
     curl -fsSL "https://github.com/jj-vcs/jj/releases/download/${JJ_VERSION}/jj-${JJ_VERSION}-${JJ_ARCH}-unknown-linux-musl.tar.gz" \
     | tar -xz -C "$jj_tmp"; \

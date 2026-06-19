@@ -40,11 +40,14 @@ class RendererTests(TestCase):
             self.assertIn("npm install -g @fission-ai/openspec@latest", docker_text)
             self.assertIn("/home/agent/.claude/settings.json", docker_text)
             self.assertIn("/home/agent/.codex/config.toml", docker_text)
-            self.assertIn("https://api.github.com/repos/jj-vcs/jj/releases/latest", docker_text)
+            self.assertIn("https://github.com/jj-vcs/jj/releases/latest", docker_text)
+            self.assertIn("JJ_LATEST_URL=", docker_text)
+            self.assertIn("Unable to resolve latest jj release tag", docker_text)
             self.assertIn(
                 'jj-${JJ_VERSION}-${JJ_ARCH}-unknown-linux-musl.tar.gz',
                 docker_text,
             )
+            self.assertNotIn("releases/download//jj--", docker_text)
             self.assertIn('install -m 0755 "$jj_tmp/jj" /usr/local/bin/jj', docker_text)
             self.assertNotIn("releases/latest/download/jj-${JJ_ARCH}", docker_text)
             self.assertNotIn("tar -xz -C /usr/local/bin jj", docker_text)
