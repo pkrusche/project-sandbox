@@ -395,6 +395,45 @@ class RendererTests(TestCase):
 
         self.assertIn("symlinked credential directory", str(raised.exception))
 
+    def test_render_refuses_symlinked_project_config_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            context = root / ".project-sandbox"
+            context.mkdir()
+            external = root / "external"
+            external.mkdir()
+            (context / "claude").symlink_to(external, target_is_directory=True)
+
+            with self.assertRaises(RuntimeError) as raised:
+                config_agents.render(context)
+
+            self.assertIn("symlinked project config path", str(raised.exception))
+            # Nothing was written through the link.
+            self.assertEqual(list(external.iterdir()), [])
+
+    def test_stale_cleanup_refuses_symlinked_project_config_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            context = root / ".project-sandbox"
+            context.mkdir()
+            external = root / "external"
+            external.mkdir()
+            victim = external / ".credentials.json"
+            victim.write_text("host-secret\n", encoding="utf-8")
+            (context / "claude").symlink_to(external, target_is_directory=True)
+
+            with self.assertRaises(RuntimeError) as raised:
+                config_agents._remove_stale_project_credentials(context)
+
+            with self.assertRaises(RuntimeError):
+                config_agents._remove_stale_project_agent_credentials(
+                    context, "claude", None
+                )
+
+            self.assertIn("symlinked project config path", str(raised.exception))
+            # The host credential file behind the link was not deleted.
+            self.assertTrue(victim.exists())
+
     def test_invalid_claude_json_is_replaced_with_sanitized_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

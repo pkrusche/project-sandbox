@@ -72,8 +72,7 @@ def render(context_dir: Path) -> dict[str, Path]:
     """Render all agent config files and return a dict of written paths."""
     paths: dict[str, Path] = {}
     for key, permission_mode in CLAUDE_PROFILES.items():
-        out_dir = context_dir / key
-        out_dir.mkdir(parents=True, exist_ok=True)
+        out_dir = _ensure_project_subdir(context_dir, key)
         out = out_dir / "settings.json"
         out.write_text(_claude_settings_json(permission_mode), encoding="utf-8")
         paths[key] = out
@@ -81,8 +80,7 @@ def render(context_dir: Path) -> dict[str, Path]:
         ("codex", "never"),
         ("codex-devcontainer", "on-request"),
     ):
-        out_dir = context_dir / key
-        out_dir.mkdir(parents=True, exist_ok=True)
+        out_dir = _ensure_project_subdir(context_dir, key)
         out = out_dir / "config.toml"
         out.write_text(_codex_config_toml(approval_policy), encoding="utf-8")
         paths[key] = out
@@ -255,6 +253,30 @@ def _sync_opencode_credentials(
     return out_dir
 
 
+def _reject_symlinked_project_path(path: Path) -> None:
+    """Refuse a managed .project-sandbox path reached through a symlink.
+
+    A hostile repository can pre-place an in-repo `.project-sandbox/<agent>`
+    path as a symlink to e.g. ~/.claude, so that rendering writes outside the
+    project and stale-cleanup unlinks host credentials. Mirror the
+    `_ensure_private_dir` guard: lstat each managed component and reject any
+    symlink before writing or unlinking.
+    """
+    for component in (path.parent, path):
+        if component.is_symlink():
+            raise RuntimeError(
+                f"Refusing to use symlinked project config path: {component}"
+            )
+
+
+def _ensure_project_subdir(context_dir: Path, name: str) -> Path:
+    """Create `context_dir / name`, refusing symlinked components."""
+    out_dir = context_dir / name
+    _reject_symlinked_project_path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return out_dir
+
+
 def _ensure_private_dir(path: Path) -> None:
     for directory in (path.parent.parent, path.parent, path):
         if directory.is_symlink():
@@ -267,6 +289,7 @@ def _ensure_private_dir(path: Path) -> None:
 
 def _remove_stale_project_credentials(project_sandbox_dir: Path) -> None:
     project_claude_dir = project_sandbox_dir / "claude"
+    _reject_symlinked_project_path(project_claude_dir)
     for name in (".credentials.json", ".claude.json"):
         _remove_if_exists(project_claude_dir / name)
 
@@ -277,6 +300,7 @@ def _remove_stale_project_agent_credentials(
     include_files: tuple[str, ...] | None,
 ) -> None:
     project_agent_dir = project_sandbox_dir / agent
+    _reject_symlinked_project_path(project_agent_dir)
     if include_files is None:
         _remove_path_if_exists(project_agent_dir)
         return
