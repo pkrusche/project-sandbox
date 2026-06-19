@@ -87,6 +87,18 @@ class UpdateProjectGitignoreTests(TestCase):
             self.assertIn(".devcontainer/", content)
 
 
+class RepoGitignoreTests(TestCase):
+    def test_uv_lock_is_not_ignored(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        entries = {
+            line.strip()
+            for line in (repo_root / ".gitignore").read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        }
+
+        self.assertNotIn("uv.lock", entries)
+
+
 class WriteProjectSandboxGitignoreTests(TestCase):
     def test_whitelists_committed_assets(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

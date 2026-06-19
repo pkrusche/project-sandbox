@@ -10,7 +10,6 @@ dist/
 .project-sandbox/
 .uv-cache
 .uv_cache
-uv.lock
 .pycache-test
 .pytest_cache
 .uv-python
