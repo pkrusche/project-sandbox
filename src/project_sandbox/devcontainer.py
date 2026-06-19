@@ -1,8 +1,9 @@
+import json
 import os
 import re
 from pathlib import Path
 
-from . import config_agents, templating
+from . import config_agents
 from .git_identity import GitIdentity
 from .paths import (
     HISTORY_CLAUDE_PROJECTS_TARGET,
@@ -49,7 +50,6 @@ def render(
     _symlink(dc_dir / "codex-devcontainer", Path("../.project-sandbox/codex-devcontainer"))
 
     out = dc_dir / "devcontainer.json"
-    tmpl = templating.get_template("devcontainer.json.j2")
     generated_dockerfile = project / ".project-sandbox" / "Dockerfile.devcontainer"
     build_context = build_context or project / ".project-sandbox"
     use_provided_credential_dirs = credential_dirs is not None
@@ -86,42 +86,114 @@ def render(
     history_init_command = (
         f"mkdir -p '{history_root}/shell' '{history_root}/claude_projects'"
     )
-    out.write_text(
-        tmpl.render(
-            project_name=project.name,
-            dockerfile_ref=_devcontainer_ref(dc_dir, generated_dockerfile),
-            build_context_ref=_devcontainer_ref(dc_dir, build_context),
-            firewall_enabled=firewall_enabled,
-            memory=memory,
-            memory_hostreq=_host_memory(memory),
-            cpus=cpus,
-            mount_codex_secrets=mount_codex_secrets,
-            mount_opencode_secrets=mount_opencode_secrets,
-            claude_config_mount="${localWorkspaceFolder}/.project-sandbox/claude-devcontainer",
-            claude_credentials_mount=claude_devcontainer_credentials_dir.resolve(strict=False).as_posix(),
-            codex_config_mount="${localWorkspaceFolder}/.project-sandbox/codex-devcontainer",
-            codex_credentials_mount=credential_dirs.get(
-                "codex",
-                config_agents.credentials_dir(project / ".project-sandbox", "codex"),
-            )
-            .resolve(strict=False)
-            .as_posix(),
-            opencode_credentials_mount=credential_dirs.get(
-                "opencode",
-                config_agents.credentials_dir(project / ".project-sandbox", "opencode"),
-            )
-            .resolve(strict=False)
-            .as_posix(),
-            history_mounts=history_mounts,
-            history_init_command=history_init_command,
-            history_histfile=HISTORY_HISTFILE,
-            extra_mounts=extra_mounts,
-            user_name=identity.name or "",
-            user_email=identity.email or "",
+
+    # Build the config as a Python dict and emit it with json.dumps so every
+    # interpolated value (project name, git identity, mount specs, including the
+    # user-supplied --mount values in extra_mounts) is JSON-escaped. Rendering
+    # these directly into a template produced no escaping, letting a crafted
+    # value close a string and inject arbitrary devcontainer fields.
+    claude_config_mount = "${localWorkspaceFolder}/.project-sandbox/claude-devcontainer"
+    claude_credentials_mount = claude_devcontainer_credentials_dir.resolve(strict=False).as_posix()
+    codex_config_mount = "${localWorkspaceFolder}/.project-sandbox/codex-devcontainer"
+    codex_credentials_mount = (
+        credential_dirs.get(
+            "codex",
+            config_agents.credentials_dir(project / ".project-sandbox", "codex"),
         )
-        + "\n",
-        encoding="utf-8",
+        .resolve(strict=False)
+        .as_posix()
     )
+    opencode_credentials_mount = (
+        credential_dirs.get(
+            "opencode",
+            config_agents.credentials_dir(project / ".project-sandbox", "opencode"),
+        )
+        .resolve(strict=False)
+        .as_posix()
+    )
+
+    run_args: list[str] = []
+    if firewall_enabled:
+        run_args.append("--cap-add=NET_ADMIN")
+        run_args.append("--cap-add=NET_RAW")
+    if memory:
+        run_args.append(f"--memory={memory}")
+    if cpus:
+        run_args.append(f"--cpus={cpus}")
+
+    container_env = {
+        "CLAUDE_SECURESTORAGE_CONFIG_DIR": "/home/agent/.claude",
+        "CODEX_HOME": "/home/agent/.codex",
+        "NODE_OPTIONS": "--max-old-space-size=4096",
+    }
+    if HISTORY_HISTFILE:
+        container_env["HISTFILE"] = HISTORY_HISTFILE
+
+    mounts = [
+        f"source={claude_config_mount},target=/project-sandbox-config/claude,type=bind,readonly",
+        f"source={claude_credentials_mount},target=/project-sandbox-secrets/claude,type=bind,readonly",
+        f"source={codex_config_mount},target=/project-sandbox-config/codex,type=bind,readonly",
+    ]
+    if mount_codex_secrets:
+        mounts.append(
+            f"source={codex_credentials_mount},target=/project-sandbox-secrets/codex,type=bind,readonly"
+        )
+    if mount_opencode_secrets:
+        mounts.append(
+            f"source={opencode_credentials_mount},target=/project-sandbox-secrets/opencode,type=bind,readonly"
+        )
+    mounts.extend(history_mounts)
+    mounts.extend(extra_mounts)
+
+    post_start_command = (
+        "sudo -n /usr/local/bin/project-sandbox-init-firewall && "
+        if firewall_enabled
+        else ""
+    ) + "/usr/local/bin/project-sandbox-devcontainer-init"
+
+    config: dict = {
+        "name": f"{project.name} (project-sandbox)",
+        "build": {
+            "dockerfile": _devcontainer_ref(dc_dir, generated_dockerfile),
+            "context": _devcontainer_ref(dc_dir, build_context),
+        },
+        "runArgs": run_args,
+        "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=delegated",
+        "workspaceFolder": "/workspace",
+    }
+    if history_init_command:
+        config["initializeCommand"] = history_init_command
+    config["remoteUser"] = "agent"
+    config["containerEnv"] = container_env
+    config["remoteEnv"] = {
+        "PROJECT_SANDBOX_USER_NAME": identity.name or "",
+        "PROJECT_SANDBOX_USER_EMAIL": identity.email or "",
+    }
+    config["mounts"] = mounts
+    config["postStartCommand"] = post_start_command
+    config["waitFor"] = "postStartCommand"
+    config["customizations"] = {
+        "vscode": {
+            "extensions": [
+                "anthropic.claude-code",
+                "openai.codex-vscode",
+            ],
+            "settings": {
+                "terminal.integrated.defaultProfile.linux": "bash",
+            },
+        }
+    }
+    config["features"] = {}
+    memory_hostreq = _host_memory(memory)
+    if cpus or memory_hostreq:
+        host_requirements: dict = {}
+        if cpus:
+            host_requirements["cpus"] = cpus
+        if memory_hostreq:
+            host_requirements["memory"] = memory_hostreq
+        config["hostRequirements"] = host_requirements
+
+    out.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
     return dc_dir
 
 

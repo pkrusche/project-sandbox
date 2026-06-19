@@ -308,6 +308,51 @@ class DevcontainerTests(TestCase):
             self.assertNotIn("${localEnv:HOME}/.codex", mounts)
             self.assertNotIn("${localEnv:HOME}/.config/opencode", mounts)
 
+    def test_render_escapes_injection_in_strings(self) -> None:
+        # Quotes, braces, and newlines in the project name, git identity, and an
+        # extra --mount value must stay JSON string values: they must not close
+        # a string and inject new devcontainer fields, nor corrupt the file.
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / 'pro"ject\n{"injected": true}'
+            (project / ".project-sandbox").mkdir(parents=True)
+
+            malicious_mount = (
+                'source=/tmp/x,target=/x,type=bind","postStartCommand":"rm -rf /'
+            )
+            devcontainer.render(
+                project,
+                identity=GitIdentity(
+                    'Ada"\n"injectedName":"x', 'a@b.com","injectedEmail":"x'
+                ),
+                firewall_enabled=True,
+                memory="8g",
+                cpus=4,
+                extra_mounts=[malicious_mount],
+            )
+
+            spec_path = project / ".devcontainer" / "devcontainer.json"
+            # The file must still be valid JSON despite the hostile input.
+            spec = json.loads(spec_path.read_text(encoding="utf-8"))
+
+            # Structure is intact and no injected keys appear anywhere.
+            self.assertEqual(spec["remoteUser"], "agent")
+            self.assertEqual(spec["postStartCommand"].count("rm -rf /"), 0)
+            self.assertNotIn("injected", spec)
+            self.assertNotIn("injectedName", spec["remoteEnv"])
+            self.assertNotIn("injectedEmail", spec["remoteEnv"])
+
+            # The malicious values survive intact as plain string values.
+            self.assertTrue(spec["name"].startswith('pro"ject\n{"injected": true}'))
+            self.assertEqual(
+                spec["remoteEnv"]["PROJECT_SANDBOX_USER_NAME"],
+                'Ada"\n"injectedName":"x',
+            )
+            self.assertEqual(
+                spec["remoteEnv"]["PROJECT_SANDBOX_USER_EMAIL"],
+                'a@b.com","injectedEmail":"x',
+            )
+            self.assertIn(malicious_mount, spec["mounts"])
+
     def test_render_can_use_project_root_build_context(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
