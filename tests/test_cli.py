@@ -796,7 +796,7 @@ class CliTests(TestCase):
             )
             self.assertNotIn("PROJECT_SANDBOX_PROMPT=echo ok", cmd)
 
-    def test_prompt_file_mounts_parent_directory(self) -> None:
+    def test_prompt_file_mounts_staged_copy_not_source_parent(self) -> None:
         import argparse
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -836,7 +836,18 @@ class CliTests(TestCase):
             )
 
             self.assertTrue(unsupervised)
+            # The prompt is copied into a private staging dir and only that dir
+            # is mounted; the source parent (which could be $HOME) is not.
+            staging_dir = context_dir / "prompt"
+            staged_file = staging_dir / "prompt.txt"
+            self.assertTrue(staged_file.is_file())
+            self.assertEqual(staged_file.read_text(encoding="utf-8"), "echo ok")
             self.assertIn(
+                f"type=bind,source={staging_dir.resolve()},"
+                "target=/project-sandbox-prompt,readonly",
+                cmd,
+            )
+            self.assertNotIn(
                 f"type=bind,source={prompt_file.parent.resolve()},"
                 "target=/project-sandbox-prompt,readonly",
                 cmd,

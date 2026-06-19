@@ -1,5 +1,6 @@
 import hashlib
 import re
+import shutil
 import uuid
 from argparse import ArgumentParser
 from pathlib import Path
@@ -579,10 +580,19 @@ def _build_session_command(
         )
         run_mode_agent = f"{run_agent}-headless"
         if args.prompt:
-            prompt_file = resolve_strict(args.prompt)
-            prompt_target = f"{PROMPT_MOUNT_TARGET}/{prompt_file.name}"
+            source_prompt = resolve_strict(args.prompt)
+            # Copy the prompt into a private staging dir so we mount only the
+            # prompt file, not its source parent (which could be $HOME).
+            prompt_staging = context_dir / "prompt"
+            prompt_file = prompt_staging / source_prompt.name
+            if create_prompt_files:
+                ensure_dir(prompt_staging)
+                shutil.copyfile(source_prompt, prompt_file)
+            else:
+                print(f"Would stage prompt to: {prompt_file}")
+            prompt_target = f"{PROMPT_MOUNT_TARGET}/{source_prompt.name}"
             extra_mounts.append(
-                f"type=bind,source={prompt_file.parent},"
+                f"type=bind,source={prompt_staging.resolve()},"
                 f"target={PROMPT_MOUNT_TARGET},readonly"
             )
             extra_env.append(f"PROJECT_SANDBOX_PROMPT_FILE={prompt_target}")
