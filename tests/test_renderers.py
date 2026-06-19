@@ -815,6 +815,56 @@ class RendererTests(TestCase):
                 self.assertIn('for dns in "${DNS4_LIST[@]}"', text)
                 self.assertIn('for dns6 in "${DNS6_LIST[@]}"', text)
 
+    def test_firewall_narrows_icmpv6_to_required_types(self) -> None:
+        # Regression: a blanket "ip6tables -p ipv6-icmp -j ACCEPT" on INPUT and
+        # OUTPUT let arbitrary data ride ICMPv6 to any host. Only the specific
+        # control types must be allowed, with neighbor/router discovery confined
+        # to link-local scope.
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            firewall.render(context, extra_domains=[])
+            for name in ("init-firewall.sh", "init-firewall-devcontainer.sh"):
+                text = (context / name).read_text(encoding="utf-8")
+                # No blanket ipv6-icmp accept on INPUT or OUTPUT.
+                self.assertNotIn("-p ipv6-icmp -j ACCEPT", text)
+                # Per-type matching is used instead.
+                self.assertIn("--icmpv6-type", text)
+                # Error / PMTU types are present.
+                for icmp6_type in ("1", "2", "3", "4"):
+                    self.assertIn(icmp6_type, text)
+                # Neighbor / router discovery types are present...
+                for icmp6_type in ("133", "134", "135", "136", "137"):
+                    self.assertIn(icmp6_type, text)
+                # ...and confined to link-local scope.
+                self.assertIn("fe80::/10", text)
+                self.assertIn("ff02::/16", text)
+
+    def test_firewall_blocks_general_dns_after_preresolution(self) -> None:
+        # The resolver must no longer be reachable for arbitrary names (which
+        # enabled DNS-tunnel exfiltration). Allowlisted domains are pre-resolved
+        # and pinned into /etc/hosts, then general outbound DNS is dropped.
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            firewall.render(context, extra_domains=[])
+            for name in ("init-firewall.sh", "init-firewall-devcontainer.sh"):
+                text = (context / name).read_text(encoding="utf-8")
+                # No blanket DNS ACCEPT to/from the resolver any more.
+                self.assertNotIn('--dport 53 -d "$dns" -j ACCEPT', text)
+                self.assertNotIn('--dport 53 -d "$dns6" -j ACCEPT', text)
+                self.assertNotIn('--sport 53 -s "$dns" -j ACCEPT', text)
+                # Allowlisted names are pinned into /etc/hosts.
+                self.assertIn("/etc/hosts", text)
+                self.assertIn("project-sandbox-dns-pin", text)
+                # General outbound DNS is dropped (both transports).
+                self.assertIn("-p udp --dport 53 -j DROP", text)
+                self.assertIn("-p tcp --dport 53 -j DROP", text)
+                # The DROP must precede the allowlist ACCEPT so DNS is blocked
+                # even toward an allowlisted address.
+                self.assertLess(
+                    text.index("--dport 53 -j DROP"),
+                    text.index("--match-set allowed-ipv4 dst -j ACCEPT"),
+                )
+
     def test_firewall_nat_restore_is_valid_and_non_fatal(self) -> None:
         # Regression: "iptables-restore --noflush -t nat" is invalid (-t is not
         # an iptables-restore option), so it tried to open a file named "nat"

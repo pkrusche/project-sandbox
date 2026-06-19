@@ -60,24 +60,33 @@ fi
 
 iptables -A INPUT -i lo -j ACCEPT
 iptables -A OUTPUT -o lo -j ACCEPT
-for dns in "${DNS4_LIST[@]}"; do
-  iptables -A OUTPUT -p udp --dport 53 -d "$dns" -j ACCEPT
-  iptables -A OUTPUT -p tcp --dport 53 -d "$dns" -j ACCEPT
-  iptables -A INPUT  -p udp --sport 53 -s "$dns" -j ACCEPT
-  iptables -A INPUT  -p tcp --sport 53 -s "$dns" -j ACCEPT
-done
+# NOTE: outbound DNS to the resolver is intentionally NOT opened here.
+# Allowlisted names are pre-resolved into /etc/hosts below and general
+# outbound DNS is dropped (see "Block general outbound DNS") to prevent
+# DNS-tunnel exfiltration of data to arbitrary names via the resolver.
 
 if [ "$IPV6_FW" = "1" ]; then
   ip6tables -A INPUT -i lo -j ACCEPT
   ip6tables -A OUTPUT -o lo -j ACCEPT
-  ip6tables -A INPUT -p ipv6-icmp -j ACCEPT
-  ip6tables -A OUTPUT -p ipv6-icmp -j ACCEPT
-  for dns6 in "${DNS6_LIST[@]}"; do
-    ip6tables -A OUTPUT -p udp --dport 53 -d "$dns6" -j ACCEPT
-    ip6tables -A OUTPUT -p tcp --dport 53 -d "$dns6" -j ACCEPT
-    ip6tables -A INPUT  -p udp --sport 53 -s "$dns6" -j ACCEPT
-    ip6tables -A INPUT  -p tcp --sport 53 -s "$dns6" -j ACCEPT
+  # ICMPv6 is required for IPv6 to function, but a blanket accept lets data
+  # ride arbitrary ICMPv6 to any host. Allow only the control types actually
+  # needed: error / PMTU messages (types 1-4, left unrestricted because a
+  # Packet Too Big can legitimately originate from any on-path router) and
+  # neighbor / router discovery (types 133-137), the latter confined to
+  # link-local unicast (fe80::/10) and link-local multicast (ff02::/16) so it
+  # cannot carry data to off-link / global destinations.
+  for icmp6_type in 1 2 3 4; do
+    ip6tables -A INPUT  -p ipv6-icmp --icmpv6-type "$icmp6_type" -j ACCEPT
+    ip6tables -A OUTPUT -p ipv6-icmp --icmpv6-type "$icmp6_type" -j ACCEPT
   done
+  for icmp6_type in 133 134 135 136 137; do
+    for ll_scope in fe80::/10 ff02::/16; do
+      ip6tables -A INPUT  -p ipv6-icmp --icmpv6-type "$icmp6_type" -s "$ll_scope" -j ACCEPT
+      ip6tables -A OUTPUT -p ipv6-icmp --icmpv6-type "$icmp6_type" -d "$ll_scope" -j ACCEPT
+    done
+  done
+  # Outbound DNS over IPv6 is dropped below alongside IPv4 (see "Block general
+  # outbound DNS"); allowlisted names are pre-resolved into /etc/hosts.
 fi
 
 ipset create allowed-ipv4 hash:net family inet
@@ -109,16 +118,23 @@ DOMAINS=(
 {% endfor %}
 )
 
+# Pre-resolve the allowlisted domains and pin each result into /etc/hosts so
+# name resolution keeps working after general outbound DNS is dropped below.
+# Strip any pins from a previous run first to stay idempotent.
+sed -i '/# project-sandbox-dns-pin/d' /etc/hosts 2>/dev/null || true
+
 for domain in "${DOMAINS[@]}"; do
   while IFS= read -r ip4; do
     [[ "$ip4" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || continue
     ipset add --exist allowed-ipv4 "$ip4"
+    printf '%s\t%s # project-sandbox-dns-pin\n' "$ip4" "$domain" >> /etc/hosts
   done < <(dig +noall +answer +time=5 A "$domain" 2>/dev/null | awk '$4=="A" {print $5}' || true)
 
   if [ "$IPV6_FW" = "1" ]; then
     while IFS= read -r ip6; do
       [[ "$ip6" =~ : ]] || continue
       ipset add --exist allowed-ipv6 "$ip6" 2>/dev/null || true
+      printf '%s\t%s # project-sandbox-dns-pin\n' "$ip6" "$domain" >> /etc/hosts
     done < <(dig +noall +answer +time=5 AAAA "$domain" 2>/dev/null | awk '$4=="AAAA" {print $5}' || true)
   fi
 done
@@ -158,6 +174,17 @@ iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
 if [ "$IPV6_FW" = "1" ]; then
   ip6tables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
   ip6tables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+fi
+
+# Block general outbound DNS. Allowlisted names are already pinned in
+# /etc/hosts, so no runtime DNS is required; dropping it here (ahead of the
+# allowlist ACCEPT, so it applies even if a resolver IP falls inside an
+# allowlisted range) closes the DNS-tunnel exfiltration channel.
+iptables -A OUTPUT -p udp --dport 53 -j DROP
+iptables -A OUTPUT -p tcp --dport 53 -j DROP
+if [ "$IPV6_FW" = "1" ]; then
+  ip6tables -A OUTPUT -p udp --dport 53 -j DROP
+  ip6tables -A OUTPUT -p tcp --dport 53 -j DROP
 fi
 
 iptables -A OUTPUT -m set --match-set allowed-ipv4 dst -j ACCEPT
