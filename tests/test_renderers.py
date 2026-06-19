@@ -68,7 +68,7 @@ class RendererTests(TestCase):
             self.assertIn('"auth.openai.com"', firewall_text)
             self.assertIn('"chatgpt.com"', firewall_text)
             self.assertNotIn("statsig", firewall_text)
-            self.assertIn('"internal.example.com"', firewall_text)
+            self.assertIn("internal.example.com", firewall_text)
             self.assertNotIn("--dport 22", firewall_text)
             self.assertNotIn("--sport 22", firewall_text)
 
@@ -796,6 +796,31 @@ class RendererTests(TestCase):
                 # Only append real matches (no bare-newline padding that made
                 # NAT4/NAT6 look non-empty and forced a restore on empty input).
                 self.assertIn('[ -n "$match" ] && NAT4+="$match"', text)
+
+    def test_firewall_rejects_unsafe_extra_domains(self) -> None:
+        # Regression: extra domains are interpolated into a root-run Bash array,
+        # so command substitutions, backticks, embedded quotes, or newlines must
+        # be rejected before the firewall script is rendered.
+        unsafe = [
+            "$(touch /tmp/pwned)",
+            "`touch /tmp/pwned`",
+            'evil.com"; touch /tmp/pwned; "',
+            "evil.com\nrm -rf /",
+        ]
+        for domain in unsafe:
+            with tempfile.TemporaryDirectory() as tmp:
+                with self.assertRaises(ValueError):
+                    firewall.render(Path(tmp), extra_domains=[domain])
+
+    def test_firewall_renders_valid_extra_domain_quoted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            firewall.render(context, extra_domains=["example.com"])
+            for name in ("init-firewall.sh", "init-firewall-devcontainer.sh"):
+                text = (context / name).read_text(encoding="utf-8")
+                # Rendered as a shell-safe token inside the DOMAINS=( ... ) array.
+                array = text.split("DOMAINS=(", 1)[1].split(")", 1)[0]
+                self.assertIn("example.com", array)
 
     def test_render_returns_all_four_config_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

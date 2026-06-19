@@ -1,6 +1,27 @@
+import re
 from pathlib import Path
 
 from . import templating
+
+# Strict hostname: dot-separated labels of letters/digits/hyphens (no leading or
+# trailing hyphen per label), with an optional trailing dot. Anything else (command
+# substitutions, backticks, quotes, whitespace, newlines, ...) is rejected so a
+# malicious --extra-domain cannot execute when the firewall script runs as root.
+_HOSTNAME_RE = re.compile(
+    r"^(?=.{1,253}\.?$)"
+    r"(?!-)[A-Za-z0-9-]{1,63}(?<!-)"
+    r"(?:\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))*"
+    r"\.?$"
+)
+
+
+def _validate_domains(extra_domains: list[str]) -> None:
+    for domain in extra_domains:
+        if not _HOSTNAME_RE.fullmatch(domain):
+            raise ValueError(
+                f"Invalid --extra-domain {domain!r}: expected a hostname of "
+                "letters, digits, hyphens, and dots."
+            )
 
 
 def render(
@@ -8,6 +29,7 @@ def render(
     *,
     extra_domains: list[str],
 ) -> Path:
+    _validate_domains(extra_domains)
     tmpl = templating.get_template("init-firewall.sh.j2")
     container = _write(
         tmpl,

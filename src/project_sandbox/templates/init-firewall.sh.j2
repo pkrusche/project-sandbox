@@ -105,7 +105,7 @@ DOMAINS=(
   "auth.openai.com"
   "chatgpt.com"
 {% for domain in extra_domains %}
-  "{{ domain }}"
+  {{ domain | shlex_quote }}
 {% endfor %}
 )
 
