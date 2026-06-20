@@ -19,6 +19,7 @@ _LOCAL_INSTALL_RE = re.compile(
     r"|poetry\s+install"
     r"|pipenv\s+install"
     r"|npm\s+install(?!\s+(-g|--global)\b)"
+    r"|npm\s+ci\b"
     r"|yarn\s+install"
     r"|pnpm\s+install",
     re.IGNORECASE,
@@ -79,10 +80,30 @@ def _extract_last_from(blocks: list[list[str]]) -> str | None:
     result = None
     for block in blocks:
         if block:
-            m = re.match(r"\s*FROM\s+(\S+)", block[0], re.IGNORECASE)
+            m = re.match(r"\s*FROM\s+(.*)", block[0], re.IGNORECASE)
             if m:
-                result = m.group(1)
+                image = _first_non_option_token(m.group(1))
+                if image is not None:
+                    result = image
     return result
+
+
+def _first_non_option_token(rest: str) -> str | None:
+    """Return the image token from a FROM line, skipping options like
+    ``--platform=...`` (or ``--flag value``) that may precede the image."""
+    tokens = rest.split()
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if token.startswith("--"):
+            # "--flag=value" carries its value inline; "--flag value" does not,
+            # so skip the following token as well.
+            if "=" not in token:
+                i += 1
+            i += 1
+            continue
+        return token
+    return None
 
 
 def _is_non_apt_image(image: str) -> bool:
@@ -142,6 +163,17 @@ def _remove_restricted_user_setup(text: str) -> tuple[str, int]:
     removed = 0
     for block in _dockerfile_blocks(text):
         if _is_restricted_user_setup(block):
+            if _is_mixed_user_setup_run(block):
+                command = " ".join(line.strip().rstrip("\\") for line in block).strip()
+                raise ValueError(
+                    "Dockerfile RUN instruction mixes restricted user-management "
+                    "commands (useradd/groupadd/etc.) with other build steps and "
+                    "cannot be sanitized automatically:\n"
+                    f"    {command}\n"
+                    "Move the user-management commands into a separate RUN "
+                    "instruction so project-sandbox can remove them safely; "
+                    "project-sandbox creates its own agent user with UID 1000."
+                )
             removed += 1
             continue
         kept.extend(block)
@@ -188,6 +220,31 @@ def _is_restricted_user_setup(block: list[str]) -> bool:
         command = " ".join(line.strip().rstrip("\\") for line in block)
         return _USER_SETUP_COMMAND_RE.search(command) is not None
     return False
+
+
+def _is_mixed_user_setup_run(block: list[str]) -> bool:
+    """Return True when a RUN block contains user-management commands alongside
+    unrelated build steps, so removing the whole block would drop real work."""
+    if not block or not re.match(r"\s*RUN\b", block[0], re.IGNORECASE):
+        return False
+    command = " ".join(line.strip().rstrip("\\") for line in block)
+    command = re.sub(r"^\s*RUN\b", "", command, count=1, flags=re.IGNORECASE)
+    has_user_setup = False
+    has_other = False
+    for sub in re.split(r"&&|\|\||;", command):
+        sub = sub.strip()
+        if not sub or _is_trivial_subcommand(sub):
+            continue
+        if _USER_SETUP_COMMAND_RE.search(sub):
+            has_user_setup = True
+        else:
+            has_other = True
+    return has_user_setup and has_other
+
+
+def _is_trivial_subcommand(sub: str) -> bool:
+    head = sub.split(maxsplit=1)[0]
+    return head in {"set", "export", "true", ":"}
 
 
 def _sandbox_copy_prefix(*, context_dir: Path, build_context: Path) -> str:

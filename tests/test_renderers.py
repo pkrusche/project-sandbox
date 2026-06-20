@@ -673,6 +673,33 @@ class RendererTests(TestCase):
             self.assertEqual(len(warnings), 1)
             self.assertIn("Removed 2 restricted user setup instructions", warnings[0])
 
+    def test_dockerfile_source_rejects_mixed_user_setup_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            context = project / ".project-sandbox"
+            context.mkdir()
+            source = project / "Dockerfile"
+            source.write_text(
+                "FROM ubuntu:24.04\n"
+                "RUN apt-get update && apt-get install -y curl && \\\n"
+                "    useradd -m app && \\\n"
+                "    make setup\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValueError) as ctx:
+                dockerfile.render(
+                    context,
+                    base_dockerfile=source,
+                    build_context=project,
+                    install_agents=("codex",),
+                    warn=[].append,
+                )
+            message = str(ctx.exception)
+            self.assertIn("useradd", message)
+            self.assertIn("separate RUN", message)
+            # The mixed block must not have been silently dropped to a file.
+            self.assertFalse((context / "Dockerfile").exists())
+
     def test_entrypoint_supports_all_headless_agents(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             context = Path(tmp)
@@ -1030,6 +1057,24 @@ class RendererTests(TestCase):
             self.assertIn("alpine", warnings[0])
             self.assertIn("apt-get", warnings[0])
 
+    def test_dockerfile_source_warns_on_alpine_base_with_platform_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            context = project / ".project-sandbox"
+            context.mkdir()
+            source = project / "Dockerfile"
+            source.write_text(
+                "FROM --platform=$BUILDPLATFORM alpine:3.19\nRUN echo hello\n",
+                encoding="utf-8",
+            )
+            warnings: list[str] = []
+            dockerfile.render(
+                context, base_dockerfile=source, build_context=project, warn=warnings.append
+            )
+            self.assertEqual(len(warnings), 1)
+            self.assertIn("alpine", warnings[0])
+            self.assertIn("apt-get", warnings[0])
+
     def test_dockerfile_source_warns_on_distroless_base(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
@@ -1103,6 +1148,22 @@ class RendererTests(TestCase):
             source = project / "Dockerfile"
             source.write_text(
                 "FROM node:20\nWORKDIR /app\nRUN npm install\n", encoding="utf-8"
+            )
+            warnings: list[str] = []
+            dockerfile.render(
+                context, base_dockerfile=source, build_context=project, warn=warnings.append
+            )
+            self.assertEqual(len(warnings), 1)
+            self.assertIn("/workspace", warnings[0])
+
+    def test_dockerfile_source_warns_on_workdir_and_npm_ci(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            context = project / ".project-sandbox"
+            context.mkdir()
+            source = project / "Dockerfile"
+            source.write_text(
+                "FROM node:20\nWORKDIR /app\nRUN npm ci\n", encoding="utf-8"
             )
             warnings: list[str] = []
             dockerfile.render(
