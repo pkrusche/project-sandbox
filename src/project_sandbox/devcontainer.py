@@ -82,10 +82,16 @@ def render(
     # absent at container-create time (fresh clone, cleaned .project-sandbox, or
     # an upgrade that added history mounts). A missing source makes the runtime
     # fail to start. initializeCommand runs on the host before the container is
-    # created, recreating the directories so the mounts always succeed.
-    history_init_command = (
-        f"mkdir -p '{history_root}/shell' '{history_root}/claude_projects'"
-    )
+    # created, recreating the directories so the mounts always succeed. Use the
+    # argv (array) form so each path is passed as a single literal argument with
+    # no shell parsing: a workspace path containing an apostrophe (or any shell
+    # metacharacter) is then safe and cannot create the wrong directories.
+    history_init_command = [
+        "mkdir",
+        "-p",
+        f"{history_root}/shell",
+        f"{history_root}/claude_projects",
+    ]
 
     # Build the config as a Python dict and emit it with json.dumps so every
     # interpolated value (project name, git identity, mount specs, including the

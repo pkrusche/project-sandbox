@@ -148,14 +148,62 @@ class DevcontainerTests(TestCase):
                 (project / ".devcontainer" / "devcontainer.json").read_text()
             )
             command = spec["initializeCommand"]
+            # Array (argv) form: each element is a literal argument, no shell.
+            self.assertIsInstance(command, list)
 
             # Simulate a fresh/cleaned checkout: the gitignored history dir is gone.
             shutil.rmtree(project / ".project-sandbox" / "history")
 
             # Run the host command exactly as a devcontainer host would, with the
             # ${localWorkspaceFolder} variable resolved to the project root.
-            resolved = command.replace("${localWorkspaceFolder}", str(project))
-            subprocess.run(resolved, shell=True, check=True)
+            resolved = [
+                arg.replace("${localWorkspaceFolder}", str(project))
+                for arg in command
+            ]
+            subprocess.run(resolved, check=True)
+
+            history_dir = project / ".project-sandbox" / "history"
+            self.assertTrue((history_dir / "shell").is_dir())
+            self.assertTrue((history_dir / "claude_projects").is_dir())
+
+    def test_initialize_command_is_array_form_safe_for_apostrophe_paths(self) -> None:
+        # A workspace path containing an apostrophe must not break the host
+        # initializeCommand. The array (argv) form passes each path as a single
+        # literal argument, so no shell quoting can corrupt it.
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "ada's project"
+            (project / ".project-sandbox").mkdir(parents=True)
+
+            _render(project)
+            spec = json.loads(
+                (project / ".devcontainer" / "devcontainer.json").read_text()
+            )
+            command = spec["initializeCommand"]
+
+            # Array form, not a shell string.
+            self.assertIsInstance(command, list)
+            self.assertEqual(command[:2], ["mkdir", "-p"])
+
+            # The history paths appear as whole literal elements with the
+            # apostrophe intact and no shell quoting wrapping the value.
+            self.assertIn(
+                "${localWorkspaceFolder}/.project-sandbox/history/shell",
+                command,
+            )
+            self.assertIn(
+                "${localWorkspaceFolder}/.project-sandbox/history/claude_projects",
+                command,
+            )
+
+            # Simulate the host resolving ${localWorkspaceFolder} to the real
+            # apostrophe-containing path and running the argv directly (no shell):
+            # the correct directories must be created.
+            shutil.rmtree(project / ".project-sandbox" / "history")
+            resolved = [
+                arg.replace("${localWorkspaceFolder}", str(project))
+                for arg in command
+            ]
+            subprocess.run(resolved, check=True)
 
             history_dir = project / ".project-sandbox" / "history"
             self.assertTrue((history_dir / "shell").is_dir())
