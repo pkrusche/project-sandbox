@@ -66,12 +66,22 @@ if [ "$SLEEP" -le "$TIMEOUT" ]; then
   exit 64
 fi
 
-# List the IDs of currently-running containers, one per line, sorted. Docker
-# and Podman expose this as `ps -q`; apple/container exposes it as `ls -q`.
+# Unsupervised runs (this script always passes --prompt-text) get a generated
+# container name of the form "project-sandbox-<hex>" (see cli.py). Restrict the
+# before/after snapshots to that name prefix so unrelated containers started by
+# someone else during the settle window are not mistaken for leaks from this
+# run.
+NAME_PREFIX="project-sandbox-"
+
+# List the names of currently-running project-sandbox containers, one per line,
+# sorted. apple/container's container id IS the assigned --name, so `ls -q`
+# already yields those names and we filter by prefix; Docker and Podman take an
+# explicit name filter and print the matching names. `sed` (not `grep`) does the
+# prefix filtering so an empty result stays exit status 0 under `set -e`.
 running_ids() {
   case "$RUNTIME" in
-    apple-container) "$BIN" ls -q ;;
-    docker|podman)   "$BIN" ps -q ;;
+    apple-container) "$BIN" ls -q | sed -n "/^${NAME_PREFIX}/p" ;;
+    docker|podman)   "$BIN" ps --filter "name=${NAME_PREFIX}" --format '{{.Names}}' ;;
   esac 2>/dev/null | sed '/^$/d' | sort -u
 }
 

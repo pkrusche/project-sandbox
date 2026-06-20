@@ -66,12 +66,16 @@ DC="$TMP_PROJECT/.devcontainer"
 
 REQUIRED=(
   "$PS/Dockerfile"
+  "$PS/Dockerfile.devcontainer"
   "$PS/entrypoint.sh"
   "$PS/init-firewall.sh"
+  "$PS/init-firewall-devcontainer.sh"
   "$PS/project-sandbox-devcontainer-init"
   "$PS/.gitignore"
   "$PS/claude/settings.json"
+  "$PS/claude-devcontainer/settings.json"
   "$PS/codex/config.toml"
+  "$PS/codex-devcontainer/config.toml"
   "$DC/devcontainer.json"
   "$TMP_PROJECT/.gitignore"
 )
@@ -102,7 +106,17 @@ for s in "${SYMLINKS[@]}"; do
   if [ -L "$s" ]; then
     target="$(readlink "$s")"
     case "$target" in
-      ../.project-sandbox/*) echo "  ok    $s -> $target" ;;
+      ../.project-sandbox/*)
+        # -e follows the symlink: this fails for a dangling link whose target
+        # file does not exist, so a correct-looking prefix can't mask a missing
+        # artefact.
+        if [ -e "$s" ]; then
+          echo "  ok    $s -> $target"
+        else
+          echo "  DANG  $s -> $target (target does not exist)"
+          fail=1
+        fi
+        ;;
       *) echo "  BAD   $s -> $target (expected ../.project-sandbox/...)" ; fail=1 ;;
     esac
   else
