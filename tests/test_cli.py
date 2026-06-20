@@ -1309,3 +1309,47 @@ class PythonUvFlagTests(TestCase):
                 ])
 
         self.assertIn("mutually exclusive", str(raised.exception))
+
+    def test_invalid_build_source_fails_before_worktree(self) -> None:
+        # A bad build source must abort before _setup_worktree runs, so no
+        # branch/worktree is orphaned by the failure.
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            _make_git_repo(project)
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("A", "a@b.com")),
+                patch.object(cli, "_setup_worktree") as setup_wt,
+                patch.object(cli.config_agents, "available_agents", return_value=("claude",)),
+                patch.object(cli.container_cli, "select_runtime", return_value=cli.container_cli.DOCKER),
+            ):
+                with self.assertRaises(SystemExit) as raised:
+                    cli.main([
+                        "--agent", "claude",
+                        "--branch", "feat/x", "--after-session", "nothing",
+                        "--python-uv",
+                        str(project), "python:3.12-slim",
+                    ])
+
+            setup_wt.assert_not_called()
+            self.assertIn("mutually exclusive", str(raised.exception))
+
+    def test_missing_prompt_file_fails_before_worktree(self) -> None:
+        # A missing --prompt must abort before _setup_worktree runs.
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            _make_git_repo(project)
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("A", "a@b.com")),
+                patch.object(cli, "_setup_worktree") as setup_wt,
+                patch.object(cli.config_agents, "available_agents", return_value=("claude",)),
+                patch.object(cli.container_cli, "select_runtime", return_value=cli.container_cli.DOCKER),
+            ):
+                with self.assertRaises((SystemExit, FileNotFoundError)):
+                    cli.main([
+                        "--agent", "claude",
+                        "--branch", "feat/x", "--after-session", "nothing",
+                        "--prompt", str(project / "missing-prompt.md"),
+                        str(project), "python:3.12-slim",
+                    ])
+
+            setup_wt.assert_not_called()

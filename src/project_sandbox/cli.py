@@ -148,6 +148,19 @@ def main(argv: list[str] | None = None) -> int:
             available_agents=available_agents,
         )
 
+    # Validate fatal inputs BEFORE creating a worktree, so a bad build source,
+    # missing prompt, or unwritable log path fails without first orphaning a
+    # branch/worktree. _resolve_build_source also writes the synthesised python-uv
+    # Dockerfile, but only into .project-sandbox (project-level, not the worktree).
+    context_dir = ensure_dir(project / ".project-sandbox")
+    base_image, base_dockerfile, build_context = _resolve_build_source(
+        args,
+        project=project,
+        context_dir=context_dir,
+    )
+    if run_agent is not None:
+        _validate_session_inputs(args)
+
     wt, workspace = _setup_worktree(args, project) if run_agent else (None, project)
 
     # Once a worktree exists, every exit path must run teardown so a failed build
@@ -157,13 +170,6 @@ def main(argv: list[str] | None = None) -> int:
     agent_ran = False
     exit_code = 1
     try:
-        context_dir = ensure_dir(project / ".project-sandbox")
-        base_image, base_dockerfile, build_context = _resolve_build_source(
-            args,
-            project=project,
-            context_dir=context_dir,
-        )
-
         dockerfile.render(
             context_dir,
             base_image=base_image,
@@ -473,6 +479,23 @@ def _resolve_build_source(
     if not args.base_image:
         raise SystemExit("base_image is required unless --dockerfile is used")
     return args.base_image, None, context_dir
+
+
+def _validate_session_inputs(args) -> None:
+    """Validate fatal session inputs before any worktree is created.
+
+    These checks otherwise fire inside ``_build_session_command``, after a
+    worktree (and its branch) may already exist. This is non-mutating: nothing is
+    written or staged here — the actual prompt/log handling still happens later.
+    """
+    if args.prompt:
+        source_prompt = resolve_strict(args.prompt)
+        if not source_prompt.is_file():
+            raise SystemExit(f"--prompt must point to a file: {source_prompt}")
+    if args.log:
+        log_parent = Path(args.log).expanduser().resolve().parent
+        if not log_parent.is_dir():
+            raise SystemExit(f"--log parent directory does not exist: {log_parent}")
 
 
 def _setup_worktree(args, project: Path):
