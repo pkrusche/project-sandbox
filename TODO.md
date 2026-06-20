@@ -25,10 +25,3 @@ security boundary, so treat it as unshipped until exercised live.
 **Test.** Render coverage already exists; record the live-host result (resolvers
 allowed, no other egress) in the PR description. If the run reveals a gap, add a
 render regression in `tests/test_renderers.py` for the corrected rule shape.
-
-## Repository review findings (2026-06-19) — resolved
-
-All High, Medium, and Low items from the 2026-06-19 multi-agent review have
-been implemented with regression tests (see git history). The only remaining
-entry is the manual live-iptables validation gate above, which is a host
-validation step rather than a code change.

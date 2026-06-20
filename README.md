@@ -36,6 +36,35 @@ uv sync
 uv run project-sandbox --help
 ```
 
+## Updating pinned dependencies
+
+Pinned package and tool versions are updated with the interactive helper:
+
+```bash
+uv run python scripts/update-pins.py
+```
+
+The script checks:
+
+- exact PyPI pins in `pyproject.toml`, regenerating `uv.lock` after accepted
+  direct dependency updates;
+- lockfile-only PyPI package pins in `uv.lock`, updated through
+  `uv lock --upgrade-package`;
+- global npm tool pins in the generated Dockerfile template;
+- pinned Node.js and jj binary releases, including their per-architecture
+  SHA256 checksums;
+- the pinned `ghcr.io/astral-sh/uv` image tag and digest used by the project
+  Dockerfile helpers.
+
+For each changed upstream version, the script asks before editing so individual
+updates can be accepted or skipped. After accepting updates, run the usual
+verification commands:
+
+```bash
+uv run python -m compileall src tests scripts
+uv run pytest -q
+```
+
 ## Quick start
 
 ```bash
