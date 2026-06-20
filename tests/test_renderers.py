@@ -38,6 +38,7 @@ class RendererTests(TestCase):
             self.assertIn("npm install -g @openai/codex", docker_text)
             self.assertIn("npm install -g opencode-ai", docker_text)
             self.assertIn("npm install -g @fission-ai/openspec@1.4.1", docker_text)
+            self.assertIn("libatomic1", docker_text)
             self.assertIn("/home/agent/.claude/settings.json", docker_text)
             self.assertIn("/home/agent/.codex/config.toml", docker_text)
             self.assertIn('JJ_VERSION="v0.42.0"', docker_text)
