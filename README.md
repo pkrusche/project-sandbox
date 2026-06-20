@@ -274,8 +274,8 @@ The tool does **not** protect against:
 - Base images, including the final stage of a Dockerfile passed with `--dockerfile`, must be Debian or Ubuntu based — the firewall depends on `apt` packages including `aggregate`, which Alpine does not ship.
 - Direct Python CLI runs support Apple `container`, Docker, and Podman. Docker/Podman provide container isolation rather than the Apple MicroVM boundary. Incus is a future backend candidate, but it has a different image/import and launch lifecycle from the generated Dockerfile flow used here.
 - The generated `.devcontainer/` targets local Docker-compatible runtimes such as Docker Desktop or OrbStack; remote services may require rewriting local mounts and relaxing or replacing firewall capability requirements.
-- `--branch` (worktree mode) creates a git worktree on the given branch (creating it if it doesn't exist), mounts the worktree at `/workspace`, and bind-mounts the main repo's `.git/` so `git` works correctly inside the container. After the session, `--after-session` controls whether to ask interactively (default), merge, rebase, open a PR, or do nothing. Note: jj repos and worktree-of-worktree setups are not yet supported.
-- `jj` is installed in the container and configured with the same global name/email identity passed to Git, but jj-native repos are not yet supported by `--branch`.
+- `--branch` creates an isolated workspace for the agent. In git repos it creates a git worktree on the given branch (creating the branch if it doesn't exist), mounts the worktree at `/workspace`, and bind-mounts the main repo's `.git/` so `git` works correctly inside the container. In jj repos it creates a jj workspace plus bookmark, mounts that workspace at `/workspace`, and bind-mounts the main repo's `.jj/` metadata so `jj` works inside the container. After the session, `--after-session` controls whether to ask interactively (default), merge/rebase back into the main workspace, open a PR, or do nothing. Note: worktree-of-worktree setups are not supported.
+- `jj` is installed in the container and configured with the same global name/email identity passed to Git.
 
 ## Development
 

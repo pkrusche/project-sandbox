@@ -107,6 +107,42 @@ class TranscriptRenderTests(TestCase):
         self.assertIn("### ↳ tool error", md)
         self.assertIn("boom", md)
 
+    def test_tool_output_with_backticks_cannot_break_out_of_fence(self) -> None:
+        # Tool output that embeds a triple-backtick fence plus injected markup
+        # must not be able to terminate the surrounding code block early.
+        hostile = "before\n```\n# Injected heading\n<script>alert(1)</script>\nafter"
+        events = [
+            {
+                "type": "user",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "x",
+                            "content": hostile,
+                        }
+                    ]
+                },
+            }
+        ]
+        md = transcript.render_markdown(events)
+
+        # The opening fence must be longer than any backtick run in the body, so
+        # the embedded ``` is treated as literal content, not a closing fence.
+        self.assertIn("````", md)
+        self.assertNotIn("```json", md)
+        # The hostile payload survives verbatim inside the block.
+        self.assertIn("# Injected heading", md)
+        self.assertIn("<script>alert(1)</script>", md)
+
+    def test_code_block_fence_outgrows_longest_backtick_run(self) -> None:
+        # A body whose longest run is four backticks needs a five-backtick fence.
+        lines = transcript._code_block("a ```` b")
+        self.assertEqual(lines[0], "`````")
+        self.assertEqual(lines[-1], "`````")
+        # Plain text still uses the standard three-backtick fence.
+        self.assertEqual(transcript._code_block("plain")[0], "```")
+
     def test_long_blocks_are_truncated(self) -> None:
         big = "A" * (transcript._MAX_BLOCK_CHARS + 500)
         events = [

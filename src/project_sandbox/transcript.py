@@ -108,9 +108,7 @@ def _render_tool_use(name: str, tool_input: object) -> list[str]:
     return [
         f"### 🔧 {name}",
         "",
-        "```json",
-        _truncate(rendered),
-        "```",
+        *_code_block(_truncate(rendered), "json"),
         "",
     ]
 
@@ -126,9 +124,7 @@ def _render_user(event: dict, tool_names: dict[str, str]) -> list[str]:
             [
                 f"### ↳ {name} {label}",
                 "",
-                "```",
-                _truncate(_tool_result_text(block.get("content"))),
-                "```",
+                *_code_block(_truncate(_tool_result_text(block.get("content")))),
                 "",
             ]
         )
@@ -180,6 +176,26 @@ def _tool_result_text(content: object) -> str:
                 chunks.append(f"[{block.get('type', 'content')}]")
         return "\n".join(chunks)
     return str(content)
+
+
+def _code_block(text: str, info: str = "") -> list[str]:
+    """Wrap text in a fence longer than any backtick run it contains.
+
+    A fenced block is closed by the first line holding at least as many
+    backticks as its opening fence, so tool output containing ``` would
+    otherwise break out and inject arbitrary Markdown/HTML into the sidecar.
+    Size the fence to one more backtick than the longest run in the body.
+    """
+    longest = 0
+    run = 0
+    for ch in text:
+        if ch == "`":
+            run += 1
+            longest = max(longest, run)
+        else:
+            run = 0
+    fence = "`" * max(3, longest + 1)
+    return [f"{fence}{info}", text, fence]
 
 
 def _blockquote(text: str) -> str:

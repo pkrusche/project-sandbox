@@ -15,6 +15,7 @@ from . import (
     transcript,
 )
 from . import (
+    jj_workspace as jj_workspace_mod,
     worktree as worktree_mod,
 )
 from .git_identity import read as read_identity
@@ -282,7 +283,7 @@ def main(argv: list[str] | None = None) -> int:
             if agent_ran:
                 _teardown_worktree(args, project=project, wt=wt, exit_code=exit_code)
             else:
-                worktree_mod.teardown(project, wt, after="nothing")
+                _teardown_any(project, wt, after="nothing")
 
 
 def _write_transcript_markdown(log_path: Path) -> None:
@@ -345,7 +346,10 @@ def _dry_run(
     print("DRY RUN: no files, worktrees, images, or containers will be created.")
     if worktree is not None:
         print(f"Would use worktree at: {workspace}")
-        print(f"Would mount .git metadata: {(project / '.git').resolve()}")
+        if isinstance(worktree, jj_workspace_mod.JjWorkspace):
+            print(f"Would mount .jj metadata: {(project / '.jj').resolve()}")
+        else:
+            print(f"Would mount .git metadata: {(project / '.git').resolve()}")
     print(f"Would render sandbox assets under: {context_dir}")
     print(f"Would render devcontainer under: {project / '.devcontainer'}")
     _, base_dockerfile, build_context = _resolve_build_source(
@@ -499,9 +503,18 @@ def _validate_session_inputs(args) -> None:
 
 
 def _setup_worktree(args, project: Path):
-    """Return (Worktree | None, workspace_path). main() validates the project first."""
+    """Return (Worktree | JjWorkspace | None, workspace_path). main() validates the project first."""
     if not args.branch:
         return None, project
+
+    if (project / ".jj").is_dir():
+        ws = jj_workspace_mod.setup(
+            repo=project,
+            bookmark=args.branch,
+            base=args.worktree_base,
+            workspace_dir=_worktree_dir(args),
+        )
+        return ws, ws.path
 
     wt = worktree_mod.setup(
         repo=project,
@@ -513,9 +526,17 @@ def _setup_worktree(args, project: Path):
 
 
 def _plan_worktree(args, project: Path):
-    """Return a non-mutating Worktree placeholder and workspace path for dry-run."""
+    """Return a non-mutating placeholder and workspace path for dry-run."""
     if not args.branch:
         return None, project
+
+    if (project / ".jj").is_dir():
+        ws_path = jj_workspace_mod.path_for(
+            project,
+            args.branch,
+            workspace_dir=_worktree_dir(args),
+        )
+        return jj_workspace_mod.JjWorkspace(path=ws_path, bookmark=args.branch), ws_path
 
     wt_path = worktree_mod.path_for(
         project,
@@ -531,12 +552,12 @@ def _worktree_dir(args) -> Path | None:
 
 def _validate_worktree_project(project: Path) -> None:
     if (project / ".jj").is_dir():
-        raise SystemExit("--branch is not yet supported for jj repos.")
+        return  # jj workspace support
 
     git_dir = project / ".git"
     if not git_dir.is_dir():
         raise SystemExit(
-            "--branch requires a plain git repo at the project root "
+            "--branch requires a git or jj repo at the project root "
             "(.git is a file or missing — worktree-of-worktree and submodules are not supported)."
         )
 
@@ -547,7 +568,14 @@ def _teardown_worktree(args, *, project: Path, wt, exit_code: int) -> None:
         if after != "nothing":
             print(f"session exited {exit_code}; skipping {after} — worktree left at {wt.path}")
         after = "nothing"
-    worktree_mod.teardown(project, wt, after=after)
+    _teardown_any(project, wt, after=after)
+
+
+def _teardown_any(project: Path, wt, *, after: str) -> None:
+    if isinstance(wt, jj_workspace_mod.JjWorkspace):
+        jj_workspace_mod.teardown(project, wt, after=after)
+    else:
+        worktree_mod.teardown(project, wt, after=after)
 
 
 def _build_session_command(
@@ -568,13 +596,16 @@ def _build_session_command(
     # Agent availability is validated up front in main() via _ensure_agent_available.
     extra_mounts = list(args.extra_mounts)
     if worktree is not None:
-        git_dir_host = (project / ".git").resolve()
-        git_dir_str = str(git_dir_host)
-        if any(git_dir_str in m for m in extra_mounts):
-            raise SystemExit(
-                f"--mount conflicts with the worktree .git metadata mount at {git_dir_str}"
-            )
-        extra_mounts.append(f"type=bind,source={git_dir_str},target={git_dir_str}")
+        if isinstance(worktree, jj_workspace_mod.JjWorkspace):
+            vcs_dir = (project / ".jj").resolve()
+            conflict_msg = f"--mount conflicts with the workspace .jj metadata mount at {vcs_dir}"
+        else:
+            vcs_dir = (project / ".git").resolve()
+            conflict_msg = f"--mount conflicts with the worktree .git metadata mount at {vcs_dir}"
+        vcs_dir_str = str(vcs_dir)
+        if any(vcs_dir_str in m for m in extra_mounts):
+            raise SystemExit(conflict_msg)
+        extra_mounts.append(f"type=bind,source={vcs_dir_str},target={vcs_dir_str}")
     extra_env: list[str] = []
     if not args.verbose:
         # Silence the in-container firewall/startup banner; the entrypoint still

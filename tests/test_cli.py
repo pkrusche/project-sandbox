@@ -444,24 +444,39 @@ class CliTests(TestCase):
 
         self.assertIn("base_image is required", str(raised.exception))
 
-    def test_branch_jj_repo_raises(self) -> None:
+    def test_branch_jj_repo_dispatches_to_jj_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
             (project / ".jj").mkdir()
+            host_home = project / "home"
+            paths = _agent_paths(host_home)
+            paths["claude"].mkdir(parents=True)
+
+            fake_ws = cli.jj_workspace_mod.JjWorkspace(
+                path=project.parent / f"{project.name}-workspaces" / "feat-x",
+                bookmark="feat/x",
+            )
+            stdout_buf = io.StringIO()
             with (
                 patch.object(cli, "read_identity", return_value=GitIdentity("A", "a@b.com")),
-                patch.object(cli.config_agents, "_agent_host_paths", return_value=_agent_paths(project / "home")),
+                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                patch.object(cli.jj_workspace_mod, "setup", return_value=fake_ws) as jj_setup,
+                patch.object(cli.worktree_mod, "setup") as git_setup,
+                patch.object(cli.jj_workspace_mod, "teardown"),
+                contextlib.redirect_stdout(stdout_buf),
             ):
-                with self.assertRaises(SystemExit) as raised:
-                    cli.main([
-                        "--agent",
-                        "claude",
-                        "--branch",
-                        "feat/x",
-                        str(project),
-                        "python:3.12-slim",
-                    ])
-        self.assertIn("jj", str(raised.exception).lower())
+                cli.main([
+                    "--dry-run", "--no-build", "--no-firewall",
+                    "--agent", "claude",
+                    "--branch", "feat/x", "--after-session", "nothing",
+                    str(project), "python:3.12-slim",
+                ])
+
+        jj_setup.assert_not_called()  # dry-run uses path_for, not setup
+        git_setup.assert_not_called()
+        # Dry-run output should reference the jj workspace path
+        output = stdout_buf.getvalue()
+        self.assertIn(str(fake_ws.path), output)
 
     def test_branch_file_git_raises(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -480,7 +495,7 @@ class CliTests(TestCase):
                         str(project),
                         "python:3.12-slim",
                     ])
-        self.assertIn("plain git repo", str(raised.exception))
+        self.assertIn(".git is a file or missing", str(raised.exception))
 
     def test_branch_dry_run_argv_includes_git_metadata_mount(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -517,6 +532,60 @@ class CliTests(TestCase):
         # And the workspace mount should point at the worktree, not the project root
         self.assertIn(str(wt_path), output)
         self.assertNotIn(f"source={project},target=/workspace", output)
+
+    def test_branch_jj_dry_run_argv_includes_jj_metadata_mount(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / ".jj").mkdir()
+            host_home = project / "home"
+            paths = _agent_paths(host_home)
+            paths["claude"].mkdir(parents=True)
+
+            stdout_buf = io.StringIO()
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("A", "a@b.com")),
+                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                contextlib.redirect_stdout(stdout_buf),
+            ):
+                rc = cli.main([
+                    "--dry-run", "--no-build", "--no-firewall",
+                    "--agent", "claude",
+                    "--branch", "feat/x", "--after-session", "nothing",
+                    str(project), "python:3.12-slim",
+                ])
+
+        self.assertEqual(rc, 0)
+        output = stdout_buf.getvalue()
+        jj_dir = str((project / ".jj").resolve())
+        self.assertIn(jj_dir, output)
+        self.assertIn("Would mount .jj metadata:", output)
+        self.assertNotIn("Would mount .git metadata:", output)
+
+    def test_branch_jj_mount_conflicting_with_jj_metadata_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / ".jj").mkdir()
+            host_home = project / "home"
+            paths = _agent_paths(host_home)
+            paths["claude"].mkdir(parents=True)
+            jj_dir = str((project / ".jj").resolve())
+
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("A", "a@b.com")),
+                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                with self.assertRaises(SystemExit) as raised:
+                    cli.main([
+                        "--dry-run", "--no-build", "--no-firewall",
+                        "--agent", "claude",
+                        "--branch", "feat/x", "--after-session", "nothing",
+                        "--mount", f"type=bind,source={jj_dir},target=/jj",
+                        str(project), "python:3.12-slim",
+                    ])
+
+        self.assertIn("--mount conflicts", str(raised.exception))
+        self.assertIn(jj_dir, str(raised.exception))
 
     def test_branch_dry_run_prints_worktree_info(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

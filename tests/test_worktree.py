@@ -1,12 +1,29 @@
 import contextlib
 import io
+import shutil
 import subprocess
 import sys
+import unittest
 from pathlib import Path
 from unittest import TestCase
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+def _find_docker() -> str | None:
+    for cmd in ("docker", "podman"):
+        path = shutil.which(cmd)
+        if path is None:
+            continue
+        try:
+            if subprocess.run([path, "info"], capture_output=True, timeout=5).returncode == 0:
+                return path
+        except (subprocess.TimeoutExpired, OSError):
+            continue
+    return None
+
+DOCKER = _find_docker()
+DOCKER_IMAGE = "ubuntu:22.04"
 
 from project_sandbox import worktree as worktree_mod
 
@@ -325,3 +342,79 @@ class WorktreeSetupStaleDirectoryTests(TestCase):
         self.assertIn("not registered", msg)
         # Directory must NOT be deleted automatically
         self.assertTrue(wt_path.is_dir())
+
+
+@unittest.skipUnless(DOCKER, "docker/podman not available")
+class GitWorktreeDockerEndToEndTests(TestCase):
+    """Container writes a file+commit via bash; host verifies tree and revision, then teardown."""
+
+    def setUp(self) -> None:
+        import tempfile
+        self._td = tempfile.TemporaryDirectory()
+        self.root = Path(self._td.name)
+        self.repo = self.root / "repo"
+        self.repo.mkdir()
+        _make_repo(self.repo)
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def _docker(self, wt_path: Path, bash_cmd: str) -> None:
+        git_dir = str((self.repo / ".git").resolve())
+        subprocess.run(
+            [
+                DOCKER, "run", "--rm",
+                "--mount", f"type=bind,source={wt_path},target=/workspace",
+                "--mount", f"type=bind,source={git_dir},target={git_dir}",
+                "--workdir", "/workspace",
+                DOCKER_IMAGE,
+                "bash", "-c", bash_cmd,
+            ],
+            check=True,
+        )
+
+    def test_container_adds_file_tree_and_revision_visible_on_host(self) -> None:
+        # 1. Create worktree
+        wt = worktree_mod.setup(self.repo, "feat/e2e")
+
+        # 2. Container adds a file and commits via bash
+        self._docker(
+            wt.path,
+            "git config user.email t@test.com && git config user.name Test && "
+            "echo 'hello from container' > agent_output.txt && "
+            "git add . && git commit -m 'agent: add agent_output'",
+        )
+
+        # 3. Show tree — file present on host
+        self.assertTrue((wt.path / "agent_output.txt").exists())
+        tree_out = subprocess.run(
+            ["find", str(wt.path), "-not", "-path", f"{wt.path}/.git*", "-type", "f"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        self.assertIn("agent_output.txt", tree_out)
+
+        # 4. Show revision — commit in branch log
+        log_out = subprocess.run(
+            ["git", "-C", str(wt.path), "log", "--oneline"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        self.assertIn("agent: add agent_output", log_out)
+
+    def test_container_commit_survives_rebase_teardown(self) -> None:
+        wt = worktree_mod.setup(self.repo, "feat/e2e-rebase")
+        self._docker(
+            wt.path,
+            "git config user.email t@test.com && git config user.name Test && "
+            "echo 'hello from container' > agent_output.txt && "
+            "git add . && git commit -m 'agent: add file'",
+        )
+
+        worktree_mod.teardown(self.repo, wt, after="rebase")
+
+        self.assertFalse(wt.path.exists())  # worktree removed
+        log_out = subprocess.run(
+            ["git", "-C", str(self.repo), "log", "--oneline"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        self.assertIn("agent: add file", log_out)
+        self.assertTrue((self.repo / "agent_output.txt").exists())
