@@ -37,10 +37,10 @@ class RendererTests(TestCase):
             self.assertIn("npm install -g @anthropic-ai/claude-code", docker_text)
             self.assertIn("npm install -g @openai/codex", docker_text)
             self.assertIn("npm install -g opencode-ai", docker_text)
-            self.assertIn("npm install -g @fission-ai/openspec@0.9.0", docker_text)
+            self.assertIn("npm install -g @fission-ai/openspec@1.4.1", docker_text)
             self.assertIn("/home/agent/.claude/settings.json", docker_text)
             self.assertIn("/home/agent/.codex/config.toml", docker_text)
-            self.assertIn('JJ_VERSION="v0.31.0"', docker_text)
+            self.assertIn('JJ_VERSION="v0.42.0"', docker_text)
             self.assertNotIn("releases/latest", docker_text)
             self.assertIn(
                 'jj-${JJ_VERSION}-${JJ_ARCH}-unknown-linux-musl.tar.gz',
@@ -521,7 +521,7 @@ class RendererTests(TestCase):
             self.assertNotIn("@anthropic-ai/claude-code", text)
             self.assertIn("@openai/codex", text)
             self.assertNotIn("opencode-ai", text)
-            self.assertIn("@fission-ai/openspec@0.9.0", text)
+            self.assertIn("@fission-ai/openspec@1.4.1", text)
 
     def test_dockerfile_renderer_overwrites_existing_agent_uid_setup(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
