@@ -83,7 +83,18 @@ def teardown(repo: Path, wt: Worktree, *, after: str) -> None:
                 f"Worktree left in place at {wt.path}."
             )
             return
-        subprocess.run(["gh", "pr", "create", "--head", wt.branch, "--fill"], check=False)
+        try:
+            subprocess.run(
+                ["gh", "pr", "create", "--head", wt.branch, "--fill"],
+                cwd=str(repo),
+                check=True,
+            )
+        except subprocess.CalledProcessError:
+            print(
+                f"  'gh pr create' failed for branch '{wt.branch}'. "
+                f"Worktree left in place at {wt.path}; create the PR manually."
+            )
+            return
 
     if after in ("merge", "rebase"):
         _git(repo, ["worktree", "remove", "--force", str(wt.path)])

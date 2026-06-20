@@ -233,6 +233,54 @@ class WorktreeTeardownTests(TestCase):
         self.assertIn("merge conflict", message)
         self.assertIn(str(self.wt.path), message)
 
+    def test_teardown_pr_runs_gh_in_repo_and_preserves_worktree_on_success(self) -> None:
+        real_run = subprocess.run
+        calls = []
+
+        def mock_run(cmd, **kwargs):
+            if cmd[:1] == ["gh"]:
+                calls.append((cmd, kwargs))
+                return subprocess.CompletedProcess(cmd, 0)
+            if "push" in cmd:
+                # No 'origin' remote in the test repo; stub a successful push.
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            return real_run(cmd, **kwargs)
+
+        with patch("subprocess.run", side_effect=mock_run):
+            worktree_mod.teardown(self.repo, self.wt, after="pr")
+
+        self.assertEqual(len(calls), 1, "gh pr create should be invoked exactly once")
+        cmd, kwargs = calls[0]
+        self.assertEqual(cmd, ["gh", "pr", "create", "--head", self.wt.branch, "--fill"])
+        self.assertEqual(kwargs.get("cwd"), str(self.repo))
+        self.assertTrue(kwargs.get("check"))
+        # pr teardown never removes the worktree
+        self.assertTrue(self.wt.path.is_dir())
+
+    def test_teardown_pr_failure_leaves_worktree_and_prints_message(self) -> None:
+        out = io.StringIO()
+        real_run = subprocess.run
+
+        def mock_run(cmd, **kwargs):
+            if cmd[:1] == ["gh"]:
+                raise subprocess.CalledProcessError(1, cmd)
+            if "push" in cmd:
+                # No 'origin' remote in the test repo; stub a successful push.
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            return real_run(cmd, **kwargs)
+
+        with (
+            patch("subprocess.run", side_effect=mock_run),
+            contextlib.redirect_stdout(out),
+        ):
+            # A failing gh pr create must be surfaced, not swallowed silently.
+            worktree_mod.teardown(self.repo, self.wt, after="pr")
+
+        self.assertTrue(self.wt.path.is_dir(), "worktree must remain after PR failure")
+        message = out.getvalue()
+        self.assertIn("gh pr create", message)
+        self.assertIn(str(self.wt.path), message)
+
     def test_teardown_clears_stale_index_lock(self) -> None:
         # Simulate a stale lock left by a crashed container.
         git_dir = self.repo.resolve() / ".git"
