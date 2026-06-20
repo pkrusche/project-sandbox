@@ -8,7 +8,10 @@ import threading
 
 
 def default_log_path(project: Path, branch: str | None, agent: str, *, create: bool = True) -> Path:
-    ts = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    now = dt.datetime.now()
+    # Include microseconds so two same-agent sessions started within the same
+    # second do not resolve to the same log file (which run() opens with "w").
+    ts = now.strftime("%Y%m%d-%H%M%S-%f")
     stem = f"{agent}-{branch.replace('/', '-') if branch else 'main'}-{ts}"
     log_dir = project / ".project-sandbox" / "sessions"
     if create:
@@ -53,6 +56,13 @@ def run(
         except subprocess.TimeoutExpired:
             _terminate_process_group(proc, container_stop_argv=container_stop_argv)
             return 124
+        except BaseException:
+            # A KeyboardInterrupt (or any other parent-side exception) must not
+            # leave the named headless container running. Tear down the process
+            # group before re-raising.
+            if proc.poll() is None:
+                _terminate_process_group(proc, container_stop_argv=container_stop_argv)
+            raise
         finally:
             output_thread.join(timeout=5)
             proc.stdout.close()

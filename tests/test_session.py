@@ -91,6 +91,40 @@ class SessionTests(TestCase):
         proc.send_signal.assert_not_called()
         self.assertEqual(proc.wait.call_args_list[0].kwargs["timeout"], 30)
 
+    def test_run_terminates_container_on_keyboard_interrupt(self) -> None:
+        proc = Mock()
+        proc.pid = 1234
+        proc.wait.side_effect = KeyboardInterrupt()
+        proc.poll.return_value = None
+        proc.stdout = io.StringIO("")
+
+        stop_argv = ["docker", "stop", "project-sandbox-abc123"]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "session.log"
+            with (
+                patch("project_sandbox.session.subprocess.Popen", return_value=proc),
+                patch(
+                    "project_sandbox.session._terminate_process_group"
+                ) as terminate,
+            ):
+                with self.assertRaises(KeyboardInterrupt):
+                    session.run(
+                        ["cmd"],
+                        log_path=log_path,
+                        container_stop_argv=stop_argv,
+                    )
+
+        terminate.assert_called_once_with(proc, container_stop_argv=stop_argv)
+
+    def test_default_log_path_is_unique_within_the_same_second(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            first = session.default_log_path(project, "agent/demo", "claude", create=False)
+            second = session.default_log_path(project, "agent/demo", "claude", create=False)
+
+            self.assertNotEqual(first, second)
+
     def test_terminate_process_group_runs_container_stop_before_signalling(self) -> None:
         proc = Mock()
         proc.pid = 1234
