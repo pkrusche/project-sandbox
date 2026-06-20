@@ -37,12 +37,11 @@ class RendererTests(TestCase):
             self.assertIn("npm install -g @anthropic-ai/claude-code", docker_text)
             self.assertIn("npm install -g @openai/codex", docker_text)
             self.assertIn("npm install -g opencode-ai", docker_text)
-            self.assertIn("npm install -g @fission-ai/openspec@latest", docker_text)
+            self.assertIn("npm install -g @fission-ai/openspec@0.9.0", docker_text)
             self.assertIn("/home/agent/.claude/settings.json", docker_text)
             self.assertIn("/home/agent/.codex/config.toml", docker_text)
-            self.assertIn("https://github.com/jj-vcs/jj/releases/latest", docker_text)
-            self.assertIn("JJ_LATEST_URL=", docker_text)
-            self.assertIn("Unable to resolve latest jj release tag", docker_text)
+            self.assertIn('JJ_VERSION="v0.31.0"', docker_text)
+            self.assertNotIn("releases/latest", docker_text)
             self.assertIn(
                 'jj-${JJ_VERSION}-${JJ_ARCH}-unknown-linux-musl.tar.gz',
                 docker_text,
@@ -71,6 +70,51 @@ class RendererTests(TestCase):
             self.assertIn("internal.example.com", firewall_text)
             self.assertNotIn("--dport 22", firewall_text)
             self.assertNotIn("--sport 22", firewall_text)
+
+    def test_dockerfile_pins_and_verifies_mutable_remote_installs(self) -> None:
+        import re
+
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            dockerfile.render(context, base_image="python:3.12-slim")
+            docker_text = (context / "Dockerfile").read_text(encoding="utf-8")
+
+            # No unpinned npm installs anywhere in the generated steps.
+            self.assertNotIn("@latest", docker_text)
+            # Every global npm tool carries an explicit @<version> pin.
+            for pkg in (
+                "@fission-ai/openspec",
+                "@anthropic-ai/claude-code",
+                "@openai/codex",
+                "opencode-ai",
+            ):
+                self.assertRegex(
+                    docker_text,
+                    rf"npm install -g {re.escape(pkg)}@\d+\.\d+\.\d+",
+                )
+
+            # jj is pinned to an exact tag and not discovered via "latest".
+            self.assertNotIn("releases/latest", docker_text)
+            self.assertNotIn("/releases/latest", docker_text)
+            self.assertRegex(docker_text, r'JJ_VERSION="v\d+\.\d+\.\d+"')
+
+            # Node is pinned to an exact release rather than piping the
+            # NodeSource installer through bash.
+            self.assertNotIn("deb.nodesource.com", docker_text)
+            self.assertNotIn("| bash", docker_text)
+            self.assertRegex(docker_text, r'NODE_VERSION="v\d+\.\d+\.\d+"')
+
+            # Downloaded artifacts (node + jj tarballs) are SHA256-verified
+            # before use, with a per-architecture expected checksum.
+            self.assertGreaterEqual(docker_text.count("sha256sum -c -"), 2)
+            self.assertIn("NODE_SHA256=", docker_text)
+            self.assertIn("JJ_SHA256=", docker_text)
+            self.assertRegex(
+                docker_text, r'echo "\$\{NODE_SHA256\}  \$\{node_tarball\}" \| sha256sum -c -'
+            )
+            self.assertRegex(
+                docker_text, r'echo "\$\{JJ_SHA256\}  \$\{jj_tarball\}" \| sha256sum -c -'
+            )
 
     def test_entrypoint_requires_prompt_file_for_headless_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -477,7 +521,7 @@ class RendererTests(TestCase):
             self.assertNotIn("@anthropic-ai/claude-code", text)
             self.assertIn("@openai/codex", text)
             self.assertNotIn("opencode-ai", text)
-            self.assertIn("@fission-ai/openspec@latest", text)
+            self.assertIn("@fission-ai/openspec@0.9.0", text)
 
     def test_dockerfile_renderer_overwrites_existing_agent_uid_setup(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

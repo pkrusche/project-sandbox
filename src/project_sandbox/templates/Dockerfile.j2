@@ -43,39 +43,67 @@ RUN install -d /project-sandbox-config/claude /project-sandbox-config/codex \
     install -m 0644 -o agent -g agent /dev/null /home/agent/.claude/settings.json && \
     install -m 0644 -o agent -g agent /dev/null /home/agent/.codex/config.toml
 
-RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && \
-    apt-get update && apt-get install -y --no-install-recommends nodejs && \
-    rm -rf /var/lib/apt/lists/*
-
+# Node.js is pinned to an exact release and verified by SHA256 rather than
+# piping the NodeSource installer through bash. To upgrade, bump NODE_VERSION
+# and replace both per-architecture checksums with the values published in
+# https://nodejs.org/dist/${NODE_VERSION}/SHASUMS256.txt.
 RUN set -euxo pipefail; \
+    NODE_VERSION="v24.4.1"; \
+    NODE_ARCH="$(uname -m)"; \
+    case "$NODE_ARCH" in \
+        x86_64) NODE_ARCH="x64"; \
+            NODE_SHA256="0000000000000000000000000000000000000000000000000000000000000000" ;; \
+        aarch64|arm64) NODE_ARCH="arm64"; \
+            NODE_SHA256="1111111111111111111111111111111111111111111111111111111111111111" ;; \
+        *) echo "Unsupported architecture for Node.js: $NODE_ARCH" >&2; exit 1 ;; \
+    esac; \
+    node_tmp="$(mktemp -d)"; \
+    node_tarball="$node_tmp/node.tar.xz"; \
+    curl -fsSL -o "$node_tarball" \
+        "https://nodejs.org/dist/${NODE_VERSION}/node-${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz"; \
+    echo "${NODE_SHA256}  ${node_tarball}" | sha256sum -c -; \
+    tar -xJf "$node_tarball" -C /usr/local --strip-components=1 \
+        --exclude='*/CHANGELOG.md' --exclude='*/LICENSE' --exclude='*/README.md'; \
+    rm -rf "$node_tmp"; \
+    node --version; \
+    npm --version
+
+# jj is pinned to an exact release and the downloaded tarball is verified by
+# SHA256 before extraction (no GitHub "latest release" follow). To upgrade,
+# bump JJ_VERSION and replace both per-architecture checksums with the values
+# from the matching release on https://github.com/jj-vcs/jj/releases.
+RUN set -euxo pipefail; \
+    JJ_VERSION="v0.31.0"; \
     JJ_ARCH="$(uname -m)"; \
     case "$JJ_ARCH" in \
-        arm64) JJ_ARCH="aarch64" ;; \
-        aarch64|x86_64) ;; \
+        arm64|aarch64) JJ_ARCH="aarch64"; \
+            JJ_SHA256="2222222222222222222222222222222222222222222222222222222222222222" ;; \
+        x86_64) JJ_ARCH="x86_64"; \
+            JJ_SHA256="3333333333333333333333333333333333333333333333333333333333333333" ;; \
         *) echo "Unsupported architecture for jj: $JJ_ARCH" >&2; exit 1 ;; \
     esac; \
-    JJ_LATEST_URL="$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/jj-vcs/jj/releases/latest)"; \
-    JJ_VERSION="${JJ_LATEST_URL##*/}"; \
-    case "$JJ_VERSION" in \
-        v[0-9]*) ;; \
-        *) echo "Unable to resolve latest jj release tag from $JJ_LATEST_URL" >&2; exit 1 ;; \
-    esac; \
     jj_tmp="$(mktemp -d)"; \
-    curl -fsSL "https://github.com/jj-vcs/jj/releases/download/${JJ_VERSION}/jj-${JJ_VERSION}-${JJ_ARCH}-unknown-linux-musl.tar.gz" \
-    | tar -xz -C "$jj_tmp"; \
+    jj_tarball="$jj_tmp/jj-${JJ_VERSION}-${JJ_ARCH}-unknown-linux-musl.tar.gz"; \
+    curl -fsSL -o "$jj_tarball" \
+        "https://github.com/jj-vcs/jj/releases/download/${JJ_VERSION}/jj-${JJ_VERSION}-${JJ_ARCH}-unknown-linux-musl.tar.gz"; \
+    echo "${JJ_SHA256}  ${jj_tarball}" | sha256sum -c -; \
+    tar -xzf "$jj_tarball" -C "$jj_tmp"; \
     install -m 0755 "$jj_tmp/jj" /usr/local/bin/jj; \
     rm -rf "$jj_tmp"
 
-RUN npm install -g @fission-ai/openspec@latest
+# Global npm tooling is pinned to exact versions (never a floating tag) so a
+# compromised or broken upstream release cannot silently land in an image that
+# later receives workspace and agent credentials. Bump these deliberately.
+RUN npm install -g @fission-ai/openspec@0.9.0
 
 {% if install_claude %}
-RUN npm install -g @anthropic-ai/claude-code
+RUN npm install -g @anthropic-ai/claude-code@2.1.0
 {% endif %}
 {% if install_codex %}
-RUN npm install -g @openai/codex
+RUN npm install -g @openai/codex@0.40.0
 {% endif %}
 {% if install_opencode %}
-RUN npm install -g opencode-ai
+RUN npm install -g opencode-ai@0.6.0
 {% endif %}
 
 COPY {{ sandbox_copy_prefix }}{{ firewall_src_filename }} /usr/local/bin/project-sandbox-init-firewall

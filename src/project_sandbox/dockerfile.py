@@ -219,7 +219,12 @@ def render_python_uv_dockerfile(
     lockfile changes.
     """
     lines = [
-        "FROM ghcr.io/astral-sh/uv:latest AS uv-bin",
+        # Pin uv to an exact tag and digest instead of the mutable ":latest"
+        # tag. Bump deliberately and refresh the digest via
+        # `docker buildx imagetools inspect ghcr.io/astral-sh/uv:<tag>`.
+        "FROM ghcr.io/astral-sh/uv:0.8.0"
+        "@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+        " AS uv-bin",
         f"FROM python:{python_version}-slim",
         "",
         "COPY --from=uv-bin /uv /uvx /usr/local/bin/",
