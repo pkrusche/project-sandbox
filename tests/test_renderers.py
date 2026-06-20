@@ -788,15 +788,38 @@ class RendererTests(TestCase):
             devcontainer_text = (context / "init-firewall-devcontainer.sh").read_text(encoding="utf-8")
 
             self.assertEqual(fw, context / "init-firewall.sh")
-            self.assertNotIn("HOST_NET4", container_text)
+            self.assertNotIn("HOST_GW4", container_text)
             self.assertNotIn("HOST_GW6", container_text)
             self.assertNotIn("Host gateway", container_text)
-            self.assertIn("HOST_NET4", devcontainer_text)
+            self.assertIn("HOST_GW4", devcontainer_text)
             self.assertIn("HOST_GW6", devcontainer_text)
             self.assertIn("Host gateway", devcontainer_text)
             for text in (container_text, devcontainer_text):
                 self.assertIn('"api.anthropic.com"', text)
                 self.assertIn('"claude.ai"', text)
+
+    def test_firewall_host_network_allows_gateway_not_interface_cidr(self) -> None:
+        # Regression: the devcontainer (allow_host_network) variant must allow
+        # only the default IPv4 gateway, not the entire interface CIDR, so peers
+        # sharing the container subnet are not reachable. Mirrors the IPv6 path,
+        # which already restricts to the gateway.
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            firewall.render(context, extra_domains=[])
+            text = (context / "init-firewall-devcontainer.sh").read_text(
+                encoding="utf-8"
+            )
+            # Must derive the gateway from the default route and allow only it.
+            self.assertIn("HOST_GW4", text)
+            self.assertIn('iptables -A OUTPUT -d "$HOST_GW4"', text)
+            self.assertIn('iptables -A INPUT  -s "$HOST_GW4"', text)
+            # Must NOT open the whole interface CIDR any more.
+            self.assertNotIn("HOST_NET4", text)
+            self.assertNotIn('-d "$HOST_NET4"', text)
+            self.assertNotIn('-s "$HOST_NET4"', text)
+            # The IPv4 narrowing should match the IPv6 gateway derivation style.
+            self.assertIn("ip -4 route", text)
+            self.assertIn("/default/ {print $3; exit}", text)
 
     def test_firewall_collects_all_resolvers_not_just_first(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

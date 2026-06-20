@@ -143,14 +143,14 @@ done
 # ============================================================
 # Host gateway (port-forwarding / IDE attach)
 # ============================================================
-HOST_IF4=$(ip route | awk '/default/ {print $5; exit}') || true
-if [ -n "$HOST_IF4" ]; then
-  HOST_NET4=$(ip -o -4 addr show dev "$HOST_IF4" 2>/dev/null | awk '{print $4; exit}') || true
-  if [ -n "$HOST_NET4" ]; then
-    echo "Allowing host network (IPv4): $HOST_NET4 (via $HOST_IF4)"
-    iptables -A OUTPUT -d "$HOST_NET4" -j ACCEPT
-    iptables -A INPUT  -s "$HOST_NET4" -j ACCEPT
-  fi
+# Allow only the default gateway address (not the whole interface CIDR), so
+# peers sharing the container subnet are not reachable. Mirrors the IPv6 path.
+HOST_GW4=$(ip -4 route | awk '/default/ {print $3; exit}') || true
+HOST_IF4=$(ip -4 route | awk '/default/ {print $5; exit}') || true
+if [ -n "$HOST_GW4" ]; then
+  echo "Allowing host gateway (IPv4): $HOST_GW4"
+  iptables -A OUTPUT -d "$HOST_GW4" -o "${HOST_IF4:-eth0}" -j ACCEPT
+  iptables -A INPUT  -s "$HOST_GW4" -i "${HOST_IF4:-eth0}" -j ACCEPT
 fi
 
 if [ "$IPV6_FW" = "1" ]; then
