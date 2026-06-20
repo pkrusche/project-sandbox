@@ -15,6 +15,7 @@ from project_sandbox.container_cli import (
     _run_quietable,
     build_image,
     build_run_argv,
+    build_stop_argv,
     ensure_system_started,
     run,
     select_runtime,
@@ -261,6 +262,21 @@ class ContainerCliTests(TestCase):
                 rc = _run_quietable(["container", "build", "-t", "x", "."], verbose=False)
         self.assertEqual(rc, 127)
         self.assertIn("container CLI not found on PATH", out.getvalue())
+
+    def test_build_stop_argv_uses_bounded_graceful_stop(self) -> None:
+        argv = build_stop_argv(DOCKER, "project-sandbox-abc123")
+        self.assertEqual(
+            argv, ["docker", "stop", "--time", "5", "project-sandbox-abc123"]
+        )
+
+    def test_build_stop_argv_honours_custom_grace_and_runtime(self) -> None:
+        argv = build_stop_argv(PODMAN, "project-sandbox-xyz", grace=12)
+        self.assertEqual(argv[0], "podman")
+        self.assertIn("stop", argv)
+        self.assertIn("--time", argv)
+        self.assertIn("12", argv)
+        self.assertIn("project-sandbox-xyz", argv)
+        self.assertNotIn("kill", argv)
 
     def test_run_returns_127_when_container_not_on_path(self) -> None:
         out = io.StringIO()

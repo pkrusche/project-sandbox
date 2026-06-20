@@ -148,13 +148,17 @@ def build_run_argv(
     return argv
 
 
-def build_stop_argv(runtime: Runtime, container_name: str) -> list[str]:
-    """Return an argv that immediately kills a named container via the runtime CLI.
+def build_stop_argv(
+    runtime: Runtime, container_name: str, *, grace: int = 5
+) -> list[str]:
+    """Return an argv that stops a named container with a bounded grace period.
 
-    All three runtimes support `kill`, which sends SIGKILL with no grace period,
-    unlike `stop` which sends SIGTERM and waits (10 s by default) before force-killing.
+    All three runtimes support `stop --time <seconds>`, which sends SIGTERM to
+    the container's PID 1 and, after at most ``grace`` seconds, force-kills it.
+    This bounded graceful stop (rather than an immediate `kill`) lets the
+    container shut down cleanly while still guaranteeing a prompt exit.
     """
-    return [runtime.binary, "kill", container_name]
+    return [runtime.binary, "stop", "--time", str(grace), container_name]
 
 
 def build_image(
