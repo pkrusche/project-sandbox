@@ -21,6 +21,7 @@ def ensure_dir(path: Path) -> Path:
 HISTORY_SHELL_TARGET = "/home/agent/.bash_history.d"
 HISTORY_HISTFILE = HISTORY_SHELL_TARGET + "/bash_history"
 HISTORY_CLAUDE_PROJECTS_TARGET = "/home/agent/.claude/projects"
+WORKSPACE_SANDBOX_TARGET = "/workspace/.project-sandbox"
 
 
 def ensure_history_paths(project: Path, *, create: bool = True) -> tuple[Path, Path]:
@@ -43,3 +44,17 @@ def ensure_history_paths(project: Path, *, create: bool = True) -> tuple[Path, P
         if not histfile.exists():
             histfile.touch()
     return shell_dir, claude_projects
+
+
+def ensure_workspace_sandbox_mask(project: Path, *, create: bool = True) -> Path:
+    """Return the empty host directory mounted over /workspace/.project-sandbox.
+
+    Generated sandbox files must exist on the host for image/devcontainer builds,
+    but exposing them through the writable workspace mount lets an agent tamper
+    with files that might be copied into a later image. Mount this empty
+    directory read-only over the in-workspace generated directory instead.
+    """
+    mask_dir = project / ".project-sandbox" / "workspace-mask"
+    if create:
+        ensure_dir(mask_dir)
+    return mask_dir

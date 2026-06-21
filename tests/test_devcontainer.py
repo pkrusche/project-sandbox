@@ -101,8 +101,43 @@ class DevcontainerTests(TestCase):
                 "source=${localWorkspaceFolder}/.project-sandbox/codex-devcontainer,target=/project-sandbox-config/codex,type=bind,readonly",
                 mounts,
             )
+            self.assertIn(
+                "source=${localWorkspaceFolder}/.project-sandbox/workspace-mask,target=/workspace/.project-sandbox,type=bind,readonly",
+                mounts,
+            )
+            self.assertTrue((project / ".project-sandbox" / "workspace-mask").is_dir())
             self.assertNotIn("/home/agent/.claude/settings.json", mounts)
             self.assertNotIn("/home/agent/.claude.host", mounts)
+
+    def test_workspace_sandbox_mask_overrides_custom_mount(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / ".project-sandbox").mkdir()
+            custom_mount = "source=/tmp/custom,target=/workspace/.project-sandbox,type=bind"
+
+            devcontainer.render(
+                project,
+                identity=GitIdentity("Ada", "ada@example.com"),
+                firewall_enabled=True,
+                memory="8g",
+                cpus=4,
+                extra_mounts=[custom_mount],
+            )
+            spec = json.loads(
+                (project / ".devcontainer" / "devcontainer.json").read_text()
+            )
+
+            mask_mount = (
+                "source=${localWorkspaceFolder}/.project-sandbox/workspace-mask,"
+                "target=/workspace/.project-sandbox,type=bind,readonly"
+            )
+            self.assertIn(custom_mount, spec["mounts"])
+            self.assertIn(mask_mount, spec["mounts"])
+            self.assertLess(spec["mounts"].index(custom_mount), spec["mounts"].index(mask_mount))
+            self.assertIn(
+                "${localWorkspaceFolder}/.project-sandbox/workspace-mask",
+                spec["initializeCommand"],
+            )
 
     def test_render_mounts_persistent_history(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

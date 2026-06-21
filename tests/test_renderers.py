@@ -67,6 +67,9 @@ class RendererTests(TestCase):
             self.assertIn('"api.openai.com"', firewall_text)
             self.assertIn('"auth.openai.com"', firewall_text)
             self.assertIn('"chatgpt.com"', firewall_text)
+            self.assertNotIn("api.github.com/meta", firewall_text)
+            self.assertNotIn('"github.com"', firewall_text)
+            self.assertNotIn('"api.githubcopilot.com"', firewall_text)
             self.assertNotIn("statsig", firewall_text)
             self.assertIn("internal.example.com", firewall_text)
             self.assertNotIn("--dport 22", firewall_text)
@@ -1005,6 +1008,27 @@ class RendererTests(TestCase):
                 # Rendered as a shell-safe token inside the DOMAINS=( ... ) array.
                 array = text.split("DOMAINS=(", 1)[1].split(")", 1)[0]
                 self.assertIn("example.com", array)
+
+    def test_firewall_allows_github_only_when_requested(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            firewall.render(context, extra_domains=[], allow_github=True)
+            for name in ("init-firewall.sh", "init-firewall-devcontainer.sh"):
+                text = (context / name).read_text(encoding="utf-8")
+                self.assertIn("https://api.github.com/meta", text)
+                self.assertIn('"github.com"', text)
+                self.assertIn('"api.github.com"', text)
+                self.assertIn('"raw.githubusercontent.com"', text)
+                self.assertIn('"objects.githubusercontent.com"', text)
+                self.assertIn('"api.githubcopilot.com"', text)
+                self.assertIn('"api.individual.githubcopilot.com"', text)
+                self.assertIn('"api.business.githubcopilot.com"', text)
+                self.assertIn('"api.enterprise.githubcopilot.com"', text)
+                self.assertIn('"copilot-proxy.githubusercontent.com"', text)
+                self.assertIn('"origin-tracker.githubusercontent.com"', text)
+                self.assertIn('"copilot-telemetry.githubusercontent.com"', text)
+                self.assertIn('"collector.github.com"', text)
+                self.assertIn('"default.exp-tas.com"', text)
 
     def test_render_returns_all_four_config_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

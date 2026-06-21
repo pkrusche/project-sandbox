@@ -1,5 +1,6 @@
 import hashlib
 import re
+import shlex
 import shutil
 import uuid
 from argparse import ArgumentParser
@@ -23,8 +24,10 @@ from .paths import (
     HISTORY_CLAUDE_PROJECTS_TARGET,
     HISTORY_HISTFILE,
     HISTORY_SHELL_TARGET,
+    WORKSPACE_SANDBOX_TARGET,
     ensure_dir,
     ensure_history_paths,
+    ensure_workspace_sandbox_mask,
     resolve_strict,
 )
 
@@ -79,6 +82,15 @@ def build_parser() -> ArgumentParser:
     p.add_argument("--cpus", type=int, default=4)
     p.add_argument("--mount", dest="extra_mounts", action="append", default=[])
     p.add_argument("--extra-domain", action="append", default=[])
+    p.add_argument(
+        "--allow-github",
+        action="store_true",
+        help=(
+            "Allow GitHub and GitHub Copilot hosts at runtime. This includes "
+            "GitHub's published web/API/git IP ranges and DNS-pinned GitHub "
+            "Copilot endpoints."
+        ),
+    )
     p.add_argument("--no-firewall", action="store_true")
     p.add_argument(
         "--branch",
@@ -161,6 +173,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     if run_agent is not None:
         _validate_session_inputs(args)
+    allow_github = _allow_github(args, run_agent)
+    _warn_opencode_provider_allowlist(args, run_agent)
 
     wt, workspace = _setup_worktree(args, project) if run_agent else (None, project)
 
@@ -184,6 +198,7 @@ def main(argv: list[str] | None = None) -> int:
         firewall.render(
             context_dir,
             extra_domains=args.extra_domain,
+            allow_github=allow_github,
         )
 
         cfg = config_agents.render(context_dir)
@@ -342,6 +357,7 @@ def _dry_run(
         },
     }
     run_agent = _requested_agent(args)
+    _warn_opencode_provider_allowlist(args, run_agent)
 
     print("DRY RUN: no files, worktrees, images, or containers will be created.")
     if worktree is not None:
@@ -500,6 +516,40 @@ def _validate_session_inputs(args) -> None:
         log_parent = Path(args.log).expanduser().resolve().parent
         if not log_parent.is_dir():
             raise SystemExit(f"--log parent directory does not exist: {log_parent}")
+
+
+def _allow_github(args, run_agent: str | None) -> bool:
+    return bool(args.allow_github or _uses_github_copilot_cli(args, run_agent))
+
+
+def _uses_github_copilot_cli(args, run_agent: str | None) -> bool:
+    if run_agent == "copilot":
+        return True
+    if run_agent != "bash":
+        return False
+    command = args.prompt_text
+    if command is None and args.prompt:
+        try:
+            command = resolve_strict(args.prompt).read_text(encoding="utf-8")
+        except OSError:
+            return False
+    if command is None:
+        return False
+    try:
+        words = shlex.split(command, comments=True)
+    except ValueError:
+        return False
+    return bool(words and words[0] == "copilot")
+
+
+def _warn_opencode_provider_allowlist(args, run_agent: str | None) -> None:
+    if run_agent != "opencode" or args.no_firewall:
+        return
+    print(
+        "[W] OpenCode provider network access depends on the selected provider. "
+        "OpenAI and Anthropic endpoints are allowed by default; use --allow-github "
+        "for GitHub Copilot or --extra-domain DOMAIN for another provider."
+    )
 
 
 def _setup_worktree(args, project: Path):
@@ -677,6 +727,21 @@ def _build_session_command(
             f"type=bind,source={claude_projects.resolve()},target={HISTORY_CLAUDE_PROJECTS_TARGET}"
         )
         extra_env.append(f"HISTFILE={HISTORY_HISTFILE}")
+
+    workspace_mask = ensure_workspace_sandbox_mask(
+        project,
+        create=create_prompt_files,
+    )
+    if create_prompt_files:
+        mask_source = workspace_mask.resolve(strict=False)
+    else:
+        mask_source = workspace_mask.resolve(strict=False)
+        print(f"Would mask workspace sandbox files with: {mask_source}")
+    # Keep this after user-supplied mounts so a writable --mount cannot expose
+    # the generated files at /workspace/.project-sandbox again.
+    extra_mounts.append(
+        f"type=bind,source={mask_source},target={WORKSPACE_SANDBOX_TARGET},readonly"
+    )
 
     return (
         container_cli.build_run_argv(

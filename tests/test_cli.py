@@ -43,6 +43,7 @@ class CliTests(TestCase):
         self.assertIn("--branch", help_text)
         self.assertIn("--dockerfile", help_text)
         self.assertIn("--runtime", help_text)
+        self.assertIn("--allow-github", help_text)
         self.assertNotIn("--rebuild", help_text)
         self.assertNotIn("--refresh-config", help_text)
         self.assertIn("bash", help_text)
@@ -741,7 +742,10 @@ class CliTests(TestCase):
                 ])
 
         self.assertEqual(rc, 0)
-        self.assertIn("opencode-headless", out.getvalue())
+        output = out.getvalue()
+        self.assertIn("opencode-headless", output)
+        self.assertIn("OpenCode provider network access depends", output)
+        self.assertIn("--allow-github", output)
 
     def test_unsupervised_bash_uses_headless_dispatch_without_host_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -767,6 +771,42 @@ class CliTests(TestCase):
 
         self.assertEqual(rc, 0)
         self.assertIn("bash-headless", out.getvalue())
+
+    def test_github_allowlist_is_enabled_for_headless_copilot_cli_command(self) -> None:
+        parser = cli.build_parser()
+        args = parser.parse_args([
+            "--agent",
+            "bash",
+            "--prompt-text",
+            "copilot -p 'summarize this repo'",
+            "/tmp/project",
+            "python:3.12-slim",
+        ])
+
+        self.assertTrue(cli._allow_github(args, "bash"))
+
+    def test_github_allowlist_is_explicit_for_non_copilot_commands(self) -> None:
+        parser = cli.build_parser()
+        args = parser.parse_args([
+            "--agent",
+            "bash",
+            "--prompt-text",
+            "git status",
+            "/tmp/project",
+            "python:3.12-slim",
+        ])
+        explicit = parser.parse_args([
+            "--allow-github",
+            "--agent",
+            "bash",
+            "--prompt-text",
+            "git status",
+            "/tmp/project",
+            "python:3.12-slim",
+        ])
+
+        self.assertFalse(cli._allow_github(args, "bash"))
+        self.assertTrue(cli._allow_github(explicit, "bash"))
 
     def _headless_dry_run(self, *extra_args: str) -> str:
         with tempfile.TemporaryDirectory() as tmp:
@@ -812,6 +852,19 @@ class CliTests(TestCase):
         )
         self.assertIn("target=/project-sandbox-prompt,readonly", out)
         self.assertNotIn("PROJECT_SANDBOX_PROMPT=echo ok", out)
+
+    def test_dry_run_masks_workspace_project_sandbox_after_user_mounts(self) -> None:
+        out = self._headless_dry_run(
+            "--mount",
+            "type=bind,source=/tmp/custom,target=/workspace/.project-sandbox",
+        )
+
+        custom = "type=bind,source=/tmp/custom,target=/workspace/.project-sandbox"
+        mask = "target=/workspace/.project-sandbox,readonly"
+        self.assertIn("Would mask workspace sandbox files with:", out)
+        self.assertIn(custom, out)
+        self.assertIn(mask, out)
+        self.assertLess(out.index(custom), out.index(mask))
 
     def test_prompt_text_writes_prompt_file_for_short_prompt(self) -> None:
         import argparse

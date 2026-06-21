@@ -9,7 +9,9 @@ from .paths import (
     HISTORY_CLAUDE_PROJECTS_TARGET,
     HISTORY_HISTFILE,
     HISTORY_SHELL_TARGET,
+    WORKSPACE_SANDBOX_TARGET,
     ensure_history_paths,
+    ensure_workspace_sandbox_mask,
 )
 
 _MEMORY_RE = re.compile(r"(\d+)\s*([gm])b?", re.IGNORECASE)
@@ -78,6 +80,11 @@ def render(
         f"source={history_root}/shell,target={HISTORY_SHELL_TARGET},type=bind",
         f"source={history_root}/claude_projects,target={HISTORY_CLAUDE_PROJECTS_TARGET},type=bind",
     ]
+    ensure_workspace_sandbox_mask(project, create=True)
+    workspace_mask_root = "${localWorkspaceFolder}/.project-sandbox/workspace-mask"
+    workspace_mask_mount = (
+        f"source={workspace_mask_root},target={WORKSPACE_SANDBOX_TARGET},type=bind,readonly"
+    )
     # The history dir is gitignored and ephemeral, so the bind sources can be
     # absent at container-create time (fresh clone, cleaned .project-sandbox, or
     # an upgrade that added history mounts). A missing source makes the runtime
@@ -91,6 +98,7 @@ def render(
         "-p",
         f"{history_root}/shell",
         f"{history_root}/claude_projects",
+        workspace_mask_root,
     ]
 
     # Build the config as a Python dict and emit it with json.dumps so every
@@ -150,6 +158,9 @@ def render(
         )
     mounts.extend(history_mounts)
     mounts.extend(extra_mounts)
+    # Keep this after user-supplied mounts so a writable custom mount cannot
+    # expose generated sandbox files inside the workspace.
+    mounts.append(workspace_mask_mount)
 
     post_start_command = (
         "sudo -n /usr/local/bin/project-sandbox-init-firewall && "

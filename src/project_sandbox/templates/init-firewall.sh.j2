@@ -92,6 +92,7 @@ fi
 ipset create allowed-ipv4 hash:net family inet
 [ "$IPV6_FW" = "1" ] && ipset create allowed-ipv6 hash:net family inet6
 
+{% if allow_github %}
 gh_meta=$(curl -sf --max-time 10 https://api.github.com/meta || true)
 [ -z "$gh_meta" ] && gh_meta='{"web":[],"api":[],"git":[],"ipv6":[]}'
 
@@ -104,6 +105,7 @@ if [ "$IPV6_FW" = "1" ]; then
     [ -n "$cidr6" ] && ipset add --exist allowed-ipv6 "$cidr6" 2>/dev/null || true
   done < <(echo "$gh_meta" | jq -r '.ipv6[]?' 2>/dev/null || true)
 fi
+{% endif %}
 
 DOMAINS=(
   "api.anthropic.com"
@@ -113,6 +115,26 @@ DOMAINS=(
   "api.openai.com"
   "auth.openai.com"
   "chatgpt.com"
+{% if allow_github %}
+  "github.com"
+  "api.github.com"
+  "uploads.github.com"
+  "codeload.github.com"
+  "lfs.github.com"
+  "ghcr.io"
+  "raw.githubusercontent.com"
+  "objects.githubusercontent.com"
+  "github-cloud.githubusercontent.com"
+  "api.githubcopilot.com"
+  "api.individual.githubcopilot.com"
+  "api.business.githubcopilot.com"
+  "api.enterprise.githubcopilot.com"
+  "copilot-proxy.githubusercontent.com"
+  "origin-tracker.githubusercontent.com"
+  "copilot-telemetry.githubusercontent.com"
+  "collector.github.com"
+  "default.exp-tas.com"
+{% endif %}
 {% for domain in extra_domains %}
   {{ domain | shlex_quote }}
 {% endfor %}

@@ -215,6 +215,16 @@ uv run project-sandbox \
 - `--verbose` controls how much is shown on the terminal. By default it is quiet: image build and Apple `container system start` output is suppressed (shown only if they fail), the in-container firewall banner is silenced, interactive runs just print `Starting container…` before handing off to the agent/shell, and headless runs print the log path up front and a `Wrote N lines to …` summary at the end (the full output still goes to the log file). With `--verbose`, the build output streams, the firewall banner shows, and headless output is teed live to the terminal as well as the log.
 - The agent's exit code is propagated, so CI pipelines can detect failures.
 
+OpenCode can be configured with multiple providers. The default firewall allows
+OpenAI and Anthropic endpoints; use `--allow-github` for GitHub Copilot, or
+`--extra-domain DOMAIN` for another provider endpoint.
+
+The generated `.project-sandbox/` directory remains on the host for image builds
+and devcontainer setup, but direct runs and devcontainers mask
+`/workspace/.project-sandbox` with an empty read-only bind mount. Agents still
+receive the generated config, credentials, prompts, and history through their
+dedicated mounts, but cannot edit the generated files through the workspace.
+
 Unsupervised sessions skip the interactive `-it` flags and switch dispatch to `<agent>-headless` for all supported agents. Claude runs with `--dangerously-skip-permissions`, Codex uses `approval_policy = "never"`, OpenCode runs via `opencode run`, and Bash runs with `bash -lc`. The container is still the sandbox boundary; review the diff before integrating.
 
 A maliciously crafted file in the workspace (e.g. a prompt-injection in a README) can still steer an unsupervised agent. Use narrow prompts and inspect the diff before merging.
@@ -227,7 +237,8 @@ When the firewall is enabled (default), `init-firewall.sh` runs as root inside t
 - Pre-resolves allowlisted domains using the resolvers in `/etc/resolv.conf`,
   pins the resulting addresses into `/etc/hosts` and `ipset`, then blocks
   general outbound DNS to close DNS-tunnel exfiltration.
-- Allows GitHub's published IP ranges (fetched from `api.github.com/meta`), Claude/Anthropic endpoints (`api.anthropic.com`, `claude.ai`, `code.claude.com`, `platform.claude.com`), `api.openai.com`, `auth.openai.com`, and `chatgpt.com`.
+- Allows Claude/Anthropic endpoints (`api.anthropic.com`, `claude.ai`, `code.claude.com`, `platform.claude.com`), `api.openai.com`, `auth.openai.com`, and `chatgpt.com`.
+- When `--allow-github` is set, also allows GitHub's published web/API/git IP ranges (fetched from `api.github.com/meta`) and DNS-pinned GitHub/Copilot hosts including `github.com`, `api.github.com`, `raw.githubusercontent.com`, `objects.githubusercontent.com`, and `api.githubcopilot.com`.
 - In the devcontainer firewall variant only, allows the host gateway address so port-forwarding and IDE attach work. Direct CLI runs omit this host-network allowlist.
 - Mirrors the IPv4 allowlist into a parallel IPv6 set; falls back to disabling IPv6 via `sysctl` when `ip6_tables` is unavailable — the script exits with an error if both `ip6tables` and `sysctl` are unavailable.
 
@@ -239,6 +250,7 @@ container or devcontainer so the firewall resolves fresh addresses.
 Customize:
 
 - `--extra-domain DOMAIN` — append entries to the allowlist (`registry.npmjs.org`, private registries, internal APIs, etc.). Repeatable.
+- `--allow-github` — allow GitHub and GitHub Copilot endpoints. This is useful for GitHub-backed workflows, but it also creates a viable exfiltration path through GitHub.
 - `--no-firewall` — skip the firewall entirely (trusted-LAN debugging only).
 
 ## Threat model
