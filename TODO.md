@@ -1,5 +1,12 @@
 # TODO — outstanding items
 
+## Optimize image build times on start
+
+Startup can be slow when `project-sandbox` needs to build or rebuild the container
+image before launching. Outstanding: profile the current image build path and
+reduce cold-start and rebuild time, especially for repeated local runs where most
+inputs have not changed.
+
 ## OAuth refresh token handling
 
 E.g. Claude Code uses OAuth and may write an updated refresh token back to its config
