@@ -24,7 +24,7 @@ def _find_docker() -> str | None:
     return None
 
 DOCKER = _find_docker()
-DOCKER_IMAGE = "bitnami/git:latest"
+DOCKER_IMAGE = "alpine/git:v2.45.2"
 
 from project_sandbox import worktree as worktree_mod
 
@@ -369,8 +369,9 @@ class GitWorktreeDockerEndToEndTests(TestCase):
                 "--mount", f"type=bind,source={wt_path},target=/workspace",
                 "--mount", f"type=bind,source={git_dir},target={git_dir}",
                 "--workdir", "/workspace",
+                "--entrypoint", "sh",
                 DOCKER_IMAGE,
-                "bash", "-c", bash_cmd,
+                "-c", bash_cmd,
             ],
             check=True,
         )
