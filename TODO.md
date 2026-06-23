@@ -1,5 +1,10 @@
 # TODO - outstanding items
 
+## Model selection for batch mode
+
+In unsupervised mode we should have a CLI switch to select a model. This model 
+ID will be passed to the agent and used for all completions.
+
 ## Firewall: verify multi-resolver rules on a real iptables host
 
 Code is complete and the render path is covered by

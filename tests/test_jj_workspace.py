@@ -90,6 +90,15 @@ class PathForCollisionTests(unittest.TestCase):
         p = jj_workspace_mod.path_for(self._fake_repo(), "main", workspace_dir=custom)
         self.assertEqual(p.parent, custom)
 
+    def test_repo_store_mount_resolves_relative_workspace_pointer_in_container(self) -> None:
+        repo = Path("/tmp/root/repo")
+        ws = Path("/tmp/root/repo-workspaces/feat")
+
+        source, target = jj_workspace_mod.repo_store_mount(repo, ws)
+
+        self.assertEqual(source, (repo / ".jj" / "repo").resolve())
+        self.assertEqual(target, "/repo/.jj/repo")
+
 
 @unittest.skipUnless(JJ, "jj not installed")
 class JjWorkspaceSetupTests(unittest.TestCase):
@@ -140,6 +149,13 @@ class JjWorkspaceSetupTests(unittest.TestCase):
             capture_output=True, text=True, check=True,
         ).stdout
         self.assertIn("my-feature", log_out)
+
+    def test_setup_non_empty_current_revision_starts_from_current_tree(self) -> None:
+        (self.repo / "current.txt").write_text("current\n", encoding="utf-8")
+
+        ws = jj_workspace_mod.setup(self.repo, "feat/current")
+
+        self.assertTrue((ws.path / "current.txt").is_file())
 
     def test_setup_stale_unregistered_directory_raises(self) -> None:
         ws_path = jj_workspace_mod.path_for(self.repo, "feat/stale")
@@ -205,10 +221,38 @@ class JjWorkspaceTeardownTests(unittest.TestCase):
         ).stdout
         self.assertIn("agent work", log_out)
 
+    def test_teardown_rebase_snapshots_plain_file_edits(self) -> None:
+        ws = jj_workspace_mod.setup(self.repo, "feat/plain-edits")
+        (ws.path / "plain.txt").write_text("plain\n", encoding="utf-8")
+
+        jj_workspace_mod.teardown(self.repo, ws, after="rebase")
+
+        self.assertFalse(ws.path.exists())
+        file_out = subprocess.run(
+            [
+                "jj",
+                "-R",
+                str(self.repo),
+                "file",
+                "show",
+                "-r",
+                "feat/plain-edits",
+                "root:plain.txt",
+            ],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        self.assertEqual(file_out, "plain\n")
+
     def test_teardown_rebase_conflict_leaves_workspace_and_prints_message(self) -> None:
         out = io.StringIO()
+
+        def mock_jj(repo, args, capture=False):
+            if "rebase" in args:
+                raise subprocess.CalledProcessError(1, "jj rebase")
+            return ""
+
         with (
-            patch.object(jj_workspace_mod, "_jj", side_effect=subprocess.CalledProcessError(1, "jj rebase")),
+            patch.object(jj_workspace_mod, "_jj", side_effect=mock_jj),
             contextlib.redirect_stdout(out),
         ):
             jj_workspace_mod.teardown(self.repo, self.ws, after="rebase")

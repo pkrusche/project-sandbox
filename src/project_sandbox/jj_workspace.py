@@ -1,5 +1,7 @@
 from __future__ import annotations
 import hashlib
+import os
+import posixpath
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -31,10 +33,13 @@ def setup(
         )
 
     ws_path.parent.mkdir(parents=True, exist_ok=True)
-    _jj(repo, ["workspace", "add", str(ws_path)])
-
+    add_args = ["workspace", "add"]
     if base:
-        _jj(ws_path, ["new", base])
+        add_args += ["-r", base]
+    elif not _current_revision_is_empty(repo):
+        add_args += ["-r", "@"]
+    add_args.append(str(ws_path))
+    _jj(repo, add_args)
 
     # Create bookmark at the workspace's working-copy commit
     _jj(ws_path, ["bookmark", "create", bookmark])
@@ -56,6 +61,24 @@ def path_for(
     return ws_root / safe
 
 
+def repo_store_mount(repo: Path, ws_path: Path) -> tuple[Path, str]:
+    """Return the shared jj repo store source and its container target path."""
+    source = (repo.resolve() / ".jj" / "repo").resolve()
+    pointer = ws_path / ".jj" / "repo"
+    if pointer.is_file():
+        raw_target = pointer.read_text(encoding="utf-8").strip()
+    else:
+        raw_target = os.path.relpath(source, start=(ws_path.resolve() / ".jj"))
+
+    if raw_target.startswith("/"):
+        target = raw_target
+    else:
+        target = posixpath.normpath(
+            posixpath.join("/workspace", ".jj", raw_target.replace(os.sep, "/"))
+        )
+    return source, target
+
+
 def teardown(repo: Path, ws: JjWorkspace, *, after: str) -> None:
     if after == "ask":
         after = _prompt_user(ws)
@@ -63,6 +86,7 @@ def teardown(repo: Path, ws: JjWorkspace, *, after: str) -> None:
     ws_name = ws.path.name
 
     if after in ("rebase", "merge"):
+        _snapshot_workspace(ws)
         # Rebase bookmark commits onto the default workspace's current @
         try:
             _jj(repo, ["rebase", "-b", ws.bookmark, "-d", "@"])
@@ -73,6 +97,7 @@ def teardown(repo: Path, ws: JjWorkspace, *, after: str) -> None:
         shutil.rmtree(ws.path, ignore_errors=True)
 
     elif after == "pr":
+        _snapshot_workspace(ws)
         try:
             _jj(repo, ["git", "push", "-b", ws.bookmark, "--allow-new"])
         except subprocess.CalledProcessError:
@@ -104,6 +129,24 @@ def _jj(repo: Path, args: list[str], capture: bool = False) -> str:
         check=True,
     )
     return result.stdout if capture else ""
+
+
+def _current_revision_is_empty(repo: Path) -> bool:
+    out = _jj(
+        repo,
+        ["log", "-r", "@", "--no-graph", "--template", 'empty ++ "\n"'],
+        capture=True,
+    )
+    return out.strip() == "true"
+
+
+def _snapshot_workspace(ws: JjWorkspace) -> None:
+    _jj(ws.path, ["status"], capture=True)
+    _jj(
+        ws.path,
+        ["bookmark", "set", "--allow-backwards", ws.bookmark, "-r", "@"],
+        capture=True,
+    )
 
 
 def _list_workspaces(repo: Path) -> list[str]:

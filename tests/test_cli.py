@@ -563,6 +563,7 @@ class CliTests(TestCase):
         jj_dir = str((project / ".jj").resolve())
         self.assertIn(jj_dir, output)
         self.assertIn("Would mount .jj metadata:", output)
+        self.assertIn("-> /", output)
         self.assertNotIn("Would mount .git metadata:", output)
 
     def test_branch_jj_mount_conflicting_with_jj_metadata_raises(self) -> None:

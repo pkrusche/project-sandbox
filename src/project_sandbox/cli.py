@@ -471,7 +471,8 @@ def _dry_run(
     if worktree is not None:
         print(f"Would use worktree at: {workspace}")
         if isinstance(worktree, jj_workspace_mod.JjWorkspace):
-            print(f"Would mount .jj metadata: {(project / '.jj').resolve()}")
+            source, target = jj_workspace_mod.repo_store_mount(project, workspace)
+            print(f"Would mount .jj metadata: {source} -> {target}")
         else:
             print(f"Would mount .git metadata: {(project / '.git').resolve()}")
     print(f"Would render sandbox assets under: {context_dir}")
@@ -889,15 +890,18 @@ def _build_session_command(
             conflict_msg = (
                 f"--mount conflicts with the workspace .jj metadata mount at {vcs_dir}"
             )
+            source, target = jj_workspace_mod.repo_store_mount(project, worktree.path)
+            metadata_mounts = [f"type=bind,source={source},target={target}"]
         else:
             vcs_dir = (project / ".git").resolve()
             conflict_msg = (
                 f"--mount conflicts with the worktree .git metadata mount at {vcs_dir}"
             )
+            metadata_mounts = [f"type=bind,source={vcs_dir},target={vcs_dir}"]
         vcs_dir_str = str(vcs_dir)
         if any(vcs_dir_str in m for m in extra_mounts):
             raise SystemExit(conflict_msg)
-        extra_mounts.append(f"type=bind,source={vcs_dir_str},target={vcs_dir_str}")
+        extra_mounts.extend(metadata_mounts)
     extra_env: list[str] = []
     extra_env.extend(_api_key_env(args, redact=not create_prompt_files))
     if not args.verbose:
