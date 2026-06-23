@@ -1,5 +1,6 @@
 import contextlib
 import io
+import os
 import shutil
 import subprocess
 import sys
@@ -23,7 +24,7 @@ def _find_docker() -> str | None:
     return None
 
 DOCKER = _find_docker()
-DOCKER_IMAGE = "ubuntu:22.04"
+DOCKER_IMAGE = "alpine/git:v2.45.2"
 
 from project_sandbox import worktree as worktree_mod
 
@@ -361,14 +362,16 @@ class GitWorktreeDockerEndToEndTests(TestCase):
 
     def _docker(self, wt_path: Path, bash_cmd: str) -> None:
         git_dir = str((self.repo / ".git").resolve())
+        uid = os.getuid()
         subprocess.run(
             [
-                DOCKER, "run", "--rm",
+                DOCKER, "run", "--rm", "-u", str(uid),
                 "--mount", f"type=bind,source={wt_path},target=/workspace",
                 "--mount", f"type=bind,source={git_dir},target={git_dir}",
                 "--workdir", "/workspace",
+                "--entrypoint", "sh",
                 DOCKER_IMAGE,
-                "bash", "-c", bash_cmd,
+                "-c", bash_cmd,
             ],
             check=True,
         )
@@ -380,9 +383,13 @@ class GitWorktreeDockerEndToEndTests(TestCase):
         # 2. Container adds a file and commits via bash
         self._docker(
             wt.path,
-            "git config user.email t@test.com && git config user.name Test && "
+            "export HOME=/tmp && "
+            "git config --global --add safe.directory /workspace && "
+            "git config user.email t@test.com && "
+            "git config user.name Test && "
             "echo 'hello from container' > agent_output.txt && "
-            "git add . && git commit -m 'agent: add agent_output'",
+            "git add . && "
+            "git commit -m 'agent: add agent_output'",
         )
 
         # 3. Show tree — file present on host
@@ -404,9 +411,13 @@ class GitWorktreeDockerEndToEndTests(TestCase):
         wt = worktree_mod.setup(self.repo, "feat/e2e-rebase")
         self._docker(
             wt.path,
-            "git config user.email t@test.com && git config user.name Test && "
+            "export HOME=/tmp && "
+            "git config --global --add safe.directory /workspace && "
+            "git config user.email t@test.com && "
+            "git config user.name Test && "
             "echo 'hello from container' > agent_output.txt && "
-            "git add . && git commit -m 'agent: add file'",
+            "git add . && "
+            "git commit -m 'agent: add file'",
         )
 
         worktree_mod.teardown(self.repo, wt, after="rebase")
