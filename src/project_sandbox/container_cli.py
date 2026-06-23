@@ -198,6 +198,31 @@ def build_image(
     return _run_quietable(cmd, verbose=verbose, cwd=str(build_context))
 
 
+def image_exists(
+    runtime: Runtime, image_tag: str, *, dry_run: bool = False
+) -> bool:
+    """Return True when ``image_tag`` already exists for ``runtime``.
+
+    Uses ``<binary> image inspect <tag>``, verified to exit 0 for a present
+    image and non-zero for an absent one on docker, podman, and Apple
+    ``container`` (0.12.3). Any non-zero exit (image absent, or the subcommand
+    unsupported on some future runtime) maps to False, so an inconclusive check
+    triggers a rebuild rather than reusing a possibly-stale image.
+    """
+    if dry_run:
+        return False
+    try:
+        proc = subprocess.run(
+            [runtime.binary, "image", "inspect", image_tag],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        return False
+    return proc.returncode == 0
+
+
 def ensure_system_started(
     *, runtime: Runtime = APPLE_CONTAINER, dry_run: bool = False, verbose: bool = True
 ) -> int:

@@ -17,6 +17,7 @@ from project_sandbox.container_cli import (
     build_run_argv,
     build_stop_argv,
     ensure_system_started,
+    image_exists,
     run,
     select_runtime,
 )
@@ -210,6 +211,32 @@ class ContainerCliTests(TestCase):
         self.assertEqual(run_mock.call_args.kwargs["cwd"], str(context.resolve()))
         # Context must be passed as "." (apple/container ignores absolute paths).
         self.assertEqual(run_mock.call_args.args[0][-1], ".")
+
+    def test_image_exists_inspects_tag_and_maps_returncode(self) -> None:
+        with patch("project_sandbox.container_cli.subprocess.run") as run_mock:
+            run_mock.return_value.returncode = 0
+            self.assertTrue(image_exists(DOCKER, "project-sandbox:test"))
+        self.assertEqual(
+            run_mock.call_args.args[0],
+            ["docker", "image", "inspect", "project-sandbox:test"],
+        )
+
+    def test_image_exists_false_on_nonzero_exit(self) -> None:
+        with patch("project_sandbox.container_cli.subprocess.run") as run_mock:
+            run_mock.return_value.returncode = 1
+            self.assertFalse(image_exists(DOCKER, "project-sandbox:missing"))
+
+    def test_image_exists_false_when_binary_absent(self) -> None:
+        with patch(
+            "project_sandbox.container_cli.subprocess.run",
+            side_effect=FileNotFoundError,
+        ):
+            self.assertFalse(image_exists(PODMAN, "project-sandbox:test"))
+
+    def test_image_exists_dry_run_does_not_invoke_runtime(self) -> None:
+        with patch("project_sandbox.container_cli.subprocess.run") as run_mock:
+            self.assertFalse(image_exists(DOCKER, "project-sandbox:test", dry_run=True))
+        run_mock.assert_not_called()
 
     def test_build_run_argv_uses_selected_podman_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

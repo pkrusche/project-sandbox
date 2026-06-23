@@ -657,6 +657,69 @@ class RendererTests(TestCase):
             self.assertEqual(len(warnings), 1)
             self.assertIn("Removed 1 restricted user setup instruction", warnings[0])
 
+    def test_render_dockerignore_writes_scoped_files_for_project_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            context = project / ".project-sandbox"
+            context.mkdir()
+
+            dockerfile.render_dockerignore(context, build_context=project)
+
+            ignore = context / "Dockerfile.dockerignore"
+            self.assertTrue(ignore.exists())
+            patterns = ignore.read_text(encoding="utf-8").splitlines()
+            self.assertIn(".venv", patterns)
+            self.assertIn("node_modules", patterns)
+            # .git must stay in the context: git version backends read it during
+            # the in-image project install.
+            self.assertNotIn(".git", patterns)
+            # Must not exclude the generated dir whose scripts are COPY'd in.
+            self.assertNotIn(".project-sandbox", patterns)
+            self.assertTrue(
+                (context / "Dockerfile.devcontainer.dockerignore").exists()
+            )
+
+    def test_render_dockerignore_skips_when_context_is_sandbox(self) -> None:
+        # When the build context is just .project-sandbox/ there is nothing heavy
+        # to trim, so no .dockerignore is written.
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp) / ".project-sandbox"
+            context.mkdir()
+
+            dockerfile.render_dockerignore(context, build_context=context)
+
+            self.assertFalse((context / "Dockerfile.dockerignore").exists())
+
+    def test_render_dockerignore_respects_existing_root_dockerignore(self) -> None:
+        # A user's root .dockerignore is authoritative; generating a
+        # per-Dockerfile file would override (not merge with) it.
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            context = project / ".project-sandbox"
+            context.mkdir()
+            (project / ".dockerignore").write_text("secrets/\n", encoding="utf-8")
+
+            dockerfile.render_dockerignore(context, build_context=project)
+
+            self.assertFalse((context / "Dockerfile.dockerignore").exists())
+
+    def test_render_does_not_emit_dockerignore_itself(self) -> None:
+        # render() renders Dockerfiles only; the .dockerignore policy lives in the
+        # caller (python-uv flow), never for base-image or custom --dockerfile.
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            context = project / ".project-sandbox"
+            context.mkdir()
+
+            dockerfile.render(
+                context,
+                base_image="python:3.12-slim",
+                build_context=project,
+                install_agents=("claude",),
+            )
+
+            self.assertFalse((context / "Dockerfile.dockerignore").exists())
+
     def test_dockerfile_renderer_removes_source_user_id_setup(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)

@@ -1207,6 +1207,124 @@ class DefaultImageTagTests(TestCase):
             self.assertEqual(call_kwargs["image_tag"], "my-custom:v1")
 
 
+class BuildCacheReuseTests(TestCase):
+    """The build is skipped when inputs are unchanged and the image exists."""
+
+    def _run(
+        self,
+        project: Path,
+        *,
+        image_exists: bool,
+        extra_args: list[str] | None = None,
+        base_image: str | None = "python:3.12-slim",
+    ) -> tuple[int, str, "patch"]:
+        host_home = project / "home"
+        paths = _agent_paths(host_home)
+        paths["claude"].mkdir(parents=True, exist_ok=True)
+        out = io.StringIO()
+        positional = [str(project)] + ([base_image] if base_image else [])
+        with (
+            patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+            patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+            patch.object(cli.config_agents, "sync_credentials"),
+            patch.object(cli.container_cli, "select_runtime", return_value=cli.container_cli.DOCKER),
+            patch.object(cli.container_cli, "ensure_system_started", return_value=0),
+            patch.object(cli.container_cli, "image_exists", return_value=image_exists),
+            patch.object(cli.container_cli, "build_image", return_value=0) as build_image,
+            patch.object(cli.container_cli, "run", return_value=0),
+            contextlib.redirect_stdout(out),
+        ):
+            rc = cli.main([
+                "--agent", "claude",
+                *(extra_args or []),
+                *positional,
+            ])
+        return rc, out.getvalue(), build_image
+
+    def _make_project(self, tmp: str) -> Path:
+        project = Path(tmp)
+        (project / "README.md").write_text("# demo\n", encoding="utf-8")
+        return project
+
+    def test_first_run_builds_and_records_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self._make_project(tmp)
+            rc, out, build_image = self._run(project, image_exists=False)
+            self.assertEqual(rc, 0)
+            build_image.assert_called_once()
+            self.assertIn("Built image in", out)
+            self.assertTrue((project / ".project-sandbox" / ".build-state.json").exists())
+
+    def test_second_run_reuses_cached_image(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self._make_project(tmp)
+            self._run(project, image_exists=False)  # seed state
+            rc, out, build_image = self._run(project, image_exists=True)
+            self.assertEqual(rc, 0)
+            build_image.assert_not_called()
+            self.assertIn("Reusing cached image", out)
+
+    def test_force_build_rebuilds_despite_valid_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self._make_project(tmp)
+            self._run(project, image_exists=False)  # seed state
+            rc, out, build_image = self._run(
+                project, image_exists=True, extra_args=["--force-build"]
+            )
+            self.assertEqual(rc, 0)
+            build_image.assert_called_once()
+
+    def test_missing_image_forces_rebuild_even_with_matching_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self._make_project(tmp)
+            self._run(project, image_exists=False)  # seed state
+            rc, out, build_image = self._run(project, image_exists=False)
+            self.assertEqual(rc, 0)
+            build_image.assert_called_once()
+
+    def test_changed_inputs_force_rebuild(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self._make_project(tmp)
+            self._run(project, image_exists=False)  # seed state
+            # Corrupt the recorded fingerprint so it no longer matches.
+            state = project / ".project-sandbox" / ".build-state.json"
+            state.write_text('{"image_tag": "x", "fingerprint": "stale"}\n', encoding="utf-8")
+            rc, out, build_image = self._run(project, image_exists=True)
+            self.assertEqual(rc, 0)
+            build_image.assert_called_once()
+
+    def test_python_uv_run_generates_dockerignore_but_base_image_does_not(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self._make_project(tmp)
+            self._run(project, image_exists=False)  # base-image flow
+            self.assertFalse(
+                (project / ".project-sandbox" / "Dockerfile.dockerignore").exists()
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self._make_project(tmp)
+            (project / "pyproject.toml").write_text("[project]\nname='d'\n", encoding="utf-8")
+            (project / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+            self._run(project, image_exists=False, extra_args=["--python-uv"], base_image=None)
+            self.assertTrue(
+                (project / ".project-sandbox" / "Dockerfile.dockerignore").exists()
+            )
+
+    def test_python_uv_whole_project_context_never_skips(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self._make_project(tmp)
+            (project / "pyproject.toml").write_text("[project]\nname='d'\n", encoding="utf-8")
+            (project / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+            # Even with a matching state file and an existing image, the
+            # whole-project build context disables the auto-skip.
+            self._run(project, image_exists=False, extra_args=["--python-uv"], base_image=None)
+            rc, out, build_image = self._run(
+                project, image_exists=True, extra_args=["--python-uv"], base_image=None
+            )
+            self.assertEqual(rc, 0)
+            build_image.assert_called_once()
+
+
 class PythonUvFlagTests(TestCase):
     """Tests for --python-uv and --python VERSION flags."""
 

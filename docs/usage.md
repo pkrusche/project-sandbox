@@ -157,6 +157,31 @@ generated spec uses local `.project-sandbox/` files, absolute host credential
 staging under `/tmp/project-sandbox-<uid>/...`, and firewall capabilities
 (`NET_ADMIN`/`NET_RAW`) that may not be available remotely.
 
+## Image Builds
+
+The container image is built before a direct-run session starts. To keep
+repeated local runs fast, the build is **skipped when nothing changed**:
+project-sandbox fingerprints the generated build inputs (the rendered
+`Dockerfile`, `entrypoint.sh`, `init-firewall.sh`, the devcontainer init script,
+the base image, and the image tag) and records that fingerprint in
+`.project-sandbox/.build-state.json`. On the next run, if the fingerprint still
+matches and the runtime confirms the image exists, the build is skipped and
+`Reusing cached image (inputs unchanged)` is printed; otherwise the image is
+rebuilt and the build duration is reported (`Built image in 12.3s`).
+
+- Auto-skip applies to the default base-image flow. `--python-uv` and
+  `--dockerfile` builds use the whole project as the build context, so they
+  always invoke the build and rely on the runtime's layer cache instead.
+- For `--python-uv` only, a generated `.project-sandbox/Dockerfile.dockerignore`
+  trims virtualenvs, `node_modules`, and tool caches from the context (it does
+  not exclude `.git` — git version backends read it during the in-image install
+  — nor `.project-sandbox/`, whose scripts are copied into the image). It is not
+  generated for user-supplied `--dockerfile` builds, which may legitimately copy
+  those paths. If the project already has a root `.dockerignore`, it is left
+  authoritative and no per-Dockerfile file is generated.
+- `--force-build` rebuilds even when the cache is valid.
+- `--no-build` skips the build entirely, assuming the image already exists.
+
 ## Unsupervised Sessions
 
 Run the agent without a TTY, starting from a prompt and writing all output to a

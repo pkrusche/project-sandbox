@@ -3,11 +3,13 @@ import os
 import re
 import shlex
 import shutil
+import time
 import uuid
 from argparse import ArgumentParser
 from pathlib import Path
 
 from . import (
+    build_cache,
     config_agents,
     container_cli,
     devcontainer,
@@ -83,6 +85,7 @@ def build_parser() -> ArgumentParser:
         help="Container runtime for direct CLI runs (default: auto).",
     )
     p.add_argument("--no-build", action="store_true")
+    p.add_argument("--force-build", action="store_true")
     p.add_argument("--memory", default="8g")
     p.add_argument("--cpus", type=int, default=4)
     p.add_argument("--mount", dest="extra_mounts", action="append", default=[])
@@ -238,6 +241,12 @@ def main(argv: list[str] | None = None) -> int:
             install_agents=available_agents,
             warn=print,
         )
+        # Trim the whole-project build context only for the python-uv flow, whose
+        # Dockerfile we generate and whose excluded paths we know are not build
+        # inputs. User-supplied --dockerfile builds are left untouched so an
+        # injected ignore file can't break a COPY they rely on.
+        if getattr(args, "python_uv", False):
+            dockerfile.render_dockerignore(context_dir, build_context=build_context)
         dockerfile.render_entrypoint(context_dir)
         dockerfile.render_devcontainer_entrypoint(context_dir)
         firewall.render(
@@ -298,18 +307,52 @@ def main(argv: list[str] | None = None) -> int:
             )
 
         if not args.no_build:
-            if not args.verbose:
-                print("Building container image…")
-            rc = container_cli.build_image(
-                runtime=runtime,
-                context_dir=context_dir,
-                image_tag=args.image_tag,
-                build_context=build_context,
-                dockerfile_path=context_dir / "Dockerfile",
-                verbose=args.verbose,
+            # Reuse an existing image when its build inputs are unchanged. This
+            # auto-skip is limited to the default flow where the build context is
+            # the generated .project-sandbox dir, which fully determines the
+            # image; whole-project contexts (--python-uv / --dockerfile) keep
+            # building and rely on the runtime's layer cache + the generated
+            # .dockerignore instead of fingerprinting an arbitrary source tree.
+            fingerprint = build_cache.compute_fingerprint(
+                context_dir,
+                extra={"image_tag": args.image_tag, "base_image": base_image or ""},
             )
-            if rc != 0:
-                return rc
+            context_is_sandbox = (
+                build_context.resolve(strict=False)
+                == context_dir.resolve(strict=False)
+            )
+            cache_hit = (
+                not args.force_build
+                and context_is_sandbox
+                and build_cache.is_cache_valid(
+                    context_dir,
+                    image_tag=args.image_tag,
+                    fingerprint=fingerprint,
+                )
+                and container_cli.image_exists(runtime, args.image_tag)
+            )
+            if cache_hit:
+                print("Reusing cached image (inputs unchanged)")
+            else:
+                if not args.verbose:
+                    print("Building container image…")
+                start = time.monotonic()
+                rc = container_cli.build_image(
+                    runtime=runtime,
+                    context_dir=context_dir,
+                    image_tag=args.image_tag,
+                    build_context=build_context,
+                    dockerfile_path=context_dir / "Dockerfile",
+                    verbose=args.verbose,
+                )
+                if rc != 0:
+                    return rc
+                build_cache.write_state(
+                    context_dir,
+                    image_tag=args.image_tag,
+                    fingerprint=fingerprint,
+                )
+                print(f"Built image in {time.monotonic() - start:.1f}s")
 
         cmd, log_path, unsupervised, container_stop_argv = _build_session_command(
             args,

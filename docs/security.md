@@ -115,6 +115,11 @@ The tool does not protect against:
 - **Build OOM on Apple `container`.** The builder VM is separate from run VMs.
   Bump it with `container builder start --memory 8g --cpus 8`, then re-run
   `project-sandbox`.
+- **Stale image after an out-of-band change.** Builds are skipped when the
+  generated inputs are unchanged and the image still exists; the decision uses a
+  fingerprint recorded in `.project-sandbox/.build-state.json` (a non-sensitive
+  tag + hash). If the image was modified outside project-sandbox, pass
+  `--force-build` to rebuild.
 - **GitHub meta API timeout.** The firewall script falls back to an empty
   `{web,api,git,ipv6}` set and starts with a partial allowlist. Re-running the
   agent later will retry.

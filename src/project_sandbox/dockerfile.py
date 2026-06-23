@@ -66,6 +66,58 @@ def render(
     return container
 
 
+# Paths that are never needed inside the image and never affect a build (so they
+# are safe to drop from a whole-project build context). Deliberately excludes
+# .git — git-based version backends (setuptools_scm, hatch-vcs) read it during
+# `uv sync` / project install — and source/artifact dirs like dist/build that a
+# project might legitimately ship. Must NOT list .project-sandbox/, whose
+# generated scripts are COPY'd into the image.
+_DOCKERIGNORE_PATTERNS = (
+    ".venv",
+    "venv",
+    "node_modules",
+    "__pycache__",
+    "*.pyc",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".DS_Store",
+)
+
+
+def render_dockerignore(
+    context_dir: Path, *, build_context: Path | None = None
+) -> tuple[Path, ...]:
+    """Write build-ignore files scoped to the generated python-uv Dockerfile.
+
+    Call this *only* for the python-uv flow, where project-sandbox generates the
+    Dockerfile (`COPY . . && uv sync`) and therefore knows the excluded paths are
+    not build inputs. It is NOT used for user-supplied `--dockerfile` builds: that
+    Dockerfile may legitimately `COPY` a venv or `node_modules`, so imposing an
+    ignore file the user did not write could silently break their build.
+
+    BuildKit (used by docker, podman and Apple container) honors a
+    ``<dockerfile>.dockerignore`` next to the referenced Dockerfile, so this trims
+    the context without creating a root .dockerignore that would affect the user's
+    other builds. A user's existing root .dockerignore is left authoritative — the
+    per-Dockerfile file would *override* (not merge with) it, re-including paths
+    they deliberately excluded — so generation is skipped when one is present, and
+    also when the build context is just the .project-sandbox dir (nothing to trim).
+    """
+    root = build_context if build_context is not None else context_dir
+    if root.resolve(strict=False) == context_dir.resolve(strict=False):
+        return ()
+    if (root / ".dockerignore").exists():
+        return ()
+    body = "\n".join(_DOCKERIGNORE_PATTERNS) + "\n"
+    written = []
+    for dockerfile_name in ("Dockerfile", "Dockerfile.devcontainer"):
+        out = context_dir / f"{dockerfile_name}.dockerignore"
+        out.write_text(body, encoding="utf-8")
+        written.append(out)
+    return tuple(written)
+
+
 def _write_dockerfile(tmpl, out: Path, *, firewall_src_filename: str, **kwargs) -> Path:
     out.write_text(tmpl.render(firewall_src_filename=firewall_src_filename, **kwargs) + "\n", encoding="utf-8")
     return out

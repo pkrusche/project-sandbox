@@ -1,12 +1,5 @@
 # TODO - outstanding items
 
-## Optimize image build times on start
-
-Startup can be slow when `project-sandbox` needs to build or rebuild the container
-image before launching. Outstanding: profile the current image build path and
-reduce cold-start and rebuild time, especially for repeated local runs where most
-inputs have not changed.
-
 ## Telemetry and config filtering for OpenCode
 
 OpenCode credentials are staged as-is from `~/.config/opencode` with no sanitization
