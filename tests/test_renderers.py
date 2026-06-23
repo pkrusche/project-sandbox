@@ -432,6 +432,24 @@ class RendererTests(TestCase):
 
         self.assertIn("Invalid credential agent name", str(raised.exception))
 
+    def test_purge_staged_credentials_removes_digest_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            context = root / ".project-sandbox"
+            context.mkdir()
+            home = root / "home"
+            (home / ".claude").mkdir(parents=True)
+            (home / ".claude" / ".credentials.json").write_text("{}\n", encoding="utf-8")
+            with _credentials_root(root):
+                staged = config_agents.sync_credentials(context, home=home)["claude"]
+                digest_dir = staged.parent
+                self.assertTrue(digest_dir.exists())
+
+                config_agents.purge_staged_credentials(context)
+                self.assertFalse(digest_dir.exists())
+                # Idempotent: a second purge (nothing staged) does not raise.
+                config_agents.purge_staged_credentials(context)
+
     def test_staging_refuses_symlinked_credential_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

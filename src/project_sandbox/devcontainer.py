@@ -39,6 +39,7 @@ def render(
     cpus: int | None,
     extra_mounts: list[str],
     credential_dirs: dict[str, Path] | None = None,
+    forward_credentials: bool = True,
     build_context: Path | None = None,
 ) -> Path:
     dc_dir = project / ".devcontainer"
@@ -143,19 +144,26 @@ def render(
     if HISTORY_HISTFILE:
         container_env["HISTFILE"] = HISTORY_HISTFILE
 
+    # Generated, non-secret config is always mounted; the staged host tokens
+    # under /project-sandbox-secrets are only wired when forwarding credentials.
+    # With it off the devcontainer starts unauthenticated, matching a direct run
+    # launched with --no-forward-credentials.
     mounts = [
         f"source={claude_config_mount},target=/project-sandbox-config/claude,type=bind,readonly",
-        f"source={claude_credentials_mount},target=/project-sandbox-secrets/claude,type=bind,readonly",
         f"source={codex_config_mount},target=/project-sandbox-config/codex,type=bind,readonly",
     ]
-    if mount_codex_secrets:
+    if forward_credentials:
         mounts.append(
-            f"source={codex_credentials_mount},target=/project-sandbox-secrets/codex,type=bind,readonly"
+            f"source={claude_credentials_mount},target=/project-sandbox-secrets/claude,type=bind,readonly"
         )
-    if mount_opencode_secrets:
-        mounts.append(
-            f"source={opencode_credentials_mount},target=/project-sandbox-secrets/opencode,type=bind,readonly"
-        )
+        if mount_codex_secrets:
+            mounts.append(
+                f"source={codex_credentials_mount},target=/project-sandbox-secrets/codex,type=bind,readonly"
+            )
+        if mount_opencode_secrets:
+            mounts.append(
+                f"source={opencode_credentials_mount},target=/project-sandbox-secrets/opencode,type=bind,readonly"
+            )
     mounts.extend(history_mounts)
     mounts.extend(extra_mounts)
     # Keep this after user-supplied mounts so a writable custom mount cannot

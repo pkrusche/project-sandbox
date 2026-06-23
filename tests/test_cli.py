@@ -1475,3 +1475,78 @@ class PythonUvFlagTests(TestCase):
                     ])
 
             setup_wt.assert_not_called()
+
+
+class HostTokenRefreshGatingTests(TestCase):
+    def _run_with_refresh_mock(self, extra_args: list[str], *, agent: str = "claude"):
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            host_home = project / "home"
+            paths = _agent_paths(host_home)
+            paths["claude"].mkdir(parents=True)
+            paths["codex"].mkdir(parents=True)
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                patch.object(cli.config_agents, "sync_credentials"),
+                patch.object(cli.container_cli, "select_runtime", return_value=cli.container_cli.DOCKER),
+                patch.object(cli.container_cli, "ensure_system_started", return_value=0),
+                patch.object(cli.container_cli, "build_image", return_value=0),
+                patch.object(cli.container_cli, "run", return_value=0),
+                # Re-patch over the suite-wide autouse stub to observe the call.
+                patch.object(cli.oauth_refresh, "refresh_host_token") as refresh,
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                cli.main(["--agent", agent, *extra_args, str(project), "python:3.12-slim"])
+            return refresh
+
+    def test_claude_run_refreshes_claude(self) -> None:
+        refresh = self._run_with_refresh_mock([])
+        refresh.assert_called_once()
+        self.assertEqual(refresh.call_args.args[0], "claude")
+
+    def test_codex_run_refreshes_codex(self) -> None:
+        refresh = self._run_with_refresh_mock([], agent="codex")
+        refresh.assert_called_once()
+        self.assertEqual(refresh.call_args.args[0], "codex")
+
+    def test_bash_run_refreshes_claude(self) -> None:
+        refresh = self._run_with_refresh_mock([], agent="bash")
+        refresh.assert_called_once()
+        self.assertEqual(refresh.call_args.args[0], "claude")
+
+    def test_no_token_refresh_skips_refresh(self) -> None:
+        self.assertEqual(self._run_with_refresh_mock(["--no-token-refresh"]).call_count, 0)
+
+    def test_no_forward_credentials_skips_refresh(self) -> None:
+        self.assertEqual(
+            self._run_with_refresh_mock(["--no-forward-credentials"]).call_count, 0
+        )
+
+
+class NoForwardCredentialsTests(TestCase):
+    def test_skips_staging_and_purges_instead(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            host_home = project / "home"
+            paths = _agent_paths(host_home)
+            paths["claude"].mkdir(parents=True)
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                patch.object(cli.config_agents, "sync_credentials") as sync,
+                patch.object(cli.config_agents, "purge_staged_credentials") as purge,
+                patch.object(cli.container_cli, "select_runtime", return_value=cli.container_cli.DOCKER),
+                patch.object(cli.container_cli, "ensure_system_started", return_value=0),
+                patch.object(cli.container_cli, "build_image", return_value=0),
+                patch.object(cli.container_cli, "run", return_value=0),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                cli.main([
+                    "--agent", "claude", "--no-forward-credentials",
+                    str(project), "python:3.12-slim",
+                ])
+            sync.assert_not_called()
+            purge.assert_called_once()

@@ -217,6 +217,40 @@ uv run project-sandbox \
 - `--verbose` controls how much is shown on the terminal. By default it is quiet: image build and Apple `container system start` output is suppressed (shown only if they fail), the in-container firewall banner is silenced, interactive runs just print `Starting container…` before handing off to the agent/shell, and headless runs print the log path up front and a `Wrote N lines to …` summary at the end (the full output still goes to the log file). With `--verbose`, the build output streams, the firewall banner shows, and headless output is teed live to the terminal as well as the log.
 - The agent's exit code is propagated, so CI pipelines can detect failures.
 
+### OAuth token lifetime
+
+Agent OAuth access tokens are short-lived and the refresh tokens that renew them
+are single-use. If an agent refreshed its token *inside* the `--rm` container, the
+rotated token would be discarded on exit (logging the host out), and parallel
+containers sharing one host login would race on the single-use refresh token and
+invalidate each other. Two host-side measures keep the in-container token valid for
+as long as possible and make any shortfall visible:
+
+- **Host pre-launch refresh.** Before staging, `project-sandbox` runs the agent's
+  own CLI on the host (`claude auth status` / `codex login status`) so the tool
+  refreshes and persists its token using its own maintained logic; the refreshed
+  credential is then staged, so the container starts with a near-full window. This
+  runs under a per-agent lock (so concurrent launches don't race on the single-use
+  refresh token), is best-effort (never blocks a launch), and is skipped with
+  `--no-token-refresh`. OpenCode has no delegated refresh.
+- **Start-of-session warning.** When credentials are forwarded, the launch prints
+  the remaining lifetime of the staged token (`claudeAiOauth.expiresAt` for Claude;
+  the `exp` claim of the Codex access-token JWT). If the session outlives it, the
+  in-container agent refreshes the token using the host's single-use refresh token —
+  the session keeps working, but that **rotation invalidates the host login**, so
+  you'll need to re-authenticate on the host (and re-run to re-stage) afterward. The
+  warning makes that consequence explicit. Sessions are **not** killed at the
+  deadline. For OpenCode, the soonest-expiring OAuth provider in its `auth.json` is
+  used; long-lived/API-key providers (e.g. GitHub Copilot, which mints short-lived
+  session tokens from a non-expiring token) carry no host-logout risk and show no
+  warning.
+- `--no-forward-credentials` starts the container unauthenticated (log in inside the
+  sandbox). Host credentials are **not read, staged, or mounted**: nothing is copied
+  to the `/tmp/project-sandbox-<uid>/...` staging area, any credentials left there by
+  a previous forwarding run are **removed**, and the generated `devcontainer.json` is
+  rendered credential-free (config mounts only, no `/project-sandbox-secrets`). It
+  also disables the host refresh and the start-of-session warning.
+
 OpenCode can be configured with multiple providers. The default firewall allows
 OpenAI and Anthropic endpoints; use `--allow-github` for GitHub Copilot, or
 `--extra-domain DOMAIN` for another provider endpoint.
@@ -282,7 +316,7 @@ The tool does **not** protect against:
 - **Build OOM on Apple `container`.** The builder VM is separate from run VMs. Bump it: `container builder start --memory 8g --cpus 8`, then re-run `project-sandbox`.
 - **GitHub meta API timeout.** The firewall script falls back to an empty `{web,api,git,ipv6}` set and starts with a partial allowlist. Re-running the agent later (with the firewall flushed and rebuilt at container start) will retry.
 - **`ip6tables` unavailable.** The script attempts `sysctl net.ipv6.conf.all.disable_ipv6=1` first. If that also fails, the script aborts with an error.
-- **Credentials look stale.** Re-run `project-sandbox` on the host to refresh the `/tmp` credential staging directory from the host agent config or macOS Keychain.
+- **Credentials look stale.** Re-run `project-sandbox` on the host to refresh the `/tmp` credential staging directory from the host agent config or macOS Keychain. The CLI also refreshes a near-expiry host Claude token before staging (unless `--no-token-refresh`); if a session is unexpectedly short, the staged token was already close to expiry — re-authenticate on the host. See [OAuth token lifetime](#oauth-token-lifetime).
 - **Env vars in `vminitd.log`.** apple/container [logs the full process environment](https://github.com/apple/container/discussions/1153). Tokens are passed through mounted credential files only; identity env vars are low-sensitivity.
 - **Rootless Podman firewall setup fails.** The default firewall needs `NET_ADMIN` and `NET_RAW`. Use a Podman setup that permits those capabilities, or pass `--no-firewall` only for trusted-network debugging.
 

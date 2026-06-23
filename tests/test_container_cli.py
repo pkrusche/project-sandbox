@@ -104,6 +104,41 @@ class ContainerCliTests(TestCase):
             cmd,
         )
 
+    def test_no_forward_credentials_omits_secrets_but_keeps_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cmd = build_run_argv(
+                image="project-sandbox:test",
+                project_abs=root / "workspace",
+                claude_cfg=root / "claude/settings.json",
+                claude_credentials_dir=root / "claude-secrets",
+                codex_cfg=root / "codex/config.toml",
+                codex_credentials_dir=root / "codex-secrets",
+                opencode_credentials_dir=root / "opencode-secrets",
+                identity=GitIdentity("Ada Lovelace", "ada@example.com"),
+                memory="8g",
+                cpus=4,
+                extra_mounts=[],
+                agent="claude",
+                firewall_enabled=False,
+                interactive=True,
+                forward_credentials=False,
+            )
+
+        # No staged host tokens are forwarded...
+        self.assertNotIn("/project-sandbox-secrets/claude,readonly", "".join(cmd))
+        self.assertNotIn("/project-sandbox-secrets/codex,readonly", "".join(cmd))
+        self.assertNotIn("/project-sandbox-secrets/opencode,readonly", "".join(cmd))
+        # ...but generated, non-secret config still is.
+        self.assertIn(
+            f"type=bind,source={root / 'claude'},target=/project-sandbox-config/claude,readonly",
+            cmd,
+        )
+        self.assertIn(
+            f"type=bind,source={root / 'codex'},target=/project-sandbox-config/codex,readonly",
+            cmd,
+        )
+
     def test_build_image_can_use_generated_dockerfile_with_project_context(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

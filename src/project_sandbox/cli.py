@@ -12,11 +12,15 @@ from . import (
     devcontainer,
     dockerfile,
     firewall,
+    oauth_refresh,
     session,
+    token_expiry,
     transcript,
 )
 from . import (
     jj_workspace as jj_workspace_mod,
+)
+from . import (
     worktree as worktree_mod,
 )
 from .git_identity import read as read_identity
@@ -112,6 +116,24 @@ def build_parser() -> ArgumentParser:
     )
     p.add_argument("--log")
     p.add_argument("--timeout", type=int)
+    p.add_argument(
+        "--no-forward-credentials",
+        action="store_true",
+        help=(
+            "Do not stage, mount, or forward host agent credentials (and remove "
+            "any previously staged), and generate a credential-free devcontainer; "
+            "start unauthenticated and log in inside the sandbox. Disables the host "
+            "token refresh and the credential-lifetime warning."
+        ),
+    )
+    p.add_argument(
+        "--no-token-refresh",
+        action="store_true",
+        help=(
+            "Do not attempt to refresh the host Claude OAuth token before launching, even "
+            "if it is near expiry. The staged token is used as-is."
+        ),
+    )
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--verbose", action="store_true")
     return p
@@ -202,7 +224,25 @@ def main(argv: list[str] | None = None) -> int:
         )
 
         cfg = config_agents.render(context_dir)
-        credential_dirs = config_agents.sync_credentials(context_dir)
+        forward_credentials = not args.no_forward_credentials
+        # Before staging, ask the agent's own CLI to refresh its host token so the
+        # container starts with a near-full window. bash may run claude, so it
+        # refreshes the claude token; opencode has no delegated refresh (no-op).
+        if (
+            run_agent is not None
+            and forward_credentials
+            and not args.no_token_refresh
+        ):
+            oauth_refresh.refresh_host_token(
+                "claude" if run_agent == "bash" else run_agent, home=Path.home()
+            )
+        if forward_credentials:
+            credential_dirs = config_agents.sync_credentials(context_dir)
+        else:
+            # Read/copy no host credentials, and remove any staged by a previous
+            # forwarding run so nothing lingers on disk or can be mounted.
+            config_agents.purge_staged_credentials(context_dir)
+            credential_dirs = {}
 
         _write_project_sandbox_gitignore(context_dir)
         _update_project_gitignore(project)
@@ -215,6 +255,7 @@ def main(argv: list[str] | None = None) -> int:
             cpus=args.cpus,
             extra_mounts=args.extra_mounts,
             credential_dirs=credential_dirs,
+            forward_credentials=forward_credentials,
             build_context=build_context,
         )
 
@@ -384,7 +425,9 @@ def _dry_run(
         print(f"Would use build context: {build_context}")
 
     if run_agent is None:
-        print("Would initialize config files only; no agent container would be started.")
+        print(
+            "Would initialize config files only; no agent container would be started."
+        )
         return 0
 
     runtime = container_cli.select_runtime(args.runtime, dry_run=True)
@@ -487,7 +530,9 @@ def _resolve_build_source(
             resolve_strict(args.docker_context) if args.docker_context else project
         )
         if not build_context.is_dir():
-            raise SystemExit(f"--docker-context must point to a directory: {build_context}")
+            raise SystemExit(
+                f"--docker-context must point to a directory: {build_context}"
+            )
         try:
             context_dir.resolve(strict=False).relative_to(build_context.resolve())
         except ValueError as exc:
@@ -616,7 +661,9 @@ def _teardown_worktree(args, *, project: Path, wt, exit_code: int) -> None:
     after = args.after_session
     if exit_code != 0:
         if after != "nothing":
-            print(f"session exited {exit_code}; skipping {after} — worktree left at {wt.path}")
+            print(
+                f"session exited {exit_code}; skipping {after} — worktree left at {wt.path}"
+            )
         after = "nothing"
     _teardown_any(project, wt, after=after)
 
@@ -626,6 +673,51 @@ def _teardown_any(project: Path, wt, *, after: str) -> None:
         jj_workspace_mod.teardown(project, wt, after=after)
     else:
         worktree_mod.teardown(project, wt, after=after)
+
+
+def _format_duration(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    hours, rem = divmod(seconds, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}h{minutes:02d}m"
+    if minutes:
+        return f"{minutes}m{secs:02d}s"
+    return f"{secs}s"
+
+
+def _warn_forwarded_credential_lifetime(
+    *,
+    run_mode_agent: str,
+    credential_dirs: dict[str, Path],
+    forward_credentials: bool,
+) -> None:
+    """Warn at session start about the remaining lifetime of forwarded credentials.
+
+    Sessions are never killed; if one outlives the forwarded token the agent will
+    log out inside the sandbox and the user must re-authenticate on the host and
+    re-run. We surface that up front. Unknown lifetimes (e.g. opencode) are
+    silent — there is nothing meaningful to show.
+    """
+    if not forward_credentials:
+        return
+    expiry = token_expiry.staged_token_expiry(credential_dirs, run_mode_agent)
+    if expiry is None:
+        return
+    remaining_seconds = int(token_expiry.remaining(expiry).total_seconds())
+    if remaining_seconds <= 0:
+        print(
+            "[!] Forwarded credentials have already expired; on first use the agent "
+            "will refresh the token inside the sandbox, which logs you out on the "
+            "host. Re-authenticate on the host first, then re-run."
+        )
+        return
+    human = _format_duration(remaining_seconds)
+    print(
+        f"[!] Forwarded credentials are valid for ~{human}. If this session runs "
+        "longer, the agent refreshes the token inside the sandbox, which logs you "
+        "out on the host — you'll then need to re-authenticate on the host and re-run."
+    )
 
 
 def _build_session_command(
@@ -648,10 +740,14 @@ def _build_session_command(
     if worktree is not None:
         if isinstance(worktree, jj_workspace_mod.JjWorkspace):
             vcs_dir = (project / ".jj").resolve()
-            conflict_msg = f"--mount conflicts with the workspace .jj metadata mount at {vcs_dir}"
+            conflict_msg = (
+                f"--mount conflicts with the workspace .jj metadata mount at {vcs_dir}"
+            )
         else:
             vcs_dir = (project / ".git").resolve()
-            conflict_msg = f"--mount conflicts with the worktree .git metadata mount at {vcs_dir}"
+            conflict_msg = (
+                f"--mount conflicts with the worktree .git metadata mount at {vcs_dir}"
+            )
         vcs_dir_str = str(vcs_dir)
         if any(vcs_dir_str in m for m in extra_mounts):
             raise SystemExit(conflict_msg)
@@ -667,7 +763,9 @@ def _build_session_command(
     # Unsupervised runs get a named container so that on timeout the runtime can
     # be told to stop it explicitly (rather than relying on SIGKILL to the CLI
     # process, which does not guarantee the backing VM is reclaimed).
-    container_name = f"project-sandbox-{uuid.uuid4().hex[:12]}" if unsupervised else None
+    container_name = (
+        f"project-sandbox-{uuid.uuid4().hex[:12]}" if unsupervised else None
+    )
     container_stop_argv = (
         container_cli.build_stop_argv(runtime, container_name)
         if container_name is not None
@@ -743,13 +841,20 @@ def _build_session_command(
         f"type=bind,source={mask_source},target={WORKSPACE_SANDBOX_TARGET},readonly"
     )
 
+    forward_credentials = not getattr(args, "no_forward_credentials", False)
+    _warn_forwarded_credential_lifetime(
+        run_mode_agent=run_mode_agent,
+        credential_dirs=credential_dirs,
+        forward_credentials=forward_credentials,
+    )
+
     return (
         container_cli.build_run_argv(
             runtime=runtime,
             image=args.image_tag,
             project_abs=workspace,
             claude_cfg=claude_cfg,
-            claude_credentials_dir=credential_dirs["claude"],
+            claude_credentials_dir=credential_dirs.get("claude"),
             codex_cfg=codex_cfg,
             codex_credentials_dir=credential_dirs.get("codex"),
             opencode_credentials_dir=credential_dirs.get("opencode"),
@@ -762,6 +867,7 @@ def _build_session_command(
             interactive=not unsupervised,
             extra_env=extra_env,
             container_name=container_name,
+            forward_credentials=forward_credentials,
         ),
         log_path,
         unsupervised,

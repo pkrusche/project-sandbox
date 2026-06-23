@@ -109,6 +109,32 @@ class DevcontainerTests(TestCase):
             self.assertNotIn("/home/agent/.claude/settings.json", mounts)
             self.assertNotIn("/home/agent/.claude.host", mounts)
 
+    def test_no_forward_credentials_renders_credential_free_devcontainer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / ".project-sandbox").mkdir()
+
+            devcontainer.render(
+                project,
+                identity=GitIdentity("Ada", "ada@example.com"),
+                firewall_enabled=True,
+                memory="8g",
+                cpus=4,
+                extra_mounts=[],
+                forward_credentials=False,
+            )
+            mounts = "\n".join(
+                json.loads(
+                    (project / ".devcontainer" / "devcontainer.json").read_text()
+                )["mounts"]
+            )
+
+            # No staged host tokens are wired...
+            self.assertNotIn("/project-sandbox-secrets/", mounts)
+            # ...but generated, non-secret config still is.
+            self.assertIn("target=/project-sandbox-config/claude,type=bind,readonly", mounts)
+            self.assertIn("target=/project-sandbox-config/codex,type=bind,readonly", mounts)
+
     def test_workspace_sandbox_mask_overrides_custom_mount(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)

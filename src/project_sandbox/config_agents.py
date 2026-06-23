@@ -287,6 +287,18 @@ def _ensure_private_dir(path: Path) -> None:
         directory.chmod(0o700)
 
 
+def purge_staged_credentials(project_sandbox_dir: Path) -> None:
+    """Delete this project's staged credential tree under /tmp.
+
+    Used with --no-forward-credentials: no host tokens are staged, and any left
+    over from a previous forwarding run are removed so nothing lingers on disk or
+    can be mounted. The per-project digest directory holds only this project's
+    staged agent credentials, so removing it is safe.
+    """
+    digest_dir = credentials_dir(project_sandbox_dir, "claude").parent
+    _remove_path_if_exists(digest_dir)
+
+
 def _remove_stale_project_credentials(project_sandbox_dir: Path) -> None:
     project_claude_dir = project_sandbox_dir / "claude"
     _reject_symlinked_project_path(project_claude_dir)

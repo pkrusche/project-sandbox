@@ -63,7 +63,7 @@ def build_run_argv(
     image: str,
     project_abs: Path,
     claude_cfg: Path,
-    claude_credentials_dir: Path,
+    claude_credentials_dir: Path | None = None,
     codex_cfg: Path,
     codex_credentials_dir: Path | None,
     identity: GitIdentity,
@@ -76,6 +76,7 @@ def build_run_argv(
     extra_env: Sequence[str] = (),
     opencode_credentials_dir: Path | None = None,
     container_name: str | None = None,
+    forward_credentials: bool = True,
 ) -> list[str]:
     argv = [
         runtime.binary,
@@ -94,26 +95,33 @@ def build_run_argv(
         argv.append("-it")
     if firewall_enabled:
         argv += ["--cap-add", "NET_ADMIN", "--cap-add", "NET_RAW"]
+    # Generated, non-secret config (settings.json / config.toml) is always
+    # mounted; the staged host tokens under /project-sandbox-secrets are only
+    # forwarded when forward_credentials is set. With it off, the container
+    # starts unauthenticated and the user logs in inside the sandbox.
     argv += [
         "--mount",
         f"type=bind,source={project_abs},target=/workspace",
         "--mount",
         f"type=bind,source={claude_cfg.parent},target=/project-sandbox-config/claude,readonly",
         "--mount",
-        f"type=bind,source={claude_credentials_dir.resolve(strict=False)},target=/project-sandbox-secrets/claude,readonly",
-        "--mount",
         f"type=bind,source={codex_cfg.parent},target=/project-sandbox-config/codex,readonly",
     ]
-    if codex_credentials_dir is not None:
+    if forward_credentials:
         argv += [
             "--mount",
-            f"type=bind,source={codex_credentials_dir.resolve(strict=False)},target=/project-sandbox-secrets/codex,readonly",
+            f"type=bind,source={claude_credentials_dir.resolve(strict=False)},target=/project-sandbox-secrets/claude,readonly",
         ]
-    if opencode_credentials_dir is not None:
-        argv += [
-            "--mount",
-            f"type=bind,source={opencode_credentials_dir.resolve(strict=False)},target=/project-sandbox-secrets/opencode,readonly",
-        ]
+        if codex_credentials_dir is not None:
+            argv += [
+                "--mount",
+                f"type=bind,source={codex_credentials_dir.resolve(strict=False)},target=/project-sandbox-secrets/codex,readonly",
+            ]
+        if opencode_credentials_dir is not None:
+            argv += [
+                "--mount",
+                f"type=bind,source={opencode_credentials_dir.resolve(strict=False)},target=/project-sandbox-secrets/opencode,readonly",
+            ]
     if identity.name:
         argv += [
             "--env",
