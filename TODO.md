@@ -1,37 +1,17 @@
 # TODO - outstanding items
 
+## Implement API key injection
+
+When running with --no-forward-credentials, we should add functionality to inject
+environment variables for API keys (e.g. Bedrock / Anthropic). These credentials could e.g. 
+come from the local environment on the host shell, or from a .env file.
+
 ## Optimize image build times on start
 
 Startup can be slow when `project-sandbox` needs to build or rebuild the container
 image before launching. Outstanding: profile the current image build path and
 reduce cold-start and rebuild time, especially for repeated local runs where most
 inputs have not changed.
-
-## OAuth refresh validation follow-ups
-
-Resolved behavior is documented in `docs/security.md`. Remaining real-host
-validation:
-
-- Confirm `claude auth status` actually triggers a refresh-and-persist for a
-  near-expiry token (vs. only reading state). If it only reads, switch the Claude
-  trigger to one that does refresh (e.g. a minimal `claude -p`, or `claude
-  setup-token` long-lived tokens). The command lives in one place: `_AGENTS` in
-  `oauth_refresh.py`.
-- Confirm `codex login status` refreshes `auth.json` in place (OpenAI's CI/CD docs
-  say running Codex refreshes it; verify `login status` specifically does).
-- The refresh shells out to the agent CLI on the host (network + process startup);
-  confirm latency is acceptable and that neither command can prompt interactively
-  (we run with a 30s timeout and captured output).
-- OpenCode host refresh: not done. OpenCode exposes no `auth status`/`refresh`
-  delegation command (only `auth list`/`login`/`logout`), its `auth.json` is
-  multi-provider, and Anthropic OAuth is being removed from OpenCode for legal
-  reasons - so a clean delegated refresh isn't available. The lifetime *warning* is
-  implemented (`token_expiry._opencode_expiry`); only the host pre-launch refresh is
-  missing for OpenCode OAuth providers.
-- Devcontainer sessions are out of scope: they mount the same staged credentials but
-  are launched by the IDE, so neither the host refresh nor the warning applies. A
-  long-lived devcontainer can still rotate-then-lose a token like the original bug.
-  Consider applying the same delegated refresh + warning to that path.
 
 ## Telemetry and config filtering for OpenCode and GitHub Copilot
 
