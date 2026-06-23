@@ -394,7 +394,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             if not args.verbose:
                 print(f"Wrote {session.count_lines(log_path)} lines to {log_path}")
-            if run_agent == "claude":
+            if run_agent in ("claude", "codex"):
                 _write_transcript_markdown(log_path)
         else:
             exit_code = container_cli.run(cmd)

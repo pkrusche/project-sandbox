@@ -41,6 +41,7 @@ def run(
         # not just the immediate child.
         proc = subprocess.Popen(
             argv,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,

@@ -52,7 +52,7 @@ case "${1:-bash}" in
       codex-headless)
         shift
         load_project_sandbox_prompt codex-headless || exit $?
-        exec codex exec "$PROMPT"
+        exec codex exec --json --color never "$PROMPT"
         ;;
       opencode-headless)
         shift

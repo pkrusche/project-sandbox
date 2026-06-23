@@ -819,6 +819,7 @@ class RendererTests(TestCase):
                 text,
             )
             self.assertIn("codex-headless", text)
+            self.assertIn('exec codex exec --json --color never "$PROMPT"', text)
             self.assertIn("opencode-headless", text)
             self.assertIn("bash-headless", text)
             self.assertIn('exec bash -lc "$PROMPT"', text)

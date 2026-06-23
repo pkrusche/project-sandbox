@@ -63,6 +63,21 @@ class SessionTests(TestCase):
 
             self.assertIn("streamed line", out.getvalue())
 
+    def test_run_closes_child_stdin(self) -> None:
+        proc = Mock()
+        proc.pid = 1234
+        proc.wait.return_value = 0
+        proc.stdout = io.StringIO("")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "session.log"
+            with patch(
+                "project_sandbox.session.subprocess.Popen", return_value=proc
+            ) as popen:
+                session.run(["cmd"], log_path=log_path)
+
+        self.assertEqual(popen.call_args.kwargs["stdin"], subprocess.DEVNULL)
+
     def test_count_lines(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "f.log"

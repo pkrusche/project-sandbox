@@ -65,6 +65,39 @@ SAMPLE_EVENTS = [
     },
 ]
 
+CODEX_EVENTS = [
+    {"type": "thread.started", "thread_id": "019ef629-9102-7733-922a"},
+    {"type": "turn.started"},
+    {
+        "type": "item.completed",
+        "item": {
+            "id": "item_0",
+            "type": "command_execution",
+            "command": "/bin/bash -lc pwd",
+            "aggregated_output": "/workspace\n",
+            "exit_code": 0,
+            "status": "completed",
+        },
+    },
+    {
+        "type": "item.completed",
+        "item": {
+            "id": "item_1",
+            "type": "agent_message",
+            "text": "Done.",
+        },
+    },
+    {
+        "type": "turn.completed",
+        "usage": {
+            "input_tokens": 53323,
+            "cached_input_tokens": 28928,
+            "output_tokens": 43,
+            "reasoning_output_tokens": 0,
+        },
+    },
+]
+
 
 class TranscriptRenderTests(TestCase):
     def test_render_includes_header_text_tool_and_result(self) -> None:
@@ -181,7 +214,7 @@ class TranscriptLogToMarkdownTests(TestCase):
             self.assertIn("Done reading the file.", text)
             self.assertNotIn("Firewall initialized", text)
 
-    def test_returns_none_when_no_claude_events(self) -> None:
+    def test_returns_none_when_no_json_agent_events(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             log_path = Path(tmp) / "codex-main.log"
             log_path.write_text("just plain text\nno json here\n", encoding="utf-8")
@@ -195,3 +228,36 @@ class TranscriptLogToMarkdownTests(TestCase):
         ]
         md = transcript.render_markdown(events)
         self.assertIn("plain string answer", md)
+
+    def test_render_codex_json_events(self) -> None:
+        md = transcript.render_codex_markdown(CODEX_EVENTS)
+
+        self.assertIn("# Codex session transcript", md)
+        self.assertIn("- **Thread:** `019ef629-9102-7733-922a`", md)
+        self.assertIn("### Command", md)
+        self.assertIn("/bin/bash -lc pwd", md)
+        self.assertIn("#### Output", md)
+        self.assertIn("/workspace", md)
+        self.assertIn("- **Exit code:** 0", md)
+        self.assertIn("## Assistant", md)
+        self.assertIn("Done.", md)
+        self.assertIn("- **Input tokens:** 53323", md)
+        self.assertIn("- **Output tokens:** 43", md)
+
+    def test_writes_codex_sidecar_skipping_non_json_preamble(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "codex-main.log"
+            log_path.write_text(
+                "Reading additional input from stdin...\n"
+                + _log_lines(*CODEX_EVENTS),
+                encoding="utf-8",
+            )
+
+            md_path = transcript.log_to_markdown(log_path)
+
+            self.assertIsNotNone(md_path)
+            self.assertEqual(md_path, log_path.with_suffix(".md"))
+            text = md_path.read_text(encoding="utf-8")
+            self.assertIn("# Codex session transcript", text)
+            self.assertIn("Done.", text)
+            self.assertNotIn("Reading additional input", text)

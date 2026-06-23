@@ -1,7 +1,8 @@
-"""Render a human-readable markdown transcript from a Claude stream-json log.
+"""Render a human-readable markdown transcript from headless agent JSON logs.
 
 Headless claude runs emit newline-delimited JSON (one event per line) via
-`claude -p --output-format stream-json --verbose`. The session log also holds
+`claude -p --output-format stream-json --verbose`; headless Codex runs emit
+newline-delimited JSON via `codex exec --json`. The session log also holds
 plain-text preamble from the container entrypoint and firewall, so the parser
 tolerates and skips any line that is not a JSON object.
 """
@@ -15,16 +16,21 @@ _MAX_BLOCK_CHARS = 2000
 
 
 def log_to_markdown(log_path: Path) -> Path | None:
-    """Parse a stream-json session log and write a markdown sidecar next to it.
+    """Parse a headless JSON session log and write a markdown sidecar next to it.
 
     Returns the markdown path on success, or None if the log held no parseable
-    Claude events (e.g. a non-claude agent or a run that never started).
+    agent events (e.g. a non-JSON agent or a run that never started).
     """
     events = _parse_events(log_path.read_text(encoding="utf-8", errors="replace"))
-    if not _has_claude_events(events):
+    markdown: str | None
+    if _has_claude_events(events):
+        markdown = render_markdown(events)
+    elif _has_codex_events(events):
+        markdown = render_codex_markdown(events)
+    else:
         return None
     md_path = log_path.with_suffix(".md")
-    md_path.write_text(render_markdown(events), encoding="utf-8")
+    md_path.write_text(markdown, encoding="utf-8")
     return md_path
 
 
@@ -47,6 +53,14 @@ def _has_claude_events(events: list[dict]) -> bool:
     return any(e.get("type") in ("system", "assistant", "result") for e in events)
 
 
+def _has_codex_events(events: list[dict]) -> bool:
+    return any(
+        isinstance(e.get("type"), str)
+        and e["type"].startswith(("thread.", "turn.", "item."))
+        for e in events
+    )
+
+
 def render_markdown(events: list[dict]) -> str:
     parts: list[str] = ["# Claude session transcript", ""]
     tool_names: dict[str, str] = {}
@@ -67,6 +81,90 @@ def render_markdown(events: list[dict]) -> str:
     while "\n\n\n" in text:
         text = text.replace("\n\n\n", "\n\n")
     return text.strip() + "\n"
+
+
+def render_codex_markdown(events: list[dict]) -> str:
+    parts: list[str] = ["# Codex session transcript", ""]
+
+    for event in events:
+        etype = event.get("type")
+        if etype == "thread.started":
+            thread_id = event.get("thread_id")
+            if thread_id:
+                parts.extend([f"- **Thread:** `{thread_id}`", "", "---", ""])
+        elif etype == "item.completed":
+            parts.extend(_render_codex_item(event.get("item")))
+        elif etype == "turn.failed":
+            parts.extend(_render_codex_failure(event))
+        elif etype == "turn.completed":
+            parts.extend(_render_codex_usage(event.get("usage")))
+
+    text = "\n".join(parts)
+    while "\n\n\n" in text:
+        text = text.replace("\n\n\n", "\n\n")
+    return text.strip() + "\n"
+
+
+def _render_codex_item(item: object) -> list[str]:
+    if not isinstance(item, dict):
+        return []
+    itype = item.get("type")
+    if itype == "agent_message":
+        text = item.get("text")
+        if isinstance(text, str) and text.strip():
+            return ["## Assistant", "", text.strip(), ""]
+        return []
+    if itype == "command_execution":
+        out: list[str] = ["### Command", ""]
+        command = item.get("command")
+        if isinstance(command, str) and command.strip():
+            out.extend(_code_block(command.strip(), "sh"))
+            out.append("")
+        output = item.get("aggregated_output")
+        if isinstance(output, str) and output:
+            out.extend(
+                ["#### Output", "", *_code_block(_truncate(output.rstrip("\n"))), ""]
+            )
+        exit_code = item.get("exit_code")
+        if exit_code is not None:
+            out.extend([f"- **Exit code:** {exit_code}", ""])
+        return out
+    return []
+
+
+def _render_codex_failure(event: dict) -> list[str]:
+    error = event.get("error")
+    if isinstance(error, dict):
+        message = error.get("message") or error.get("error")
+        if isinstance(message, str) and message.strip():
+            return [
+                "---",
+                "",
+                "## Result",
+                "",
+                "- **Status:** error",
+                message.strip(),
+                "",
+            ]
+    return ["---", "", "## Result", "", "- **Status:** error", ""]
+
+
+def _render_codex_usage(usage: object) -> list[str]:
+    out = ["---", "", "## Result", ""]
+    stats: list[str] = []
+    if isinstance(usage, dict):
+        for key, label in (
+            ("input_tokens", "Input tokens"),
+            ("cached_input_tokens", "Cached input tokens"),
+            ("output_tokens", "Output tokens"),
+            ("reasoning_output_tokens", "Reasoning output tokens"),
+        ):
+            value = usage.get(key)
+            if isinstance(value, int):
+                stats.append(f"- **{label}:** {value}")
+    if stats:
+        out.extend([*stats, ""])
+    return out
 
 
 def _render_init(event: dict) -> list[str]:
