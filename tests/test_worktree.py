@@ -1,5 +1,6 @@
 import contextlib
 import io
+import os
 import shutil
 import subprocess
 import sys
@@ -361,7 +362,6 @@ class GitWorktreeDockerEndToEndTests(TestCase):
 
     def _docker(self, wt_path: Path, bash_cmd: str) -> None:
         git_dir = str((self.repo / ".git").resolve())
-        import os
         uid = os.getuid()
         subprocess.run(
             [
@@ -382,9 +382,13 @@ class GitWorktreeDockerEndToEndTests(TestCase):
         # 2. Container adds a file and commits via bash
         self._docker(
             wt.path,
-            "export HOME=/tmp && git config --global --add safe.directory /workspace && git config user.email t@test.com && git config user.name Test && "
+            "export HOME=/tmp && "
+            "git config --global --add safe.directory /workspace && "
+            "git config user.email t@test.com && "
+            "git config user.name Test && "
             "echo 'hello from container' > agent_output.txt && "
-            "git add . && git commit -m 'agent: add agent_output'",
+            "git add . && "
+            "git commit -m 'agent: add agent_output'",
         )
 
         # 3. Show tree — file present on host
@@ -406,9 +410,13 @@ class GitWorktreeDockerEndToEndTests(TestCase):
         wt = worktree_mod.setup(self.repo, "feat/e2e-rebase")
         self._docker(
             wt.path,
-            "export HOME=/tmp && git config --global --add safe.directory /workspace && git config user.email t@test.com && git config user.name Test && "
+            "export HOME=/tmp && "
+            "git config --global --add safe.directory /workspace && "
+            "git config user.email t@test.com && "
+            "git config user.name Test && "
             "echo 'hello from container' > agent_output.txt && "
-            "git add . && git commit -m 'agent: add file'",
+            "git add . && "
+            "git commit -m 'agent: add file'",
         )
 
         worktree_mod.teardown(self.repo, wt, after="rebase")
