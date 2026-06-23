@@ -462,6 +462,30 @@ class DevcontainerTests(TestCase):
             )
             self.assertIn(malicious_mount, spec["mounts"])
 
+    def test_render_sets_uv_offline_when_firewall_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / ".project-sandbox").mkdir()
+
+            _render(project, firewall_enabled=True)
+            spec = json.loads(
+                (project / ".devcontainer" / "devcontainer.json").read_text()
+            )
+
+            self.assertEqual(spec["containerEnv"]["UV_OFFLINE"], "1")
+
+    def test_render_omits_uv_offline_when_firewall_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / ".project-sandbox").mkdir()
+
+            _render(project, firewall_enabled=False)
+            spec = json.loads(
+                (project / ".devcontainer" / "devcontainer.json").read_text()
+            )
+
+            self.assertNotIn("UV_OFFLINE", spec["containerEnv"])
+
     def test_render_can_use_project_root_build_context(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)

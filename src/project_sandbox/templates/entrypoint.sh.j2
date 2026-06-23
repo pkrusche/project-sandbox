@@ -17,6 +17,7 @@ if [ "${PROJECT_SANDBOX_NO_FIREWALL:-0}" != "1" ]; then
   else
     sudo -n /usr/local/bin/project-sandbox-init-firewall
   fi
+  export UV_OFFLINE=1
 fi
 
 load_project_sandbox_prompt() {

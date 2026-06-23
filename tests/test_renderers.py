@@ -823,6 +823,8 @@ class RendererTests(TestCase):
             self.assertIn("opencode-headless", text)
             self.assertIn("bash-headless", text)
             self.assertIn('exec bash -lc "$PROMPT"', text)
+            # UV_OFFLINE is set after the firewall block so uv works offline.
+            self.assertIn("export UV_OFFLINE=1", text)
 
     def test_entrypoint_renderer_overwrites_missing_jj_identity_setup(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

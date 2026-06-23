@@ -141,6 +141,8 @@ def render(
         "CODEX_HOME": "/home/agent/.codex",
         "NODE_OPTIONS": "--max-old-space-size=4096",
     }
+    if firewall_enabled:
+        container_env["UV_OFFLINE"] = "1"
     if HISTORY_HISTFILE:
         container_env["HISTFILE"] = HISTORY_HISTFILE
 
