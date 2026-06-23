@@ -12,12 +12,14 @@ runs in its own VM. On Linux, direct CLI runs support Docker or Podman.
 Many sandboxes exist - this is the one with a feature-set / configureable agency-boundary that I was comfortable with in the end:
 
 * **Strong isolation** - on OSX with Apple Container VMs. Custom Dockerfile support (as long as it's based on Debian)
-* **Agent config glue**: Forward host credentials / agent subscriptions into containers, update settings to bypass permissions inside the container.
-* **Devcontainer support**: Creates a matched devcontainer config for editor support.
+* **Agent config glue**: Forward host credentials / agent subscriptions into containers selectively, update settings to bypass permissions inside the container.
+* **Devcontainer support**: Creates a matched devcontainer config for editor support (weaker isolation but integrated workflow).
 * **Unsupervised job runs** - submit batch jobs.
 * **Network access restrictions**: restrict to allowed domains, (somewhat) hardened firewall script.
 * **git/jj integration**: Managed execution with worktrees / workspaces. No credentials to push inside containers.
 * **pinned dependencies**: pre-install agents & extra tools into the image, manual upversioning.
+* **Simple workflow** (in my view).
+* **Minimal dependencies** (jinja2)
 
 ## Quick Start
 

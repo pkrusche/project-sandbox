@@ -1,11 +1,5 @@
 # TODO - outstanding items
 
-## Implement API key injection
-
-When running with --no-forward-credentials, we should add functionality to inject
-environment variables for API keys (e.g. Bedrock / Anthropic). These credentials could e.g. 
-come from the local environment on the host shell, or from a .env file.
-
 ## Optimize image build times on start
 
 Startup can be slow when `project-sandbox` needs to build or rebuild the container
@@ -13,7 +7,7 @@ image before launching. Outstanding: profile the current image build path and
 reduce cold-start and rebuild time, especially for repeated local runs where most
 inputs have not changed.
 
-## Telemetry and config filtering for OpenCode and GitHub Copilot
+## Telemetry and config filtering for OpenCode
 
 OpenCode credentials are staged as-is from `~/.config/opencode` with no sanitization
 equivalent to the Claude/Codex config generation. This means auto-update settings,

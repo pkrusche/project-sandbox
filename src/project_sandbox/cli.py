@@ -1,4 +1,5 @@
 import hashlib
+import os
 import re
 import shlex
 import shutil
@@ -127,6 +128,27 @@ def build_parser() -> ArgumentParser:
         ),
     )
     p.add_argument(
+        "--api-key-env",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help=(
+            "With --no-forward-credentials, inject this host environment variable "
+            "into a direct agent container. Repeat for multiple API keys."
+        ),
+    )
+    p.add_argument(
+        "--api-key-env-file",
+        action="append",
+        default=[],
+        metavar="FILE",
+        help=(
+            "With --no-forward-credentials, inject API key environment variables "
+            "from a dotenv-style KEY=VALUE file into a direct agent container. "
+            "Repeat to load multiple files."
+        ),
+    )
+    p.add_argument(
         "--no-token-refresh",
         action="store_true",
         help=(
@@ -145,6 +167,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.prompt and args.prompt_text:
         raise SystemExit("Use only one of --prompt or --prompt-text")
     run_agent = _requested_agent(args)
+    _validate_api_key_injection_args(args, run_agent)
     if args.branch and run_agent is None:
         raise SystemExit("--branch requires --agent, --prompt, or --prompt-text")
     if (
@@ -398,6 +421,7 @@ def _dry_run(
         },
     }
     run_agent = _requested_agent(args)
+    _validate_api_key_injection_args(args, run_agent)
     _warn_opencode_provider_allowlist(args, run_agent)
 
     print("DRY RUN: no files, worktrees, images, or containers will be created.")
@@ -471,6 +495,85 @@ def _dry_run(
     else:
         container_cli.run(cmd, dry_run=True)
     return 0
+
+
+_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _validate_api_key_injection_args(args, run_agent: str | None) -> None:
+    requested = bool(
+        getattr(args, "api_key_env", []) or getattr(args, "api_key_env_file", [])
+    )
+    if not requested:
+        return
+    if not args.no_forward_credentials:
+        raise SystemExit(
+            "--api-key-env and --api-key-env-file require --no-forward-credentials"
+        )
+    if run_agent is None:
+        raise SystemExit(
+            "--api-key-env and --api-key-env-file require --agent, --prompt, or --prompt-text"
+        )
+
+
+def _api_key_env(args, *, redact: bool = False) -> list[str]:
+    values: dict[str, str] = {}
+    for env_file in getattr(args, "api_key_env_file", []):
+        values.update(_read_api_key_env_file(resolve_strict(env_file)))
+    for name in getattr(args, "api_key_env", []):
+        _validate_env_name(name, source="--api-key-env")
+        if name not in os.environ:
+            raise SystemExit(f"--api-key-env {name}: host environment variable is not set")
+        values[name] = os.environ[name]
+    if redact:
+        return [f"{name}=<redacted>" for name in values]
+    return [f"{name}={value}" for name, value in values.items()]
+
+
+def _read_api_key_env_file(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except UnicodeDecodeError as exc:
+        raise SystemExit(f"{path}: API key env file must be UTF-8") from exc
+
+    for line_no, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.startswith("export "):
+            stripped = stripped[len("export ") :].lstrip()
+        if "=" not in stripped:
+            raise SystemExit(f"{path}:{line_no}: expected KEY=VALUE")
+        name, raw_value = stripped.split("=", 1)
+        name = name.strip()
+        _validate_env_name(name, source=f"{path}:{line_no}")
+        values[name] = _parse_env_file_value(raw_value)
+    return values
+
+
+def _parse_env_file_value(raw_value: str) -> str:
+    raw_value = raw_value.strip()
+    if not raw_value:
+        return ""
+    if raw_value[0] in {'"', "'"}:
+        try:
+            parts = shlex.split(raw_value, comments=True, posix=True)
+        except ValueError as exc:
+            raise SystemExit(f"Invalid quoted value in API key env file: {exc}") from exc
+        if len(parts) != 1:
+            raise SystemExit("Invalid quoted value in API key env file")
+        return parts[0]
+
+    # Match common dotenv behavior: comments start only after whitespace, so
+    # values such as sk-abc#123 are preserved.
+    return re.sub(r"\s+#.*$", "", raw_value).strip()
+
+
+def _validate_env_name(name: str, *, source: str) -> None:
+    if _ENV_NAME_RE.fullmatch(name):
+        return
+    raise SystemExit(f"{source}: invalid environment variable name: {name!r}")
 
 
 def _resolve_build_source(
@@ -753,6 +856,7 @@ def _build_session_command(
             raise SystemExit(conflict_msg)
         extra_mounts.append(f"type=bind,source={vcs_dir_str},target={vcs_dir_str}")
     extra_env: list[str] = []
+    extra_env.extend(_api_key_env(args, redact=not create_prompt_files))
     if not args.verbose:
         # Silence the in-container firewall/startup banner; the entrypoint still
         # surfaces firewall errors on failure.

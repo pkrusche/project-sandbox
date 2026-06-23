@@ -28,7 +28,10 @@ for as long as possible and make any shortfall visible:
   credentials are not read, staged, or mounted; any credentials left in the
   staging area by a previous forwarding run are removed, and the generated
   `devcontainer.json` is rendered credential-free. It also disables the host
-  refresh and start-of-session warning.
+  refresh and start-of-session warning. Direct CLI runs may opt in to API-key
+  environment injection with `--api-key-env NAME` or `--api-key-env-file FILE`;
+  dry-runs redact values, but real runs still pass those values through the
+  runtime process environment.
 
 OpenCode can be configured with multiple providers. The default firewall allows
 OpenAI and Anthropic endpoints; use `--allow-github` for GitHub Copilot, or
@@ -89,7 +92,7 @@ Customize:
 | Malicious npm post-install scripts | Run as UID 1000 inside the container; no access to unmounted host paths. |
 | Agent updates itself to a malicious version | `autoUpdaterStatus: disabled` for Claude and `disable_update_check = true` for Codex. OpenCode config is not currently sanitized; see `TODO.md`. |
 | Agent sends telemetry / usage data | `CLAUDE_TELEMETRY_DISABLED=1` for Claude; `analytics.enabled = false` and `feedback.enabled = false` for Codex. OpenCode config is not currently filtered for telemetry settings; see `TODO.md`. |
-| API token leakage via process environment | Tokens are passed through mounted credential files, not environment variables; host staging files are kept under a private `/tmp` directory. |
+| API token leakage via process environment | Default forwarded agent tokens are passed through mounted credential files, not environment variables; host staging files are kept under a private `/tmp` directory. Explicit `--api-key-env*` injection is opt-in, requires `--no-forward-credentials`, and redacts dry-run output, but the selected keys are still present in the runtime process environment during real runs. |
 
 The tool does not protect against:
 
@@ -123,8 +126,10 @@ The tool does not protect against:
   Keychain. The CLI also refreshes a near-expiry host Claude token before staging
   unless `--no-token-refresh` is set.
 - **Env vars in `vminitd.log`.** apple/container logs the full process
-  environment. Tokens are passed through mounted credential files only; identity
-  env vars are low-sensitivity.
+  environment. Default forwarded agent tokens are passed through mounted
+  credential files only; identity env vars are low-sensitivity. Values injected
+  with `--api-key-env` or `--api-key-env-file` are process environment secrets
+  and may appear in runtime metadata or logs.
 - **Rootless Podman firewall setup fails.** The default firewall needs
   `NET_ADMIN` and `NET_RAW`. Use a Podman setup that permits those capabilities,
   or pass `--no-firewall` only for trusted-network debugging.

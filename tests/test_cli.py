@@ -1,5 +1,6 @@
 import contextlib
 import io
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -44,6 +45,8 @@ class CliTests(TestCase):
         self.assertIn("--dockerfile", help_text)
         self.assertIn("--runtime", help_text)
         self.assertIn("--allow-github", help_text)
+        self.assertIn("--api-key-env", help_text)
+        self.assertIn("--api-key-env-file", help_text)
         self.assertNotIn("--rebuild", help_text)
         self.assertNotIn("--refresh-config", help_text)
         self.assertIn("bash", help_text)
@@ -1550,3 +1553,107 @@ class NoForwardCredentialsTests(TestCase):
                 ])
             sync.assert_not_called()
             purge.assert_called_once()
+
+
+class ApiKeyInjectionTests(TestCase):
+    def test_api_key_env_requires_no_forward_credentials(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(cli.config_agents, "_agent_host_paths", return_value=_agent_paths(project / "home")),
+                patch.dict(os.environ, {"ANTHROPIC_API_KEY": "secret"}, clear=False),
+            ):
+                with self.assertRaises(SystemExit) as raised:
+                    cli.main([
+                        "--dry-run",
+                        "--no-build",
+                        "--agent",
+                        "bash",
+                        "--api-key-env",
+                        "ANTHROPIC_API_KEY",
+                        str(project),
+                        "python:3.12-slim",
+                    ])
+
+            self.assertIn("require --no-forward-credentials", str(raised.exception))
+
+    def test_api_key_env_requires_agent_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(cli.config_agents, "_agent_host_paths", return_value=_agent_paths(project / "home")),
+                patch.dict(os.environ, {"ANTHROPIC_API_KEY": "secret"}, clear=False),
+            ):
+                with self.assertRaises(SystemExit) as raised:
+                    cli.main([
+                        "--dry-run",
+                        "--no-forward-credentials",
+                        "--api-key-env",
+                        "ANTHROPIC_API_KEY",
+                        str(project),
+                        "python:3.12-slim",
+                    ])
+
+            self.assertIn("require --agent", str(raised.exception))
+
+    def test_api_key_env_dry_run_redacts_secret(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            out = io.StringIO()
+
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(cli.config_agents, "_agent_host_paths", return_value=_agent_paths(project / "home")),
+                patch.dict(os.environ, {"ANTHROPIC_API_KEY": "super-secret"}, clear=False),
+                contextlib.redirect_stdout(out),
+            ):
+                rc = cli.main([
+                    "--dry-run",
+                    "--no-build",
+                    "--no-forward-credentials",
+                    "--agent",
+                    "bash",
+                    "--api-key-env",
+                    "ANTHROPIC_API_KEY",
+                    str(project),
+                    "python:3.12-slim",
+                ])
+
+            self.assertEqual(rc, 0)
+            output = out.getvalue()
+            self.assertIn("ANTHROPIC_API_KEY=<redacted>", output)
+            self.assertNotIn("super-secret", output)
+
+    def test_api_key_env_file_parses_dotenv_values(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env_file = Path(tmp) / ".env"
+            env_file.write_text(
+                "\n".join(
+                    [
+                        "# API keys",
+                        "ANTHROPIC_API_KEY=sk-ant # local key",
+                        "export AWS_ACCESS_KEY_ID='AKIA test'",
+                        'AWS_SECRET_ACCESS_KEY="quoted secret"',
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            values = cli._read_api_key_env_file(env_file)
+
+        self.assertEqual(
+            values,
+            {
+                "ANTHROPIC_API_KEY": "sk-ant",
+                "AWS_ACCESS_KEY_ID": "AKIA test",
+                "AWS_SECRET_ACCESS_KEY": "quoted secret",
+            },
+        )

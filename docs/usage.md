@@ -53,6 +53,40 @@ uv run project-sandbox --runtime podman --agent bash /absolute/path/to/repo pyth
 uv run project-sandbox --runtime apple-container --agent bash /absolute/path/to/repo python:3.12-slim
 ```
 
+## API Key Injection
+
+`--no-forward-credentials` starts a direct agent container without staging or
+mounting host agent credential files. For API-key based providers, inject only
+the specific environment variables the session needs:
+
+```bash
+export ANTHROPIC_API_KEY=...
+
+uv run project-sandbox \
+  --no-forward-credentials \
+  --api-key-env ANTHROPIC_API_KEY \
+  --agent bash \
+  /absolute/path/to/repo \
+  python:3.12-slim
+```
+
+You can also load a dotenv-style file containing `KEY=VALUE` lines:
+
+```bash
+uv run project-sandbox \
+  --no-forward-credentials \
+  --api-key-env-file /absolute/path/to/.env.sandbox \
+  --agent bash \
+  /absolute/path/to/repo \
+  python:3.12-slim
+```
+
+Repeat `--api-key-env` or `--api-key-env-file` to inject multiple keys. Dry-runs
+validate the variables but print `<redacted>` instead of secret values.
+Environment-based secrets can appear in container runtime metadata or logs, so
+prefer this only for explicit API-key sessions where mounted agent credentials
+are intentionally disabled.
+
 ## Python + uv Projects
 
 For a Python project managed with uv, create a `Dockerfile` at the project root
