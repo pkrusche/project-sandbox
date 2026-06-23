@@ -38,3 +38,7 @@ Keep unrelated edits in separate changes. Recent history uses short imperative d
 ## Security & Configuration Tips
 
 Treat generated container config and firewall behavior as security-sensitive. Avoid passing secrets through environment variables; prefer mounted credential files. The `--branch` flag is active: it mounts the worktree directory at `/workspace` and bind-mounts the main repo's `.git/` at its absolute host path so `git` works inside the container (via VirtioFS UID remapping).
+
+## Documentation guidelines
+
+Document features via the `docs` subfolder. Keep README.md minimal. Add left-over or future tasks to TODO.md. Longer planning documentation / technical specifications go to ROADMAP.md.
