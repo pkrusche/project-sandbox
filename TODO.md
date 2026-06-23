@@ -3,7 +3,10 @@
 ## Model selection for batch mode
 
 In unsupervised mode we should have a CLI switch to select a model. This model 
-ID will be passed to the agent and used for all completions.
+ID will be passed to the agent and used for all completions. This should work for
+all three agents we support. To ensure users can find out the correct model names
+to pass, the help text in the CLI should indicate which command to run to get the list of
+model names for each agent.
 
 ## Firewall: verify multi-resolver rules on a real iptables host
 

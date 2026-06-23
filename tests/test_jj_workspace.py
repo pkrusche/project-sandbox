@@ -170,6 +170,41 @@ class JjWorkspaceSetupTests(unittest.TestCase):
         self.assertIn("not registered", msg)
         self.assertTrue(ws_path.is_dir())  # must not be auto-deleted
 
+    def test_setup_reuses_existing_bookmark(self) -> None:
+        """Retry after rebase/merge teardown leaves bookmark but no workspace."""
+        ws = jj_workspace_mod.setup(self.repo, "feat/reuse")
+        ws_name = ws.path.name
+        # Simulate what rebase/merge teardown does: forget workspace, keep bookmark
+        subprocess.run(
+            ["jj", "-R", str(self.repo), "workspace", "forget", ws_name],
+            check=True, capture_output=True,
+        )
+        shutil.rmtree(ws.path)
+
+        ws2 = jj_workspace_mod.setup(self.repo, "feat/reuse")
+
+        self.assertEqual(ws2.bookmark, "feat/reuse")
+        self.assertTrue(ws2.path.is_dir())
+
+    def test_remove_cleans_up_workspace_and_bookmark(self) -> None:
+        ws = jj_workspace_mod.setup(self.repo, "feat/cleanup")
+
+        jj_workspace_mod.remove(self.repo, ws)
+
+        self.assertFalse(ws.path.exists())
+        existing = jj_workspace_mod._list_workspaces(self.repo)
+        self.assertFalse(any(ws.path.name in e for e in existing))
+        bookmark_out = subprocess.run(
+            ["jj", "-R", str(self.repo), "bookmark", "list"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        self.assertNotIn("feat/cleanup", bookmark_out)
+
+    def test_remove_is_idempotent(self) -> None:
+        ws = jj_workspace_mod.setup(self.repo, "feat/idempotent-remove")
+        jj_workspace_mod.remove(self.repo, ws)
+        jj_workspace_mod.remove(self.repo, ws)  # should not raise
+
 
 @unittest.skipUnless(JJ, "jj not installed")
 class JjWorkspaceTeardownTests(unittest.TestCase):

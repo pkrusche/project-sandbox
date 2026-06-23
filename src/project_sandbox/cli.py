@@ -260,11 +260,7 @@ def main(argv: list[str] | None = None) -> int:
         # Before staging, ask the agent's own CLI to refresh its host token so the
         # container starts with a near-full window. bash may run claude, so it
         # refreshes the claude token; opencode has no delegated refresh (no-op).
-        if (
-            run_agent is not None
-            and forward_credentials
-            and not args.no_token_refresh
-        ):
+        if run_agent is not None and forward_credentials and not args.no_token_refresh:
             oauth_refresh.refresh_host_token(
                 "claude" if run_agent == "bash" else run_agent, home=Path.home()
             )
@@ -317,10 +313,9 @@ def main(argv: list[str] | None = None) -> int:
                 context_dir,
                 extra={"image_tag": args.image_tag, "base_image": base_image or ""},
             )
-            context_is_sandbox = (
-                build_context.resolve(strict=False)
-                == context_dir.resolve(strict=False)
-            )
+            context_is_sandbox = build_context.resolve(
+                strict=False
+            ) == context_dir.resolve(strict=False)
             cache_hit = (
                 not args.force_build
                 and context_is_sandbox
@@ -404,6 +399,8 @@ def main(argv: list[str] | None = None) -> int:
         if wt is not None:
             if agent_ran:
                 _teardown_worktree(args, project=project, wt=wt, exit_code=exit_code)
+            elif isinstance(wt, jj_workspace_mod.JjWorkspace):
+                jj_workspace_mod.remove(project, wt)
             else:
                 _teardown_any(project, wt, after="nothing")
 
@@ -567,7 +564,9 @@ def _api_key_env(args, *, redact: bool = False) -> list[str]:
     for name in getattr(args, "api_key_env", []):
         _validate_env_name(name, source="--api-key-env")
         if name not in os.environ:
-            raise SystemExit(f"--api-key-env {name}: host environment variable is not set")
+            raise SystemExit(
+                f"--api-key-env {name}: host environment variable is not set"
+            )
         values[name] = os.environ[name]
     if redact:
         return [f"{name}=<redacted>" for name in values]
@@ -604,7 +603,9 @@ def _parse_env_file_value(raw_value: str) -> str:
         try:
             parts = shlex.split(raw_value, comments=True, posix=True)
         except ValueError as exc:
-            raise SystemExit(f"Invalid quoted value in API key env file: {exc}") from exc
+            raise SystemExit(
+                f"Invalid quoted value in API key env file: {exc}"
+            ) from exc
         if len(parts) != 1:
             raise SystemExit("Invalid quoted value in API key env file")
         return parts[0]
@@ -856,7 +857,7 @@ def _warn_forwarded_credential_lifetime(
         print(
             "[!] Forwarded credentials have already expired; on first use the agent "
             "will refresh the token inside the sandbox, which logs you out on the "
-            "host. Re-authenticate on the host first, then re-run."
+            "host. You will likely need to re-login on the host."
         )
         return
     human = _format_duration(remaining_seconds)

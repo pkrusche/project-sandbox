@@ -41,8 +41,13 @@ def setup(
     add_args.append(str(ws_path))
     _jj(repo, add_args)
 
-    # Create bookmark at the workspace's working-copy commit
-    _jj(ws_path, ["bookmark", "create", bookmark])
+    # Create or move the bookmark to this workspace's working-copy commit.
+    # After a rebase/merge teardown the bookmark survives but the workspace does
+    # not, so a fresh workspace must set rather than create.
+    if _bookmark_exists(ws_path, bookmark):
+        _jj(ws_path, ["bookmark", "set", "--allow-backwards", bookmark, "-r", "@"])
+    else:
+        _jj(ws_path, ["bookmark", "create", bookmark])
 
     return JjWorkspace(path=ws_path, bookmark=bookmark)
 
@@ -119,6 +124,28 @@ def teardown(repo: Path, ws: JjWorkspace, *, after: str) -> None:
             )
 
     # "nothing": leave workspace and bookmark in place
+
+
+def remove(repo: Path, ws: JjWorkspace) -> None:
+    """Remove workspace and bookmark without integration (e.g. after a failed build)."""
+    ws_name = ws.path.name
+    try:
+        _jj(repo, ["bookmark", "delete", ws.bookmark])
+    except subprocess.CalledProcessError:
+        pass
+    try:
+        _jj(repo, ["workspace", "forget", ws_name])
+    except subprocess.CalledProcessError:
+        pass
+    shutil.rmtree(ws.path, ignore_errors=True)
+
+
+def _bookmark_exists(repo: Path, bookmark: str) -> bool:
+    try:
+        out = _jj(repo, ["bookmark", "list", "--template", 'name ++ "\n"'], capture=True)
+        return bookmark in out.splitlines()
+    except subprocess.CalledProcessError:
+        return False
 
 
 def _jj(repo: Path, args: list[str], capture: bool = False) -> str:
