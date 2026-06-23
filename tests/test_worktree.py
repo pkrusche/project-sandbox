@@ -23,7 +23,7 @@ def _find_docker() -> str | None:
     return None
 
 DOCKER = _find_docker()
-DOCKER_IMAGE = "ubuntu:22.04"
+DOCKER_IMAGE = "bitnami/git:latest"
 
 from project_sandbox import worktree as worktree_mod
 
@@ -361,9 +361,11 @@ class GitWorktreeDockerEndToEndTests(TestCase):
 
     def _docker(self, wt_path: Path, bash_cmd: str) -> None:
         git_dir = str((self.repo / ".git").resolve())
+        import os
+        uid = os.getuid()
         subprocess.run(
             [
-                DOCKER, "run", "--rm",
+                DOCKER, "run", "--rm", "-u", str(uid),
                 "--mount", f"type=bind,source={wt_path},target=/workspace",
                 "--mount", f"type=bind,source={git_dir},target={git_dir}",
                 "--workdir", "/workspace",
@@ -380,7 +382,7 @@ class GitWorktreeDockerEndToEndTests(TestCase):
         # 2. Container adds a file and commits via bash
         self._docker(
             wt.path,
-            "git config user.email t@test.com && git config user.name Test && "
+            "export HOME=/tmp && git config --global --add safe.directory /workspace && git config user.email t@test.com && git config user.name Test && "
             "echo 'hello from container' > agent_output.txt && "
             "git add . && git commit -m 'agent: add agent_output'",
         )
@@ -404,7 +406,7 @@ class GitWorktreeDockerEndToEndTests(TestCase):
         wt = worktree_mod.setup(self.repo, "feat/e2e-rebase")
         self._docker(
             wt.path,
-            "git config user.email t@test.com && git config user.name Test && "
+            "export HOME=/tmp && git config --global --add safe.directory /workspace && git config user.email t@test.com && git config user.name Test && "
             "echo 'hello from container' > agent_output.txt && "
             "git add . && git commit -m 'agent: add file'",
         )
