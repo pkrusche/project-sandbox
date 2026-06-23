@@ -4,6 +4,8 @@
 
 The tool generates a derived image with OpenSpec and detected agent CLIs, sanitized agent configs, an egress firewall, and a parallel devcontainer specification so the same sandbox is reachable from the Python CLI or from local devcontainer clients.
 
+ ⚠️ Created with the help of AI.
+
 ## What it does end-to-end
 
 Given `project-sandbox /path/to/repo python:3.12-slim`:
@@ -313,9 +315,9 @@ The test prints the temp project path on success so the generated files can be i
 
 ## References
 
-**Prior art and direct inspiration**
+**Similar projects**
 - [agentbox (fletchgqc)](https://github.com/fletchgqc/agentbox/tree/main) — ephemeral per-project Docker containers for Claude/OpenCode/Gemini
-- [Claude Code devcontainer](https://github.com/anthropics/claude-code/tree/main/.devcontainer) — reference `init-firewall.sh` and devcontainer layout
+- [Claude Code devcontainer](https://github.com/anthropics/claude-code/tree/main/.devcontainer) — example for `init-firewall.sh` and devcontainer layout
 - [Jarek Hartman: Codex in the jail](https://jhartman.pl/posts/macos/2026-02-02-codex-in-the-jail/) — why `sandbox-exec` falls short and apple/container fills the gap
 
 **Similar projects using apple/container**
