@@ -815,7 +815,10 @@ class RendererTests(TestCase):
             self.assertIn("claude-headless", text)
             self.assertIn('exec claude "$@"', text)
             self.assertIn("codex-headless", text)
-            self.assertIn('exec codex exec --json --color never "$PROMPT"', text)
+            self.assertIn(
+                'exec codex exec --skip-git-repo-check --json --color never "$PROMPT"',
+                text,
+            )
             self.assertIn("opencode-headless", text)
             self.assertIn("bash-headless", text)
             self.assertIn('exec bash -lc "$PROMPT"', text)
@@ -837,14 +840,17 @@ class RendererTests(TestCase):
             self.assertIn('exec claude "$@"', text)
             # Codex and opencode still use the if/else pattern.
             self.assertIn(
-                'exec codex exec --model "$PROJECT_SANDBOX_MODEL" --json --color never "$PROMPT"',
+                'exec codex exec --model "$PROJECT_SANDBOX_MODEL" --skip-git-repo-check --json --color never "$PROMPT"',
                 text,
             )
             self.assertIn(
                 'exec opencode run --model "$PROJECT_SANDBOX_MODEL" "$PROMPT"',
                 text,
             )
-            self.assertIn('exec codex exec --json --color never "$PROMPT"', text)
+            self.assertIn(
+                'exec codex exec --skip-git-repo-check --json --color never "$PROMPT"',
+                text,
+            )
             self.assertIn('exec opencode run "$PROMPT"', text)
 
     def test_entrypoint_headless_supports_effort_selection(self) -> None:
