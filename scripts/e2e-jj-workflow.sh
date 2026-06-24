@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
 # End-to-end jj workflow verification for headless bash-agent sessions.
 #
-# Creates a throwaway colocated jj/git repository, asks the sandboxed bash agent
-# to modify the jj workspace, and verifies --after-session=rebase, merge, and
-# nothing. In jj, project-sandbox currently handles merge the same way as rebase:
-# it rebases the bookmarked agent change onto the default workspace revision.
+# Creates a throwaway jj repository (matching tests/test_jj_workspace.py's
+# _make_jj_repo), asks the sandboxed bash agent to modify the jj workspace, and
+# verifies --after-session=rebase, merge, and nothing. The agent runs jj inside
+# the container, which works because project-sandbox mounts both the shared
+# .jj/repo store and the git backend it points at for an additional workspace.
 #
-# Requirements: uv, git, jj, and a supported container runtime on PATH.
+# In jj, project-sandbox currently handles merge the same way as rebase: it
+# rebases the bookmarked agent change onto the default workspace revision.
+#
+# Requirements: uv, jj, and a supported container runtime on PATH.
 #
 # Usage:
 #   scripts/e2e-jj-workflow.sh [--runtime auto|apple-container|docker|podman]
@@ -20,7 +24,7 @@ BASE_IMAGE="python:3.12-slim"
 NO_BUILD=0
 KEEP=0
 
-usage() { sed -n '2,13p' "$0"; }
+usage() { sed -n '2,17p' "$0"; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -41,10 +45,16 @@ case "$RUNTIME" in
 esac
 
 command -v uv >/dev/null 2>&1 || { echo "ERROR: uv not found on PATH." >&2; exit 64; }
-command -v git >/dev/null 2>&1 || { echo "ERROR: git not found on PATH." >&2; exit 64; }
 command -v jj >/dev/null 2>&1 || { echo "ERROR: jj not found on PATH." >&2; exit 64; }
 
-TMP_PROJECT="$(mktemp -d -t project-sandbox-jj-e2e.XXXXXX)"
+# Apple's `container` build VM cannot read the macOS per-user temp dir
+# ($TMPDIR, /var/folders/...), so a build context created there arrives empty
+# and the image's COPY steps fail. Keep the throwaway repo under the repo's
+# gitignored .project-sandbox/ tree, which the runtime can access (the same
+# reason scripts/verify-timeout-teardown.sh does this).
+TMP_BASE="$ROOT/.project-sandbox/e2e"
+mkdir -p "$TMP_BASE"
+TMP_PROJECT="$(mktemp -d "$TMP_BASE/jj-e2e.XXXXXX")"
 cleanup() {
   if [ "$KEEP" = 0 ]; then
     rm -rf "$TMP_PROJECT" "${TMP_PROJECT}-workspaces"
@@ -64,8 +74,7 @@ run_ps() {
 
   prompt=$(
     printf "set -euo pipefail\n"
-    printf "git config --global --add safe.directory /workspace || true\n"
-    printf "printf %%s %q > %q\n" "$text" "$file"
+    printf "printf '%%s\\\\n' %q > %q\n" "$text" "$file"
     printf "jj describe -m %q\n" "$message"
     printf "jj status\n"
   )
@@ -79,6 +88,7 @@ run_ps() {
     --after-session "$after"
     --no-forward-credentials
     --no-firewall
+    --verbose
   )
   if [ "$NO_BUILD" = 1 ]; then
     cmd+=(--no-build)
@@ -94,7 +104,9 @@ assert_jj_file_contains() {
   local rev="$2"
   local file="$3"
   local needle="$4"
-  if jj -R "$repo" file show -r "$rev" "$file" | grep -qF -- "$needle"; then
+  # jj resolves file-show paths relative to the cwd, not -R; anchor to the repo
+  # root with a root: fileset so it works regardless of where the script runs.
+  if jj -R "$repo" file show -r "$rev" "root:$file" | grep -qF -- "$needle"; then
     echo "  ok    $rev:$file contains: $needle"
   else
     echo "  BAD   $rev:$file missing: $needle"
@@ -114,20 +126,19 @@ assert_jj_log_contains() {
 }
 
 echo "Test jj repo: $TMP_PROJECT"
-git -C "$TMP_PROJECT" init -q
-git -C "$TMP_PROJECT" config user.name "Project Sandbox E2E"
-git -C "$TMP_PROJECT" config user.email "project-sandbox-e2e@example.invalid"
+jj git init "$TMP_PROJECT" >/dev/null
+jj -R "$TMP_PROJECT" config set --repo user.name "Project Sandbox E2E"
+jj -R "$TMP_PROJECT" config set --repo user.email "project-sandbox-e2e@example.invalid"
 printf "base\n" > "$TMP_PROJECT/README.md"
-git -C "$TMP_PROJECT" add README.md
-git -C "$TMP_PROJECT" commit -qm "initial commit"
-jj git init --colocate "$TMP_PROJECT" >/dev/null
+jj -R "$TMP_PROJECT" describe -m "initial commit"
+jj -R "$TMP_PROJECT" new
 
 # Let the sandbox's agent user write in this disposable repo on Docker/Podman
 # hosts where the container UID may not match the host user.
 chmod -R a+rwX "$TMP_PROJECT"
 
 echo
-run_ps "e2e-jj-rebase" "rebase" "jj-rebase.txt" "jj rebase\n" "agent: jj rebase"
+run_ps "e2e-jj-rebase" "rebase" "jj-rebase.txt" "jj rebase" "agent: jj rebase"
 assert_jj_file_contains "$TMP_PROJECT" "e2e-jj-rebase" "jj-rebase.txt" "jj rebase"
 assert_jj_log_contains "e2e-jj-rebase" "agent: jj rebase"
 if [ -d "${TMP_PROJECT}-workspaces/e2e-jj-rebase" ]; then
@@ -138,7 +149,7 @@ else
 fi
 
 echo
-run_ps "e2e-jj-merge" "merge" "jj-merge.txt" "jj merge\n" "agent: jj merge"
+run_ps "e2e-jj-merge" "merge" "jj-merge.txt" "jj merge" "agent: jj merge"
 assert_jj_file_contains "$TMP_PROJECT" "e2e-jj-merge" "jj-merge.txt" "jj merge"
 assert_jj_log_contains "e2e-jj-merge" "agent: jj merge"
 if [ -d "${TMP_PROJECT}-workspaces/e2e-jj-merge" ]; then
@@ -149,8 +160,8 @@ else
 fi
 
 echo
-run_ps "e2e-jj-nothing" "nothing" "jj-nothing.txt" "jj nothing\n" "agent: jj nothing"
-if jj -R "$TMP_PROJECT" file show -r @ "jj-nothing.txt" >/dev/null 2>&1; then
+run_ps "e2e-jj-nothing" "nothing" "jj-nothing.txt" "jj nothing" "agent: jj nothing"
+if jj -R "$TMP_PROJECT" file show -r @ "root:jj-nothing.txt" >/dev/null 2>&1; then
   echo "  BAD   nothing action changed the default workspace revision"
   fail=1
 else

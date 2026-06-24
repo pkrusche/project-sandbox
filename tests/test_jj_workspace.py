@@ -99,6 +99,13 @@ class PathForCollisionTests(unittest.TestCase):
         self.assertEqual(source, (repo / ".jj" / "repo").resolve())
         self.assertEqual(target, "/repo/.jj/repo")
 
+    def test_git_backend_mount_returns_none_without_git_target(self) -> None:
+        # No real repo on disk, so the store/git_target file is absent.
+        repo = Path("/tmp/root/repo")
+        ws = Path("/tmp/root/repo-workspaces/feat")
+
+        self.assertIsNone(jj_workspace_mod.git_backend_mount(repo, ws))
+
 
 @unittest.skipUnless(JJ, "jj not installed")
 class JjWorkspaceSetupTests(unittest.TestCase):
@@ -119,6 +126,22 @@ class JjWorkspaceSetupTests(unittest.TestCase):
         self.assertTrue(ws.path.is_dir())
         # Workspace directory should have jj state
         self.assertTrue((ws.path / ".jj").exists())
+
+    def test_git_backend_mount_points_at_main_repo_git_dir(self) -> None:
+        ws = jj_workspace_mod.setup(self.repo, "feat/hello")
+
+        mount = jj_workspace_mod.git_backend_mount(self.repo, ws.path)
+        self.assertIsNotNone(mount)
+        source, target = mount
+
+        # Source is the real git backend the store points at, and it exists.
+        self.assertEqual(source, (self.repo / ".git").resolve())
+        self.assertTrue(source.exists())
+        # Container target mirrors the store mount so jj's git_target resolves:
+        # store at /repo/.jj/repo, backend at /repo/.git.
+        _, store_target = jj_workspace_mod.repo_store_mount(self.repo, ws.path)
+        self.assertEqual(target, "/repo/.git")
+        self.assertEqual(store_target, "/repo/.jj/repo")
 
     def test_setup_default_workspace_dir(self) -> None:
         ws = jj_workspace_mod.setup(self.repo, "feat/hello")

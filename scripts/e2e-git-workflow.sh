@@ -42,7 +42,14 @@ esac
 command -v uv >/dev/null 2>&1 || { echo "ERROR: uv not found on PATH." >&2; exit 64; }
 command -v git >/dev/null 2>&1 || { echo "ERROR: git not found on PATH." >&2; exit 64; }
 
-TMP_PROJECT="$(mktemp -d -t project-sandbox-git-e2e.XXXXXX)"
+# Apple's `container` build VM cannot read the macOS per-user temp dir
+# ($TMPDIR, /var/folders/...), so a build context created there arrives empty
+# and the image's COPY steps fail. Keep the throwaway repo under the repo's
+# gitignored .project-sandbox/ tree, which the runtime can access (the same
+# reason scripts/verify-timeout-teardown.sh does this).
+TMP_BASE="$ROOT/.project-sandbox/e2e"
+mkdir -p "$TMP_BASE"
+TMP_PROJECT="$(mktemp -d "$TMP_BASE/git-e2e.XXXXXX")"
 cleanup() {
   if [ "$KEEP" = 0 ]; then
     rm -rf "$TMP_PROJECT" "${TMP_PROJECT}-worktrees"
@@ -63,7 +70,7 @@ run_ps() {
   prompt=$(
     printf "set -euo pipefail\n"
     printf "git config --global --add safe.directory /workspace || true\n"
-    printf "printf %%s %q > %q\n" "$text" "$file"
+    printf "printf '%%s\\\\n' %q > %q\n" "$text" "$file"
     printf "git add %q\n" "$file"
     printf "git commit -m %q\n" "$message"
   )
@@ -77,6 +84,7 @@ run_ps() {
     --after-session "$after"
     --no-forward-credentials
     --no-firewall
+    --verbose
   )
   if [ "$NO_BUILD" = 1 ]; then
     cmd+=(--no-build)
@@ -121,7 +129,7 @@ git -C "$TMP_PROJECT" commit -qm "initial commit"
 chmod -R a+rwX "$TMP_PROJECT"
 
 echo
-run_ps "e2e-git-rebase" "rebase" "git-rebase.txt" "git rebase\n" "agent: git rebase"
+run_ps "e2e-git-rebase" "rebase" "git-rebase.txt" "git rebase" "agent: git rebase"
 assert_file_contains "$TMP_PROJECT/git-rebase.txt" "git rebase"
 assert_git_log_contains "agent: git rebase"
 if [ -d "${TMP_PROJECT}-worktrees/e2e-git-rebase" ]; then
@@ -132,7 +140,7 @@ else
 fi
 
 echo
-run_ps "e2e-git-merge" "merge" "git-merge.txt" "git merge\n" "agent: git merge"
+run_ps "e2e-git-merge" "merge" "git-merge.txt" "git merge" "agent: git merge"
 assert_file_contains "$TMP_PROJECT/git-merge.txt" "git merge"
 assert_git_log_contains "agent: git merge"
 if git -C "$TMP_PROJECT" log -1 --format=%s | grep -qF "Merge agent session: e2e-git-merge"; then
@@ -149,7 +157,7 @@ else
 fi
 
 echo
-run_ps "e2e-git-nothing" "nothing" "git-nothing.txt" "git nothing\n" "agent: git nothing"
+run_ps "e2e-git-nothing" "nothing" "git-nothing.txt" "git nothing" "agent: git nothing"
 if [ -e "$TMP_PROJECT/git-nothing.txt" ]; then
   echo "  BAD   nothing action changed the main worktree"
   fail=1

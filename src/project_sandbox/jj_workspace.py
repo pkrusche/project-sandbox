@@ -1,9 +1,13 @@
 from __future__ import annotations
+import fcntl
 import hashlib
 import os
 import posixpath
 import shutil
 import subprocess
+import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -84,46 +88,108 @@ def repo_store_mount(repo: Path, ws_path: Path) -> tuple[Path, str]:
     return source, target
 
 
+def git_backend_mount(repo: Path, ws_path: Path) -> tuple[Path, str] | None:
+    """Return the git backend source and its container target for a jj session.
+
+    A jj repo's git backend lives outside ``.jj/repo`` — the store records its
+    location in ``.jj/repo/store/git_target`` (typically ``../../../.git``).
+    When the agent runs in the *default* workspace the backend is reachable via
+    the ``/workspace`` mount, but an additional workspace's store points back at
+    the *main* repo's git dir, which is not otherwise mounted; without it every
+    in-container ``jj`` command fails to open the repository.
+
+    Returns ``None`` when the store has no git backend or its target cannot be
+    located, so callers can simply skip the extra mount.
+    """
+    store_source = (repo.resolve() / ".jj" / "repo" / "store").resolve()
+    git_target_file = store_source / "git_target"
+    if not git_target_file.is_file():
+        return None
+    raw = git_target_file.read_text(encoding="utf-8").strip()
+    if not raw:
+        return None
+
+    if posixpath.isabs(raw) or os.path.isabs(raw):
+        source = Path(raw)
+        target = raw
+    else:
+        source = (store_source / raw).resolve()
+        # The git_target is relative to the store dir; mirror that against the
+        # store's container path so the backend lands where jj will look for it.
+        _, store_target = repo_store_mount(repo, ws_path)
+        target = posixpath.normpath(
+            posixpath.join(store_target, "store", raw.replace(os.sep, "/"))
+        )
+
+    if not source.exists():
+        return None
+    return source, target
+
+
+@contextmanager
+def _teardown_lock(repo: Path) -> Iterator[None]:
+    """Serialize teardown across concurrent host project-sandbox processes.
+
+    Several agents can share one repo's store through separate workspaces, and
+    each agent's host-side teardown mutates that shared store — moving bookmarks
+    and rebasing onto the default workspace's ``@``. An exclusive file lock keyed
+    by the repo path keeps those teardowns from interleaving. (Concurrent writes
+    from *inside* the containers are a separate, still-open problem — see the
+    clone-per-subagent item in TODO.md.)
+    """
+    key = hashlib.sha256(str(repo.resolve()).encode()).hexdigest()[:16]
+    lock_path = Path(tempfile.gettempdir()) / f"project-sandbox-jj-teardown-{key}.lock"
+    with open(lock_path, "w") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
 def teardown(repo: Path, ws: JjWorkspace, *, after: str) -> None:
     if after == "ask":
         after = _prompt_user(ws)
 
-    ws_name = ws.path.name
+    if after == "nothing":
+        # Leave workspace and bookmark in place; nothing mutates the shared store.
+        return
 
-    if after in ("rebase", "merge"):
-        _snapshot_workspace(ws)
-        # Rebase bookmark commits onto the default workspace's current @
-        try:
-            _jj(repo, ["rebase", "-b", ws.bookmark, "-d", "@"])
-        except subprocess.CalledProcessError:
-            print(f"rebase conflict — workspace left in place at {ws.path}; integrate manually")
-            return
-        _jj(repo, ["workspace", "forget", ws_name])
-        shutil.rmtree(ws.path, ignore_errors=True)
+    with _teardown_lock(repo):
+        ws_name = ws.path.name
 
-    elif after == "pr":
-        _snapshot_workspace(ws)
-        try:
-            _jj(repo, ["git", "push", "-b", ws.bookmark, "--allow-new"])
-        except subprocess.CalledProcessError:
-            print(
-                f"  Could not push '{ws.bookmark}' (is a git remote configured?). "
-                f"Workspace left in place at {ws.path}."
-            )
-            return
-        try:
-            subprocess.run(
-                ["gh", "pr", "create", "--head", ws.bookmark, "--fill"],
-                cwd=str(repo),
-                check=True,
-            )
-        except subprocess.CalledProcessError:
-            print(
-                f"  'gh pr create' failed for bookmark '{ws.bookmark}'. "
-                f"Workspace left in place at {ws.path}; create the PR manually."
-            )
+        if after in ("rebase", "merge"):
+            _snapshot_workspace(ws)
+            # Rebase bookmark commits onto the default workspace's current @
+            try:
+                _jj(repo, ["rebase", "-b", ws.bookmark, "-d", "@"])
+            except subprocess.CalledProcessError:
+                print(f"rebase conflict — workspace left in place at {ws.path}; integrate manually")
+                return
+            _jj(repo, ["workspace", "forget", ws_name])
+            shutil.rmtree(ws.path, ignore_errors=True)
 
-    # "nothing": leave workspace and bookmark in place
+        elif after == "pr":
+            _snapshot_workspace(ws)
+            try:
+                _jj(repo, ["git", "push", "-b", ws.bookmark, "--allow-new"])
+            except subprocess.CalledProcessError:
+                print(
+                    f"  Could not push '{ws.bookmark}' (is a git remote configured?). "
+                    f"Workspace left in place at {ws.path}."
+                )
+                return
+            try:
+                subprocess.run(
+                    ["gh", "pr", "create", "--head", ws.bookmark, "--fill"],
+                    cwd=str(repo),
+                    check=True,
+                )
+            except subprocess.CalledProcessError:
+                print(
+                    f"  'gh pr create' failed for bookmark '{ws.bookmark}'. "
+                    f"Workspace left in place at {ws.path}; create the PR manually."
+                )
 
 
 def remove(repo: Path, ws: JjWorkspace) -> None:
