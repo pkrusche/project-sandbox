@@ -47,3 +47,15 @@ runs the tool against it, and validates every generated artefact:
 
 The test prints the temp project path on success so the generated files can be
 inspected.
+
+Branch workflow end-to-end tests exercise real headless bash-agent runs against
+throwaway git and jj repositories. They verify the finish actions that integrate
+or leave agent work after the session:
+
+```bash
+./scripts/e2e-git-workflow.sh
+./scripts/e2e-jj-workflow.sh
+```
+
+Both scripts accept `--runtime auto|apple-container|docker|podman`,
+`--base-image IMAGE`, `--no-build`, and `--keep`.
