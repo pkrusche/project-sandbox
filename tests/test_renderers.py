@@ -813,11 +813,7 @@ class RendererTests(TestCase):
             self.assertIn('jj config set --user user.name "$NAME"', text)
             self.assertIn('jj config set --user user.email "$EMAIL"', text)
             self.assertIn("claude-headless", text)
-            self.assertIn(
-                'exec claude -p "$PROMPT" --output-format stream-json '
-                "--verbose --dangerously-skip-permissions",
-                text,
-            )
+            self.assertIn('exec claude "$@"', text)
             self.assertIn("codex-headless", text)
             self.assertIn('exec codex exec --json --color never "$PROMPT"', text)
             self.assertIn("opencode-headless", text)
@@ -831,13 +827,15 @@ class RendererTests(TestCase):
             context = Path(tmp)
             dockerfile.render_entrypoint(context)
             text = (context / "entrypoint.sh").read_text(encoding="utf-8")
-            # All three headless agents check PROJECT_SANDBOX_MODEL and pass --model.
+            # Claude headless builds args with set -- and conditionally prepends flags.
             self.assertIn("PROJECT_SANDBOX_MODEL", text)
             self.assertIn(
-                'exec claude --model "$PROJECT_SANDBOX_MODEL" -p "$PROMPT" '
-                "--output-format stream-json --verbose --dangerously-skip-permissions",
+                'set -- -p "$PROMPT" --output-format stream-json --verbose --dangerously-skip-permissions',
                 text,
             )
+            self.assertIn('set -- --model "$PROJECT_SANDBOX_MODEL" "$@"', text)
+            self.assertIn('exec claude "$@"', text)
+            # Codex and opencode still use the if/else pattern.
             self.assertIn(
                 'exec codex exec --model "$PROJECT_SANDBOX_MODEL" --json --color never "$PROMPT"',
                 text,
@@ -846,13 +844,16 @@ class RendererTests(TestCase):
                 'exec opencode run --model "$PROJECT_SANDBOX_MODEL" "$PROMPT"',
                 text,
             )
-            # Fallback (no model) paths are still present.
-            self.assertIn(
-                'exec claude -p "$PROMPT" --output-format stream-json --verbose --dangerously-skip-permissions',
-                text,
-            )
             self.assertIn('exec codex exec --json --color never "$PROMPT"', text)
             self.assertIn('exec opencode run "$PROMPT"', text)
+
+    def test_entrypoint_headless_supports_effort_selection(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            dockerfile.render_entrypoint(context)
+            text = (context / "entrypoint.sh").read_text(encoding="utf-8")
+            self.assertIn("PROJECT_SANDBOX_EFFORT", text)
+            self.assertIn('set -- --effort "$PROJECT_SANDBOX_EFFORT" "$@"', text)
 
     def test_entrypoint_renderer_overwrites_missing_jj_identity_setup(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

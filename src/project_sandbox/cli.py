@@ -127,7 +127,20 @@ def build_parser() -> ArgumentParser:
         help=(
             "Model ID to use for all completions in unsupervised (batch) mode. "
             "Only takes effect with --prompt or --prompt-text. "
-            "To list available models (opencode only): opencode: 'opencode models'."
+            "To list available models: 'claude models' (Claude), "
+            "'codex models list' (Codex), 'opencode models' (OpenCode)."
+        ),
+    )
+    p.add_argument(
+        "--effort",
+        choices=["low", "medium", "high", "xhigh", "max"],
+        default=None,
+        metavar="LEVEL",
+        help=(
+            "Reasoning effort level for Claude in unsupervised (batch) mode. "
+            "One of: low, medium, high, xhigh, max (default: xhigh). "
+            "Only takes effect with --prompt or --prompt-text. "
+            "Claude only; has no effect for other agents."
         ),
     )
     p.add_argument(
@@ -945,6 +958,8 @@ def _build_session_command(
         run_mode_agent = f"{run_agent}-headless"
         if getattr(args, "model", None):
             extra_env.append(f"PROJECT_SANDBOX_MODEL={args.model}")
+        if getattr(args, "effort", None):
+            extra_env.append(f"PROJECT_SANDBOX_EFFORT={args.effort}")
         if args.prompt:
             source_prompt = resolve_strict(args.prompt)
             # Copy the prompt into a private staging dir so we mount only the

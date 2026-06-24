@@ -40,6 +40,8 @@ class CliTests(TestCase):
 
         self.assertEqual(raised.exception.code, 0)
         help_text = stdout.getvalue()
+        # Normalize whitespace to handle argparse line-wrapping in assertions.
+        flat_help = " ".join(help_text.split())
         self.assertIn("--dry-run", help_text)
         self.assertIn("--branch", help_text)
         self.assertIn("--dockerfile", help_text)
@@ -51,9 +53,10 @@ class CliTests(TestCase):
         self.assertNotIn("--refresh-config", help_text)
         self.assertIn("bash", help_text)
         self.assertIn("--model", help_text)
-        self.assertIn("claude models", help_text)
-        self.assertIn("codex models list", help_text)
-        self.assertIn("opencode models", help_text)
+        self.assertIn("--effort", help_text)
+        self.assertIn("claude models", flat_help)
+        self.assertIn("codex models list", flat_help)
+        self.assertIn("opencode models", flat_help)
 
     def test_refresh_flags_are_removed(self) -> None:
         parser = cli.build_parser()
@@ -1187,6 +1190,107 @@ class ModelSelectionTests(TestCase):
                 ])
             self.assertEqual(rc, 0)
             self.assertNotIn("PROJECT_SANDBOX_MODEL", out.getvalue())
+
+
+class EffortSelectionTests(TestCase):
+    """--effort passes PROJECT_SANDBOX_EFFORT into unsupervised Claude runs."""
+
+    def _headless_dry_run_with_effort(self, agent: str, effort: str | None) -> str:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            host_home = project / "home"
+            paths = _agent_paths(host_home)
+            for key in paths:
+                paths[key].mkdir(parents=True, exist_ok=True)
+            out = io.StringIO()
+            extra = ["--effort", effort] if effort else []
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                contextlib.redirect_stdout(out),
+            ):
+                rc = cli.main([
+                    "--dry-run", "--no-build", "--no-firewall",
+                    "--agent", agent,
+                    "--prompt-text", "do something",
+                    *extra,
+                    str(project), "python:3.12-slim",
+                ])
+            self.assertEqual(rc, 0)
+            return out.getvalue()
+
+    def test_effort_injected_for_claude_headless(self) -> None:
+        output = self._headless_dry_run_with_effort("claude", "high")
+        self.assertIn("PROJECT_SANDBOX_EFFORT=high", output)
+
+    def test_effort_injected_for_codex_headless(self) -> None:
+        output = self._headless_dry_run_with_effort("codex", "low")
+        self.assertIn("PROJECT_SANDBOX_EFFORT=low", output)
+
+    def test_no_effort_does_not_inject_env_var(self) -> None:
+        output = self._headless_dry_run_with_effort("claude", None)
+        self.assertNotIn("PROJECT_SANDBOX_EFFORT", output)
+
+    def test_effort_not_injected_in_interactive_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            host_home = project / "home"
+            paths = _agent_paths(host_home)
+            paths["claude"].mkdir(parents=True, exist_ok=True)
+            out = io.StringIO()
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                contextlib.redirect_stdout(out),
+            ):
+                rc = cli.main([
+                    "--dry-run", "--no-build", "--no-firewall",
+                    "--agent", "claude",
+                    "--effort", "max",
+                    str(project), "python:3.12-slim",
+                ])
+            self.assertEqual(rc, 0)
+            self.assertNotIn("PROJECT_SANDBOX_EFFORT", out.getvalue())
+
+    def test_effort_choices_are_validated(self) -> None:
+        parser = cli.build_parser()
+        with (
+            self.assertRaises(SystemExit),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            parser.parse_args([
+                "--effort", "ultra",
+                "/tmp/project", "python:3.12-slim",
+            ])
+
+    def test_effort_and_model_can_be_combined(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            host_home = project / "home"
+            paths = _agent_paths(host_home)
+            for key in paths:
+                paths[key].mkdir(parents=True, exist_ok=True)
+            out = io.StringIO()
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                contextlib.redirect_stdout(out),
+            ):
+                rc = cli.main([
+                    "--dry-run", "--no-build", "--no-firewall",
+                    "--agent", "claude",
+                    "--prompt-text", "do something",
+                    "--model", "claude-opus-4-8",
+                    "--effort", "xhigh",
+                    str(project), "python:3.12-slim",
+                ])
+            self.assertEqual(rc, 0)
+            result = out.getvalue()
+            self.assertIn("PROJECT_SANDBOX_MODEL=claude-opus-4-8", result)
+            self.assertIn("PROJECT_SANDBOX_EFFORT=xhigh", result)
 
 
 class TeardownWorktreeOnFailureTests(TestCase):
