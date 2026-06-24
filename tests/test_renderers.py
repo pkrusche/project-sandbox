@@ -826,6 +826,34 @@ class RendererTests(TestCase):
             # UV_OFFLINE is set after the firewall block so uv works offline.
             self.assertIn("export UV_OFFLINE=1", text)
 
+    def test_entrypoint_headless_supports_model_selection(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            dockerfile.render_entrypoint(context)
+            text = (context / "entrypoint.sh").read_text(encoding="utf-8")
+            # All three headless agents check PROJECT_SANDBOX_MODEL and pass --model.
+            self.assertIn("PROJECT_SANDBOX_MODEL", text)
+            self.assertIn(
+                'exec claude --model "$PROJECT_SANDBOX_MODEL" -p "$PROMPT" '
+                "--output-format stream-json --verbose --dangerously-skip-permissions",
+                text,
+            )
+            self.assertIn(
+                'exec codex exec --model "$PROJECT_SANDBOX_MODEL" --json --color never "$PROMPT"',
+                text,
+            )
+            self.assertIn(
+                'exec opencode run --model "$PROJECT_SANDBOX_MODEL" "$PROMPT"',
+                text,
+            )
+            # Fallback (no model) paths are still present.
+            self.assertIn(
+                'exec claude -p "$PROMPT" --output-format stream-json --verbose --dangerously-skip-permissions',
+                text,
+            )
+            self.assertIn('exec codex exec --json --color never "$PROMPT"', text)
+            self.assertIn('exec opencode run "$PROMPT"', text)
+
     def test_entrypoint_renderer_overwrites_missing_jj_identity_setup(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             context = Path(tmp)

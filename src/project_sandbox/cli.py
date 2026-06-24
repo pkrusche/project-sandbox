@@ -121,6 +121,16 @@ def build_parser() -> ArgumentParser:
     p.add_argument("--log")
     p.add_argument("--timeout", type=int)
     p.add_argument(
+        "--model",
+        default=None,
+        metavar="MODEL_ID",
+        help=(
+            "Model ID to use for all completions in unsupervised (batch) mode. "
+            "Only takes effect with --prompt or --prompt-text. "
+            "To list available models (opencode only): opencode: 'opencode models'."
+        ),
+    )
+    p.add_argument(
         "--no-forward-credentials",
         action="store_true",
         help=(
@@ -933,6 +943,8 @@ def _build_session_command(
             )
         )
         run_mode_agent = f"{run_agent}-headless"
+        if getattr(args, "model", None):
+            extra_env.append(f"PROJECT_SANDBOX_MODEL={args.model}")
         if args.prompt:
             source_prompt = resolve_strict(args.prompt)
             # Copy the prompt into a private staging dir so we mount only the

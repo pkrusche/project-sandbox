@@ -50,6 +50,10 @@ class CliTests(TestCase):
         self.assertNotIn("--rebuild", help_text)
         self.assertNotIn("--refresh-config", help_text)
         self.assertIn("bash", help_text)
+        self.assertIn("--model", help_text)
+        self.assertIn("claude models", help_text)
+        self.assertIn("codex models list", help_text)
+        self.assertIn("opencode models", help_text)
 
     def test_refresh_flags_are_removed(self) -> None:
         parser = cli.build_parser()
@@ -1116,6 +1120,73 @@ class CliTests(TestCase):
         self.assertIn("unavailable", str(raised.exception).lower())
         self.assertIn("claude", str(raised.exception).lower())
         self.assertIn("bash", str(raised.exception).lower())
+
+
+class ModelSelectionTests(TestCase):
+    """--model passes PROJECT_SANDBOX_MODEL into unsupervised container runs."""
+
+    def _headless_dry_run_with_model(self, agent: str, model: str | None) -> str:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            host_home = project / "home"
+            paths = _agent_paths(host_home)
+            for key in paths:
+                paths[key].mkdir(parents=True, exist_ok=True)
+            out = io.StringIO()
+            extra = ["--model", model] if model else []
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                contextlib.redirect_stdout(out),
+            ):
+                rc = cli.main([
+                    "--dry-run", "--no-build", "--no-firewall",
+                    "--agent", agent,
+                    "--prompt-text", "do something",
+                    *extra,
+                    str(project), "python:3.12-slim",
+                ])
+            self.assertEqual(rc, 0)
+            return out.getvalue()
+
+    def test_model_injected_for_claude_headless(self) -> None:
+        output = self._headless_dry_run_with_model("claude", "claude-opus-4-5")
+        self.assertIn("PROJECT_SANDBOX_MODEL=claude-opus-4-5", output)
+
+    def test_model_injected_for_codex_headless(self) -> None:
+        output = self._headless_dry_run_with_model("codex", "o4-mini")
+        self.assertIn("PROJECT_SANDBOX_MODEL=o4-mini", output)
+
+    def test_model_injected_for_opencode_headless(self) -> None:
+        output = self._headless_dry_run_with_model("opencode", "gpt-4o")
+        self.assertIn("PROJECT_SANDBOX_MODEL=gpt-4o", output)
+
+    def test_no_model_does_not_inject_env_var(self) -> None:
+        output = self._headless_dry_run_with_model("claude", None)
+        self.assertNotIn("PROJECT_SANDBOX_MODEL", output)
+
+    def test_model_not_injected_in_interactive_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            host_home = project / "home"
+            paths = _agent_paths(host_home)
+            paths["claude"].mkdir(parents=True, exist_ok=True)
+            out = io.StringIO()
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                contextlib.redirect_stdout(out),
+            ):
+                rc = cli.main([
+                    "--dry-run", "--no-build", "--no-firewall",
+                    "--agent", "claude",
+                    "--model", "claude-opus-4-5",
+                    str(project), "python:3.12-slim",
+                ])
+            self.assertEqual(rc, 0)
+            self.assertNotIn("PROJECT_SANDBOX_MODEL", out.getvalue())
 
 
 class TeardownWorktreeOnFailureTests(TestCase):
