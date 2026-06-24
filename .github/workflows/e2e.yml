@@ -1,0 +1,30 @@
+name: E2E Tests
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: e2e-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Install project dependencies
+        run: uv sync
+
+      # Only the smoke suite runs in CI. The git/jj workflow suites build and
+      # run real sandbox containers, which is out of scope for hosted runners.
+      - name: Run e2e smoke test
+        run: scripts/e2e-test.sh

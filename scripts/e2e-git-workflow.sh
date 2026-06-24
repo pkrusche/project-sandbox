@@ -63,7 +63,7 @@ run_ps() {
   prompt=$(
     printf "set -euo pipefail\n"
     printf "git config --global --add safe.directory /workspace || true\n"
-    printf "printf %%s %q > %q\n" "$text" "$file"
+    printf "printf '%%s\\\\n' %q > %q\n" "$text" "$file"
     printf "git add %q\n" "$file"
     printf "git commit -m %q\n" "$message"
   )
@@ -121,7 +121,7 @@ git -C "$TMP_PROJECT" commit -qm "initial commit"
 chmod -R a+rwX "$TMP_PROJECT"
 
 echo
-run_ps "e2e-git-rebase" "rebase" "git-rebase.txt" "git rebase\n" "agent: git rebase"
+run_ps "e2e-git-rebase" "rebase" "git-rebase.txt" "git rebase" "agent: git rebase"
 assert_file_contains "$TMP_PROJECT/git-rebase.txt" "git rebase"
 assert_git_log_contains "agent: git rebase"
 if [ -d "${TMP_PROJECT}-worktrees/e2e-git-rebase" ]; then
@@ -132,7 +132,7 @@ else
 fi
 
 echo
-run_ps "e2e-git-merge" "merge" "git-merge.txt" "git merge\n" "agent: git merge"
+run_ps "e2e-git-merge" "merge" "git-merge.txt" "git merge" "agent: git merge"
 assert_file_contains "$TMP_PROJECT/git-merge.txt" "git merge"
 assert_git_log_contains "agent: git merge"
 if git -C "$TMP_PROJECT" log -1 --format=%s | grep -qF "Merge agent session: e2e-git-merge"; then
@@ -149,7 +149,7 @@ else
 fi
 
 echo
-run_ps "e2e-git-nothing" "nothing" "git-nothing.txt" "git nothing\n" "agent: git nothing"
+run_ps "e2e-git-nothing" "nothing" "git-nothing.txt" "git nothing" "agent: git nothing"
 if [ -e "$TMP_PROJECT/git-nothing.txt" ]; then
   echo "  BAD   nothing action changed the main worktree"
   fail=1

@@ -65,7 +65,7 @@ run_ps() {
   prompt=$(
     printf "set -euo pipefail\n"
     printf "git config --global --add safe.directory /workspace || true\n"
-    printf "printf %%s %q > %q\n" "$text" "$file"
+    printf "printf '%%s\\\\n' %q > %q\n" "$text" "$file"
     printf "jj describe -m %q\n" "$message"
     printf "jj status\n"
   )
@@ -127,7 +127,7 @@ jj git init --colocate "$TMP_PROJECT" >/dev/null
 chmod -R a+rwX "$TMP_PROJECT"
 
 echo
-run_ps "e2e-jj-rebase" "rebase" "jj-rebase.txt" "jj rebase\n" "agent: jj rebase"
+run_ps "e2e-jj-rebase" "rebase" "jj-rebase.txt" "jj rebase" "agent: jj rebase"
 assert_jj_file_contains "$TMP_PROJECT" "e2e-jj-rebase" "jj-rebase.txt" "jj rebase"
 assert_jj_log_contains "e2e-jj-rebase" "agent: jj rebase"
 if [ -d "${TMP_PROJECT}-workspaces/e2e-jj-rebase" ]; then
@@ -138,7 +138,7 @@ else
 fi
 
 echo
-run_ps "e2e-jj-merge" "merge" "jj-merge.txt" "jj merge\n" "agent: jj merge"
+run_ps "e2e-jj-merge" "merge" "jj-merge.txt" "jj merge" "agent: jj merge"
 assert_jj_file_contains "$TMP_PROJECT" "e2e-jj-merge" "jj-merge.txt" "jj merge"
 assert_jj_log_contains "e2e-jj-merge" "agent: jj merge"
 if [ -d "${TMP_PROJECT}-workspaces/e2e-jj-merge" ]; then
@@ -149,7 +149,7 @@ else
 fi
 
 echo
-run_ps "e2e-jj-nothing" "nothing" "jj-nothing.txt" "jj nothing\n" "agent: jj nothing"
+run_ps "e2e-jj-nothing" "nothing" "jj-nothing.txt" "jj nothing" "agent: jj nothing"
 if jj -R "$TMP_PROJECT" file show -r @ "jj-nothing.txt" >/dev/null 2>&1; then
   echo "  BAD   nothing action changed the default workspace revision"
   fail=1
