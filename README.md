@@ -5,8 +5,9 @@ inside per-project Linux containers. On macOS, direct CLI runs default to Apple'
 [`container`](https://github.com/apple/container) runtime, where each container
 runs in its own VM. On Linux, direct CLI runs support Docker or Podman.
 
-> ⚠️ Created with the help of AI.
-> 🚧 Experimental work in progress
+> ⚠️ Created with the help of AI. \
+> 🚧 Experimental work in progress \
+> ‼️ Use at your own risk.
 
 ## Main features
 
