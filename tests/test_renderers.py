@@ -816,9 +816,10 @@ class RendererTests(TestCase):
             self.assertIn('exec claude "$@"', text)
             self.assertIn("codex-headless", text)
             self.assertIn(
-                'exec codex exec --skip-git-repo-check --json --color never "$PROMPT"',
+                'set -- --skip-git-repo-check --json --color never "$PROMPT"',
                 text,
             )
+            self.assertIn('exec codex exec "$@"', text)
             self.assertIn("opencode-headless", text)
             self.assertIn("bash-headless", text)
             self.assertIn('exec bash -lc "$PROMPT"', text)
@@ -838,20 +839,21 @@ class RendererTests(TestCase):
             )
             self.assertIn('set -- --model "$PROJECT_SANDBOX_MODEL" "$@"', text)
             self.assertIn('exec claude "$@"', text)
-            # Codex and opencode still use the if/else pattern.
+            # Codex builds args with set -- so model and config overrides compose.
             self.assertIn(
-                'exec codex exec --model "$PROJECT_SANDBOX_MODEL" --skip-git-repo-check --json --color never "$PROMPT"',
+                'set -- --model "$PROJECT_SANDBOX_MODEL" "$@"',
+                text,
+            )
+            self.assertIn('exec codex exec "$@"', text)
+            self.assertIn(
+                'set -- --model "$PROJECT_SANDBOX_MODEL" "$@"',
                 text,
             )
             self.assertIn(
-                'exec opencode run --model "$PROJECT_SANDBOX_MODEL" "$PROMPT"',
+                'set -- --skip-git-repo-check --json --color never "$PROMPT"',
                 text,
             )
-            self.assertIn(
-                'exec codex exec --skip-git-repo-check --json --color never "$PROMPT"',
-                text,
-            )
-            self.assertIn('exec opencode run "$PROMPT"', text)
+            self.assertIn('exec opencode run "$@"', text)
 
     def test_entrypoint_headless_supports_effort_selection(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -860,6 +862,59 @@ class RendererTests(TestCase):
             text = (context / "entrypoint.sh").read_text(encoding="utf-8")
             self.assertIn("PROJECT_SANDBOX_EFFORT", text)
             self.assertIn('set -- --effort "$PROJECT_SANDBOX_EFFORT" "$@"', text)
+            self.assertIn(
+                'set -- -c "model_reasoning_effort=\\"$PROJECT_SANDBOX_EFFORT\\"" "$@"',
+                text,
+            )
+            self.assertIn('set -- --variant "$PROJECT_SANDBOX_EFFORT" "$@"', text)
+
+    def test_entrypoint_interactive_supports_model_and_effort(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            dockerfile.render_entrypoint(context)
+            text = (context / "entrypoint.sh").read_text(encoding="utf-8")
+            # Interactive agent branches consume the same env vars as headless and
+            # turn them into each agent's own model/effort flags before exec.
+            self.assertIn('log_project_sandbox_agent_command claude "$@"', text)
+            self.assertIn('log_project_sandbox_agent_command codex "$@"', text)
+            self.assertIn('log_project_sandbox_agent_command opencode "$@"', text)
+            self.assertIn('exec codex "$@"', text)
+            self.assertIn('exec opencode "$@"', text)
+            # The codex interactive branch uses -c for reasoning effort and the
+            # opencode branch uses --variant, mirroring their headless forms.
+            self.assertEqual(
+                text.count(
+                    'set -- -c "model_reasoning_effort=\\"$PROJECT_SANDBOX_EFFORT\\"" "$@"'
+                ),
+                2,
+            )
+            self.assertEqual(
+                text.count('set -- --variant "$PROJECT_SANDBOX_EFFORT" "$@"'), 2
+            )
+
+    def test_entrypoint_headless_logs_agent_command_when_verbose(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            dockerfile.render_entrypoint(context)
+            text = (context / "entrypoint.sh").read_text(encoding="utf-8")
+            # The verbose echo is gated on PROJECT_SANDBOX_VERBOSE and reports the
+            # resolved model/effort plus the full agent argv.
+            self.assertIn("log_project_sandbox_agent_command() {", text)
+            self.assertIn(
+                'if [ "${PROJECT_SANDBOX_VERBOSE:-0}" != "1" ]; then', text
+            )
+            self.assertIn(
+                "printf '  model:  %s\\n' \"${PROJECT_SANDBOX_MODEL:-(agent default)}\"",
+                text,
+            )
+            self.assertIn(
+                "printf '  effort: %s\\n' \"${PROJECT_SANDBOX_EFFORT:-(agent default)}\"",
+                text,
+            )
+            # Each headless agent logs its resolved argv right before exec.
+            self.assertIn('log_project_sandbox_agent_command claude "$@"', text)
+            self.assertIn('log_project_sandbox_agent_command codex exec "$@"', text)
+            self.assertIn('log_project_sandbox_agent_command opencode run "$@"', text)
 
     def test_entrypoint_renderer_overwrites_missing_jj_identity_setup(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

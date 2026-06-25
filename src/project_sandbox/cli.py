@@ -125,10 +125,13 @@ def build_parser() -> ArgumentParser:
         default=None,
         metavar="MODEL_ID",
         help=(
-            "Model ID to use for all completions in unsupervised (batch) mode. "
-            "Only takes effect with --prompt or --prompt-text. "
-            "To list available models: 'claude models' (Claude), "
-            "'codex models list' (Codex), 'opencode models' (OpenCode)."
+            "Model ID to use for the agent, in both interactive and unsupervised "
+            "(batch) runs. "
+            "Example for Claude: --agent claude --model sonnet --prompt-text '...'. "
+            "Example for Codex: --agent codex --model gpt-5.4-mini "
+            "--prompt-text '...'. "
+            "Example for OpenCode: --agent opencode --model openai/gpt-5.4-mini "
+            "--prompt-text '...'."
         ),
     )
     p.add_argument(
@@ -137,10 +140,16 @@ def build_parser() -> ArgumentParser:
         default=None,
         metavar="LEVEL",
         help=(
-            "Reasoning effort level for Claude in unsupervised (batch) mode. "
+            "Reasoning effort level for Claude, Codex, and OpenCode, in both "
+            "interactive and unsupervised (batch) runs. "
             "One of: low, medium, high, xhigh, max (default: xhigh). "
-            "Only takes effect with --prompt or --prompt-text. "
-            "Claude only; has no effect for other agents."
+            "Examples for Claude: --agent claude --model sonnet --effort low "
+            "or --agent claude --model sonnet --effort high. "
+            "Examples for Codex: --agent codex --model gpt-5.4-mini --effort low "
+            "or --agent codex --model gpt-5.4-mini --effort high. "
+            "Examples for OpenCode: --agent opencode --model openai/gpt-5.4-mini "
+            "--effort low or --agent opencode --model openai/gpt-5.4-mini "
+            "--effort high."
         ),
     )
     p.add_argument(
@@ -932,6 +941,17 @@ def _build_session_command(
         # Silence the in-container firewall/startup banner; the entrypoint still
         # surfaces firewall errors on failure.
         extra_env.append("PROJECT_SANDBOX_QUIET=1")
+    else:
+        # Have the entrypoint echo the resolved coding-agent config and argv, so
+        # the actual --model/--effort the agent receives are visible.
+        extra_env.append("PROJECT_SANDBOX_VERBOSE=1")
+    # Model/effort apply in both interactive and headless runs; the entrypoint
+    # branch for each agent turns these into the agent's own --model/--effort
+    # flags (and ignores them for bash).
+    if getattr(args, "model", None):
+        extra_env.append(f"PROJECT_SANDBOX_MODEL={args.model}")
+    if getattr(args, "effort", None):
+        extra_env.append(f"PROJECT_SANDBOX_EFFORT={args.effort}")
     run_mode_agent = run_agent
     unsupervised = bool(args.prompt or args.prompt_text)
     log_path: Path | None = None
@@ -956,10 +976,6 @@ def _build_session_command(
             )
         )
         run_mode_agent = f"{run_agent}-headless"
-        if getattr(args, "model", None):
-            extra_env.append(f"PROJECT_SANDBOX_MODEL={args.model}")
-        if getattr(args, "effort", None):
-            extra_env.append(f"PROJECT_SANDBOX_EFFORT={args.effort}")
         if args.prompt:
             source_prompt = resolve_strict(args.prompt)
             # Copy the prompt into a private staging dir so we mount only the
@@ -1027,6 +1043,9 @@ def _build_session_command(
         forward_credentials=forward_credentials,
     )
 
+    if args.verbose and run_agent != "bash":
+        _print_agent_config(run_agent, args, unsupervised=unsupervised)
+
     return (
         container_cli.build_run_argv(
             runtime=runtime,
@@ -1052,6 +1071,20 @@ def _build_session_command(
         unsupervised,
         container_stop_argv,
     )
+
+
+def _print_agent_config(run_agent: str, args, *, unsupervised: bool) -> None:
+    """Summarize the coding-agent config the container is launched with.
+
+    Printed on --verbose so the resolved --model/--effort are visible host-side;
+    the entrypoint echoes the same values (and the full argv) from inside the
+    container, where a blank value reveals an env var that did not arrive.
+    """
+    mode = "headless" if unsupervised else "interactive"
+    print(f"=== coding agent ({mode}) ===")
+    print(f"  agent:  {run_agent}")
+    print(f"  model:  {args.model or '(agent default)'}")
+    print(f"  effort: {args.effort or '(agent default)'}")
 
 
 def _print_next_steps(

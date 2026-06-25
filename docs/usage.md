@@ -204,6 +204,12 @@ uv run project-sandbox \
   the CLI only initializes generated config files unless a prompt is supplied.
   Claude, Codex, and OpenCode require their host config directories; Bash is
   always available.
+- `--model MODEL_ID` selects the agent model and `--effort {low,medium,high,xhigh,max}`
+  selects the reasoning effort. Both apply to interactive and headless runs: the
+  CLI forwards them as `PROJECT_SANDBOX_MODEL` / `PROJECT_SANDBOX_EFFORT`, and the
+  entrypoint turns them into each agent's own flags — `--model` plus `--effort`
+  for Claude, `--model` plus `-c model_reasoning_effort=...` for Codex, and
+  `--model` plus `--variant` for OpenCode. They are ignored for Bash.
 - `--log FILE` overrides the default log path under
   `.project-sandbox/sessions/<agent>-main-<timestamp>.log`.
 - For headless `claude` runs, a readable markdown transcript is rendered
@@ -221,7 +227,10 @@ uv run project-sandbox \
   `Starting container...` before handing off to the agent/shell, and headless
   runs print the log path up front and a `Wrote N lines to ...` summary at the
   end. With `--verbose`, the build output streams, the firewall banner shows, and
-  headless output is teed live to the terminal as well as the log.
+  headless output is teed live to the terminal as well as the log. It also prints
+  the resolved coding-agent config (agent, model, effort) before launch, and the
+  entrypoint echoes the same values plus the exact agent argv from inside the
+  container — a blank model/effort there means the env var did not arrive.
 - The agent's exit code is propagated, so CI pipelines can detect failures.
 
 Unsupervised sessions skip the interactive `-it` flags and switch dispatch to
