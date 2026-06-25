@@ -35,11 +35,20 @@ def _make_git_repo(path: Path) -> None:
 class CliTests(TestCase):
     def test_help_includes_core_options(self) -> None:
         parser = cli.build_parser()
-        with self.assertRaises(SystemExit) as raised, contextlib.redirect_stdout(io.StringIO()) as stdout:
+        # Render at a wide width so argparse does not wrap example invocations
+        # mid-flag (e.g. "--prompt-text" -> "--prompt-\ntext"), which would make
+        # the substring assertions below depend on terminal width.
+        with (
+            patch.dict(os.environ, {"COLUMNS": "240"}),
+            self.assertRaises(SystemExit) as raised,
+            contextlib.redirect_stdout(io.StringIO()) as stdout,
+        ):
             parser.parse_args(["--help"])
 
         self.assertEqual(raised.exception.code, 0)
         help_text = stdout.getvalue()
+        # Normalize whitespace to handle argparse line-wrapping in assertions.
+        flat_help = " ".join(help_text.split())
         self.assertIn("--dry-run", help_text)
         self.assertIn("--branch", help_text)
         self.assertIn("--dockerfile", help_text)
@@ -50,6 +59,20 @@ class CliTests(TestCase):
         self.assertNotIn("--rebuild", help_text)
         self.assertNotIn("--refresh-config", help_text)
         self.assertIn("bash", help_text)
+        self.assertIn("--model", help_text)
+        self.assertIn("--effort", help_text)
+        self.assertIn("--agent claude --model sonnet --prompt-text", flat_help)
+        self.assertIn("--agent claude --model sonnet --effort low", flat_help)
+        self.assertIn("--agent claude --model sonnet --effort high", flat_help)
+        self.assertIn("--agent codex --model gpt-5.4-mini --prompt-text", flat_help)
+        self.assertIn("--agent codex --model gpt-5.4-mini --effort low", flat_help)
+        self.assertIn("--agent codex --model gpt-5.4-mini --effort high", flat_help)
+        self.assertIn("--agent opencode --model openai/gpt-5.4-mini --prompt-text", flat_help)
+        self.assertIn("--agent opencode --model openai/gpt-5.4-mini --effort low", flat_help)
+        self.assertIn("--agent opencode --model openai/gpt-5.4-mini --effort high", flat_help)
+        self.assertNotIn("claude models", flat_help)
+        self.assertNotIn("codex models list", flat_help)
+        self.assertNotIn("opencode models", flat_help)
 
     def test_refresh_flags_are_removed(self) -> None:
         parser = cli.build_parser()
@@ -1116,6 +1139,310 @@ class CliTests(TestCase):
         self.assertIn("unavailable", str(raised.exception).lower())
         self.assertIn("claude", str(raised.exception).lower())
         self.assertIn("bash", str(raised.exception).lower())
+
+
+class ModelSelectionTests(TestCase):
+    """--model passes PROJECT_SANDBOX_MODEL into unsupervised container runs."""
+
+    def _headless_dry_run_with_model(self, agent: str, model: str | None) -> str:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            host_home = project / "home"
+            paths = _agent_paths(host_home)
+            for key in paths:
+                paths[key].mkdir(parents=True, exist_ok=True)
+            out = io.StringIO()
+            extra = ["--model", model] if model else []
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                contextlib.redirect_stdout(out),
+            ):
+                rc = cli.main([
+                    "--dry-run", "--no-build", "--no-firewall",
+                    "--agent", agent,
+                    "--prompt-text", "do something",
+                    *extra,
+                    str(project), "python:3.12-slim",
+                ])
+            self.assertEqual(rc, 0)
+            return out.getvalue()
+
+    def test_model_injected_for_claude_headless(self) -> None:
+        output = self._headless_dry_run_with_model("claude", "claude-opus-4-5")
+        self.assertIn("PROJECT_SANDBOX_MODEL=claude-opus-4-5", output)
+
+    def test_model_injected_for_codex_headless(self) -> None:
+        output = self._headless_dry_run_with_model("codex", "o4-mini")
+        self.assertIn("PROJECT_SANDBOX_MODEL=o4-mini", output)
+
+    def test_model_injected_for_opencode_headless(self) -> None:
+        output = self._headless_dry_run_with_model("opencode", "openai/gpt-5.4-mini")
+        self.assertIn("PROJECT_SANDBOX_MODEL=openai/gpt-5.4-mini", output)
+
+    def test_no_model_does_not_inject_env_var(self) -> None:
+        output = self._headless_dry_run_with_model("claude", None)
+        self.assertNotIn("PROJECT_SANDBOX_MODEL", output)
+
+    def test_model_injected_in_interactive_mode(self) -> None:
+        # Interactive runs (no --prompt) also honor --model: the env var is
+        # injected and the entrypoint's interactive branch turns it into --model.
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            host_home = project / "home"
+            paths = _agent_paths(host_home)
+            paths["claude"].mkdir(parents=True, exist_ok=True)
+            out = io.StringIO()
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                contextlib.redirect_stdout(out),
+            ):
+                rc = cli.main([
+                    "--dry-run", "--no-build", "--no-firewall",
+                    "--agent", "claude",
+                    "--model", "claude-opus-4-5",
+                    str(project), "python:3.12-slim",
+                ])
+            self.assertEqual(rc, 0)
+            self.assertIn("PROJECT_SANDBOX_MODEL=claude-opus-4-5", out.getvalue())
+
+
+class EffortSelectionTests(TestCase):
+    """--effort passes PROJECT_SANDBOX_EFFORT into unsupervised agent runs."""
+
+    def _headless_dry_run_with_effort(self, agent: str, effort: str | None) -> str:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            host_home = project / "home"
+            paths = _agent_paths(host_home)
+            for key in paths:
+                paths[key].mkdir(parents=True, exist_ok=True)
+            out = io.StringIO()
+            extra = ["--effort", effort] if effort else []
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                contextlib.redirect_stdout(out),
+            ):
+                rc = cli.main([
+                    "--dry-run", "--no-build", "--no-firewall",
+                    "--agent", agent,
+                    "--prompt-text", "do something",
+                    *extra,
+                    str(project), "python:3.12-slim",
+                ])
+            self.assertEqual(rc, 0)
+            return out.getvalue()
+
+    def test_effort_injected_for_claude_headless(self) -> None:
+        output = self._headless_dry_run_with_effort("claude", "high")
+        self.assertIn("PROJECT_SANDBOX_EFFORT=high", output)
+
+    def test_low_effort_injected_for_claude_headless(self) -> None:
+        output = self._headless_dry_run_with_effort("claude", "low")
+        self.assertIn("PROJECT_SANDBOX_EFFORT=low", output)
+
+    def test_effort_injected_for_codex_headless(self) -> None:
+        output = self._headless_dry_run_with_effort("codex", "low")
+        self.assertIn("PROJECT_SANDBOX_EFFORT=low", output)
+
+    def test_high_effort_injected_for_codex_headless(self) -> None:
+        output = self._headless_dry_run_with_effort("codex", "high")
+        self.assertIn("PROJECT_SANDBOX_EFFORT=high", output)
+
+    def test_effort_injected_for_opencode_headless(self) -> None:
+        output = self._headless_dry_run_with_effort("opencode", "low")
+        self.assertIn("PROJECT_SANDBOX_EFFORT=low", output)
+
+    def test_high_effort_injected_for_opencode_headless(self) -> None:
+        output = self._headless_dry_run_with_effort("opencode", "high")
+        self.assertIn("PROJECT_SANDBOX_EFFORT=high", output)
+
+    def test_no_effort_does_not_inject_env_var(self) -> None:
+        output = self._headless_dry_run_with_effort("claude", None)
+        self.assertNotIn("PROJECT_SANDBOX_EFFORT", output)
+
+    def test_effort_injected_in_interactive_mode(self) -> None:
+        # Interactive runs (no --prompt) also honor --effort.
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            host_home = project / "home"
+            paths = _agent_paths(host_home)
+            paths["claude"].mkdir(parents=True, exist_ok=True)
+            out = io.StringIO()
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                contextlib.redirect_stdout(out),
+            ):
+                rc = cli.main([
+                    "--dry-run", "--no-build", "--no-firewall",
+                    "--agent", "claude",
+                    "--effort", "max",
+                    str(project), "python:3.12-slim",
+                ])
+            self.assertEqual(rc, 0)
+            self.assertIn("PROJECT_SANDBOX_EFFORT=max", out.getvalue())
+
+    def test_effort_choices_are_validated(self) -> None:
+        parser = cli.build_parser()
+        with (
+            self.assertRaises(SystemExit),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            parser.parse_args([
+                "--effort", "ultra",
+                "/tmp/project", "python:3.12-slim",
+            ])
+
+    def test_effort_and_model_can_be_combined(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            host_home = project / "home"
+            paths = _agent_paths(host_home)
+            for key in paths:
+                paths[key].mkdir(parents=True, exist_ok=True)
+            out = io.StringIO()
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                contextlib.redirect_stdout(out),
+            ):
+                rc = cli.main([
+                    "--dry-run", "--no-build", "--no-firewall",
+                    "--agent", "claude",
+                    "--prompt-text", "do something",
+                    "--model", "sonnet",
+                    "--effort", "high",
+                    str(project), "python:3.12-slim",
+                ])
+            self.assertEqual(rc, 0)
+            result = out.getvalue()
+            self.assertIn("PROJECT_SANDBOX_MODEL=sonnet", result)
+            self.assertIn("PROJECT_SANDBOX_EFFORT=high", result)
+
+    def test_codex_effort_and_model_can_be_combined(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            host_home = project / "home"
+            paths = _agent_paths(host_home)
+            for key in paths:
+                paths[key].mkdir(parents=True, exist_ok=True)
+            out = io.StringIO()
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                contextlib.redirect_stdout(out),
+            ):
+                rc = cli.main([
+                    "--dry-run", "--no-build", "--no-firewall",
+                    "--agent", "codex",
+                    "--prompt-text", "do something",
+                    "--model", "gpt-5.4-mini",
+                    "--effort", "high",
+                    str(project), "python:3.12-slim",
+                ])
+            self.assertEqual(rc, 0)
+            result = out.getvalue()
+            self.assertIn("PROJECT_SANDBOX_MODEL=gpt-5.4-mini", result)
+            self.assertIn("PROJECT_SANDBOX_EFFORT=high", result)
+
+    def test_opencode_effort_and_model_can_be_combined(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            host_home = project / "home"
+            paths = _agent_paths(host_home)
+            for key in paths:
+                paths[key].mkdir(parents=True, exist_ok=True)
+            out = io.StringIO()
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                contextlib.redirect_stdout(out),
+            ):
+                rc = cli.main([
+                    "--dry-run", "--no-build", "--no-firewall",
+                    "--agent", "opencode",
+                    "--prompt-text", "do something",
+                    "--model", "openai/gpt-5.4-mini",
+                    "--effort", "high",
+                    str(project), "python:3.12-slim",
+                ])
+            self.assertEqual(rc, 0)
+            result = out.getvalue()
+            self.assertIn("PROJECT_SANDBOX_MODEL=openai/gpt-5.4-mini", result)
+            self.assertIn("PROJECT_SANDBOX_EFFORT=high", result)
+
+
+class VerboseAgentConfigTests(TestCase):
+    """--verbose surfaces the headless coding-agent config and forwards the
+    PROJECT_SANDBOX_VERBOSE flag so the entrypoint echoes the resolved argv."""
+
+    def _verbose_headless_run(
+        self, *, model: str | None, effort: str | None, verbose: bool
+    ) -> str:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            host_home = project / "home"
+            paths = _agent_paths(host_home)
+            for key in paths:
+                paths[key].mkdir(parents=True, exist_ok=True)
+            out = io.StringIO()
+            argv = ["--dry-run", "--no-build", "--no-firewall"]
+            if verbose:
+                argv.append("--verbose")
+            argv += ["--agent", "codex", "--prompt-text", "do something"]
+            if model:
+                argv += ["--model", model]
+            if effort:
+                argv += ["--effort", effort]
+            argv += [str(project), "python:3.12-slim"]
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                contextlib.redirect_stdout(out),
+            ):
+                rc = cli.main(argv)
+            self.assertEqual(rc, 0)
+            return out.getvalue()
+
+    def test_verbose_prints_agent_config_summary(self) -> None:
+        output = self._verbose_headless_run(
+            model="gpt-5.4-mini", effort="high", verbose=True
+        )
+        self.assertIn("=== coding agent (headless) ===", output)
+        self.assertIn("agent:  codex", output)
+        self.assertIn("model:  gpt-5.4-mini", output)
+        self.assertIn("effort: high", output)
+
+    def test_verbose_summary_shows_defaults_when_unset(self) -> None:
+        output = self._verbose_headless_run(model=None, effort=None, verbose=True)
+        self.assertIn("model:  (agent default)", output)
+        self.assertIn("effort: (agent default)", output)
+
+    def test_verbose_forwards_verbose_env_to_container(self) -> None:
+        output = self._verbose_headless_run(
+            model="gpt-5.4-mini", effort="high", verbose=True
+        )
+        self.assertIn("PROJECT_SANDBOX_VERBOSE=1", output)
+        self.assertNotIn("PROJECT_SANDBOX_QUIET", output)
+
+    def test_quiet_run_omits_config_summary_and_verbose_env(self) -> None:
+        output = self._verbose_headless_run(
+            model="gpt-5.4-mini", effort="high", verbose=False
+        )
+        self.assertNotIn("=== coding agent (headless) ===", output)
+        self.assertNotIn("PROJECT_SANDBOX_VERBOSE", output)
+        self.assertIn("PROJECT_SANDBOX_QUIET=1", output)
 
 
 class TeardownWorktreeOnFailureTests(TestCase):

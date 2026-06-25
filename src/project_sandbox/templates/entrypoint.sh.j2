@@ -37,28 +37,102 @@ load_project_sandbox_prompt() {
   fi
 }
 
+# When --verbose is requested, echo the coding agent's resolved config and the
+# exact argv it is launched with (to stderr, so the stream-json stdout stays
+# clean). This makes it visible whether --model / --effort actually reached the
+# agent: a blank value here means the env var did not arrive.
+log_project_sandbox_agent_command() {
+  if [ "${PROJECT_SANDBOX_VERBOSE:-0}" != "1" ]; then
+    return 0
+  fi
+  {
+    printf 'project-sandbox: coding agent config:\n'
+    printf '  model:  %s\n' "${PROJECT_SANDBOX_MODEL:-(agent default)}"
+    printf '  effort: %s\n' "${PROJECT_SANDBOX_EFFORT:-(agent default)}"
+    printf 'project-sandbox: coding agent command:'
+    for _arg in "$@"; do
+      printf ' %s' "$_arg"
+    done
+    printf '\n'
+  } >&2
+}
+
 case "${1:-bash}" in
   project-sandbox-run)
     shift
     case "${1:-bash}" in
-      claude) shift; exec claude "$@" ;;
-      codex) shift; exec codex "$@" ;;
-      opencode) shift; exec opencode "$@" ;;
+      claude)
+        shift
+        if [ -n "${PROJECT_SANDBOX_EFFORT:-}" ]; then
+          set -- --effort "$PROJECT_SANDBOX_EFFORT" "$@"
+        fi
+        if [ -n "${PROJECT_SANDBOX_MODEL:-}" ]; then
+          set -- --model "$PROJECT_SANDBOX_MODEL" "$@"
+        fi
+        log_project_sandbox_agent_command claude "$@"
+        exec claude "$@"
+        ;;
+      codex)
+        shift
+        if [ -n "${PROJECT_SANDBOX_EFFORT:-}" ]; then
+          set -- -c "model_reasoning_effort=\"$PROJECT_SANDBOX_EFFORT\"" "$@"
+        fi
+        if [ -n "${PROJECT_SANDBOX_MODEL:-}" ]; then
+          set -- --model "$PROJECT_SANDBOX_MODEL" "$@"
+        fi
+        log_project_sandbox_agent_command codex "$@"
+        exec codex "$@"
+        ;;
+      opencode)
+        shift
+        if [ -n "${PROJECT_SANDBOX_EFFORT:-}" ]; then
+          set -- --variant "$PROJECT_SANDBOX_EFFORT" "$@"
+        fi
+        if [ -n "${PROJECT_SANDBOX_MODEL:-}" ]; then
+          set -- --model "$PROJECT_SANDBOX_MODEL" "$@"
+        fi
+        log_project_sandbox_agent_command opencode "$@"
+        exec opencode "$@"
+        ;;
       bash) shift; exec bash "$@" ;;
       claude-headless)
         shift
         load_project_sandbox_prompt claude-headless || exit $?
-        exec claude -p "$PROMPT" --output-format stream-json --verbose --dangerously-skip-permissions
+        set -- -p "$PROMPT" --output-format stream-json --verbose --dangerously-skip-permissions
+        if [ -n "${PROJECT_SANDBOX_EFFORT:-}" ]; then
+          set -- --effort "$PROJECT_SANDBOX_EFFORT" "$@"
+        fi
+        if [ -n "${PROJECT_SANDBOX_MODEL:-}" ]; then
+          set -- --model "$PROJECT_SANDBOX_MODEL" "$@"
+        fi
+        log_project_sandbox_agent_command claude "$@"
+        exec claude "$@"
         ;;
       codex-headless)
         shift
         load_project_sandbox_prompt codex-headless || exit $?
-        exec codex exec --json --color never "$PROMPT"
+        set -- --skip-git-repo-check --json --color never "$PROMPT"
+        if [ -n "${PROJECT_SANDBOX_EFFORT:-}" ]; then
+          set -- -c "model_reasoning_effort=\"$PROJECT_SANDBOX_EFFORT\"" "$@"
+        fi
+        if [ -n "${PROJECT_SANDBOX_MODEL:-}" ]; then
+          set -- --model "$PROJECT_SANDBOX_MODEL" "$@"
+        fi
+        log_project_sandbox_agent_command codex exec "$@"
+        exec codex exec "$@"
         ;;
       opencode-headless)
         shift
         load_project_sandbox_prompt opencode-headless || exit $?
-        exec opencode run "$PROMPT"
+        set -- "$PROMPT"
+        if [ -n "${PROJECT_SANDBOX_EFFORT:-}" ]; then
+          set -- --variant "$PROJECT_SANDBOX_EFFORT" "$@"
+        fi
+        if [ -n "${PROJECT_SANDBOX_MODEL:-}" ]; then
+          set -- --model "$PROJECT_SANDBOX_MODEL" "$@"
+        fi
+        log_project_sandbox_agent_command opencode run "$@"
+        exec opencode run "$@"
         ;;
       bash-headless)
         shift
