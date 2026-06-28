@@ -14,6 +14,7 @@ from . import (
     container_cli,
     devcontainer,
     dockerfile,
+    dockerfile_checksum,
     firewall,
     oauth_refresh,
     session,
@@ -31,6 +32,7 @@ from .paths import (
     HISTORY_CLAUDE_PROJECTS_TARGET,
     HISTORY_HISTFILE,
     HISTORY_SHELL_TARGET,
+    WORKSPACE_DEVCONTAINER_TARGET,
     WORKSPACE_SANDBOX_TARGET,
     ensure_dir,
     ensure_history_paths,
@@ -334,6 +336,12 @@ def main(argv: list[str] | None = None) -> int:
                 "[W] Apple container system not running - if you're on a Mac, you may need to install or start it. Otherwise, you can still work with the devcontainer setup."
             )
 
+        tracked_dockerfiles = _tracked_project_dockerfiles(base_dockerfile, context_dir)
+        for warning in dockerfile_checksum.changed_warnings(
+            context_dir, tracked_dockerfiles
+        ):
+            print(warning)
+
         if not args.no_build:
             # Reuse an existing image when its build inputs are unchanged. This
             # auto-skip is limited to the default flow where the build context is
@@ -380,6 +388,11 @@ def main(argv: list[str] | None = None) -> int:
                     fingerprint=fingerprint,
                 )
                 print(f"Built image in {time.monotonic() - start:.1f}s")
+
+        # Record the trusted baseline checksum of the project Dockerfile(s) after
+        # building from them, into the masked .project-sandbox dir the sandbox
+        # cannot reach. A later run compares against this to flag tampering.
+        dockerfile_checksum.record(context_dir, tracked_dockerfiles)
 
         cmd, log_path, unsupervised, container_stop_argv = _build_session_command(
             args,
@@ -523,6 +536,11 @@ def _dry_run(
             for warning in dockerfile.source_warnings(base_dockerfile):
                 print(warning)
         print(f"Would use build context: {build_context}")
+
+    for warning in dockerfile_checksum.changed_warnings(
+        context_dir, _tracked_project_dockerfiles(base_dockerfile, context_dir)
+    ):
+        print(warning)
 
     if run_agent is None:
         print(
@@ -727,6 +745,27 @@ def _resolve_build_source(
     if not args.base_image:
         raise SystemExit("base_image is required unless --dockerfile is used")
     return args.base_image, None, context_dir
+
+
+def _tracked_project_dockerfiles(
+    base_dockerfile: Path | None, context_dir: Path
+) -> list[Path]:
+    """Return the project Dockerfiles whose checksum is worth tracking.
+
+    Only a user-supplied ``--dockerfile`` that lives outside ``.project-sandbox``
+    qualifies: it sits in the writable workspace where an agent could rewrite it.
+    Generated Dockerfiles under ``.project-sandbox`` are masked inside the sandbox
+    and so cannot be tampered with, and the bare ``base_image`` flow has no
+    project Dockerfile at all.
+    """
+    if base_dockerfile is None:
+        return []
+    sandbox_dir = context_dir.resolve(strict=False)
+    try:
+        base_dockerfile.resolve(strict=False).relative_to(sandbox_dir)
+    except ValueError:
+        return [base_dockerfile]
+    return []
 
 
 def _validate_session_inputs(args) -> None:
@@ -1048,6 +1087,14 @@ def _build_session_command(
     extra_mounts.append(
         f"type=bind,source={mask_source},target={WORKSPACE_SANDBOX_TARGET},readonly"
     )
+    # Hide the .devcontainer directory from inside the sandbox by masking it with
+    # the same empty dir. It holds host-path mounts and config the agent has no
+    # reason to read or edit. Only mask when it exists so the bind target is
+    # present (apple/container rejects a bind onto a missing target).
+    if (workspace / ".devcontainer").exists():
+        extra_mounts.append(
+            f"type=bind,source={mask_source},target={WORKSPACE_DEVCONTAINER_TARGET},readonly"
+        )
 
     forward_credentials = not getattr(args, "no_forward_credentials", False)
     _warn_forwarded_credential_lifetime(

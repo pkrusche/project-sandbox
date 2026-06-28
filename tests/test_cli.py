@@ -893,6 +893,64 @@ class CliTests(TestCase):
         self.assertIn(mask, out)
         self.assertLess(out.index(custom), out.index(mask))
 
+    def test_dry_run_masks_devcontainer_when_present(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            # A pre-existing .devcontainer must be hidden from inside the sandbox.
+            (project / ".devcontainer").mkdir()
+            out = io.StringIO()
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(
+                    cli.config_agents,
+                    "_agent_host_paths",
+                    return_value=_agent_paths(project / "home"),
+                ),
+                contextlib.redirect_stdout(out),
+            ):
+                rc = cli.main([
+                    "--dry-run", "--no-build", "--agent", "bash",
+                    "--prompt-text", "echo ok",
+                    str(project), "python:3.12-slim",
+                ])
+            self.assertEqual(rc, 0)
+            self.assertIn("target=/workspace/.devcontainer,readonly", out.getvalue())
+
+    def test_dry_run_warns_when_project_dockerfile_changed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            dockerfile = project / "Dockerfile"
+            dockerfile.write_text("FROM debian:bookworm\n", encoding="utf-8")
+            # Record a trusted baseline, then mutate the Dockerfile as an agent
+            # with workspace write access could.
+            context_dir = project / ".project-sandbox"
+            context_dir.mkdir()
+            cli.dockerfile_checksum.record(context_dir, [dockerfile])
+            dockerfile.write_text(
+                "FROM debian:bookworm\nRUN echo pwned\n", encoding="utf-8"
+            )
+
+            out = io.StringIO()
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(
+                    cli.config_agents,
+                    "_agent_host_paths",
+                    return_value=_agent_paths(project / "home"),
+                ),
+                contextlib.redirect_stdout(out),
+            ):
+                rc = cli.main([
+                    "--dry-run", "--no-build", "--agent", "bash",
+                    "--prompt-text", "echo ok",
+                    "--dockerfile", str(dockerfile),
+                    str(project),
+                ])
+            self.assertEqual(rc, 0)
+            self.assertIn("changed since it was last built", out.getvalue())
+
     def test_prompt_text_writes_prompt_file_for_short_prompt(self) -> None:
         import argparse
 

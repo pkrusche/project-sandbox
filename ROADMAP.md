@@ -742,3 +742,143 @@ creds) in memory, env, filesystem, or `/proc`. A malicious npm package reading
    the top-level keys but not necessarily complete for every preset's expansion.
    Confirm the exact `service_catalog.py` contents before shipping a default policy
    that relies on the `claude`, `codex`, `gemini`, `copilot`, or `github` presets.
+
+## Docker Sandbox (`sbx`) execution on Linux
+
+### Context
+
+On macOS, project-sandbox can run agents under Apple's `container` runtime, where each
+container gets its own VM (strong, VM-grade isolation). On Linux there is no equivalent:
+direct CLI runs only support Docker or Podman, which share the host kernel (namespace
+isolation only).
+
+[Docker Sandboxes](https://docs.docker.com/ai/sandboxes/) close that gap. On Linux the
+standalone `sbx` CLI (installed via the `docker-sbx` package, requires KVM) runs each agent
+inside a lightweight **microVM** with its own kernel, Docker daemon, filesystem, an
+egress-filtering proxy, and a credential proxy. This gives Linux users a VM-isolation
+option analogous to Apple `container` on macOS.
+
+**Key architectural finding:** Docker Sandbox is *not* a drop-in `docker run` replacement.
+The existing docker/podman/apple-container runtimes all share the exact same
+`build_run_argv()` Docker-CLI argv (`run --rm --memory ... --mount type=bind ... <image>
+<cmd>`). `sbx` has its own command shape — `sbx run [flags] AGENT [WORKSPACE]` — bundles its
+own agent images, and provides isolation/network/credential machinery natively. So it
+cannot reuse `build_run_argv()`; it needs a separate, thin code path.
+
+**Chosen approach:**
+- **Thin launcher** — shell out to `sbx run <agent> <workspace>` and lean on Docker
+  Sandbox's native microVM isolation, egress proxy, and credential proxy. Do *not* build the
+  project-sandbox image / firewall script / credential-staging mounts for this runtime.
+- **Opt-in only** — selectable via explicit `--runtime docker-sandbox`; Linux `auto` keeps
+  defaulting to docker→podman (Docker Sandbox is experimental and needs KVM + extra install).
+- **Target the `sbx` binary** (the deprecated Desktop `docker sandbox` subcommand is not used).
+
+**Scope boundary:** the thin launcher fits **interactive** runs only. project-sandbox's
+headless/unsupervised batch runs (`--prompt`/`--prompt-text`, log streaming, named-container
+timeout shutdown) depend on its own entrypoint (`project-sandbox-run <agent>`), which cannot
+be injected into Docker Sandbox's bundled agent images. Headless mode with
+`--runtime docker-sandbox` should be rejected with a clear error in the first cut; full
+headless support is a follow-up.
+
+### Implementation
+
+**1. Runtime definition — `src/project_sandbox/container_cli.py`**
+- Add `DOCKER_SANDBOX = Runtime("docker-sandbox", "sbx")`; register in `_RUNTIMES` and append
+  `"docker-sandbox"` to `RUNTIME_CHOICES`.
+- `select_runtime()` needs no change to auto-candidate lists (opt-in). Explicit selection
+  already validates the binary (`shutil.which("sbx")`) and honors `dry_run`.
+- Add an agent-name map for `sbx`'s vocabulary:
+  `SANDBOX_AGENT_MAP = {"claude": "claude", "codex": "codex", "opencode": "opencode", "bash": "shell"}`
+  (project `SUPPORTED_AGENTS` is `("claude", "codex", "opencode", "bash")`, cli.py:41).
+- New `build_sandbox_run_argv(*, agent, workspace, sandbox_name, extra_env=(), extra_workspaces=())
+  -> list[str]` producing:
+  `["sbx", "run", "--name", sandbox_name, "-e", "K=V", ..., <ro/extra workspace paths>, <sbx_agent>, str(workspace)]`.
+  Note: `sbx` mounts extra directories as additional **positional workspace paths** (append
+  `:ro` for read-only), not Docker `--mount type=bind` strings. For docker-sandbox, `--mount`
+  values are interpreted as `hostpath[:ro]` (documented divergence from the other runtimes).
+- New `build_sandbox_policy_argv(*, sandbox_name, allow_domains, deny_all) -> list[list[str]]`
+  returning the companion network-policy commands, scoped per-sandbox:
+  - default-deny: `["sbx", "policy", "deny", "network", "**", "--sandbox", name]`
+  - allowlist: `["sbx", "policy", "allow", "network", ",".join(domains), "--sandbox", name]`
+  - when firewall disabled: allow-all `["sbx", "policy", "allow", "network", "**", "--sandbox", name]`.
+  Verify exact ordering / deny-vs-allow precedence against the installed `sbx` at runtime —
+  the feature is experimental; keep this isolated so it is easy to adjust.
+
+**2. Single source of truth for allowlist domains — `src/project_sandbox/firewall.py`**
+The curated agent domains (api.anthropic.com, api.openai.com, auth.openai.com, and the
+GitHub/Copilot set under `allow_github`) are currently hardcoded inside
+`templates/init-firewall.sh.j2` (lines ~111-135). To avoid drift between the iptables script
+and the `sbx` policy mapping:
+- Add `base_agent_domains(*, allow_github: bool) -> list[str]` returning that curated list.
+- Pass it into the template context in `render()`/`_write()` and refactor the template to loop
+  over `base_agent_domains` instead of hardcoding (behavior-preserving; covered by
+  `tests/test_renderers.py` firewall assertions).
+- The sandbox policy builder consumes `firewall.base_agent_domains(...) + extra_domains`.
+  (The dynamic GitHub-meta IP-range logic in the script is iptables-specific and irrelevant to
+  `sbx`, which filters by domain/wildcard — domains are the correct shared abstraction.)
+
+**3. Wire the launcher into the CLI — `src/project_sandbox/cli.py`**
+Branch on `runtime.name == "docker-sandbox"` in both the live-run path (~225-427) and the
+dry-run rendering path (~495-569):
+- Skip `ensure_system_started`, `image_exists`, and `build_image` (no project image is built).
+- Reject headless mode: if `args.prompt`/`args.prompt_text` (or any unsupervised-only flag) is
+  set with docker-sandbox, `raise SystemExit` with a clear message pointing at interactive use.
+- Keep existing worktree/`--branch` planning; pass the resulting `workspace` path as the `sbx`
+  primary workspace positional.
+- When firewall enabled (default): run `build_sandbox_policy_argv(...)` commands first
+  (deny `**` then allow curated+extra(+github) domains, scoped to the sandbox name), then
+  `build_sandbox_run_argv(...)` via `container_cli.run(...)`. With `--no-firewall`: allow-all
+  policy (or skip policy config) then run.
+- Credential staging / token refresh is skipped for this runtime — authentication happens
+  inside the sandbox (Docker Sandbox credential proxy / `sbx secret`). Emit a one-time notice
+  so users know tokens are not forwarded.
+- Dry-run prints the `sbx policy` and `sbx run` argv (via `container_cli.run(cmd, dry_run=True)`)
+  and performs no build.
+
+**4. Tests — `tests/test_container_cli.py` (+ optional `tests/test_sandbox_cli.py`)**
+Follow existing argv-inspection conventions (assert on returned lists; mock `sys.platform`,
+`shutil.which`; no real `sbx`):
+- `select_runtime("docker-sandbox")` returns `DOCKER_SANDBOX`; missing `sbx` binary → `SystemExit`;
+  `dry_run=True` skips the binary check.
+- docker-sandbox is **not** chosen by `select_runtime("auto")` on Linux.
+- `build_sandbox_run_argv`: `cmd[:2] == ["sbx", "run"]`; agent mapping (`bash`→`shell`); workspace
+  is the final positional; env via `-e K=V`; `--name` present; extra workspace `:ro` handling.
+- `build_sandbox_policy_argv`: deny `**` + allow list includes curated + `--extra-domain` +
+  GitHub domains when `allow_github`; allow-all when firewall disabled.
+- CLI rejects `--prompt`/`--prompt-text` with `--runtime docker-sandbox`.
+- Dry-run for docker-sandbox prints `sbx ...` and constructs no build command.
+- `firewall.base_agent_domains` returns the expected sets with/without `allow_github`, and
+  `tests/test_renderers.py` still passes after the template refactor.
+
+**5. Documentation**
+- `docs/usage.md`: new "Docker Sandbox (Linux microVM)" subsection — KVM check
+  (`lsmod | grep kvm`), install (`docker-sbx`), `--runtime docker-sandbox` example,
+  interactive-only scope, network-policy mapping, in-sandbox authentication.
+- `docs/runtime.md`: note the divergent execution model (no custom image build; native
+  isolation/network/credential machinery; `--mount` = `hostpath[:ro]`).
+- `README.md`: one line under isolation — Linux microVM option via Docker Sandbox.
+- `TODO.md`: record follow-ups (headless/batch support, full allowlist parity, credential
+  forwarding) and that `sbx` policy ordering must be re-verified against the released CLI.
+
+### Verification
+
+```bash
+uv run python -m compileall src tests
+uv run pytest -q
+# Thin-launcher dry run (no sbx/KVM needed): prints `sbx policy ...` + `sbx run ...`, no build
+uv run project-sandbox --dry-run --runtime docker-sandbox --agent claude /abs/path/to/repo
+# Headless is rejected:
+uv run project-sandbox --dry-run --runtime docker-sandbox --agent claude --prompt-text hi /abs/path/to/repo
+```
+
+On a KVM-enabled Linux host with `docker-sbx` installed, a real
+`uv run project-sandbox --runtime docker-sandbox --agent bash /abs/path/to/repo` should launch
+a `shell` sandbox in a microVM with the workspace mounted and the egress policy applied.
+
+### References
+
+- [Docker Sandboxes](https://docs.docker.com/ai/sandboxes/),
+  [get started](https://docs.docker.com/ai/sandboxes/get-started/),
+  [`sbx run`](https://docs.docker.com/reference/cli/sbx/run/),
+  [network policies](https://docs.docker.com/ai/sandboxes/network-policies/),
+  [`sbx policy allow/deny network`](https://docs.docker.com/reference/cli/sbx/policy/).

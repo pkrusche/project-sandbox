@@ -47,6 +47,7 @@ Given `project-sandbox --agent claude /path/to/repo python:3.12-slim`, it also:
 |   |-- claude-devcontainer/settings.json
 |   |-- codex/config.toml
 |   |-- codex-devcontainer/config.toml
+|   |-- .dockerfile-checksums.json     # trusted project Dockerfile hashes
 |   `-- sessions/                      # unsupervised-mode logs
 `-- .devcontainer/
     |-- devcontainer.json
@@ -84,3 +85,20 @@ and devcontainer setup, but direct runs and devcontainers mask
 `/workspace/.project-sandbox` with an empty read-only bind mount. Agents still
 receive the generated config, credentials, prompts, and history through their
 dedicated mounts, but cannot edit the generated files through the workspace.
+
+The `/workspace/.devcontainer` directory is masked the same way (with the same
+empty read-only mount), so the agent cannot read the devcontainer's host-path
+mounts and config or edit them. For direct runs the mask is added only when a
+`.devcontainer` directory exists in the workspace.
+
+## Project Dockerfile Tamper Detection
+
+When you build from a project Dockerfile supplied with `--dockerfile`, that file
+lives in the writable workspace where an agent could rewrite it during a session.
+After each build, project-sandbox records a SHA256 of the Dockerfile in
+`.project-sandbox/.dockerfile-checksums.json` — inside the masked directory, so a
+running sandbox can neither read nor alter it. On a later run the current
+Dockerfile is re-hashed and compared; a mismatch prints a `[W]` warning so you can
+review the change before rebuilding. Generated Dockerfiles (the `base_image` and
+`--python-uv` flows) live in the masked directory and cannot be tampered with, so
+they are not tracked.
