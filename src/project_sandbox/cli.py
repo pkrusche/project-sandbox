@@ -3,6 +3,7 @@ import os
 import re
 import shlex
 import shutil
+import sys
 import time
 import uuid
 from argparse import ArgumentParser
@@ -88,6 +89,15 @@ def build_parser() -> ArgumentParser:
     )
     p.add_argument("--no-build", action="store_true")
     p.add_argument("--force-build", action="store_true")
+    p.add_argument(
+        "--no-verify-dockerfile",
+        action="store_true",
+        help=(
+            "Skip Dockerfile tamper-detection check. Use when you have intentionally "
+            "edited the Dockerfile and do not want to be prompted. The baseline is "
+            "still updated after a real build so verification resumes on the next run."
+        ),
+    )
     p.add_argument("--memory", default="8g")
     p.add_argument("--cpus", type=int, default=4)
     p.add_argument("--mount", dest="extra_mounts", action="append", default=[])
@@ -337,10 +347,21 @@ def main(argv: list[str] | None = None) -> int:
             )
 
         tracked_dockerfiles = _tracked_project_dockerfiles(base_dockerfile, context_dir)
-        for warning in dockerfile_checksum.changed_warnings(
-            context_dir, tracked_dockerfiles
-        ):
-            print(warning)
+        if not args.no_verify_dockerfile:
+            warnings = dockerfile_checksum.changed_warnings(context_dir, tracked_dockerfiles)
+            if warnings:
+                for warning in warnings:
+                    print(warning)
+                unsupervised_check = bool(args.prompt or args.prompt_text)
+                if unsupervised_check or not sys.stdin.isatty():
+                    print(
+                        "[E] Dockerfile changed and run is non-interactive: aborting. "
+                        "Use --no-verify-dockerfile to skip this check."
+                    )
+                    return 1
+                answer = input("Rebuild from the changed Dockerfile anyway? [y/N] ")
+                if answer.strip().lower() not in ("y", "yes"):
+                    return 1
 
         if not args.no_build:
             # Reuse an existing image when its build inputs are unchanged. This
@@ -387,12 +408,10 @@ def main(argv: list[str] | None = None) -> int:
                     image_tag=args.image_tag,
                     fingerprint=fingerprint,
                 )
+                # Record the trusted baseline after a real build into the masked
+                # .project-sandbox dir the sandbox cannot reach.
+                dockerfile_checksum.record(context_dir, tracked_dockerfiles)
                 print(f"Built image in {time.monotonic() - start:.1f}s")
-
-        # Record the trusted baseline checksum of the project Dockerfile(s) after
-        # building from them, into the masked .project-sandbox dir the sandbox
-        # cannot reach. A later run compares against this to flag tampering.
-        dockerfile_checksum.record(context_dir, tracked_dockerfiles)
 
         cmd, log_path, unsupervised, container_stop_argv = _build_session_command(
             args,

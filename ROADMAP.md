@@ -789,7 +789,7 @@ headless support is a follow-up.
   already validates the binary (`shutil.which("sbx")`) and honors `dry_run`.
 - Add an agent-name map for `sbx`'s vocabulary:
   `SANDBOX_AGENT_MAP = {"claude": "claude", "codex": "codex", "opencode": "opencode", "bash": "shell"}`
-  (project `SUPPORTED_AGENTS` is `("claude", "codex", "opencode", "bash")`, cli.py:41).
+  (project `SUPPORTED_AGENTS` is `("claude", "codex", "opencode", "bash")`, cli.py).
 - New `build_sandbox_run_argv(*, agent, workspace, sandbox_name, extra_env=(), extra_workspaces=())
   -> list[str]` producing:
   `["sbx", "run", "--name", sandbox_name, "-e", "K=V", ..., <ro/extra workspace paths>, <sbx_agent>, str(workspace)]`.
