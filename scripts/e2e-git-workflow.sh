@@ -126,7 +126,40 @@ assert_git_log_contains() {
   fi
 }
 
+print_git_debug_info() {
+  local worktree
+
+  printf '\nGit debug information\n'
+  printf '\nMain worktree status:\n'
+  git -C "$TMP_PROJECT" status --short --branch || true
+
+  printf '\nRegistered worktrees:\n'
+  git -C "$TMP_PROJECT" worktree list --porcelain || true
+
+  printf '\nBranch refs:\n'
+  git -C "$TMP_PROJECT" show-ref --heads || true
+
+  printf '\nRecent commits (including reflogs):\n'
+  git -C "$TMP_PROJECT" log --graph --decorate --oneline --all --reflog -30 || true
+
+  printf '\nRecent reflog entries:\n'
+  git -C "$TMP_PROJECT" reflog --all --date=iso -30 || true
+
+  if [ ! -d "${TMP_PROJECT}-worktrees" ]; then
+    printf '\nNo worktree directory exists at %s\n' "${TMP_PROJECT}-worktrees"
+    return
+  fi
+
+  for worktree in "${TMP_PROJECT}-worktrees"/*; do
+    [ -d "$worktree" ] || continue
+    printf '\nRetained worktree: %s\n' "$worktree"
+    git -C "$worktree" status --short --branch || true
+    git -C "$worktree" log -1 --decorate --format='HEAD: %H%nParents: %P%nSubject: %s' || true
+  done
+}
+
 echo "Test git repo: $TMP_PROJECT"
+echo "Configuration: runtime=$RUNTIME base_image=$BASE_IMAGE no_build=$NO_BUILD"
 git -C "$TMP_PROJECT" init -q
 git -C "$TMP_PROJECT" config user.name "Project Sandbox E2E"
 git -C "$TMP_PROJECT" config user.email "project-sandbox-e2e@example.invalid"
@@ -199,5 +232,7 @@ EOF
 fi
 
 KEEP=1
+print_git_debug_info
+echo
 echo "FAIL - test repository kept for debugging: $TMP_PROJECT"
 exit 1
