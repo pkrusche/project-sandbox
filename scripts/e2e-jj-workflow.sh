@@ -47,6 +47,20 @@ esac
 command -v uv >/dev/null 2>&1 || { echo "ERROR: uv not found on PATH." >&2; exit 64; }
 command -v jj >/dev/null 2>&1 || { echo "ERROR: jj not found on PATH." >&2; exit 64; }
 
+REQUESTED_RUNTIME="$RUNTIME"
+if [ "$RUNTIME" = auto ]; then
+  if [ "$(uname -s)" = Darwin ] && command -v container >/dev/null 2>&1; then
+    RUNTIME="apple-container"
+  elif command -v docker >/dev/null 2>&1; then
+    RUNTIME="docker"
+  elif command -v podman >/dev/null 2>&1; then
+    RUNTIME="podman"
+  else
+    echo "ERROR: no supported container runtime found on PATH." >&2
+    exit 64
+  fi
+fi
+
 # Apple's `container` build VM cannot read the macOS per-user temp dir
 # ($TMPDIR, /var/folders/...), so a build context created there arrives empty
 # and the image's COPY steps fail. Keep the throwaway repo under the repo's
@@ -126,6 +140,7 @@ assert_jj_log_contains() {
 }
 
 echo "Test jj repo: $TMP_PROJECT"
+echo "Configuration: runtime=$RUNTIME requested_runtime=$REQUESTED_RUNTIME base_image=$BASE_IMAGE no_build=$NO_BUILD"
 jj git init "$TMP_PROJECT" >/dev/null
 jj -R "$TMP_PROJECT" config set --repo user.name "Project Sandbox E2E"
 jj -R "$TMP_PROJECT" config set --repo user.email "project-sandbox-e2e@example.invalid"
@@ -179,9 +194,9 @@ assert_jj_log_contains "e2e-jj-nothing" "agent: jj nothing"
 
 echo
 if [ "$fail" = 0 ]; then
-  KEEP=1
-  cat <<EOF
-PASS
+  echo "PASS"
+  if [ "$KEEP" = 1 ]; then
+    cat <<EOF
 
 Test repository kept for inspection:
   $TMP_PROJECT
@@ -189,9 +204,13 @@ Test repository kept for inspection:
 Remove when done:
   rm -rf "$TMP_PROJECT" "${TMP_PROJECT}-workspaces"
 EOF
+  fi
   exit 0
 fi
 
-KEEP=1
-echo "FAIL - test repository kept for debugging: $TMP_PROJECT"
+if [ "$KEEP" = 1 ]; then
+  echo "FAIL - test repository kept for debugging: $TMP_PROJECT"
+else
+  echo "FAIL - test repository will be removed (use --keep to retain it): $TMP_PROJECT"
+fi
 exit 1

@@ -42,6 +42,20 @@ esac
 command -v uv >/dev/null 2>&1 || { echo "ERROR: uv not found on PATH." >&2; exit 64; }
 command -v git >/dev/null 2>&1 || { echo "ERROR: git not found on PATH." >&2; exit 64; }
 
+REQUESTED_RUNTIME="$RUNTIME"
+if [ "$RUNTIME" = auto ]; then
+  if [ "$(uname -s)" = Darwin ] && command -v container >/dev/null 2>&1; then
+    RUNTIME="apple-container"
+  elif command -v docker >/dev/null 2>&1; then
+    RUNTIME="docker"
+  elif command -v podman >/dev/null 2>&1; then
+    RUNTIME="podman"
+  else
+    echo "ERROR: no supported container runtime found on PATH." >&2
+    exit 64
+  fi
+fi
+
 # Apple's `container` build VM cannot read the macOS per-user temp dir
 # ($TMPDIR, /var/folders/...), so a build context created there arrives empty
 # and the image's COPY steps fail. Keep the throwaway repo under the repo's
@@ -118,10 +132,10 @@ git_log_contains() {
 
 assert_git_log_contains() {
   local needle="$1"
-  if git_log_contains "$TMP_PROJECT" "$needle" --all; then
-    echo "  ok    git history contains: $needle"
+  if git_log_contains "$TMP_PROJECT" "$needle" HEAD; then
+    echo "  ok    main HEAD history contains: $needle"
   else
-    echo "  BAD   git history missing: $needle"
+    echo "  BAD   main HEAD history missing: $needle"
     fail=1
   fi
 }
@@ -158,8 +172,19 @@ print_git_debug_info() {
   done
 }
 
+exit_with_failure() {
+  print_git_debug_info
+  echo
+  if [ "$KEEP" = 1 ]; then
+    echo "FAIL - test repository kept for debugging: $TMP_PROJECT"
+  else
+    echo "FAIL - test repository will be removed (use --keep to retain it): $TMP_PROJECT"
+  fi
+  exit 1
+}
+
 echo "Test git repo: $TMP_PROJECT"
-echo "Configuration: runtime=$RUNTIME base_image=$BASE_IMAGE no_build=$NO_BUILD"
+echo "Configuration: runtime=$RUNTIME requested_runtime=$REQUESTED_RUNTIME base_image=$BASE_IMAGE no_build=$NO_BUILD"
 git -C "$TMP_PROJECT" init -q
 git -C "$TMP_PROJECT" config user.name "Project Sandbox E2E"
 git -C "$TMP_PROJECT" config user.email "project-sandbox-e2e@example.invalid"
@@ -172,7 +197,10 @@ git -C "$TMP_PROJECT" commit -qm "initial commit"
 chmod -R a+rwX "$TMP_PROJECT"
 
 echo
-run_ps "e2e-git-rebase" "rebase" "git-rebase.txt" "git rebase" "agent: git rebase"
+if ! run_ps "e2e-git-rebase" "rebase" "git-rebase.txt" "git rebase" "agent: git rebase"; then
+  echo "  BAD   project-sandbox failed during the rebase workflow"
+  exit_with_failure
+fi
 assert_file_contains "$TMP_PROJECT/git-rebase.txt" "git rebase"
 assert_git_log_contains "agent: git rebase"
 if [ -d "${TMP_PROJECT}-worktrees/e2e-git-rebase" ]; then
@@ -183,7 +211,10 @@ else
 fi
 
 echo
-run_ps "e2e-git-merge" "merge" "git-merge.txt" "git merge" "agent: git merge"
+if ! run_ps "e2e-git-merge" "merge" "git-merge.txt" "git merge" "agent: git merge"; then
+  echo "  BAD   project-sandbox failed during the merge workflow"
+  exit_with_failure
+fi
 assert_file_contains "$TMP_PROJECT/git-merge.txt" "git merge"
 assert_git_log_contains "agent: git merge"
 if [ "$(git -C "$TMP_PROJECT" log -1 --format=%s)" = "Merge agent session: e2e-git-merge" ]; then
@@ -200,7 +231,10 @@ else
 fi
 
 echo
-run_ps "e2e-git-nothing" "nothing" "git-nothing.txt" "git nothing" "agent: git nothing"
+if ! run_ps "e2e-git-nothing" "nothing" "git-nothing.txt" "git nothing" "agent: git nothing"; then
+  echo "  BAD   project-sandbox failed during the nothing workflow"
+  exit_with_failure
+fi
 if [ -e "$TMP_PROJECT/git-nothing.txt" ]; then
   echo "  BAD   nothing action changed the main worktree"
   fail=1
@@ -218,9 +252,9 @@ fi
 
 echo
 if [ "$fail" = 0 ]; then
-  KEEP=1
-  cat <<EOF
-PASS
+  echo "PASS"
+  if [ "$KEEP" = 1 ]; then
+    cat <<EOF
 
 Test repository kept for inspection:
   $TMP_PROJECT
@@ -228,11 +262,8 @@ Test repository kept for inspection:
 Remove when done:
   rm -rf "$TMP_PROJECT" "${TMP_PROJECT}-worktrees"
 EOF
+  fi
   exit 0
 fi
 
-KEEP=1
-print_git_debug_info
-echo
-echo "FAIL - test repository kept for debugging: $TMP_PROJECT"
-exit 1
+exit_with_failure
