@@ -9,3 +9,28 @@ Outstanding: run the rendered script on a host with iptables and multiple
 `nameserver` entries in `resolv.conf`, then confirm allowlisted-domain
 pre-resolution works across the resolver setup and post-firewall DNS egress does
 not leak before treating this as shipped.
+
+## Ensure we don't mount the Dockerfile used by --dockerfile
+
+This way the agent cannot modify its own running environment.
+
+## Isolate concurrent subagents in separate clones, merge back on teardown
+
+Every `--branch` jj agent shares one repo's `.jj/repo` store and — since we now
+also mount the git backend — its `.git`, both bind-mounted read-write into each
+container. That fits jj's concurrent-workspace model on a shared-kernel runtime,
+but concurrent writes from *inside* multiple containers to a single shared store
+are not obviously safe across separate VMs (Apple `container` + VirtioFS), where
+lock-file and rename atomicity may not hold.
+
+Plan: give each subagent its own clone, then merge/rebase the agent's bookmark 
+back into the parent repo during teardown. This removes the shared-store race 
+entirely and keeps each agent's blast radius isolated.
+
+Note the git-worktree (`--branch` non-jj) path — which shares `.git` the same way —
+should use the same approach.
+
+Interim mitigation already in place: a host-side exclusive lock serializes
+`jj_workspace.teardown()` (`_teardown_lock`), so concurrent teardowns can't
+interleave their store mutations. It does not address concurrent in-container
+writes; this item supersedes it.

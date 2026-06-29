@@ -502,6 +502,9 @@ def _dry_run(
         if isinstance(worktree, jj_workspace_mod.JjWorkspace):
             source, target = jj_workspace_mod.repo_store_mount(project, workspace)
             print(f"Would mount .jj metadata: {source} -> {target}")
+            git_mount = jj_workspace_mod.git_backend_mount(project, workspace)
+            if git_mount is not None:
+                print(f"Would mount jj git backend: {git_mount[0]} -> {git_mount[1]}")
         else:
             print(f"Would mount .git metadata: {(project / '.git').resolve()}")
     print(f"Would render sandbox assets under: {context_dir}")
@@ -925,6 +928,16 @@ def _build_session_command(
             )
             source, target = jj_workspace_mod.repo_store_mount(project, worktree.path)
             metadata_mounts = [f"type=bind,source={source},target={target}"]
+            # An additional workspace's store points its git backend at the main
+            # repo's git dir, which is outside the /workspace and .jj/repo mounts.
+            # Mount it too, or every in-container `jj` command fails to open the
+            # repo. (The default workspace gets it via the /workspace mount.)
+            git_mount = jj_workspace_mod.git_backend_mount(project, worktree.path)
+            if git_mount is not None:
+                git_source, git_target = git_mount
+                metadata_mounts.append(
+                    f"type=bind,source={git_source},target={git_target}"
+                )
         else:
             vcs_dir = (project / ".git").resolve()
             conflict_msg = (

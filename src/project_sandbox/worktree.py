@@ -1,7 +1,11 @@
-from dataclasses import dataclass
+import fcntl
 import hashlib
-from pathlib import Path
 import subprocess
+import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass(slots=True)
@@ -48,56 +52,82 @@ def path_for(repo: Path, branch: str, worktree_dir: Path | None = None) -> Path:
     return wt_root / safe
 
 
+@contextmanager
+def _teardown_lock(repo: Path) -> Iterator[None]:
+    """Serialize teardown across concurrent host project-sandbox processes.
+
+    Several agents can share one repo through separate worktrees, and each
+    agent's host-side teardown mutates that shared repo — merging or rebasing
+    branches into the main checkout's HEAD, pushing, and removing worktrees. An
+    exclusive file lock keyed by the repo path keeps those teardowns from
+    interleaving. (Concurrent writes from *inside* the containers are a
+    separate, still-open problem — see the clone-per-subagent item in TODO.md.)
+    """
+    key = hashlib.sha256(str(repo.resolve()).encode()).hexdigest()[:16]
+    lock_path = Path(tempfile.gettempdir()) / f"project-sandbox-git-teardown-{key}.lock"
+    with open(lock_path, "w") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
 def teardown(repo: Path, wt: Worktree, *, after: str) -> None:
     if after == "ask":
         after = _prompt_user(wt)
 
-    if after in ("merge", "rebase"):
-        _clear_stale_index_lock(repo, wt)
+    if after == "nothing":
+        # Leave worktree and branch in place; nothing mutates the shared repo.
+        return
 
-    if after == "merge":
-        try:
-            _git(repo, ["merge", "--no-ff", wt.branch, "-m", f"Merge agent session: {wt.branch}"])
-        except subprocess.CalledProcessError:
-            subprocess.run(["git", "-C", str(repo), "merge", "--abort"], check=False, capture_output=True)
-            print(f"merge conflict — worktree left in place at {wt.path}; integrate manually")
-            return
-    elif after == "rebase":
-        current = _git(repo, ["rev-parse", "--abbrev-ref", "HEAD"], capture=True).strip()
-        try:
-            subprocess.run(
-                ["git", "-C", str(wt.path), "rebase", current],
-                check=True,
-            )
-            _git(repo, ["merge", "--ff-only", wt.branch])
-        except subprocess.CalledProcessError:
-            subprocess.run(["git", "-C", str(wt.path), "rebase", "--abort"], check=False, capture_output=True)
-            print(f"merge conflict — worktree left in place at {wt.path}; integrate manually")
-            return
-    elif after == "pr":
-        try:
-            _git(repo, ["push", "-u", "origin", wt.branch])
-        except subprocess.CalledProcessError:
-            print(
-                f"  Could not push '{wt.branch}' to 'origin' (is a remote configured?). "
-                f"Worktree left in place at {wt.path}."
-            )
-            return
-        try:
-            subprocess.run(
-                ["gh", "pr", "create", "--head", wt.branch, "--fill"],
-                cwd=str(repo),
-                check=True,
-            )
-        except subprocess.CalledProcessError:
-            print(
-                f"  'gh pr create' failed for branch '{wt.branch}'. "
-                f"Worktree left in place at {wt.path}; create the PR manually."
-            )
-            return
+    with _teardown_lock(repo):
+        if after in ("merge", "rebase"):
+            _clear_stale_index_lock(repo, wt)
 
-    if after in ("merge", "rebase"):
-        _git(repo, ["worktree", "remove", "--force", str(wt.path)])
+        if after == "merge":
+            try:
+                _git(repo, ["merge", "--no-ff", wt.branch, "-m", f"Merge agent session: {wt.branch}"])
+            except subprocess.CalledProcessError:
+                subprocess.run(["git", "-C", str(repo), "merge", "--abort"], check=False, capture_output=True)
+                print(f"merge conflict — worktree left in place at {wt.path}; integrate manually")
+                return
+        elif after == "rebase":
+            current = _git(repo, ["rev-parse", "--abbrev-ref", "HEAD"], capture=True).strip()
+            try:
+                subprocess.run(
+                    ["git", "-C", str(wt.path), "rebase", current],
+                    check=True,
+                )
+                _git(repo, ["merge", "--ff-only", wt.branch])
+            except subprocess.CalledProcessError:
+                subprocess.run(["git", "-C", str(wt.path), "rebase", "--abort"], check=False, capture_output=True)
+                print(f"merge conflict — worktree left in place at {wt.path}; integrate manually")
+                return
+        elif after == "pr":
+            try:
+                _git(repo, ["push", "-u", "origin", wt.branch])
+            except subprocess.CalledProcessError:
+                print(
+                    f"  Could not push '{wt.branch}' to 'origin' (is a remote configured?). "
+                    f"Worktree left in place at {wt.path}."
+                )
+                return
+            try:
+                subprocess.run(
+                    ["gh", "pr", "create", "--head", wt.branch, "--fill"],
+                    cwd=str(repo),
+                    check=True,
+                )
+            except subprocess.CalledProcessError:
+                print(
+                    f"  'gh pr create' failed for branch '{wt.branch}'. "
+                    f"Worktree left in place at {wt.path}; create the PR manually."
+                )
+                return
+
+        if after in ("merge", "rebase"):
+            _git(repo, ["worktree", "remove", "--force", str(wt.path)])
 
 
 def _git(repo: Path, args: list[str], capture: bool = False) -> str:
