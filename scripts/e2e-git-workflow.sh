@@ -106,9 +106,19 @@ assert_file_contains() {
   fi
 }
 
+git_log_contains() {
+  local repo="$1"
+  local needle="$2"
+  shift 2
+
+  # Do not pipe `git log` into `grep -q` under pipefail: grep can close the
+  # pipe after a match and cause git to fail with SIGPIPE.
+  [ -n "$(git -C "$repo" log "$@" --fixed-strings --grep="$needle" --format=%s -1)" ]
+}
+
 assert_git_log_contains() {
   local needle="$1"
-  if git -C "$TMP_PROJECT" log --format=%s --all | grep -qF -- "$needle"; then
+  if git_log_contains "$TMP_PROJECT" "$needle" --all; then
     echo "  ok    git history contains: $needle"
   else
     echo "  BAD   git history missing: $needle"
@@ -143,7 +153,7 @@ echo
 run_ps "e2e-git-merge" "merge" "git-merge.txt" "git merge" "agent: git merge"
 assert_file_contains "$TMP_PROJECT/git-merge.txt" "git merge"
 assert_git_log_contains "agent: git merge"
-if git -C "$TMP_PROJECT" log -1 --format=%s | grep -qF "Merge agent session: e2e-git-merge"; then
+if [ "$(git -C "$TMP_PROJECT" log -1 --format=%s)" = "Merge agent session: e2e-git-merge" ]; then
   echo "  ok    merge produced the expected merge commit"
 else
   echo "  BAD   HEAD is not the expected merge commit"
@@ -166,7 +176,7 @@ else
 fi
 WT_NOTHING="${TMP_PROJECT}-worktrees/e2e-git-nothing"
 assert_file_contains "$WT_NOTHING/git-nothing.txt" "git nothing"
-if git -C "$WT_NOTHING" log --format=%s | grep -qF "agent: git nothing"; then
+if git_log_contains "$WT_NOTHING" "agent: git nothing"; then
   echo "  ok    nothing worktree contains the agent commit"
 else
   echo "  BAD   nothing worktree is missing the agent commit"
