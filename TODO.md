@@ -1,5 +1,12 @@
 # TODO - outstanding items
 
+## Rust support
+
+Implement an analog to the --python-uv option (--rust-cargo) that pre-populates
+the generated Docker image with the dependencies for a Rust project such that
+this project builds without having to access the internet during the agent
+session.
+
 ## Firewall: verify multi-resolver rules on a real iptables host
 
 Code is complete and the render path is covered by

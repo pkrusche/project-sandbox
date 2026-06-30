@@ -1007,6 +1007,7 @@ class CliTests(TestCase):
                     "_agent_host_paths",
                     return_value=_agent_paths(project / "home"),
                 ),
+                patch.object(cli.container_cli, "select_runtime", return_value=cli.container_cli.DOCKER),
                 patch.object(cli.container_cli, "ensure_system_started", return_value=0),
                 contextlib.redirect_stdout(out),
             ):
@@ -1072,6 +1073,7 @@ class CliTests(TestCase):
                     "_agent_host_paths",
                     return_value=_agent_paths(project / "home"),
                 ),
+                patch.object(cli.container_cli, "select_runtime", return_value=cli.container_cli.DOCKER),
                 patch.object(cli.container_cli, "ensure_system_started", return_value=0),
                 patch("sys.stdin.isatty", return_value=True),
                 patch("builtins.input", return_value="n"),
@@ -1103,7 +1105,9 @@ class CliTests(TestCase):
                     "_agent_host_paths",
                     return_value=_agent_paths(project / "home"),
                 ),
+                patch.object(cli.container_cli, "select_runtime", return_value=cli.container_cli.DOCKER),
                 patch.object(cli.container_cli, "ensure_system_started", return_value=0),
+                patch.object(cli.session, "run", return_value=0),
                 contextlib.redirect_stdout(out),
             ):
                 rc = cli.main([
