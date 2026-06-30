@@ -3,6 +3,7 @@ import os
 import re
 import shlex
 import shutil
+import sys
 import time
 import uuid
 from argparse import ArgumentParser
@@ -14,6 +15,7 @@ from . import (
     container_cli,
     devcontainer,
     dockerfile,
+    dockerfile_checksum,
     firewall,
     oauth_refresh,
     session,
@@ -31,6 +33,7 @@ from .paths import (
     HISTORY_CLAUDE_PROJECTS_TARGET,
     HISTORY_HISTFILE,
     HISTORY_SHELL_TARGET,
+    WORKSPACE_DEVCONTAINER_TARGET,
     WORKSPACE_SANDBOX_TARGET,
     ensure_dir,
     ensure_history_paths,
@@ -86,6 +89,15 @@ def build_parser() -> ArgumentParser:
     )
     p.add_argument("--no-build", action="store_true")
     p.add_argument("--force-build", action="store_true")
+    p.add_argument(
+        "--no-verify-dockerfile",
+        action="store_true",
+        help=(
+            "Skip Dockerfile tamper-detection check. Use when you have intentionally "
+            "edited the Dockerfile and do not want to be prompted. The baseline is "
+            "still updated after a real build so verification resumes on the next run."
+        ),
+    )
     p.add_argument("--memory", default="8g")
     p.add_argument("--cpus", type=int, default=4)
     p.add_argument("--mount", dest="extra_mounts", action="append", default=[])
@@ -334,6 +346,23 @@ def main(argv: list[str] | None = None) -> int:
                 "[W] Apple container system not running - if you're on a Mac, you may need to install or start it. Otherwise, you can still work with the devcontainer setup."
             )
 
+        tracked_dockerfiles = _tracked_project_dockerfiles(base_dockerfile, context_dir)
+        if not args.no_verify_dockerfile:
+            warnings = dockerfile_checksum.changed_warnings(context_dir, tracked_dockerfiles)
+            if warnings:
+                for warning in warnings:
+                    print(warning)
+                unsupervised_check = bool(args.prompt or args.prompt_text)
+                if unsupervised_check or not sys.stdin.isatty():
+                    print(
+                        "[E] Dockerfile changed and run is non-interactive: aborting. "
+                        "Use --no-verify-dockerfile to skip this check."
+                    )
+                    return 1
+                answer = input("Rebuild from the changed Dockerfile anyway? [y/N] ")
+                if answer.strip().lower() not in ("y", "yes"):
+                    return 1
+
         if not args.no_build:
             # Reuse an existing image when its build inputs are unchanged. This
             # auto-skip is limited to the default flow where the build context is
@@ -379,6 +408,9 @@ def main(argv: list[str] | None = None) -> int:
                     image_tag=args.image_tag,
                     fingerprint=fingerprint,
                 )
+                # Record the trusted baseline after a real build into the masked
+                # .project-sandbox dir the sandbox cannot reach.
+                dockerfile_checksum.record(context_dir, tracked_dockerfiles)
                 print(f"Built image in {time.monotonic() - start:.1f}s")
 
         cmd, log_path, unsupervised, container_stop_argv = _build_session_command(
@@ -523,6 +555,11 @@ def _dry_run(
             for warning in dockerfile.source_warnings(base_dockerfile):
                 print(warning)
         print(f"Would use build context: {build_context}")
+
+    for warning in dockerfile_checksum.changed_warnings(
+        context_dir, _tracked_project_dockerfiles(base_dockerfile, context_dir)
+    ):
+        print(warning)
 
     if run_agent is None:
         print(
@@ -727,6 +764,27 @@ def _resolve_build_source(
     if not args.base_image:
         raise SystemExit("base_image is required unless --dockerfile is used")
     return args.base_image, None, context_dir
+
+
+def _tracked_project_dockerfiles(
+    base_dockerfile: Path | None, context_dir: Path
+) -> list[Path]:
+    """Return the project Dockerfiles whose checksum is worth tracking.
+
+    Only a user-supplied ``--dockerfile`` that lives outside ``.project-sandbox``
+    qualifies: it sits in the writable workspace where an agent could rewrite it.
+    Generated Dockerfiles under ``.project-sandbox`` are masked inside the sandbox
+    and so cannot be tampered with, and the bare ``base_image`` flow has no
+    project Dockerfile at all.
+    """
+    if base_dockerfile is None:
+        return []
+    sandbox_dir = context_dir.resolve(strict=False)
+    try:
+        base_dockerfile.resolve(strict=False).relative_to(sandbox_dir)
+    except ValueError:
+        return [base_dockerfile]
+    return []
 
 
 def _validate_session_inputs(args) -> None:
@@ -1048,6 +1106,14 @@ def _build_session_command(
     extra_mounts.append(
         f"type=bind,source={mask_source},target={WORKSPACE_SANDBOX_TARGET},readonly"
     )
+    # Hide the .devcontainer directory from inside the sandbox by masking it with
+    # the same empty dir. It holds host-path mounts and config the agent has no
+    # reason to read or edit. Only mask when it exists so the bind target is
+    # present (apple/container rejects a bind onto a missing target).
+    if (workspace / ".devcontainer").exists():
+        extra_mounts.append(
+            f"type=bind,source={mask_source},target={WORKSPACE_DEVCONTAINER_TARGET},readonly"
+        )
 
     forward_credentials = not getattr(args, "no_forward_credentials", False)
     _warn_forwarded_credential_lifetime(

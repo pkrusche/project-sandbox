@@ -10,10 +10,6 @@ Outstanding: run the rendered script on a host with iptables and multiple
 pre-resolution works across the resolver setup and post-firewall DNS egress does
 not leak before treating this as shipped.
 
-## Ensure we don't mount the Dockerfile used by --dockerfile
-
-This way the agent cannot modify its own running environment.
-
 ## Isolate concurrent subagents in separate clones, merge back on teardown
 
 Every `--branch` jj agent shares one repo's `.jj/repo` store and — since we now

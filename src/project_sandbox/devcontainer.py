@@ -9,6 +9,7 @@ from .paths import (
     HISTORY_CLAUDE_PROJECTS_TARGET,
     HISTORY_HISTFILE,
     HISTORY_SHELL_TARGET,
+    WORKSPACE_DEVCONTAINER_TARGET,
     WORKSPACE_SANDBOX_TARGET,
     ensure_history_paths,
     ensure_workspace_sandbox_mask,
@@ -85,6 +86,11 @@ def render(
     workspace_mask_root = "${localWorkspaceFolder}/.project-sandbox/workspace-mask"
     workspace_mask_mount = (
         f"source={workspace_mask_root},target={WORKSPACE_SANDBOX_TARGET},type=bind,readonly"
+    )
+    # Mask .devcontainer the same way so its host-path mounts and config are not
+    # visible from inside the running devcontainer.
+    devcontainer_mask_mount = (
+        f"source={workspace_mask_root},target={WORKSPACE_DEVCONTAINER_TARGET},type=bind,readonly"
     )
     # The history dir is gitignored and ephemeral, so the bind sources can be
     # absent at container-create time (fresh clone, cleaned .project-sandbox, or
@@ -171,6 +177,7 @@ def render(
     # Keep this after user-supplied mounts so a writable custom mount cannot
     # expose generated sandbox files inside the workspace.
     mounts.append(workspace_mask_mount)
+    mounts.append(devcontainer_mask_mount)
 
     post_start_command = (
         "sudo -n /usr/local/bin/project-sandbox-init-firewall && "

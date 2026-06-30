@@ -22,6 +22,7 @@ HISTORY_SHELL_TARGET = "/home/agent/.bash_history.d"
 HISTORY_HISTFILE = HISTORY_SHELL_TARGET + "/bash_history"
 HISTORY_CLAUDE_PROJECTS_TARGET = "/home/agent/.claude/projects"
 WORKSPACE_SANDBOX_TARGET = "/workspace/.project-sandbox"
+WORKSPACE_DEVCONTAINER_TARGET = "/workspace/.devcontainer"
 
 
 def ensure_history_paths(project: Path, *, create: bool = True) -> tuple[Path, Path]:

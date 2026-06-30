@@ -105,6 +105,10 @@ class DevcontainerTests(TestCase):
                 "source=${localWorkspaceFolder}/.project-sandbox/workspace-mask,target=/workspace/.project-sandbox,type=bind,readonly",
                 mounts,
             )
+            self.assertIn(
+                "source=${localWorkspaceFolder}/.project-sandbox/workspace-mask,target=/workspace/.devcontainer,type=bind,readonly",
+                mounts,
+            )
             self.assertTrue((project / ".project-sandbox" / "workspace-mask").is_dir())
             self.assertNotIn("/home/agent/.claude/settings.json", mounts)
             self.assertNotIn("/home/agent/.claude.host", mounts)
