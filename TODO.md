@@ -1,11 +1,71 @@
 # TODO - outstanding items
 
-## Rust support
+## Dummy chroot runtime for filesystem-layout verification
 
-Implement an analog to the --python-uv option (--rust-cargo) that pre-populates
-the generated Docker image with the dependencies for a Rust project such that
-this project builds without having to access the internet during the agent
-session.
+A `--runtime chroot` "dummy" runtime that, on Linux, reproduces only the
+container's *filesystem layout* inside a rootless chroot jail so the mount/dir
+arrangement can be inspected without docker/podman/apple-container. It is for
+verification, not isolation: no image build, no firewall, no network namespace,
+and the agent toolchain (node, claude, codex, …) is NOT installed in the jail.
+
+### Behavior
+
+- Linux-only. `select_runtime("chroot")` returns it only when requested
+  explicitly; `auto` never selects it. Error clearly on non-Linux.
+- Privileges: rootless via `unshare --map-root-user --mount` — no sudo. Bind
+  mounts and `chroot` happen inside a private user+mount namespace.
+- Image build is a no-op: `build_image()` and `ensure_system_started()`
+  short-circuit (return 0) for this runtime; no Dockerfile is rendered/built.
+- The jail mirrors the container mount set onto a temporary jail root:
+  - host system dirs (`/usr`, `/bin`, `/lib*`, `/etc`) bind-mounted read-only so
+    a shell works inside the jail;
+  - `<workspace>` -> `/workspace`;
+  - the `agent` home skeleton (`/home/agent/.claude`, `.codex`, `.config`);
+  - `/project-sandbox-config/{claude,codex}` and
+    `/project-sandbox-secrets/{claude,codex,opencode}` from the staged dirs;
+  - the prompt mount and the read-only masks over `/workspace/.project-sandbox`
+    and `/workspace/.devcontainer`, matching the real run path.
+- Entry: drops into `bash` in the jail (and/or prints the resulting tree). It
+  does not exec the coding agent — there is no agent CLI inside the jail.
+- `--dry-run` stays faithful: print the `unshare`/`chroot` argv and the planned
+  bind mounts; create nothing and mount nothing.
+
+### Implementation sketch
+
+- container_cli.py: add `CHROOT = Runtime("chroot", "unshare")`, register it in
+  `RUNTIME_CHOICES`/`_RUNTIMES`, and gate it in `select_runtime` (explicit-only,
+  Linux-only). Add `build_chroot_argv(...)` rather than overloading
+  `build_run_argv()`, since the argv shape (no `run --mount`, no image) differs.
+- Refactor the mount set into a shared structured form (e.g.
+  `MountSpec(source, target, readonly)`) consumed by BOTH the existing container
+  argv path and the new chroot path, so the two layouts cannot drift. This is the
+  main architectural lift — today the mounts are assembled inline in
+  `build_run_argv()` and `_build_session_command()` in cli.py.
+- New template `templates/chroot-run.sh.j2` rendered to
+  `.project-sandbox/chroot-run.sh`: makes the jail root, creates target dirs,
+  bind-mounts each `MountSpec` (`-o ro` for readonly), then `chroot` + exec shell.
+  Follow the existing template/`render_*` pattern in dockerfile.py.
+- cli.py: branch the `chroot` runtime past `ensure_system_started`, the
+  Dockerfile render/build, the cache check, and the firewall — none apply.
+
+### Tests (render-/argv-only, never mount for real)
+
+- `auto` never selects `chroot`; explicit `--runtime chroot` does; non-Linux errors.
+- `build_chroot_argv` maps the same sources/targets/readonly flags as the
+  container mount set (assert via the shared `MountSpec` list).
+- `chroot-run.sh` renders the expected dirs/binds and uses
+  `unshare --map-root-user --mount`.
+- `--runtime chroot --dry-run` writes/mounts nothing.
+
+### Notes / risks
+
+- Not a security boundary. chroot + a single-UID user-ns map is for inspection
+  only; document this prominently in docs/runtime.md so it is never mistaken for
+  the real sandbox isolation.
+- Rootless bind mounts surface non-mapped host UIDs as `nobody`; acceptable for
+  layout inspection.
+- Keep the chroot mount list sourced from the shared `MountSpec` set so it tracks
+  future changes to the real run mounts automatically.
 
 ## Firewall: verify multi-resolver rules on a real iptables host
 

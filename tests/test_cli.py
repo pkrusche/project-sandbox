@@ -2190,6 +2190,298 @@ class PythonUvFlagTests(TestCase):
             setup_wt.assert_not_called()
 
 
+class RustCargoFlagTests(TestCase):
+    """Tests for --rust-cargo and --rust VERSION flags."""
+
+    def _make_project(
+        self,
+        tmp: str,
+        *,
+        with_cargo_toml: bool = True,
+        with_cargo_lock: bool = True,
+    ) -> Path:
+        project = Path(tmp)
+        (project / "README.md").write_text("# demo\n", encoding="utf-8")
+        if with_cargo_toml:
+            (project / "Cargo.toml").write_text(
+                "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n", encoding="utf-8"
+            )
+        if with_cargo_lock:
+            (project / "Cargo.lock").write_text("version = 3\n", encoding="utf-8")
+        return project
+
+    def _dry_run_rust_cargo(self, project: Path, extra_args: list[str] | None = None) -> tuple[int, str]:
+        out = io.StringIO()
+        with (
+            patch.object(cli, "read_identity", return_value=GitIdentity("A", "a@b.com")),
+            patch.object(
+                cli.config_agents,
+                "_agent_host_paths",
+                return_value=_agent_paths(project / "home"),
+            ),
+            contextlib.redirect_stdout(out),
+        ):
+            rc = cli.main(
+                ["--dry-run", "--rust-cargo", *(extra_args or []), str(project)]
+            )
+        return rc, out.getvalue()
+
+    # --- dry-run output ---
+
+    def test_rust_cargo_dry_run_shows_synthesised_message(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self._make_project(tmp)
+            rc, output = self._dry_run_rust_cargo(project)
+
+        self.assertEqual(rc, 0)
+        self.assertIn("Would write synthesised Dockerfile:", output)
+        self.assertIn("Dockerfile.rust-cargo", output)
+        self.assertIn("Would use build context:", output)
+
+    def test_rust_cargo_dry_run_does_not_write_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self._make_project(tmp)
+            self._dry_run_rust_cargo(project)
+
+        self.assertFalse((project / ".project-sandbox").exists())
+
+    # --- --rust VERSION ---
+
+    def test_render_rust_cargo_dockerfile_uses_specified_version(self) -> None:
+        from project_sandbox import dockerfile as df
+
+        with tempfile.TemporaryDirectory() as tmp:
+            context_dir = Path(tmp) / ".project-sandbox"
+            context_dir.mkdir()
+            out_path = df.render_rust_cargo_dockerfile(
+                context_dir,
+                rust_version="1.87",
+                has_cargo_toml=True,
+                has_cargo_lock=True,
+            )
+            content = out_path.read_text(encoding="utf-8")
+
+        self.assertIn("rust:1.87-slim", content)
+
+    def test_render_rust_cargo_dockerfile_defaults_to_slim(self) -> None:
+        from project_sandbox import dockerfile as df
+
+        with tempfile.TemporaryDirectory() as tmp:
+            context_dir = Path(tmp) / ".project-sandbox"
+            context_dir.mkdir()
+            out_path = df.render_rust_cargo_dockerfile(
+                context_dir,
+                rust_version=None,
+                has_cargo_toml=True,
+                has_cargo_lock=True,
+            )
+            content = out_path.read_text(encoding="utf-8")
+
+        self.assertIn("FROM rust:slim", content)
+
+    def test_rust_version_flag_passes_through_to_dockerfile(self) -> None:
+        """--rust 1.87 with --rust-cargo writes a Dockerfile referencing 1.87."""
+        import argparse
+
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self._make_project(tmp)
+            context_dir = project / ".project-sandbox"
+            context_dir.mkdir()
+
+            args = argparse.Namespace(
+                rust_cargo=True,
+                rust_version="1.87",
+                dockerfile=None,
+                docker_context=None,
+                base_image=None,
+            )
+            _, base_df, build_context = cli._resolve_build_source(
+                args,
+                project=project,
+                context_dir=context_dir,
+                write_generated=True,
+            )
+
+            self.assertIsNotNone(base_df)
+            assert base_df is not None
+            content = base_df.read_text(encoding="utf-8")
+            self.assertIn("rust:1.87-slim", content)
+            self.assertEqual(build_context, project)
+
+    # --- cache-warming block presence ---
+
+    def test_render_includes_cache_warm_when_both_files_present(self) -> None:
+        from project_sandbox import dockerfile as df
+
+        with tempfile.TemporaryDirectory() as tmp:
+            context_dir = Path(tmp) / ".project-sandbox"
+            context_dir.mkdir()
+            out_path = df.render_rust_cargo_dockerfile(
+                context_dir,
+                rust_version="slim",
+                has_cargo_toml=True,
+                has_cargo_lock=True,
+            )
+            content = out_path.read_text(encoding="utf-8")
+
+        self.assertIn("COPY Cargo.toml Cargo.lock", content)
+        self.assertIn("cargo fetch --locked", content)
+        self.assertIn("chown -R 1000:1000 /opt/cargo-cache /opt/cargo-target", content)
+        # cache/target must live outside /workspace so the host target/ is never touched
+        self.assertIn("CARGO_HOME=/opt/cargo-cache", content)
+        self.assertIn("CARGO_TARGET_DIR=/opt/cargo-target", content)
+        # project must be pre-compiled at image build time so 'cargo build' works
+        # offline inside the sandbox (avoids fetching crates behind firewall)
+        self.assertIn("COPY . .", content)
+        self.assertIn("RUN cargo build &&", content)
+
+    def test_render_omits_cache_warm_when_cargo_toml_missing(self) -> None:
+        from project_sandbox import dockerfile as df
+
+        with tempfile.TemporaryDirectory() as tmp:
+            context_dir = Path(tmp) / ".project-sandbox"
+            context_dir.mkdir()
+            out_path = df.render_rust_cargo_dockerfile(
+                context_dir,
+                rust_version="slim",
+                has_cargo_toml=False,
+                has_cargo_lock=True,
+            )
+            content = out_path.read_text(encoding="utf-8")
+
+        self.assertNotIn("COPY Cargo.toml", content)
+        self.assertNotIn("cargo fetch", content)
+
+    def test_render_omits_cache_warm_when_cargo_lock_missing(self) -> None:
+        from project_sandbox import dockerfile as df
+
+        with tempfile.TemporaryDirectory() as tmp:
+            context_dir = Path(tmp) / ".project-sandbox"
+            context_dir.mkdir()
+            out_path = df.render_rust_cargo_dockerfile(
+                context_dir,
+                rust_version="slim",
+                has_cargo_toml=True,
+                has_cargo_lock=False,
+            )
+            content = out_path.read_text(encoding="utf-8")
+
+        self.assertNotIn("COPY Cargo.toml", content)
+        self.assertNotIn("cargo fetch", content)
+
+    # --- warnings for missing project files ---
+
+    def test_rust_cargo_warns_when_cargo_toml_absent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self._make_project(tmp, with_cargo_toml=False, with_cargo_lock=True)
+            rc, output = self._dry_run_rust_cargo(project)
+
+        self.assertEqual(rc, 0)
+        self.assertIn("Cargo.toml not found", output)
+        self.assertIn("cache-warming step will be skipped", output)
+
+    def test_rust_cargo_warns_when_cargo_lock_absent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self._make_project(tmp, with_cargo_toml=True, with_cargo_lock=False)
+            rc, output = self._dry_run_rust_cargo(project)
+
+        self.assertEqual(rc, 0)
+        self.assertIn("Cargo.lock not found", output)
+        self.assertIn("cache-warming step will be skipped", output)
+
+    def test_rust_cargo_warns_when_both_absent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self._make_project(tmp, with_cargo_toml=False, with_cargo_lock=False)
+            rc, output = self._dry_run_rust_cargo(project)
+
+        self.assertEqual(rc, 0)
+        self.assertIn("Cargo.toml not found", output)
+        self.assertIn("Cargo.lock not found", output)
+
+    # --- mutual-exclusion ---
+
+    def test_rust_cargo_and_dockerfile_are_mutually_exclusive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            source = project / "Dockerfile"
+            source.write_text("FROM rust:slim\n", encoding="utf-8")
+
+            with self.assertRaises(SystemExit) as raised:
+                cli.main([
+                    "--dry-run",
+                    "--rust-cargo",
+                    "--dockerfile", str(source),
+                    str(project),
+                ])
+
+        self.assertIn("mutually exclusive", str(raised.exception))
+
+    def test_rust_cargo_and_base_image_are_mutually_exclusive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+
+            with self.assertRaises(SystemExit) as raised:
+                cli.main([
+                    "--dry-run",
+                    "--rust-cargo",
+                    str(project),
+                    "rust:slim",
+                ])
+
+        self.assertIn("mutually exclusive", str(raised.exception))
+
+    def test_rust_cargo_and_python_uv_are_mutually_exclusive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+
+            with self.assertRaises(SystemExit) as raised:
+                cli.main([
+                    "--dry-run",
+                    "--rust-cargo",
+                    "--python-uv",
+                    str(project),
+                ])
+
+        self.assertIn("mutually exclusive", str(raised.exception))
+
+    def test_rust_flag_without_rust_cargo_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+
+            with self.assertRaises(SystemExit) as raised:
+                cli.main([
+                    "--dry-run",
+                    "--rust", "1.87",
+                    str(project),
+                    "rust:slim",
+                ])
+
+        self.assertIn("only valid with --rust-cargo", str(raised.exception))
+
+    def test_invalid_build_source_fails_before_worktree(self) -> None:
+        # A bad build source must abort before _setup_worktree runs, so no
+        # branch/worktree is orphaned by the failure.
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            _make_git_repo(project)
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("A", "a@b.com")),
+                patch.object(cli, "_setup_worktree") as setup_wt,
+                patch.object(cli.config_agents, "available_agents", return_value=("claude",)),
+                patch.object(cli.container_cli, "select_runtime", return_value=cli.container_cli.DOCKER),
+            ):
+                with self.assertRaises(SystemExit) as raised:
+                    cli.main([
+                        "--agent", "claude",
+                        "--branch", "feat/x", "--after-session", "nothing",
+                        "--rust-cargo",
+                        str(project), "rust:slim",
+                    ])
+
+            setup_wt.assert_not_called()
+            self.assertIn("mutually exclusive", str(raised.exception))
+
+
 class HostTokenRefreshGatingTests(TestCase):
     def _run_with_refresh_mock(self, extra_args: list[str], *, agent: str = "claude"):
         with tempfile.TemporaryDirectory() as tmp:

@@ -80,6 +80,21 @@ def build_parser() -> ArgumentParser:
         metavar="VERSION",
         help="Python image tag for --python-uv (default: 3.11). Only valid with --python-uv.",
     )
+    p.add_argument(
+        "--rust-cargo",
+        action="store_true",
+        help=(
+            "Synthesise a Rust/cargo base Dockerfile instead of supplying one. "
+            "Mutually exclusive with base_image and --dockerfile."
+        ),
+    )
+    p.add_argument(
+        "--rust",
+        default=None,
+        dest="rust_version",
+        metavar="VERSION",
+        help="Rust image tag for --rust-cargo (default: slim). Only valid with --rust-cargo.",
+    )
     p.add_argument("--image-tag", default=None)
     p.add_argument(
         "--runtime",
@@ -255,8 +270,9 @@ def main(argv: list[str] | None = None) -> int:
 
     # Validate fatal inputs BEFORE creating a worktree, so a bad build source,
     # missing prompt, or unwritable log path fails without first orphaning a
-    # branch/worktree. _resolve_build_source also writes the synthesised python-uv
-    # Dockerfile, but only into .project-sandbox (project-level, not the worktree).
+    # branch/worktree. _resolve_build_source also writes the synthesised
+    # python-uv/rust-cargo Dockerfile, but only into .project-sandbox
+    # (project-level, not the worktree).
     context_dir = ensure_dir(project / ".project-sandbox")
     base_image, base_dockerfile, build_context = _resolve_build_source(
         args,
@@ -285,11 +301,11 @@ def main(argv: list[str] | None = None) -> int:
             install_agents=available_agents,
             warn=print,
         )
-        # Trim the whole-project build context only for the python-uv flow, whose
-        # Dockerfile we generate and whose excluded paths we know are not build
-        # inputs. User-supplied --dockerfile builds are left untouched so an
-        # injected ignore file can't break a COPY they rely on.
-        if getattr(args, "python_uv", False):
+        # Trim the whole-project build context only for the python-uv/rust-cargo
+        # flows, whose Dockerfile we generate and whose excluded paths we know
+        # are not build inputs. User-supplied --dockerfile builds are left
+        # untouched so an injected ignore file can't break a COPY they rely on.
+        if getattr(args, "python_uv", False) or getattr(args, "rust_cargo", False):
             dockerfile.render_dockerignore(context_dir, build_context=build_context)
         dockerfile.render_entrypoint(context_dir)
         dockerfile.render_devcontainer_entrypoint(context_dir)
@@ -367,9 +383,10 @@ def main(argv: list[str] | None = None) -> int:
             # Reuse an existing image when its build inputs are unchanged. This
             # auto-skip is limited to the default flow where the build context is
             # the generated .project-sandbox dir, which fully determines the
-            # image; whole-project contexts (--python-uv / --dockerfile) keep
-            # building and rely on the runtime's layer cache + the generated
-            # .dockerignore instead of fingerprinting an arbitrary source tree.
+            # image; whole-project contexts (--python-uv / --rust-cargo /
+            # --dockerfile) keep building and rely on the runtime's layer
+            # cache + the generated .dockerignore instead of fingerprinting an
+            # arbitrary source tree.
             fingerprint = build_cache.compute_fingerprint(
                 context_dir,
                 extra={"image_tag": args.image_tag, "base_image": base_image or ""},
@@ -548,7 +565,7 @@ def _dry_run(
         write_generated=False,
     )
     if base_dockerfile is not None:
-        if getattr(args, "python_uv", False):
+        if getattr(args, "python_uv", False) or getattr(args, "rust_cargo", False):
             print(f"Would write synthesised Dockerfile: {base_dockerfile}")
         else:
             print(f"Would append sandbox layers to Dockerfile: {base_dockerfile}")
@@ -705,9 +722,15 @@ def _resolve_build_source(
 
     python_uv = getattr(args, "python_uv", False)
     python_version = getattr(args, "python_version", None)
+    rust_cargo = getattr(args, "rust_cargo", False)
+    rust_version = getattr(args, "rust_version", None)
 
     if python_version is not None and not python_uv:
         raise SystemExit("--python is only valid with --python-uv")
+    if rust_version is not None and not rust_cargo:
+        raise SystemExit("--rust is only valid with --rust-cargo")
+    if python_uv and rust_cargo:
+        raise SystemExit("--python-uv and --rust-cargo are mutually exclusive")
 
     if python_uv:
         if args.dockerfile:
@@ -737,6 +760,36 @@ def _resolve_build_source(
                 python_version=effective_version,
                 has_pyproject=has_pyproject,
                 has_uvlock=has_uvlock,
+            )
+        return None, generated, project
+
+    if rust_cargo:
+        if args.dockerfile:
+            raise SystemExit("--rust-cargo and --dockerfile are mutually exclusive")
+        if args.base_image:
+            raise SystemExit("--rust-cargo and base_image are mutually exclusive")
+
+        has_cargo_toml = (project / "Cargo.toml").exists()
+        has_cargo_lock = (project / "Cargo.lock").exists()
+
+        if not has_cargo_toml:
+            print(
+                "[W] --rust-cargo: Cargo.toml not found — "
+                "cache-warming step will be skipped."
+            )
+        if not has_cargo_lock:
+            print(
+                "[W] --rust-cargo: Cargo.lock not found — "
+                "cache-warming step will be skipped."
+            )
+
+        generated = context_dir / "Dockerfile.rust-cargo"
+        if write_generated:
+            generated = dockerfile.render_rust_cargo_dockerfile(
+                context_dir,
+                rust_version=rust_version,
+                has_cargo_toml=has_cargo_toml,
+                has_cargo_lock=has_cargo_lock,
             )
         return None, generated, project
 

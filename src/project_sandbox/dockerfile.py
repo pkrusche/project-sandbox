@@ -82,6 +82,7 @@ _DOCKERIGNORE_PATTERNS = (
     ".mypy_cache",
     ".ruff_cache",
     ".DS_Store",
+    "target",
 )
 
 
@@ -353,6 +354,51 @@ def render_python_uv_dockerfile(
             "RUN uv sync --frozen && chown -R 1000:1000 /opt/uv-cache /opt/venv",
         ]
     out = context_dir / "Dockerfile.python-uv"
+    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return out
+
+
+def render_rust_cargo_dockerfile(
+    context_dir: Path,
+    rust_version: str | None,
+    has_cargo_toml: bool,
+    has_cargo_lock: bool,
+) -> Path:
+    """Generate a Rust/cargo base Dockerfile and write it to context_dir.
+
+    The cache-warming COPY/RUN block is included only when both Cargo.toml and
+    Cargo.lock are present in the project (has_cargo_toml and has_cargo_lock
+    both True). Callers are responsible for emitting a warning when either is
+    absent.
+
+    The project itself is compiled during the image build (with network
+    access) so that 'cargo build' inside the sandboxed container — which has
+    no network — finds dependency sources already fetched into CARGO_HOME and
+    finds compiled dependency artifacts already in CARGO_TARGET_DIR. Two
+    layers are used so that the slower source-copy/compile layer only rebuilds
+    when source files change, while the faster fetch-only layer is cache-
+    stable against lockfile changes.
+    """
+    base_image = f"rust:{rust_version}-slim" if rust_version else "rust:slim"
+    lines = [
+        f"FROM {base_image}",
+        "",
+        "ENV CARGO_HOME=/opt/cargo-cache",
+        "ENV CARGO_TARGET_DIR=/opt/cargo-target",
+        "WORKDIR /workspace",
+    ]
+    if has_cargo_toml and has_cargo_lock:
+        lines += [
+            "",
+            "# layer 1: fetch dependency sources (rebuilds only when Cargo.toml/Cargo.lock change)",
+            "COPY Cargo.toml Cargo.lock ./",
+            "RUN cargo fetch --locked",
+            "",
+            "# layer 2: compile the project so 'cargo build' works offline inside the sandbox",
+            "COPY . .",
+            "RUN cargo build && chown -R 1000:1000 /opt/cargo-cache /opt/cargo-target",
+        ]
+    out = context_dir / "Dockerfile.rust-cargo"
     out.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return out
 
