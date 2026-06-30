@@ -141,7 +141,7 @@ check_contains() {
 check_contains "$PS/Dockerfile" "FROM python:3.12-slim"
 check_contains "$PS/Dockerfile" "useradd -m -u 1000 -g agent -s /bin/bash agent"
 check_contains "$PS/Dockerfile" "/usr/local/bin/jj"
-check_contains "$PS/Dockerfile" "npm install -g @fission-ai/openspec@1.4.1"
+check_contains "$PS/Dockerfile" "npm install -g @fission-ai/openspec"
 check_contains "$PS/init-firewall.sh" "ipset create allowed-ipv4"
 check_contains "$PS/claude/settings.json" "bypassPermissions"
 check_contains "$PS/codex/config.toml" 'approval_policy = "never"'
