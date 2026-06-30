@@ -363,6 +363,9 @@ def render_rust_cargo_dockerfile(
     rust_version: str | None,
     has_cargo_toml: bool,
     has_cargo_lock: bool,
+    *,
+    workspace_members: list[str] | None = None,
+    workspace_root_is_package: bool = False,
 ) -> Path:
     """Generate a Rust/cargo base Dockerfile and write it to context_dir.
 
@@ -371,32 +374,90 @@ def render_rust_cargo_dockerfile(
     both True). Callers are responsible for emitting a warning when either is
     absent.
 
-    The project itself is compiled during the image build (with network
-    access) so that 'cargo build' inside the sandboxed container — which has
-    no network — finds dependency sources already fetched into CARGO_HOME and
-    finds compiled dependency artifacts already in CARGO_TARGET_DIR. Two
-    layers are used so that the slower source-copy/compile layer only rebuilds
-    when source files change, while the faster fetch-only layer is cache-
-    stable against lockfile changes.
+    The project is compiled during the image build (with network access) so
+    that 'cargo build' inside the sandboxed container — which has no network —
+    finds dependency sources already fetched into CARGO_HOME and finds compiled
+    dependency artifacts already in CARGO_TARGET_DIR. Two layers are used so
+    that the faster fetch-only layer is reused across source edits and rebuilds
+    only when Cargo.toml/Cargo.lock change, while the slower source-copy/compile
+    layer rebuilds whenever any source file changes.
+
+    The project compile is best-effort ('cargo build || true'): a project that
+    does not yet compile must not block image creation, since 'cargo fetch'
+    has already made the dependency sources available offline and cargo builds
+    dependencies before the project crate, so their artifacts are cached even
+    when the project crate itself fails to build. This lets an agent enter the
+    sandbox to fix a broken build offline — the whole point of the flow.
+
+    workspace_members: relative paths to workspace member crates, or None if
+        this is not a workspace. When set, each member's Cargo.toml is COPY'd
+        into the fetch layer so cargo can resolve the full dependency graph.
+    workspace_root_is_package: True when the workspace root Cargo.toml also
+        declares a [package] (i.e. the root is itself a crate).
     """
     base_image = f"rust:{rust_version}-slim" if rust_version else "rust:slim"
     lines = [
         f"FROM {base_image}",
+        "",
+        "RUN apt-get update && apt-get install -y --no-install-recommends \\\n"
+        "    build-essential cmake \\\n"
+        "    pkg-config \\\n"
+        "    libssl-dev \\\n"
+        "    libudev-dev libasound2-dev \\\n"
+        "    libx11-dev libxcb1-dev libxrandr-dev libxi-dev libxcursor-dev \\\n"
+        "    libwayland-dev \\\n"
+        "    libdbus-1-dev \\\n"
+        "    libpq-dev libsqlite3-dev \\\n"
+        "    libclang-dev \\\n"
+        "    libfontconfig1-dev libfreetype6-dev \\\n"
+        "    && rm -rf /var/lib/apt/lists/*",
         "",
         "ENV CARGO_HOME=/opt/cargo-cache",
         "ENV CARGO_TARGET_DIR=/opt/cargo-target",
         "WORKDIR /workspace",
     ]
     if has_cargo_toml and has_cargo_lock:
+        is_workspace = workspace_members is not None
+        members = workspace_members or []
+
         lines += [
             "",
             "# layer 1: fetch dependency sources (rebuilds only when Cargo.toml/Cargo.lock change)",
             "COPY Cargo.toml Cargo.lock ./",
-            "RUN cargo fetch --locked",
+        ]
+
+        # For workspace projects, copy each member's manifest so cargo can
+        # resolve the full dependency graph without the member source files.
+        for member in members:
+            lines.append(f"COPY {member}/Cargo.toml {member}/")
+
+        # cargo refuses to parse a manifest that declares no targets, so we
+        # create a minimal stub for each crate that needs one, run the fetch,
+        # then remove the stubs before COPY . . overlays the real source.
+        needs_root_stub = not is_workspace or workspace_root_is_package
+        stub_dirs = (["src"] if needs_root_stub else []) + [f"{m}/src" for m in members]
+
+        if stub_dirs:
+            fetch_parts = (
+                ["mkdir -p " + " ".join(stub_dirs)]
+                + [f"touch {d}/lib.rs" for d in stub_dirs]
+                + ["cargo fetch --locked"]
+                + ["rm -rf " + " ".join(stub_dirs)]
+            )
+            first, *rest = fetch_parts
+            lines.append("RUN " + first + "".join(f" \\\n    && {p}" for p in rest))
+        else:
+            lines.append("RUN cargo fetch --locked")
+
+        lines += [
             "",
-            "# layer 2: compile the project so 'cargo build' works offline inside the sandbox",
+            "# layer 2: pre-compile so 'cargo build' is fast (and offline) inside the",
+            "# sandbox. Best-effort: a project that does not yet compile must not block",
+            "# the image build — 'cargo fetch' above already made deps available offline.",
             "COPY . .",
-            "RUN cargo build && chown -R 1000:1000 /opt/cargo-cache /opt/cargo-target",
+            "RUN cargo build || true",
+            "RUN mkdir -p /opt/cargo-cache /opt/cargo-target"
+            " && chown -R 1000:1000 /opt/cargo-cache /opt/cargo-target",
         ]
     out = context_dir / "Dockerfile.rust-cargo"
     out.write_text("\n".join(lines) + "\n", encoding="utf-8")

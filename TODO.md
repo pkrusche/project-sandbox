@@ -8,6 +8,10 @@ arrangement can be inspected without docker/podman/apple-container. It is for
 verification, not isolation: no image build, no firewall, no network namespace,
 and the agent toolchain (node, claude, codex, …) is NOT installed in the jail.
 
+The goal (and verification strategy) of this task is to ensure the end to end
+tests in the scripts/ directory can all run in CI without access to a container
+runtime, and with minimal overhead.
+
 ### Behavior
 
 - Linux-only. `select_runtime("chroot")` returns it only when requested
@@ -66,6 +70,33 @@ and the agent toolchain (node, claude, codex, …) is NOT installed in the jail.
   layout inspection.
 - Keep the chroot mount list sourced from the shared `MountSpec` set so it tracks
   future changes to the real run mounts automatically.
+
+## Simplify after session behaviour
+
+There should be only one after-session action, a modified version of the
+current --nothing variant with similar semantics across git and jj.
+
+The behaviour should be the following:
+
+- Ensure the changes are in a new commit or described revision 
+  (describe by date / branch if empty)
+- For git, the changes should be either in the checked out branch when --branch 
+  was not supplied, or in the branch specified by --branch
+- For jj, if --branch was supplied, we should advance the bookmark to the
+  revision after the session. If branch was not supplied, no bookmarks would be
+  updated.
+- Workspace / worktree cleanup & reuse: we would remove the --after-session switch, but 
+  add a --keep-workspace option which would leave the worktree / workspace in place
+  for subsequent sessions. Subsequent sessions would re-use the worktree / workspace
+  linked to the branch / bookmark specified by --branch if it is present
+- In addition, we should add a CLI option that allows to set the starting point 
+  for the session when using --branch - e.g. --branch-start-at <revision>. To ensure 
+  consistent semantics between git and jj, this should behave as follows:
+
+    - if the branch or bookmark already exists, fail with an error message to either
+      delete/merge the branch first
+    - if the branch / bookmark does not exist, create a branch / bookmark from the
+      specified revision / commit ID / tag / bookmark
 
 ## Firewall: verify multi-resolver rules on a real iptables host
 

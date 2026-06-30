@@ -2333,7 +2333,48 @@ class RustCargoFlagTests(TestCase):
         # project must be pre-compiled at image build time so 'cargo build' works
         # offline inside the sandbox (avoids fetching crates behind firewall)
         self.assertIn("COPY . .", content)
-        self.assertIn("RUN cargo build &&", content)
+        # best-effort compile: a project that does not yet build must still
+        # produce an image (deps are already fetched/compiled for offline use)
+        self.assertIn("RUN cargo build || true", content)
+        # common system deps for Rust crates must be present
+        self.assertIn("build-essential", content)
+        self.assertIn("cmake", content)
+        self.assertIn("pkg-config", content)
+        self.assertIn("libssl-dev", content)
+        self.assertIn("libudev-dev", content)
+        self.assertIn("libasound2-dev", content)
+        self.assertIn("libx11-dev", content)
+        self.assertIn("libwayland-dev", content)
+        self.assertIn("libdbus-1-dev", content)
+        self.assertIn("libpq-dev", content)
+        self.assertIn("libsqlite3-dev", content)
+        self.assertIn("libclang-dev", content)
+        self.assertIn("libfontconfig1-dev", content)
+
+    def test_render_cache_warm_compile_is_non_fatal(self) -> None:
+        """A non-compiling project must not block the image build, and the
+        chown must not fail when cargo leaves the target dir uncreated."""
+        from project_sandbox import dockerfile as df
+
+        with tempfile.TemporaryDirectory() as tmp:
+            context_dir = Path(tmp) / ".project-sandbox"
+            context_dir.mkdir()
+            out_path = df.render_rust_cargo_dockerfile(
+                context_dir,
+                rust_version=None,
+                has_cargo_toml=True,
+                has_cargo_lock=True,
+            )
+            content = out_path.read_text(encoding="utf-8")
+
+        # the project compile must be tolerated, not gate the build
+        self.assertNotIn("RUN cargo build && chown", content)
+        self.assertIn("RUN cargo build || true", content)
+        # chown target dirs are created first so chown -R cannot fail on a
+        # build that exited before cargo materialised CARGO_TARGET_DIR
+        self.assertIn(
+            "mkdir -p /opt/cargo-cache /opt/cargo-target", content
+        )
 
     def test_render_omits_cache_warm_when_cargo_toml_missing(self) -> None:
         from project_sandbox import dockerfile as df
@@ -2457,6 +2498,230 @@ class RustCargoFlagTests(TestCase):
                 ])
 
         self.assertIn("only valid with --rust-cargo", str(raised.exception))
+
+    # --- source stub creation for cargo fetch ---
+
+    def test_render_creates_src_stub_for_single_package(self) -> None:
+        """Non-workspace package: dummy src/lib.rs is created so cargo can parse the manifest."""
+        from project_sandbox import dockerfile as df
+
+        with tempfile.TemporaryDirectory() as tmp:
+            context_dir = Path(tmp) / ".project-sandbox"
+            context_dir.mkdir()
+            out_path = df.render_rust_cargo_dockerfile(
+                context_dir,
+                rust_version=None,
+                has_cargo_toml=True,
+                has_cargo_lock=True,
+            )
+            content = out_path.read_text(encoding="utf-8")
+
+        self.assertIn("mkdir -p src", content)
+        self.assertIn("touch src/lib.rs", content)
+        self.assertIn("cargo fetch --locked", content)
+        # Stub must be cleaned up before the real source is copied in layer 2
+        self.assertIn("rm -rf src", content)
+
+    def test_render_workspace_copies_member_manifests(self) -> None:
+        """Workspace: each member Cargo.toml is COPY'd and a stub src/lib.rs is created."""
+        from project_sandbox import dockerfile as df
+
+        with tempfile.TemporaryDirectory() as tmp:
+            context_dir = Path(tmp) / ".project-sandbox"
+            context_dir.mkdir()
+            out_path = df.render_rust_cargo_dockerfile(
+                context_dir,
+                rust_version=None,
+                has_cargo_toml=True,
+                has_cargo_lock=True,
+                workspace_members=["crates/foo", "crates/bar"],
+                workspace_root_is_package=False,
+            )
+            content = out_path.read_text(encoding="utf-8")
+
+        self.assertIn("COPY crates/foo/Cargo.toml crates/foo/", content)
+        self.assertIn("COPY crates/bar/Cargo.toml crates/bar/", content)
+        self.assertIn("touch crates/foo/src/lib.rs", content)
+        self.assertIn("touch crates/bar/src/lib.rs", content)
+        self.assertIn("cargo fetch --locked", content)
+        # Root has no [package], so no root src stub
+        self.assertNotIn("touch src/lib.rs", content)
+        # Stubs are cleaned up
+        self.assertIn("rm -rf", content)
+
+    def test_render_workspace_with_root_package_stubs_root_too(self) -> None:
+        """Workspace root that is also a package: root src stub is included."""
+        from project_sandbox import dockerfile as df
+
+        with tempfile.TemporaryDirectory() as tmp:
+            context_dir = Path(tmp) / ".project-sandbox"
+            context_dir.mkdir()
+            out_path = df.render_rust_cargo_dockerfile(
+                context_dir,
+                rust_version=None,
+                has_cargo_toml=True,
+                has_cargo_lock=True,
+                workspace_members=["member"],
+                workspace_root_is_package=True,
+            )
+            content = out_path.read_text(encoding="utf-8")
+
+        self.assertIn("touch src/lib.rs", content)
+        self.assertIn("touch member/src/lib.rs", content)
+        self.assertIn("cargo fetch --locked", content)
+
+    def test_detect_cargo_workspace_non_workspace(self) -> None:
+        """Single-package Cargo.toml is not detected as a workspace."""
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "Cargo.toml").write_text(
+                '[package]\nname = "foo"\nversion = "0.1.0"\n', encoding="utf-8"
+            )
+            is_ws, members, root_is_pkg = cli._detect_cargo_workspace(project)
+
+        self.assertFalse(is_ws)
+        self.assertEqual(members, [])
+        self.assertFalse(root_is_pkg)
+
+    def test_detect_cargo_workspace_pure_workspace(self) -> None:
+        """Workspace-only root (no [package]) with glob-matched members."""
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "Cargo.toml").write_text(
+                '[workspace]\nmembers = ["crates/*"]\n', encoding="utf-8"
+            )
+            crates = project / "crates"
+            for name in ("alpha", "beta"):
+                (crates / name).mkdir(parents=True)
+                (crates / name / "Cargo.toml").write_text(
+                    f'[package]\nname = "{name}"\nversion = "0.1.0"\n', encoding="utf-8"
+                )
+            is_ws, members, root_is_pkg = cli._detect_cargo_workspace(project)
+
+        self.assertTrue(is_ws)
+        self.assertEqual(members, ["crates/alpha", "crates/beta"])
+        self.assertFalse(root_is_pkg)
+
+    def test_detect_cargo_workspace_root_as_package(self) -> None:
+        """Workspace root that is also a [package] sets root_is_package=True."""
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "Cargo.toml").write_text(
+                '[package]\nname = "root"\nversion = "0.1.0"\n\n'
+                '[workspace]\nmembers = ["sub"]\n',
+                encoding="utf-8",
+            )
+            sub = project / "sub"
+            sub.mkdir()
+            (sub / "Cargo.toml").write_text(
+                '[package]\nname = "sub"\nversion = "0.1.0"\n', encoding="utf-8"
+            )
+            is_ws, members, root_is_pkg = cli._detect_cargo_workspace(project)
+
+        self.assertTrue(is_ws)
+        self.assertEqual(members, ["sub"])
+        self.assertTrue(root_is_pkg)
+
+    def test_detect_cargo_workspace_respects_exclude(self) -> None:
+        """Excluded workspace members are not returned."""
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "Cargo.toml").write_text(
+                '[workspace]\nmembers = ["crates/*"]\nexclude = ["crates/skip"]\n',
+                encoding="utf-8",
+            )
+            crates = project / "crates"
+            for name in ("keep", "skip"):
+                (crates / name).mkdir(parents=True)
+                (crates / name / "Cargo.toml").write_text(
+                    f'[package]\nname = "{name}"\nversion = "0.1.0"\n', encoding="utf-8"
+                )
+            is_ws, members, root_is_pkg = cli._detect_cargo_workspace(project)
+
+        self.assertTrue(is_ws)
+        self.assertEqual(members, ["crates/keep"])
+
+    # --- target/ masking ---
+
+    def _build_session_cmd_for_masking(self, project: Path, *, rust_cargo: bool) -> list[str]:
+        import argparse
+
+        context_dir = project / ".project-sandbox"
+        context_dir.mkdir(exist_ok=True)
+        claude_cfg = context_dir / "claude" / "settings.json"
+        codex_cfg = context_dir / "codex" / "config.toml"
+        credential_dirs: dict = {}
+        args = argparse.Namespace(
+            branch=None,
+            cpus=4,
+            extra_mounts=[],
+            image_tag="project-sandbox:test",
+            log=None,
+            memory="8g",
+            no_firewall=True,
+            no_forward_credentials=True,
+            prompt=None,
+            prompt_text=None,
+            rust_cargo=rust_cargo,
+            verbose=False,
+        )
+        cmd, _, _, _ = cli._build_session_command(
+            args,
+            project=project,
+            context_dir=context_dir,
+            workspace=project,
+            worktree=None,
+            identity=GitIdentity(None, None),
+            run_agent="bash",
+            claude_cfg=claude_cfg,
+            credential_dirs=credential_dirs,
+            codex_cfg=codex_cfg,
+            runtime=cli.container_cli.DOCKER,
+            create_prompt_files=True,
+        )
+        return cmd
+
+    def test_target_dir_is_masked_when_rust_cargo_and_target_exists(self) -> None:
+        """When --rust-cargo is used and target/ exists, it is masked in the container."""
+        from project_sandbox.paths import WORKSPACE_CARGO_TARGET
+
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "target").mkdir()
+            cmd = self._build_session_cmd_for_masking(project, rust_cargo=True)
+
+        self.assertTrue(
+            any(WORKSPACE_CARGO_TARGET in part for part in cmd),
+            f"Expected {WORKSPACE_CARGO_TARGET} mask mount in command: {cmd}",
+        )
+
+    def test_target_dir_not_masked_when_target_absent(self) -> None:
+        """When target/ does not exist on the host, no mask mount is added."""
+        from project_sandbox.paths import WORKSPACE_CARGO_TARGET
+
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            # no target/ directory
+            cmd = self._build_session_cmd_for_masking(project, rust_cargo=True)
+
+        self.assertFalse(
+            any(WORKSPACE_CARGO_TARGET in part for part in cmd),
+            f"Unexpected {WORKSPACE_CARGO_TARGET} mount in command: {cmd}",
+        )
+
+    def test_target_dir_not_masked_without_rust_cargo_flag(self) -> None:
+        """target/ is not masked for non-Rust-cargo runs even if target/ exists."""
+        from project_sandbox.paths import WORKSPACE_CARGO_TARGET
+
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "target").mkdir()
+            cmd = self._build_session_cmd_for_masking(project, rust_cargo=False)
+
+        self.assertFalse(
+            any(WORKSPACE_CARGO_TARGET in part for part in cmd),
+            f"Unexpected {WORKSPACE_CARGO_TARGET} mount in command: {cmd}",
+        )
 
     def test_invalid_build_source_fails_before_worktree(self) -> None:
         # A bad build source must abort before _setup_worktree runs, so no

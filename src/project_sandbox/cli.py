@@ -33,6 +33,7 @@ from .paths import (
     HISTORY_CLAUDE_PROJECTS_TARGET,
     HISTORY_HISTFILE,
     HISTORY_SHELL_TARGET,
+    WORKSPACE_CARGO_TARGET,
     WORKSPACE_DEVCONTAINER_TARGET,
     WORKSPACE_SANDBOX_TARGET,
     ensure_dir,
@@ -93,7 +94,11 @@ def build_parser() -> ArgumentParser:
         default=None,
         dest="rust_version",
         metavar="VERSION",
-        help="Rust image tag for --rust-cargo (default: slim). Only valid with --rust-cargo.",
+        help=(
+            "Rust toolchain version for --rust-cargo, e.g. 1.87, producing "
+            "rust:1.87-slim (default: latest stable rust:slim). Only valid "
+            "with --rust-cargo."
+        ),
     )
     p.add_argument("--image-tag", default=None)
     p.add_argument(
@@ -783,6 +788,10 @@ def _resolve_build_source(
                 "cache-warming step will be skipped."
             )
 
+        is_workspace, ws_members, ws_root_is_pkg = (
+            _detect_cargo_workspace(project) if has_cargo_toml else (False, [], False)
+        )
+
         generated = context_dir / "Dockerfile.rust-cargo"
         if write_generated:
             generated = dockerfile.render_rust_cargo_dockerfile(
@@ -790,6 +799,8 @@ def _resolve_build_source(
                 rust_version=rust_version,
                 has_cargo_toml=has_cargo_toml,
                 has_cargo_lock=has_cargo_lock,
+                workspace_members=ws_members if is_workspace else None,
+                workspace_root_is_package=ws_root_is_pkg,
             )
         return None, generated, project
 
@@ -817,6 +828,38 @@ def _resolve_build_source(
     if not args.base_image:
         raise SystemExit("base_image is required unless --dockerfile is used")
     return args.base_image, None, context_dir
+
+
+def _detect_cargo_workspace(project: Path) -> tuple[bool, list[str], bool]:
+    """Parse Cargo.toml to detect a Rust workspace and its member crates.
+
+    Returns (is_workspace, member_paths, root_is_package):
+    - is_workspace: True if the root Cargo.toml has a [workspace] table
+    - member_paths: sorted relative paths of member crates that have a Cargo.toml
+    - root_is_package: True if the root Cargo.toml also has a [package] table
+    """
+    import tomllib
+
+    try:
+        data = tomllib.loads((project / "Cargo.toml").read_text(encoding="utf-8"))
+    except Exception:
+        return False, [], False
+
+    workspace = data.get("workspace")
+    if workspace is None:
+        return False, [], False
+
+    root_is_package = "package" in data
+    excludes = set(workspace.get("exclude", []))
+    members: list[str] = []
+    for pattern in workspace.get("members", []):
+        for member_path in sorted(project.glob(pattern)):
+            rel = member_path.relative_to(project).as_posix()
+            if rel in excludes or rel == ".":
+                continue
+            if (member_path / "Cargo.toml").exists():
+                members.append(rel)
+    return True, members, root_is_package
 
 
 def _tracked_project_dockerfiles(
@@ -1166,6 +1209,14 @@ def _build_session_command(
     if (workspace / ".devcontainer").exists():
         extra_mounts.append(
             f"type=bind,source={mask_source},target={WORKSPACE_DEVCONTAINER_TARGET},readonly"
+        )
+    # Hide the Rust build artifact tree from the sandbox when using --rust-cargo.
+    # CARGO_TARGET_DIR=/opt/cargo-target already redirects cargo output, but a
+    # visible host target/ would expose thousands of files to the agent and allow
+    # an agent that unsets CARGO_TARGET_DIR to write back into the host tree.
+    if getattr(args, "rust_cargo", False) and (workspace / "target").exists():
+        extra_mounts.append(
+            f"type=bind,source={mask_source},target={WORKSPACE_CARGO_TARGET},readonly"
         )
 
     forward_credentials = not getattr(args, "no_forward_credentials", False)
