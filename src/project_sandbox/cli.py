@@ -273,6 +273,8 @@ def main(argv: list[str] | None = None) -> int:
         if run_agent is not None and not args.dry_run
         else None
     )
+    if runtime == container_cli.CHROOT:
+        _validate_chroot_session(args, run_agent)
 
     if args.dry_run:
         wt, workspace = _plan_worktree(args, project) if run_agent else (None, project)
@@ -585,6 +587,8 @@ def _dry_run(
         container_cli.select_runtime(args.runtime, dry_run=True) if run_agent else None
     )
     if preview_runtime == container_cli.CHROOT:
+        _validate_chroot_session(args, run_agent)
+    if preview_runtime == container_cli.CHROOT:
         base_dockerfile, build_context = None, context_dir
     else:
         _, base_dockerfile, build_context = _resolve_build_source(
@@ -652,6 +656,13 @@ def _dry_run(
     else:
         container_cli.run(cmd, dry_run=True)
     return 0
+
+
+def _validate_chroot_session(args, run_agent: str | None) -> None:
+    if run_agent != "bash":
+        raise SystemExit("--runtime chroot requires --agent bash")
+    if args.prompt or args.prompt_text:
+        raise SystemExit("--runtime chroot does not support prompt/headless sessions")
 
 
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")

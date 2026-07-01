@@ -83,9 +83,13 @@ def parse_mount(value: str) -> MountSpec:
         or "target" not in fields
     ):
         raise SystemExit(f"Only bind mounts are supported: {value}")
+    target = fields["target"]
+    target_path = Path(target)
+    if not target_path.is_absolute() or ".." in target_path.parts:
+        raise SystemExit(f"Bind mount target must be an absolute jail path: {target}")
     return MountSpec(
         Path(fields["source"]).resolve(strict=False),
-        fields["target"],
+        target,
         "readonly" in flags or fields.get("readonly") == "true",
     )
 
@@ -160,6 +164,11 @@ def build_chroot_argv(
         str(jail_root),
     ]
     for mount in mounts:
+        target = Path(mount.target)
+        if not target.is_absolute() or ".." in target.parts:
+            raise ValueError(
+                f"Chroot mount target must be an absolute jail path: {mount.target}"
+            )
         argv.extend((str(mount.source), mount.target, "ro" if mount.readonly else "rw"))
     return argv
 

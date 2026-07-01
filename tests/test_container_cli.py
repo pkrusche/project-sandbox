@@ -61,6 +61,26 @@ class ContainerCliTests(TestCase):
         self.assertIn("/project-sandbox-prompt", argv)
         self.assertEqual(argv[-1], "ro")
 
+    def test_chroot_argv_rejects_target_outside_jail(self) -> None:
+        with self.assertRaisesRegex(ValueError, "absolute jail path"):
+            build_chroot_argv(
+                script=Path("/tmp/run"),
+                jail_root=Path("/tmp/root"),
+                mounts=[MountSpec(Path("/tmp/source"), "../outside")],
+            )
+
+    def test_mount_parser_rejects_relative_target(self) -> None:
+        with self.assertRaisesRegex(SystemExit, "absolute jail path"):
+            build_mount_specs(
+                project_abs=Path("/tmp/workspace"),
+                claude_cfg=Path("/tmp/claude/settings.json"),
+                claude_credentials_dir=None,
+                codex_cfg=Path("/tmp/codex/config.toml"),
+                codex_credentials_dir=None,
+                opencode_credentials_dir=None,
+                extra_mounts=["type=bind,source=/tmp/source,target=relative"],
+            )
+
     def test_chroot_image_build_is_noop(self) -> None:
         with patch("project_sandbox.container_cli.subprocess.run") as run_mock:
             rc = build_image(runtime=CHROOT, context_dir=Path("/missing"), image_tag="unused")

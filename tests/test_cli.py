@@ -103,6 +103,48 @@ class CliTests(TestCase):
             self.assertFalse((project / ".project-sandbox").exists())
             self.assertFalse((project / ".gitignore").exists())
 
+    def test_chroot_dry_run_prints_layout_without_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            out = io.StringIO()
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity(None, None)),
+                patch.object(cli.config_agents, "available_agents", return_value=("bash",)),
+                contextlib.redirect_stdout(out),
+            ):
+                rc = cli.main(
+                    ["--dry-run", "--runtime", "chroot", "--agent", "bash", str(project)]
+                )
+
+            self.assertEqual(rc, 0)
+            self.assertIn("unshare --map-root-user --mount --", out.getvalue())
+            self.assertIn("/workspace rw", out.getvalue())
+            self.assertFalse((project / ".project-sandbox").exists())
+            self.assertFalse((project / ".devcontainer").exists())
+
+    def test_chroot_rejects_agent_and_headless_modes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            common = ["--dry-run", "--runtime", "chroot"]
+            with patch.object(
+                cli.config_agents, "available_agents", return_value=("bash", "claude")
+            ):
+                with self.assertRaisesRegex(SystemExit, "requires --agent bash"):
+                    cli.main([*common, "--agent", "claude", str(project)])
+                with self.assertRaisesRegex(SystemExit, "does not support prompt"):
+                    cli.main(
+                        [
+                            *common,
+                            "--agent",
+                            "bash",
+                            "--prompt-text",
+                            "inspect",
+                            str(project),
+                        ]
+                    )
+
     def test_default_run_initializes_files_without_starting_agent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
