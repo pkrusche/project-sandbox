@@ -57,7 +57,9 @@ class ContainerCliTests(TestCase):
         )
         argv = build_chroot_argv(script=root / "run", jail_root=root / "root", mounts=mounts)
         self.assertEqual(argv[:4], ["unshare", "--map-root-user", "--mount", "--"])
-        self.assertIn(MountSpec(root / "workspace", "/workspace"), mounts)
+        self.assertIn(
+            MountSpec((root / "workspace").resolve(strict=False), "/workspace"), mounts
+        )
         self.assertIn("/project-sandbox-prompt", argv)
         self.assertEqual(argv[-1], "ro")
 
@@ -116,7 +118,7 @@ class ContainerCliTests(TestCase):
         self.assertNotIn("CLAUDE_CONFIG_DIR=/home/agent/.claude", cmd)
         self.assertIn("CLAUDE_SECURESTORAGE_CONFIG_DIR=/home/agent/.claude", cmd)
         self.assertIn(
-            f"type=bind,source={root / 'claude'},target=/project-sandbox-config/claude,readonly",
+            f"type=bind,source={(root / 'claude').resolve(strict=False)},target=/project-sandbox-config/claude,readonly",
             cmd,
         )
         self.assertIn(
@@ -124,11 +126,11 @@ class ContainerCliTests(TestCase):
             cmd,
         )
         self.assertIn(
-            f"type=bind,source={root / 'codex'},target=/project-sandbox-config/codex,readonly",
+            f"type=bind,source={(root / 'codex').resolve(strict=False)},target=/project-sandbox-config/codex,readonly",
             cmd,
         )
         self.assertNotIn(
-            f"type=bind,source={root / 'claude/settings.json'},target=/home/agent/.claude/settings.json,readonly",
+            f"type=bind,source={(root / 'claude/settings.json').resolve(strict=False)},target=/home/agent/.claude/settings.json,readonly",
             cmd,
         )
         self.assertEqual(
@@ -194,11 +196,11 @@ class ContainerCliTests(TestCase):
         self.assertNotIn("/project-sandbox-secrets/opencode,readonly", "".join(cmd))
         # ...but generated, non-secret config still is.
         self.assertIn(
-            f"type=bind,source={root / 'claude'},target=/project-sandbox-config/claude,readonly",
+            f"type=bind,source={(root / 'claude').resolve(strict=False)},target=/project-sandbox-config/claude,readonly",
             cmd,
         )
         self.assertIn(
-            f"type=bind,source={root / 'codex'},target=/project-sandbox-config/codex,readonly",
+            f"type=bind,source={(root / 'codex').resolve(strict=False)},target=/project-sandbox-config/codex,readonly",
             cmd,
         )
 

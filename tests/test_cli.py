@@ -3,6 +3,7 @@ import io
 import os
 import sys
 import tempfile
+import unittest
 from pathlib import Path
 from unittest import TestCase
 from unittest.mock import patch
@@ -103,6 +104,7 @@ class CliTests(TestCase):
             self.assertFalse((project / ".project-sandbox").exists())
             self.assertFalse((project / ".gitignore").exists())
 
+    @unittest.skipUnless(sys.platform.startswith("linux"), "chroot runtime is Linux-only")
     def test_chroot_dry_run_prints_layout_without_writing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
@@ -123,6 +125,7 @@ class CliTests(TestCase):
             self.assertFalse((project / ".project-sandbox").exists())
             self.assertFalse((project / ".devcontainer").exists())
 
+    @unittest.skipUnless(sys.platform.startswith("linux"), "chroot runtime is Linux-only")
     def test_chroot_rejects_agent_and_headless_modes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
@@ -933,7 +936,7 @@ class CliTests(TestCase):
             "type=bind,source=/tmp/custom,target=/workspace/.project-sandbox",
         )
 
-        custom = "type=bind,source=/tmp/custom,target=/workspace/.project-sandbox"
+        custom = f"type=bind,source={Path('/tmp/custom').resolve()},target=/workspace/.project-sandbox"
         mask = "target=/workspace/.project-sandbox,readonly"
         self.assertIn("Would mask workspace sandbox files with:", out)
         self.assertIn(custom, out)
