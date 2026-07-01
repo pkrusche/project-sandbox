@@ -199,8 +199,10 @@ uv run project-sandbox \
 After the session there is one action, and it never touches your main checkout:
 
 - The agent's work is captured on the branch/bookmark. For git, any uncommitted
-  changes are committed onto `<name>`. For jj, the working copy is snapshotted,
-  `@` is described if it has no message, and the bookmark is advanced to it.
+  changes are committed onto `<name>`. For jj, the working copy is snapshotted
+  and the bookmark is advanced to the session tip (`@`, described if it has no
+  message; or `@-` when `@` is empty, so committed work is captured without
+  leaving an empty commit as the tip).
 - The worktree/workspace is then removed. The branch/bookmark keeps the commits
   for you to merge, rebase, or open a PR from manually.
 

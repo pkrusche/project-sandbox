@@ -162,8 +162,8 @@ The tool does not protect against:
   are not supported.
 - After the session there is a single, non-integrating action: the agent's work
   is captured on the branch/bookmark (any uncommitted changes are committed for
-  git; `@` is described if it has no description and the bookmark is advanced for
-  jj), and the worktree/workspace is removed. Nothing is ever merged, rebased, or
+  git; the working copy is snapshotted and the bookmark advanced to the session
+  tip for jj), and the worktree/workspace is removed. Nothing is ever merged, rebased, or
   pushed into the main checkout — the branch/bookmark holds the work for you to
   integrate manually. `--keep-workspace` leaves the worktree/workspace in place so
   a later `--branch <same>` run reuses it; a failed session is also left in place

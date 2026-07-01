@@ -16,6 +16,12 @@ from pathlib import Path
 class JjWorkspace:
     path: Path
     bookmark: str
+    # Whether *this* session created the bookmark / workspace, as opposed to
+    # reusing pre-existing ones. The build-failure cleanup (``remove``) uses these
+    # to avoid destroying a prior session's work: a reused bookmark or a kept
+    # workspace must survive a failed build, just as a git branch/worktree does.
+    created_bookmark: bool = False
+    created_workspace: bool = False
 
 
 def setup(
@@ -40,6 +46,7 @@ def setup(
     if ws_path.exists():
         existing = _list_workspaces(repo)
         if str(ws_path) in existing or str(ws_path.resolve()) in existing:
+            # Reusing a kept workspace and its bookmark; created nothing.
             return JjWorkspace(path=ws_path, bookmark=bookmark)
         raise SystemExit(
             f"workspace directory already exists but is not registered: {ws_path}\n"
@@ -55,7 +62,7 @@ def setup(
         # continues from where the last session left off (the bookmark is then
         # advanced to @ at teardown), rather than off the default workspace's @.
         add_args += ["-r", bookmark]
-    elif not _current_revision_is_empty(repo):
+    elif not _is_empty(repo):
         add_args += ["-r", "@"]
     add_args.append(str(ws_path))
     _jj(repo, add_args)
@@ -66,7 +73,12 @@ def setup(
     if not bookmark_exists:
         _jj(ws_path, ["bookmark", "create", bookmark])
 
-    return JjWorkspace(path=ws_path, bookmark=bookmark)
+    return JjWorkspace(
+        path=ws_path,
+        bookmark=bookmark,
+        created_bookmark=not bookmark_exists,
+        created_workspace=True,
+    )
 
 
 def path_for(
@@ -171,10 +183,16 @@ def finalize(
     """Capture the session's work on the bookmark, then remove the workspace.
 
     The single after-session action never integrates into the default
-    workspace: it snapshots the working copy, describes @ if it has no
-    description, and advances the bookmark to @. Unless the session failed or the
-    caller asked to keep it, the workspace is then forgotten and removed. The
-    bookmark retains the work for the user to rebase or push manually.
+    workspace: it snapshots the working copy and advances the bookmark to the
+    session's tip. Unless the session failed or the caller asked to keep it, the
+    workspace is then forgotten and removed. The bookmark retains the work for
+    the user to rebase or push manually.
+
+    The tip is @ when it holds changes (described with ``message`` if it has no
+    message of its own). When @ is empty — the agent committed and left an empty
+    working copy, or made no changes at all — the bookmark is advanced to @-
+    instead, so any committed work is still captured without leaving an empty
+    commit as the bookmark tip.
 
     Runs from ``main()``'s ``finally`` block, so any jj failure is caught and
     reported rather than propagated (which would mask the session's exit code):
@@ -184,12 +202,16 @@ def finalize(
         ws_name = ws.path.name
 
         try:
-            # A no-op jj command forces a working-copy snapshot; describe @ if it
-            # carries no message, then point the bookmark at the final revision.
+            # A no-op jj command forces a working-copy snapshot of the session's
+            # edits, then point the bookmark at the session tip.
             _jj(ws.path, ["status"], capture=True)
-            if not _description(ws.path):
-                _jj(ws.path, ["describe", "-r", "@", "-m", message])
-            _jj(ws.path, ["bookmark", "set", "--allow-backwards", ws.bookmark, "-r", "@"])
+            if _is_empty(ws.path, "@"):
+                target = "@-"
+            else:
+                target = "@"
+                if not _description(ws.path, target):
+                    _jj(ws.path, ["describe", "-r", target, "-m", message])
+            _jj(ws.path, ["bookmark", "set", "--allow-backwards", ws.bookmark, "-r", target])
         except subprocess.CalledProcessError:
             print(
                 f"could not capture session changes — workspace left in place at {ws.path}"
@@ -214,17 +236,22 @@ def finalize(
 
 
 def remove(repo: Path, ws: JjWorkspace) -> None:
-    """Remove workspace and bookmark without integration (e.g. after a failed build)."""
-    ws_name = ws.path.name
-    try:
-        _jj(repo, ["bookmark", "delete", ws.bookmark])
-    except subprocess.CalledProcessError:
-        pass
-    try:
-        _jj(repo, ["workspace", "forget", ws_name])
-    except subprocess.CalledProcessError:
-        pass
-    shutil.rmtree(ws.path, ignore_errors=True)
+    """Drop artifacts this session created, for the build-failure path (agent
+    never ran). Only freshly-created artifacts are removed: a reused bookmark or
+    a kept, reused workspace is left in place so a prior session's work is never
+    destroyed by a failed build — matching how a git branch/worktree survives.
+    """
+    if ws.created_bookmark:
+        try:
+            _jj(repo, ["bookmark", "delete", ws.bookmark])
+        except subprocess.CalledProcessError:
+            pass
+    if ws.created_workspace:
+        try:
+            _jj(repo, ["workspace", "forget", ws.path.name])
+        except subprocess.CalledProcessError:
+            pass
+        shutil.rmtree(ws.path, ignore_errors=True)
 
 
 def _bookmark_exists(repo: Path, bookmark: str) -> bool:
@@ -245,19 +272,19 @@ def _jj(repo: Path, args: list[str], capture: bool = False) -> str:
     return result.stdout if capture else ""
 
 
-def _current_revision_is_empty(repo: Path) -> bool:
+def _is_empty(repo: Path, rev: str = "@") -> bool:
     out = _jj(
         repo,
-        ["log", "-r", "@", "--no-graph", "--template", 'empty ++ "\n"'],
+        ["log", "-r", rev, "--no-graph", "--template", 'empty ++ "\n"'],
         capture=True,
     )
     return out.strip() == "true"
 
 
-def _description(ws_path: Path) -> str:
+def _description(ws_path: Path, rev: str = "@") -> str:
     out = _jj(
         ws_path,
-        ["log", "-r", "@", "--no-graph", "--template", "description"],
+        ["log", "-r", rev, "--no-graph", "--template", "description"],
         capture=True,
     )
     return out.strip()
