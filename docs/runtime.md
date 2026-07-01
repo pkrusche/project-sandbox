@@ -37,6 +37,12 @@ chroot, then runs interactive or headless Bash. It does not build an image,
 configure a firewall or network namespace, install coding-agent CLIs, or provide
 a security boundary. `--runtime auto` never selects it.
 
+This requires unprivileged user namespaces, which some hardened or nested
+environments restrict in ways that vary by kernel/config (e.g. AppArmor
+blocking `unshare --map-root-user`, or a mount policy rejecting a bind or
+fresh mount of `/proc`) — the CI e2e workflow uses `--runtime docker` instead
+for this reason (see `.github/workflows/e2e.yml`).
+
 ## File Layout
 
 ```text

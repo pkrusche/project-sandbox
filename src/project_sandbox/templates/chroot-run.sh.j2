@@ -13,12 +13,25 @@ bind() {
     if [ "$mode" = ro ]; then mount -o remount,bind,ro "$destination"; fi
 }
 
-for source in /usr /bin /lib /lib* /etc; do
+for source in /usr /bin /lib* /etc; do
     [ ! -e "$source" ] || bind "$source" "$source" ro
 done
 for source in /dev/null /dev/zero /dev/random /dev/urandom; do
     bind "$source" "$source" rw
 done
+mkdir -p "$jail/proc"
+# Which of these two works is host-dependent (kernel/procfs superblock-owner
+# policy differs across environments), so try both: a bind of the host's
+# procfs first, falling back to mounting a fresh instance (equivalent here,
+# since no PID namespace is unshared).
+mount --bind /proc "$jail/proc" 2>/dev/null || mount -t proc proc "$jail/proc"
+# -n: the jail dir is reused across runs, and a previous run's /dev/fd symlink
+# resolves (via the host's own /proc/self/fd) to a real directory, which would
+# make a dereferencing `ln -sf` create the link inside it instead of replacing it.
+ln -sfn /proc/self/fd "$jail/dev/fd"
+ln -sfn /proc/self/fd/0 "$jail/dev/stdin"
+ln -sfn /proc/self/fd/1 "$jail/dev/stdout"
+ln -sfn /proc/self/fd/2 "$jail/dev/stderr"
 mkdir -p "$jail/home/agent/.claude" "$jail/home/agent/.codex" "$jail/home/agent/.config" \
     "$jail/project-sandbox-config/claude" "$jail/project-sandbox-config/codex" \
     "$jail/project-sandbox-secrets/claude" "$jail/project-sandbox-secrets/codex" \

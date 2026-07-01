@@ -97,13 +97,13 @@ RUN set -euxo pipefail; \
 RUN npm install -g @fission-ai/openspec@1.5.0
 
 {% if install_claude %}
-RUN npm install -g @anthropic-ai/claude-code@2.1.196
+RUN npm install -g @anthropic-ai/claude-code@2.1.197
 {% endif %}
 {% if install_codex %}
-RUN npm install -g @openai/codex@0.142.4
+RUN npm install -g @openai/codex@0.142.5
 {% endif %}
 {% if install_opencode %}
-RUN npm install -g opencode-ai@1.17.11
+RUN npm install -g opencode-ai@1.17.13
 {% endif %}
 
 COPY {{ sandbox_copy_prefix }}{{ firewall_src_filename }} /usr/local/bin/project-sandbox-init-firewall

@@ -25,6 +25,16 @@ class RendererTests(TestCase):
         self.assertIn("/home/agent/.claude", text)
         self.assertIn("/project-sandbox-secrets/opencode", text)
         self.assertIn('exec unshare --root="$jail" --wd=/workspace', text)
+        # /proc (and /dev/fd symlinks resolving into it) must be present, or
+        # bash process substitution (<(...)) fails inside the jail.
+        self.assertIn('mount --bind /proc "$jail/proc"', text)
+        self.assertIn('ln -sfn /proc/self/fd "$jail/dev/fd"', text)
+        # /lib must be bound exactly once: the loop's /lib* glob already
+        # covers it, so a leftover literal /lib would double-mount it.
+        bind_loop_line = next(
+            line for line in text.splitlines() if line.startswith("for source in")
+        )
+        self.assertNotIn(" /lib ", f" {bind_loop_line} ")
 
     def test_config_and_firewall_renderers_write_expected_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

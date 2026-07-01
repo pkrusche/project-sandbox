@@ -15,6 +15,9 @@ RUNTIME_CHOICES = ("auto", "apple-container", "docker", "podman", "chroot")
 class Runtime:
     name: str
     binary: str
+    # False for runtimes (like chroot) that neither build nor run an image;
+    # lets callers branch on capability instead of comparing runtime identity.
+    is_container: bool = True
 
 
 @dataclass(frozen=True)
@@ -22,12 +25,16 @@ class MountSpec:
     source: Path
     target: str
     readonly: bool = False
+    # Set for a --mount value we don't model structurally (a non-bind type, or
+    # one missing source/target even after alias lookup); passed through to
+    # the runtime unchanged instead of being reconstructed from fields.
+    raw: str | None = None
 
 
 APPLE_CONTAINER = Runtime("apple-container", "container")
 DOCKER = Runtime("docker", "docker")
 PODMAN = Runtime("podman", "podman")
-CHROOT = Runtime("chroot", "unshare")
+CHROOT = Runtime("chroot", "unshare", is_container=False)
 
 _RUNTIMES = {
     APPLE_CONTAINER.name: APPLE_CONTAINER,
@@ -68,30 +75,53 @@ def select_runtime(requested: str, *, dry_run: bool = False) -> Runtime:
     )
 
 
+_MOUNT_FIELD_ALIASES = {
+    "source": "source",
+    "src": "source",
+    "target": "target",
+    "dst": "target",
+    "destination": "target",
+    "type": "type",
+    "readonly": "readonly",
+}
+_MOUNT_FLAGS = {"readonly", "ro"}
+
+
 def parse_mount(value: str) -> MountSpec:
     fields: dict[str, str] = {}
     flags: set[str] = set()
+    unrecognized = False
     for part in value.split(","):
         if "=" in part:
             key, item = part.split("=", 1)
-            fields[key] = item
+            canonical = _MOUNT_FIELD_ALIASES.get(key)
+            if canonical is None:
+                unrecognized = True
+            else:
+                fields[canonical] = item
         else:
             flags.add(part)
+            if part not in _MOUNT_FLAGS:
+                unrecognized = True
+    source = fields.get("source")
+    target = fields.get("target")
     if (
-        fields.get("type", "bind") != "bind"
-        or "source" not in fields
-        or "target" not in fields
+        unrecognized
+        or fields.get("type", "bind") != "bind"
+        or source is None
+        or target is None
     ):
-        raise SystemExit(f"Only bind mounts are supported: {value}")
-    target = fields["target"]
+        # A mount form we don't model structurally (tmpfs/volume mounts, an
+        # option like bind-propagation/consistency we don't understand, or a
+        # bind mount missing source/target even after alias lookup) is passed
+        # through to the container runtime unchanged. Only chroot, which
+        # performs its own bind mounts, requires a fully structured mount.
+        return MountSpec(Path("."), "", raw=value)
     target_path = Path(target)
     if not target_path.is_absolute() or ".." in target_path.parts:
         raise SystemExit(f"Bind mount target must be an absolute jail path: {target}")
-    return MountSpec(
-        Path(fields["source"]).resolve(strict=False),
-        target,
-        "readonly" in flags or fields.get("readonly") == "true",
-    )
+    readonly = "readonly" in flags or "ro" in flags or fields.get("readonly") == "true"
+    return MountSpec(Path(source).resolve(strict=False), target, readonly)
 
 
 def build_mount_specs(
@@ -148,8 +178,27 @@ def build_mount_specs(
 
 
 def _mount_arg(mount: MountSpec) -> str:
+    if mount.raw is not None:
+        return mount.raw
     value = f"type=bind,source={mount.source},target={mount.target}"
     return value + (",readonly" if mount.readonly else "")
+
+
+def identity_env(identity: GitIdentity) -> list[str]:
+    env: list[str] = []
+    if identity.name:
+        env += [
+            f"PROJECT_SANDBOX_USER_NAME={identity.name}",
+            f"GIT_AUTHOR_NAME={identity.name}",
+            f"GIT_COMMITTER_NAME={identity.name}",
+        ]
+    if identity.email:
+        env += [
+            f"PROJECT_SANDBOX_USER_EMAIL={identity.email}",
+            f"GIT_AUTHOR_EMAIL={identity.email}",
+            f"GIT_COMMITTER_EMAIL={identity.email}",
+        ]
+    return env
 
 
 def build_chroot_argv(
@@ -157,6 +206,7 @@ def build_chroot_argv(
     script: Path,
     jail_root: Path,
     mounts: Sequence[MountSpec],
+    identity: GitIdentity = GitIdentity(None, None),
     agent: str = "bash",
     extra_env: Sequence[str] = (),
 ) -> list[str]:
@@ -169,13 +219,15 @@ def build_chroot_argv(
         str(jail_root),
     ]
     for mount in mounts:
+        if mount.raw is not None:
+            raise ValueError(f"chroot runtime only supports bind mounts: {mount.raw}")
         target = Path(mount.target)
         if not target.is_absolute() or ".." in target.parts:
             raise ValueError(
                 f"Chroot mount target must be an absolute jail path: {mount.target}"
             )
         argv.extend((str(mount.source), mount.target, "ro" if mount.readonly else "rw"))
-    argv.extend(("--", agent, *extra_env))
+    argv.extend(("--", agent, *identity_env(identity), *extra_env))
     return argv
 
 
@@ -233,24 +285,8 @@ def build_run_argv(
     )
     for mount in mounts:
         argv += ["--mount", _mount_arg(mount)]
-    if identity.name:
-        argv += [
-            "--env",
-            f"PROJECT_SANDBOX_USER_NAME={identity.name}",
-            "--env",
-            f"GIT_AUTHOR_NAME={identity.name}",
-            "--env",
-            f"GIT_COMMITTER_NAME={identity.name}",
-        ]
-    if identity.email:
-        argv += [
-            "--env",
-            f"PROJECT_SANDBOX_USER_EMAIL={identity.email}",
-            "--env",
-            f"GIT_AUTHOR_EMAIL={identity.email}",
-            "--env",
-            f"GIT_COMMITTER_EMAIL={identity.email}",
-        ]
+    for env in identity_env(identity):
+        argv += ["--env", env]
     argv += [
         "--env",
         "CLAUDE_SECURESTORAGE_CONFIG_DIR=/home/agent/.claude",
@@ -288,7 +324,7 @@ def build_image(
     dry_run: bool = False,
     verbose: bool = True,
 ) -> int:
-    if runtime == CHROOT:
+    if not runtime.is_container:
         return 0
     build_context = (build_context or context_dir).resolve(strict=False)
     dockerfile_path = (dockerfile_path or context_dir / "Dockerfile").resolve(strict=False)

@@ -14,6 +14,7 @@ from project_sandbox.container_cli import (
     DOCKER,
     MountSpec,
     PODMAN,
+    _mount_arg,
     _run_quietable,
     build_image,
     build_chroot_argv,
@@ -22,6 +23,7 @@ from project_sandbox.container_cli import (
     build_stop_argv,
     ensure_system_started,
     image_exists,
+    parse_mount,
     run,
     select_runtime,
 )
@@ -94,6 +96,57 @@ class ContainerCliTests(TestCase):
             rc = build_image(runtime=CHROOT, context_dir=Path("/missing"), image_tag="unused")
         self.assertEqual(rc, 0)
         run_mock.assert_not_called()
+
+    def test_chroot_is_not_a_container_runtime(self) -> None:
+        self.assertFalse(CHROOT.is_container)
+        for runtime in (DOCKER, PODMAN):
+            self.assertTrue(runtime.is_container)
+
+    def test_parse_mount_honors_docker_ro_shorthand(self) -> None:
+        mount = parse_mount("type=bind,source=/x,target=/y,ro")
+        self.assertTrue(mount.readonly)
+
+    def test_parse_mount_honors_src_dst_aliases(self) -> None:
+        mount = parse_mount("type=bind,src=/x,dst=/y")
+        self.assertIsNone(mount.raw)
+        self.assertEqual(mount.target, "/y")
+
+    def test_parse_mount_passes_through_non_bind_mounts_unchanged(self) -> None:
+        value = "type=tmpfs,target=/scratch"
+        mount = parse_mount(value)
+        self.assertEqual(mount.raw, value)
+        self.assertEqual(_mount_arg(mount), value)
+
+    def test_parse_mount_passes_through_unrecognized_bind_options_unchanged(
+        self,
+    ) -> None:
+        value = "type=bind,source=/x,target=/y,bind-propagation=rshared"
+        mount = parse_mount(value)
+        self.assertEqual(mount.raw, value)
+        self.assertEqual(_mount_arg(mount), value)
+
+    def test_build_chroot_argv_rejects_raw_passthrough_mounts(self) -> None:
+        with self.assertRaisesRegex(ValueError, "only supports bind mounts"):
+            build_chroot_argv(
+                script=Path("/tmp/run"),
+                jail_root=Path("/tmp/root"),
+                mounts=[parse_mount("type=tmpfs,target=/scratch")],
+            )
+
+    def test_build_chroot_argv_injects_git_identity_env(self) -> None:
+        argv = build_chroot_argv(
+            script=Path("/tmp/run"),
+            jail_root=Path("/tmp/root"),
+            mounts=[],
+            identity=GitIdentity("Ada Lovelace", "ada@example.com"),
+            agent="bash",
+            extra_env=("PROJECT_SANDBOX_QUIET=1",),
+        )
+        self.assertIn("GIT_AUTHOR_NAME=Ada Lovelace", argv)
+        self.assertIn("GIT_AUTHOR_EMAIL=ada@example.com", argv)
+        self.assertIn("GIT_COMMITTER_NAME=Ada Lovelace", argv)
+        # extra_env still arrives, after the identity vars.
+        self.assertEqual(argv[-1], "PROJECT_SANDBOX_QUIET=1")
 
     def test_build_run_argv_uses_arg_list_for_headless_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

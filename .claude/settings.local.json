@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(jj status *)",
+      "Bash(jj show *)",
+      "Bash(jj file *)",
+      "Read(//tmp/**)",
+      "Bash(jj log *)"
+    ]
+  }
+}

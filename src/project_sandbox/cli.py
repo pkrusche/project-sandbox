@@ -251,6 +251,9 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("Use only one of --prompt or --prompt-text")
     run_agent = _requested_agent(args)
     _validate_api_key_injection_args(args, run_agent)
+    is_chroot = args.runtime == container_cli.CHROOT.name
+    if is_chroot:
+        _validate_chroot_session(run_agent)
     if args.branch and run_agent is None:
         raise SystemExit("--branch requires --agent, --prompt, or --prompt-text")
     if args.branch_start_at and not args.branch:
@@ -273,8 +276,6 @@ def main(argv: list[str] | None = None) -> int:
         if run_agent is not None and not args.dry_run
         else None
     )
-    if runtime == container_cli.CHROOT:
-        _validate_chroot_session(args, run_agent)
 
     if args.dry_run:
         wt, workspace = _plan_worktree(args, project) if run_agent else (None, project)
@@ -293,7 +294,7 @@ def main(argv: list[str] | None = None) -> int:
     # python-uv/rust-cargo Dockerfile, but only into .project-sandbox
     # (project-level, not the worktree).
     context_dir = ensure_dir(project / ".project-sandbox")
-    if runtime == container_cli.CHROOT:
+    if is_chroot:
         base_image, base_dockerfile, build_context = None, None, context_dir
     else:
         base_image, base_dockerfile, build_context = _resolve_build_source(
@@ -314,7 +315,7 @@ def main(argv: list[str] | None = None) -> int:
     agent_ran = False
     exit_code = 1
     try:
-        if runtime != container_cli.CHROOT:
+        if not is_chroot:
             dockerfile.render(
                 context_dir,
                 base_image=base_image,
@@ -327,11 +328,11 @@ def main(argv: list[str] | None = None) -> int:
         # flows, whose Dockerfile we generate and whose excluded paths we know
         # are not build inputs. User-supplied --dockerfile builds are left
         # untouched so an injected ignore file can't break a COPY they rely on.
-        if runtime != container_cli.CHROOT and (
+        if not is_chroot and (
             getattr(args, "python_uv", False) or getattr(args, "rust_cargo", False)
         ):
             dockerfile.render_dockerignore(context_dir, build_context=build_context)
-        if runtime != container_cli.CHROOT:
+        if not is_chroot:
             dockerfile.render_entrypoint(context_dir)
             dockerfile.render_devcontainer_entrypoint(context_dir)
             firewall.render(
@@ -362,17 +363,21 @@ def main(argv: list[str] | None = None) -> int:
         _write_project_sandbox_gitignore(context_dir)
         _update_project_gitignore(project)
 
-        devcontainer.render(
-            project,
-            identity=identity,
-            firewall_enabled=not args.no_firewall,
-            memory=args.memory,
-            cpus=args.cpus,
-            extra_mounts=args.extra_mounts,
-            credential_dirs=credential_dirs,
-            forward_credentials=forward_credentials,
-            build_context=build_context,
-        )
+        # The devcontainer integration targets docker-style build/run tooling
+        # (VS Code "Reopen in Container"); chroot renders no Dockerfile/firewall
+        # for it to reference, so skip it rather than write dangling symlinks.
+        if not is_chroot:
+            devcontainer.render(
+                project,
+                identity=identity,
+                firewall_enabled=not args.no_firewall,
+                memory=args.memory,
+                cpus=args.cpus,
+                extra_mounts=args.extra_mounts,
+                credential_dirs=credential_dirs,
+                forward_credentials=forward_credentials,
+                build_context=build_context,
+            )
 
         if run_agent is None:
             _print_next_steps(
@@ -390,7 +395,7 @@ def main(argv: list[str] | None = None) -> int:
             )
 
         tracked_dockerfiles = _tracked_project_dockerfiles(base_dockerfile, context_dir)
-        if runtime != container_cli.CHROOT and not args.no_verify_dockerfile:
+        if runtime.is_container and not args.no_verify_dockerfile:
             warnings = dockerfile_checksum.changed_warnings(context_dir, tracked_dockerfiles)
             if warnings:
                 for warning in warnings:
@@ -406,7 +411,7 @@ def main(argv: list[str] | None = None) -> int:
                 if answer.strip().lower() not in ("y", "yes"):
                     return 1
 
-        if runtime != container_cli.CHROOT and not args.no_build:
+        if runtime.is_container and not args.no_build:
             # Reuse an existing image when its build inputs are unchanged. This
             # auto-skip is limited to the default flow where the build context is
             # the generated .project-sandbox dir, which fully determines the
@@ -569,6 +574,8 @@ def _dry_run(
     run_agent = _requested_agent(args)
     _validate_api_key_injection_args(args, run_agent)
     _warn_opencode_provider_allowlist(args, run_agent)
+    if args.runtime == container_cli.CHROOT.name:
+        _validate_chroot_session(run_agent)
 
     print("DRY RUN: no files, worktrees, images, or containers will be created.")
     if worktree is not None:
@@ -586,8 +593,6 @@ def _dry_run(
     preview_runtime = (
         container_cli.select_runtime(args.runtime, dry_run=True) if run_agent else None
     )
-    if preview_runtime == container_cli.CHROOT:
-        _validate_chroot_session(args, run_agent)
     if preview_runtime == container_cli.CHROOT:
         base_dockerfile, build_context = None, context_dir
     else:
@@ -619,7 +624,7 @@ def _dry_run(
     container_cli.ensure_system_started(
         runtime=runtime, dry_run=True, verbose=args.verbose
     )
-    if runtime != container_cli.CHROOT and not args.no_build:
+    if runtime.is_container and not args.no_build:
         container_cli.build_image(
             runtime=runtime,
             context_dir=context_dir,
@@ -658,7 +663,7 @@ def _dry_run(
     return 0
 
 
-def _validate_chroot_session(args, run_agent: str | None) -> None:
+def _validate_chroot_session(run_agent: str | None) -> None:
     if run_agent != "bash":
         raise SystemExit("--runtime chroot requires --agent bash")
 
@@ -1172,7 +1177,7 @@ def _build_session_command(
     )
     container_stop_argv = (
         container_cli.build_stop_argv(runtime, container_name)
-        if container_name is not None and runtime != container_cli.CHROOT
+        if container_name is not None and runtime.is_container
         else None
     )
 
@@ -1271,26 +1276,9 @@ def _build_session_command(
     if args.verbose and run_agent != "bash":
         _print_agent_config(run_agent, args, unsupervised=unsupervised)
 
-    mounts = container_cli.build_mount_specs(
-        project_abs=workspace,
-        claude_cfg=claude_cfg,
-        claude_credentials_dir=credential_dirs.get("claude"),
-        codex_cfg=codex_cfg,
-        codex_credentials_dir=credential_dirs.get("codex"),
-        opencode_credentials_dir=credential_dirs.get("opencode"),
-        extra_mounts=extra_mounts,
-        forward_credentials=forward_credentials,
-    )
-    command = (
-        container_cli.build_chroot_argv(
-            script=context_dir / "chroot-run.sh",
-            jail_root=context_dir / "chroot-root",
-            mounts=mounts,
-            agent=run_mode_agent,
-            extra_env=extra_env,
-        )
-        if runtime == container_cli.CHROOT
-        else container_cli.build_run_argv(
+    if runtime.is_container:
+        # build_run_argv computes its own MountSpecs from these same inputs.
+        command = container_cli.build_run_argv(
             runtime=runtime,
             image=args.image_tag,
             project_abs=workspace,
@@ -1310,7 +1298,25 @@ def _build_session_command(
             container_name=container_name,
             forward_credentials=forward_credentials,
         )
-    )
+    else:
+        mounts = container_cli.build_mount_specs(
+            project_abs=workspace,
+            claude_cfg=claude_cfg,
+            claude_credentials_dir=credential_dirs.get("claude"),
+            codex_cfg=codex_cfg,
+            codex_credentials_dir=credential_dirs.get("codex"),
+            opencode_credentials_dir=credential_dirs.get("opencode"),
+            extra_mounts=extra_mounts,
+            forward_credentials=forward_credentials,
+        )
+        command = container_cli.build_chroot_argv(
+            script=context_dir / "chroot-run.sh",
+            jail_root=context_dir / "chroot-root",
+            mounts=mounts,
+            identity=identity,
+            agent=run_mode_agent,
+            extra_env=extra_env,
+        )
     return (
         command,
         log_path,

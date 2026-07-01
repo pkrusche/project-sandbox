@@ -111,7 +111,9 @@ class CliTests(TestCase):
             (project / "README.md").write_text("# demo\n", encoding="utf-8")
             out = io.StringIO()
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity(None, None)),
+                patch.object(
+                    cli, "read_identity", return_value=GitIdentity("Ada Lovelace", "ada@example.com")
+                ),
                 patch.object(cli.config_agents, "available_agents", return_value=("bash",)),
                 contextlib.redirect_stdout(out),
             ):
@@ -122,6 +124,10 @@ class CliTests(TestCase):
             self.assertEqual(rc, 0)
             self.assertIn("unshare --map-root-user --mount --", out.getvalue())
             self.assertIn("/workspace rw", out.getvalue())
+            # The chroot argv must carry the same git identity env a container
+            # session gets, or `git commit` inside the jail has no author.
+            self.assertIn("GIT_AUTHOR_NAME=Ada Lovelace", out.getvalue())
+            self.assertIn("GIT_AUTHOR_EMAIL=ada@example.com", out.getvalue())
             self.assertFalse((project / ".project-sandbox").exists())
             self.assertFalse((project / ".devcontainer").exists())
 
@@ -136,6 +142,55 @@ class CliTests(TestCase):
             ):
                 with self.assertRaisesRegex(SystemExit, "requires --agent bash"):
                     cli.main([*common, "--agent", "claude", str(project)])
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "chroot runtime is Linux-only")
+    def test_chroot_rejects_missing_agent_before_writing_files(self) -> None:
+        """--runtime chroot with no --agent must fail fast, not silently fall
+        back to rendering a Dockerfile/firewall for a runtime that never
+        builds or runs an image (real run and dry-run alike)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(SystemExit, "requires --agent bash"):
+                cli.main(["--runtime", "chroot", str(project)])
+            self.assertFalse((project / ".project-sandbox").exists())
+
+            with self.assertRaisesRegex(SystemExit, "requires --agent bash"):
+                cli.main(["--dry-run", "--runtime", "chroot", str(project)])
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "chroot runtime is Linux-only")
+    def test_chroot_real_run_skips_devcontainer_render(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity(None, None)),
+                patch.object(
+                    cli.config_agents,
+                    "_agent_host_paths",
+                    return_value=_agent_paths(project / "home"),
+                ),
+                patch.object(cli.config_agents, "available_agents", return_value=("bash",)),
+                patch.object(cli.container_cli, "run", return_value=0) as run_mock,
+            ):
+                rc = cli.main(
+                    [
+                        "--runtime", "chroot",
+                        "--agent", "bash",
+                        "--no-forward-credentials",
+                        "--no-firewall",
+                        str(project),
+                    ]
+                )
+
+            self.assertEqual(rc, 0)
+            self.assertTrue((project / ".project-sandbox" / "chroot-run.sh").exists())
+            # devcontainer.render targets docker-style build/run tooling that
+            # chroot never generates; writing it would leave dangling symlinks.
+            self.assertFalse((project / ".devcontainer").exists())
+            run_mock.assert_called_once()
 
     def test_default_run_initializes_files_without_starting_agent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -286,6 +341,36 @@ class CliTests(TestCase):
             self.assertEqual(rc, 0)
             self.assertIn("docker run", out.getvalue())
             self.assertNotIn("container system start", out.getvalue())
+
+    def test_container_session_computes_mount_specs_only_once(self) -> None:
+        """build_mount_specs should run once per session, not once in cli.py
+        plus again inside build_run_argv from identical inputs."""
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(cli.config_agents, "_agent_host_paths", return_value=_agent_paths(project / "home")),
+                patch.object(
+                    cli.container_cli,
+                    "build_mount_specs",
+                    wraps=cli.container_cli.build_mount_specs,
+                ) as build_mount_specs,
+            ):
+                rc = cli.main([
+                    "--dry-run",
+                    "--no-build",
+                    "--runtime",
+                    "docker",
+                    "--agent",
+                    "bash",
+                    str(project),
+                    "python:3.12-slim",
+                ])
+
+            self.assertEqual(rc, 0)
+            build_mount_specs.assert_called_once()
 
     def test_missing_explicit_runtime_fails_before_writing_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
