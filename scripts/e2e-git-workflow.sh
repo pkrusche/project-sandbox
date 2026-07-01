@@ -80,26 +80,12 @@ if [ "$RUNTIME" = chroot ]; then
   TMP_BASE="${TMPDIR:-/tmp}/project-sandbox-e2e"
 else
   TMP_BASE="$ROOT/.project-sandbox/e2e"
-  # Docker/Podman/apple-container run as a fixed, non-root container UID with
-  # no host UID remapping on a plain Linux host (unlike chroot's
-  # --map-root-user, or Apple container's VirtioFS), so the throwaway repo
-  # and worktree this script creates must be writable by that UID too.
-  umask 000
 fi
 mkdir -p "$TMP_BASE"
 TMP_PROJECT="$(mktemp -d "$TMP_BASE/git-e2e.XXXXXX")"
-# mktemp -d hardcodes 0700 regardless of umask, so the container UID still
-# could not even traverse into it without this.
-[ "$RUNTIME" = chroot ] || chmod 0777 "$TMP_PROJECT"
 cleanup() {
   if [ "$KEEP" = 0 ]; then
-    # The container may run as a different UID than this script (Docker on
-    # Linux has no host UID remapping), leaving behind git objects this user
-    # can't unlink; retry with sudo before giving up (never fail the run over
-    # leftover disposable test files).
-    rm -rf "$TMP_PROJECT" "${TMP_PROJECT}-worktrees" 2>/dev/null || {
-      command -v sudo >/dev/null 2>&1 && sudo rm -rf "$TMP_PROJECT" "${TMP_PROJECT}-worktrees"
-    } || true
+    rm -rf "$TMP_PROJECT" "${TMP_PROJECT}-worktrees"
   fi
 }
 trap cleanup EXIT
@@ -237,10 +223,6 @@ git -C "$TMP_PROJECT" config user.email "project-sandbox-e2e@example.invalid"
 printf "base\n" > "$TMP_PROJECT/README.md"
 git -C "$TMP_PROJECT" add README.md
 git -C "$TMP_PROJECT" commit -qm "initial commit"
-
-# Let the sandbox's agent user write in this disposable repo on Docker/Podman
-# hosts where the container UID may not match the host user.
-chmod -R a+rwX "$TMP_PROJECT"
 
 # Default: work lands on the branch, main checkout is untouched, worktree removed.
 echo

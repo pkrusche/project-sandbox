@@ -192,7 +192,7 @@ def _read_source_dockerfile(base_dockerfile: Path) -> tuple[str, tuple[str, ...]
         warnings.append(
             "WARNING: Removed "
             f"{removed} restricted user setup instruction{suffix} from {base_dockerfile}; "
-            "project-sandbox will create its own agent user with UID 1000."
+            "project-sandbox will create its own unprivileged agent user."
         )
     blocks = _dockerfile_blocks(text)
     base = _extract_last_from(blocks)
@@ -225,7 +225,7 @@ def _remove_restricted_user_setup(text: str) -> tuple[str, int]:
                     f"    {command}\n"
                     "Move the user-management commands into a separate RUN "
                     "instruction so project-sandbox can remove them safely; "
-                    "project-sandbox creates its own agent user with UID 1000."
+                    "project-sandbox creates its own unprivileged agent user."
                 )
             removed += 1
             continue
@@ -337,6 +337,9 @@ def render_python_uv_dockerfile(
         " AS uv-bin",
         f"FROM python:{python_version}-slim",
         "",
+        "ARG AGENT_UID=1000",
+        "ARG AGENT_GID=1000",
+        "",
         "COPY --from=uv-bin /uv /uvx /usr/local/bin/",
         "ENV UV_CACHE_DIR=/opt/uv-cache",
         "ENV UV_PROJECT_ENVIRONMENT=/opt/venv",
@@ -351,7 +354,7 @@ def render_python_uv_dockerfile(
             "",
             "# layer 2: install the project so 'uv run' works offline inside the sandbox",
             "COPY . .",
-            "RUN uv sync --frozen && chown -R 1000:1000 /opt/uv-cache /opt/venv",
+            'RUN uv sync --frozen && chown -R "${AGENT_UID}:${AGENT_GID}" /opt/uv-cache /opt/venv',
         ]
     out = context_dir / "Dockerfile.python-uv"
     out.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -398,6 +401,9 @@ def render_rust_cargo_dockerfile(
     base_image = f"rust:{rust_version}-slim" if rust_version else "rust:slim"
     lines = [
         f"FROM {base_image}",
+        "",
+        "ARG AGENT_UID=1000",
+        "ARG AGENT_GID=1000",
         "",
         "RUN apt-get update && apt-get install -y --no-install-recommends \\\n"
         "    build-essential cmake \\\n"
@@ -457,7 +463,7 @@ def render_rust_cargo_dockerfile(
             "COPY . .",
             "RUN cargo build || true",
             "RUN mkdir -p /opt/cargo-cache /opt/cargo-target"
-            " && chown -R 1000:1000 /opt/cargo-cache /opt/cargo-target",
+            ' && chown -R "${AGENT_UID}:${AGENT_GID}" /opt/cargo-cache /opt/cargo-target',
         ]
     out = context_dir / "Dockerfile.rust-cargo"
     out.write_text("\n".join(lines) + "\n", encoding="utf-8")

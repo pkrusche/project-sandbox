@@ -24,23 +24,20 @@ jobs:
       - name: Install project dependencies
         run: uv sync
 
-      # jj e2e workflow test is disabled for now — see the note above the
-      # disabled step below, and the "Docker/Podman on Linux: fixed UID 1000"
-      # item in TODO.md. Re-enable both once that's fixed.
-      # - name: Install jj
-      #   env:
-      #     JJ_VERSION: v0.42.0
-      #     JJ_SHA256: 2d91e81d649e617a81608e7401ad1106029c15ece01ac928c4a351abef42be6a
-      #   run: |
-      #     # Needed on the host: e2e-jj-workflow.sh drives jj directly (repo
-      #     # setup/assertions) outside the sandboxed container.
-      #     jj_tmp="$(mktemp -d)"
-      #     jj_tarball="$jj_tmp/jj-${JJ_VERSION}-x86_64-unknown-linux-musl.tar.gz"
-      #     curl -fsSL -o "$jj_tarball" \
-      #       "https://github.com/jj-vcs/jj/releases/download/${JJ_VERSION}/jj-${JJ_VERSION}-x86_64-unknown-linux-musl.tar.gz"
-      #     echo "${JJ_SHA256}  ${jj_tarball}" | sha256sum -c -
-      #     tar -xzf "$jj_tarball" -C "$jj_tmp"
-      #     sudo install -m 0755 "$jj_tmp/jj" "/usr/local/bin/jj"
+      - name: Install jj
+        env:
+          JJ_VERSION: v0.42.0
+          JJ_SHA256: 2d91e81d649e617a81608e7401ad1106029c15ece01ac928c4a351abef42be6a
+        run: |
+          # Needed on the host: e2e-jj-workflow.sh drives jj directly (repo
+          # setup/assertions) outside the sandboxed container.
+          jj_tmp="$(mktemp -d)"
+          jj_tarball="$jj_tmp/jj-${JJ_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          curl -fsSL -o "$jj_tarball" \
+            "https://github.com/jj-vcs/jj/releases/download/${JJ_VERSION}/jj-${JJ_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          echo "${JJ_SHA256}  ${jj_tarball}" | sha256sum -c -
+          tar -xzf "$jj_tarball" -C "$jj_tmp"
+          sudo install -m 0755 "$jj_tmp/jj" "/usr/local/bin/jj"
 
       - name: Run e2e smoke test
         run: scripts/e2e-test.sh
@@ -48,15 +45,5 @@ jobs:
       - name: Run git workflow e2e test
         run: scripts/e2e-git-workflow.sh --runtime docker
 
-      # Disabled: under --runtime docker, the container's fixed UID 1000 (not
-      # remapped to the runner's own UID, unlike Apple container's VirtioFS or
-      # chroot's --map-root-user) writes jj's working-copy/store state files,
-      # which jj hardcodes to 0600 regardless of umask. The host-side
-      # finalize() step then fails with "Failed to read checkout state:
-      # Permission denied" trying to read them back as a different UID. A
-      # container-side `chmod -R 777` on the .jj dirs (in
-      # scripts/e2e-jj-workflow.sh) did not resolve it. Re-enable once the
-      # underlying UID mismatch is fixed (see TODO.md: "Docker/Podman on
-      # Linux: fixed UID 1000 breaks when the host user isn't UID 1000").
-      # - name: Run jj workflow e2e test
-      #   run: scripts/e2e-jj-workflow.sh --runtime docker
+      - name: Run jj workflow e2e test
+        run: scripts/e2e-jj-workflow.sh --runtime docker

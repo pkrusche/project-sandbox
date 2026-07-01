@@ -4,6 +4,8 @@
 FROM {{ base_image }}
 {% endif %}
 SHELL ["/bin/bash", "-lc"]
+ARG AGENT_UID=1000
+ARG AGENT_GID=1000
 
 {% if source_dockerfile_text -%}
 USER root
@@ -20,28 +22,29 @@ RUN set -eux; \
     if id -u agent >/dev/null 2>&1; then \
         userdel -r agent 2>/dev/null || userdel agent; \
     fi; \
-    existing_uid_user="$(getent passwd 1000 | cut -d: -f1 || true)"; \
+    existing_uid_user="$(getent passwd "${AGENT_UID}" | cut -d: -f1 || true)"; \
     if [ -n "$existing_uid_user" ]; then \
-        echo "WARNING: Removing existing UID 1000 user '$existing_uid_user'; project-sandbox uses UID 1000 for agent."; \
+        echo "WARNING: Removing existing UID ${AGENT_UID} user '$existing_uid_user'; project-sandbox uses that UID for agent."; \
         userdel -r "$existing_uid_user" 2>/dev/null || userdel "$existing_uid_user"; \
     fi; \
-    existing_gid_group="$(getent group 1000 | cut -d: -f1 || true)"; \
-    if [ -n "$existing_gid_group" ]; then \
-        echo "WARNING: Removing existing GID 1000 group '$existing_gid_group'; project-sandbox uses GID 1000 for agent."; \
-        groupdel "$existing_gid_group" 2>/dev/null || true; \
+    existing_gid_group="$(getent group "${AGENT_GID}" | cut -d: -f1 || true)"; \
+    agent_group_gid="$(getent group agent | cut -d: -f3 || true)"; \
+    if [ -n "$agent_group_gid" ] && [ "$agent_group_gid" != "${AGENT_GID}" ]; then \
+        groupdel agent; \
     fi; \
-    if getent group agent >/dev/null 2>&1; then \
-        groupdel agent 2>/dev/null || true; \
+    if [ -z "$existing_gid_group" ]; then \
+        groupadd -g "${AGENT_GID}" agent; \
+    else \
+        echo "WARNING: Reusing existing GID ${AGENT_GID} group '$existing_gid_group' for agent."; \
     fi; \
-    groupadd -g 1000 agent; \
-    useradd -m -u 1000 -g agent -s /bin/bash agent
+    useradd -m -u "${AGENT_UID}" -g "${AGENT_GID}" -s /bin/bash agent
 
 RUN install -d /project-sandbox-config/claude /project-sandbox-config/codex \
         /project-sandbox-secrets/claude /project-sandbox-secrets/codex \
         /project-sandbox-secrets/opencode && \
-    install -d -o agent -g agent /home/agent/.claude /home/agent/.codex /home/agent/.config && \
-    install -m 0644 -o agent -g agent /dev/null /home/agent/.claude/settings.json && \
-    install -m 0644 -o agent -g agent /dev/null /home/agent/.codex/config.toml
+    install -d -o agent -g "${AGENT_GID}" /home/agent/.claude /home/agent/.codex /home/agent/.config && \
+    install -m 0644 -o agent -g "${AGENT_GID}" /dev/null /home/agent/.claude/settings.json && \
+    install -m 0644 -o agent -g "${AGENT_GID}" /dev/null /home/agent/.codex/config.toml
 
 # Node.js is pinned to an exact release and verified by SHA256 rather than
 # piping the NodeSource installer through bash. To upgrade, bump NODE_VERSION
