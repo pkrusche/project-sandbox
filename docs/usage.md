@@ -53,6 +53,16 @@ uv run project-sandbox --runtime podman --agent bash /absolute/path/to/repo pyth
 uv run project-sandbox --runtime apple-container --agent bash /absolute/path/to/repo python:3.12-slim
 ```
 
+Linux also provides an explicit layout-inspection mode that needs no image:
+
+```bash
+uv run project-sandbox --runtime chroot --agent bash /absolute/path/to/repo
+```
+
+This opens Bash in a rootless chroot mirroring the normal bind-mount layout.
+Headless Bash via `--prompt` or `--prompt-text` is also supported. It does not
+install or run coding-agent CLIs and is not an isolation or security boundary.
+
 ## API Key Injection
 
 `--no-forward-credentials` starts a direct agent container without staging or

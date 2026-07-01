@@ -57,5 +57,7 @@ or leave agent work after the session:
 ./scripts/e2e-jj-workflow.sh
 ```
 
-Both scripts accept `--runtime auto|apple-container|docker|podman`,
-`--base-image IMAGE`, `--no-build`, and `--keep`.
+Both scripts default to `--runtime chroot` on Linux and accept
+`--runtime chroot|auto|apple-container|docker|podman`, `--base-image IMAGE`,
+`--no-build`, and `--keep`. Run `./scripts/run-e2e-tests.sh` to execute the
+smoke, git, and jj suites together with the same defaults.

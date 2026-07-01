@@ -12,6 +12,7 @@ from pathlib import Path
 
 from . import (
     build_cache,
+    chroot,
     config_agents,
     container_cli,
     devcontainer,
@@ -250,6 +251,9 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("Use only one of --prompt or --prompt-text")
     run_agent = _requested_agent(args)
     _validate_api_key_injection_args(args, run_agent)
+    is_chroot = args.runtime == container_cli.CHROOT.name
+    if is_chroot:
+        _validate_chroot_session(run_agent)
     if args.branch and run_agent is None:
         raise SystemExit("--branch requires --agent, --prompt, or --prompt-text")
     if args.branch_start_at and not args.branch:
@@ -290,11 +294,12 @@ def main(argv: list[str] | None = None) -> int:
     # python-uv/rust-cargo Dockerfile, but only into .project-sandbox
     # (project-level, not the worktree).
     context_dir = ensure_dir(project / ".project-sandbox")
-    base_image, base_dockerfile, build_context = _resolve_build_source(
-        args,
-        project=project,
-        context_dir=context_dir,
-    )
+    if is_chroot:
+        base_image, base_dockerfile, build_context = None, None, context_dir
+    else:
+        base_image, base_dockerfile, build_context = _resolve_build_source(
+            args, project=project, context_dir=context_dir
+        )
     if run_agent is not None:
         _validate_session_inputs(args)
     allow_github = _allow_github(args, run_agent)
@@ -310,27 +315,33 @@ def main(argv: list[str] | None = None) -> int:
     agent_ran = False
     exit_code = 1
     try:
-        dockerfile.render(
-            context_dir,
-            base_image=base_image,
-            base_dockerfile=base_dockerfile,
-            build_context=build_context,
-            install_agents=available_agents,
-            warn=print,
-        )
+        if not is_chroot:
+            dockerfile.render(
+                context_dir,
+                base_image=base_image,
+                base_dockerfile=base_dockerfile,
+                build_context=build_context,
+                install_agents=available_agents,
+                warn=print,
+            )
         # Trim the whole-project build context only for the python-uv/rust-cargo
         # flows, whose Dockerfile we generate and whose excluded paths we know
         # are not build inputs. User-supplied --dockerfile builds are left
         # untouched so an injected ignore file can't break a COPY they rely on.
-        if getattr(args, "python_uv", False) or getattr(args, "rust_cargo", False):
+        if not is_chroot and (
+            getattr(args, "python_uv", False) or getattr(args, "rust_cargo", False)
+        ):
             dockerfile.render_dockerignore(context_dir, build_context=build_context)
-        dockerfile.render_entrypoint(context_dir)
-        dockerfile.render_devcontainer_entrypoint(context_dir)
-        firewall.render(
-            context_dir,
-            extra_domains=args.extra_domain,
-            allow_github=allow_github,
-        )
+        if not is_chroot:
+            dockerfile.render_entrypoint(context_dir)
+            dockerfile.render_devcontainer_entrypoint(context_dir)
+            firewall.render(
+                context_dir,
+                extra_domains=args.extra_domain,
+                allow_github=allow_github,
+            )
+        else:
+            chroot.render(context_dir)
 
         cfg = config_agents.render(context_dir)
         forward_credentials = not args.no_forward_credentials
@@ -352,17 +363,21 @@ def main(argv: list[str] | None = None) -> int:
         _write_project_sandbox_gitignore(context_dir)
         _update_project_gitignore(project)
 
-        devcontainer.render(
-            project,
-            identity=identity,
-            firewall_enabled=not args.no_firewall,
-            memory=args.memory,
-            cpus=args.cpus,
-            extra_mounts=args.extra_mounts,
-            credential_dirs=credential_dirs,
-            forward_credentials=forward_credentials,
-            build_context=build_context,
-        )
+        # The devcontainer integration targets docker-style build/run tooling
+        # (VS Code "Reopen in Container"); chroot renders no Dockerfile/firewall
+        # for it to reference, so skip it rather than write dangling symlinks.
+        if not is_chroot:
+            devcontainer.render(
+                project,
+                identity=identity,
+                firewall_enabled=not args.no_firewall,
+                memory=args.memory,
+                cpus=args.cpus,
+                extra_mounts=args.extra_mounts,
+                credential_dirs=credential_dirs,
+                forward_credentials=forward_credentials,
+                build_context=build_context,
+            )
 
         if run_agent is None:
             _print_next_steps(
@@ -380,7 +395,7 @@ def main(argv: list[str] | None = None) -> int:
             )
 
         tracked_dockerfiles = _tracked_project_dockerfiles(base_dockerfile, context_dir)
-        if not args.no_verify_dockerfile:
+        if runtime.is_container and not args.no_verify_dockerfile:
             warnings = dockerfile_checksum.changed_warnings(context_dir, tracked_dockerfiles)
             if warnings:
                 for warning in warnings:
@@ -396,7 +411,7 @@ def main(argv: list[str] | None = None) -> int:
                 if answer.strip().lower() not in ("y", "yes"):
                     return 1
 
-        if not args.no_build:
+        if runtime.is_container and not args.no_build:
             # Reuse an existing image when its build inputs are unchanged. This
             # auto-skip is limited to the default flow where the build context is
             # the generated .project-sandbox dir, which fully determines the
@@ -559,6 +574,8 @@ def _dry_run(
     run_agent = _requested_agent(args)
     _validate_api_key_injection_args(args, run_agent)
     _warn_opencode_provider_allowlist(args, run_agent)
+    if args.runtime == container_cli.CHROOT.name:
+        _validate_chroot_session(run_agent)
 
     print("DRY RUN: no files, worktrees, images, or containers will be created.")
     if worktree is not None:
@@ -573,12 +590,15 @@ def _dry_run(
             print(f"Would mount .git metadata: {(project / '.git').resolve()}")
     print(f"Would render sandbox assets under: {context_dir}")
     print(f"Would render devcontainer under: {project / '.devcontainer'}")
-    _, base_dockerfile, build_context = _resolve_build_source(
-        args,
-        project=project,
-        context_dir=context_dir,
-        write_generated=False,
+    preview_runtime = (
+        container_cli.select_runtime(args.runtime, dry_run=True) if run_agent else None
     )
+    if preview_runtime == container_cli.CHROOT:
+        base_dockerfile, build_context = None, context_dir
+    else:
+        _, base_dockerfile, build_context = _resolve_build_source(
+            args, project=project, context_dir=context_dir, write_generated=False
+        )
     if base_dockerfile is not None:
         if getattr(args, "python_uv", False) or getattr(args, "rust_cargo", False):
             print(f"Would write synthesised Dockerfile: {base_dockerfile}")
@@ -599,11 +619,12 @@ def _dry_run(
         )
         return 0
 
-    runtime = container_cli.select_runtime(args.runtime, dry_run=True)
+    assert preview_runtime is not None
+    runtime = preview_runtime
     container_cli.ensure_system_started(
         runtime=runtime, dry_run=True, verbose=args.verbose
     )
-    if not args.no_build:
+    if runtime.is_container and not args.no_build:
         container_cli.build_image(
             runtime=runtime,
             context_dir=context_dir,
@@ -640,6 +661,11 @@ def _dry_run(
     else:
         container_cli.run(cmd, dry_run=True)
     return 0
+
+
+def _validate_chroot_session(run_agent: str | None) -> None:
+    if run_agent != "bash":
+        raise SystemExit("--runtime chroot requires --agent bash")
 
 
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -1151,7 +1177,7 @@ def _build_session_command(
     )
     container_stop_argv = (
         container_cli.build_stop_argv(runtime, container_name)
-        if container_name is not None
+        if container_name is not None and runtime.is_container
         else None
     )
 
@@ -1250,8 +1276,9 @@ def _build_session_command(
     if args.verbose and run_agent != "bash":
         _print_agent_config(run_agent, args, unsupervised=unsupervised)
 
-    return (
-        container_cli.build_run_argv(
+    if runtime.is_container:
+        # build_run_argv computes its own MountSpecs from these same inputs.
+        command = container_cli.build_run_argv(
             runtime=runtime,
             image=args.image_tag,
             project_abs=workspace,
@@ -1270,7 +1297,28 @@ def _build_session_command(
             extra_env=extra_env,
             container_name=container_name,
             forward_credentials=forward_credentials,
-        ),
+        )
+    else:
+        mounts = container_cli.build_mount_specs(
+            project_abs=workspace,
+            claude_cfg=claude_cfg,
+            claude_credentials_dir=credential_dirs.get("claude"),
+            codex_cfg=codex_cfg,
+            codex_credentials_dir=credential_dirs.get("codex"),
+            opencode_credentials_dir=credential_dirs.get("opencode"),
+            extra_mounts=extra_mounts,
+            forward_credentials=forward_credentials,
+        )
+        command = container_cli.build_chroot_argv(
+            script=context_dir / "chroot-run.sh",
+            jail_root=context_dir / "chroot-root",
+            mounts=mounts,
+            identity=identity,
+            agent=run_mode_agent,
+            extra_env=extra_env,
+        )
+    return (
+        command,
         log_path,
         unsupervised,
         container_stop_argv,

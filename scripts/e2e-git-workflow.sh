@@ -6,16 +6,20 @@
 # the work lands on the branch (never on the main checkout), the worktree is
 # removed by default, and --keep-workspace leaves it in place for reuse.
 #
-# Requirements: uv, git, and a supported container runtime on PATH.
+# Requirements: Linux with unshare, uv, and git. Container runtimes are optional.
 #
 # Usage:
-#   scripts/e2e-git-workflow.sh [--runtime auto|apple-container|docker|podman]
+#   scripts/e2e-git-workflow.sh [--runtime chroot|auto|apple-container|docker|podman]
 #                               [--base-image IMAGE] [--no-build] [--keep]
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-RUNTIME="auto"
+if [ "$(uname -s)" = Linux ]; then
+  RUNTIME="chroot"
+else
+  RUNTIME="auto"
+fi
 BASE_IMAGE="python:3.12-slim"
 NO_BUILD=0
 KEEP=0
@@ -35,6 +39,18 @@ done
 
 case "$RUNTIME" in
   auto) ;;
+  chroot)
+    if [ "$(uname -s)" != Linux ] || ! command -v unshare >/dev/null 2>&1; then
+      echo "ERROR: chroot requires Linux and unshare." >&2
+      exit 64
+    fi
+    if ! unshare --map-root-user --mount -- true >/dev/null 2>&1; then
+      echo "ERROR: chroot requires unprivileged user namespaces (unshare --map-root-user --mount failed)." >&2
+      echo "On Ubuntu 24.04+ (including GitHub Actions ubuntu-latest runners), this is usually blocked by AppArmor; run:" >&2
+      echo "  sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0" >&2
+      exit 64
+    fi
+    ;;
   apple-container) command -v container >/dev/null 2>&1 || { echo "ERROR: container CLI not found." >&2; exit 64; } ;;
   docker|podman) command -v "$RUNTIME" >/dev/null 2>&1 || { echo "ERROR: $RUNTIME CLI not found." >&2; exit 64; } ;;
   *) echo "ERROR: unsupported --runtime '$RUNTIME'" >&2; exit 64 ;;
@@ -57,17 +73,33 @@ if [ "$RUNTIME" = auto ]; then
   fi
 fi
 
-# Apple's `container` build VM cannot read the macOS per-user temp dir
-# ($TMPDIR, /var/folders/...), so a build context created there arrives empty
-# and the image's COPY steps fail. Keep the throwaway repo under the repo's
-# gitignored .project-sandbox/ tree, which the runtime can access (the same
-# reason scripts/verify-timeout-teardown.sh does this).
-TMP_BASE="$ROOT/.project-sandbox/e2e"
+# Chroot can use the system temp directory directly. Container runtimes keep the
+# throwaway repo under the project because Apple's build VM cannot read the
+# macOS per-user temp directory ($TMPDIR, /var/folders/...).
+if [ "$RUNTIME" = chroot ]; then
+  TMP_BASE="${TMPDIR:-/tmp}/project-sandbox-e2e"
+else
+  TMP_BASE="$ROOT/.project-sandbox/e2e"
+  # Docker/Podman/apple-container run as a fixed, non-root container UID with
+  # no host UID remapping on a plain Linux host (unlike chroot's
+  # --map-root-user, or Apple container's VirtioFS), so the throwaway repo
+  # and worktree this script creates must be writable by that UID too.
+  umask 000
+fi
 mkdir -p "$TMP_BASE"
 TMP_PROJECT="$(mktemp -d "$TMP_BASE/git-e2e.XXXXXX")"
+# mktemp -d hardcodes 0700 regardless of umask, so the container UID still
+# could not even traverse into it without this.
+[ "$RUNTIME" = chroot ] || chmod 0777 "$TMP_PROJECT"
 cleanup() {
   if [ "$KEEP" = 0 ]; then
-    rm -rf "$TMP_PROJECT" "${TMP_PROJECT}-worktrees"
+    # The container may run as a different UID than this script (Docker on
+    # Linux has no host UID remapping), leaving behind git objects this user
+    # can't unlink; retry with sudo before giving up (never fail the run over
+    # leftover disposable test files).
+    rm -rf "$TMP_PROJECT" "${TMP_PROJECT}-worktrees" 2>/dev/null || {
+      command -v sudo >/dev/null 2>&1 && sudo rm -rf "$TMP_PROJECT" "${TMP_PROJECT}-worktrees"
+    } || true
   fi
 }
 trap cleanup EXIT

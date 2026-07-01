@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from project_sandbox import config_agents, dockerfile, firewall
+from project_sandbox import chroot, config_agents, dockerfile, firewall
 
 
 def _credentials_root(root: Path):
@@ -16,6 +16,26 @@ def _credentials_root(root: Path):
 
 
 class RendererTests(TestCase):
+    def test_chroot_script_renders_layout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = chroot.render(Path(tmp))
+            text = path.read_text()
+            self.assertTrue(path.stat().st_mode & 0o100)
+        self.assertIn("mount --make-rprivate /", text)
+        self.assertIn("/home/agent/.claude", text)
+        self.assertIn("/project-sandbox-secrets/opencode", text)
+        self.assertIn('exec unshare --root="$jail" --wd=/workspace', text)
+        # /proc (and /dev/fd symlinks resolving into it) must be present, or
+        # bash process substitution (<(...)) fails inside the jail.
+        self.assertIn('mount --bind /proc "$jail/proc"', text)
+        self.assertIn('ln -sfn /proc/self/fd "$jail/dev/fd"', text)
+        # /lib must be bound exactly once: the loop's /lib* glob already
+        # covers it, so a leftover literal /lib would double-mount it.
+        bind_loop_line = next(
+            line for line in text.splitlines() if line.startswith("for source in")
+        )
+        self.assertNotIn(" /lib ", f" {bind_loop_line} ")
+
     def test_config_and_firewall_renderers_write_expected_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             context = Path(tmp)
