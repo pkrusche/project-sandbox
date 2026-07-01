@@ -10,16 +10,16 @@
 # shared .jj/repo store and the git backend it points at for an additional
 # workspace.
 #
-# Requirements: uv, jj, and a supported container runtime on PATH.
+# Requirements: Linux with unshare, uv, and jj. Container runtimes are optional.
 #
 # Usage:
-#   scripts/e2e-jj-workflow.sh [--runtime auto|apple-container|docker|podman]
+#   scripts/e2e-jj-workflow.sh [--runtime chroot|auto|apple-container|docker|podman]
 #                              [--base-image IMAGE] [--no-build] [--keep]
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-RUNTIME="auto"
+RUNTIME="chroot"
 BASE_IMAGE="python:3.12-slim"
 NO_BUILD=0
 KEEP=0
@@ -39,6 +39,7 @@ done
 
 case "$RUNTIME" in
   auto) ;;
+  chroot) [ "$(uname -s)" = Linux ] && command -v unshare >/dev/null 2>&1 || { echo "ERROR: chroot requires Linux and unshare." >&2; exit 64; } ;;
   apple-container) command -v container >/dev/null 2>&1 || { echo "ERROR: container CLI not found." >&2; exit 64; } ;;
   docker|podman) command -v "$RUNTIME" >/dev/null 2>&1 || { echo "ERROR: $RUNTIME CLI not found." >&2; exit 64; } ;;
   *) echo "ERROR: unsupported --runtime '$RUNTIME'" >&2; exit 64 ;;
@@ -61,12 +62,14 @@ if [ "$RUNTIME" = auto ]; then
   fi
 fi
 
-# Apple's `container` build VM cannot read the macOS per-user temp dir
-# ($TMPDIR, /var/folders/...), so a build context created there arrives empty
-# and the image's COPY steps fail. Keep the throwaway repo under the repo's
-# gitignored .project-sandbox/ tree, which the runtime can access (the same
-# reason scripts/verify-timeout-teardown.sh does this).
-TMP_BASE="$ROOT/.project-sandbox/e2e"
+# Chroot can use the system temp directory directly. Container runtimes keep the
+# throwaway repo under the project because Apple's build VM cannot read the
+# macOS per-user temp directory ($TMPDIR, /var/folders/...).
+if [ "$RUNTIME" = chroot ]; then
+  TMP_BASE="${TMPDIR:-/tmp}/project-sandbox-e2e"
+else
+  TMP_BASE="$ROOT/.project-sandbox/e2e"
+fi
 mkdir -p "$TMP_BASE"
 TMP_PROJECT="$(mktemp -d "$TMP_BASE/jj-e2e.XXXXXX")"
 cleanup() {

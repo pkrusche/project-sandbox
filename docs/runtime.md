@@ -33,9 +33,9 @@ Given `project-sandbox --agent claude /path/to/repo python:3.12-slim`, it also:
 On Linux, `--runtime chroot` explicitly selects a dummy filesystem-layout
 verification runtime. It uses rootless `unshare --map-root-user --mount`, bind
 mounts host system directories and the normal sandbox mount set into a temporary
-chroot, then opens Bash. It does not build an image, configure a firewall or
-network namespace, install or run an agent, or provide a security boundary.
-`--runtime auto` never selects it.
+chroot, then runs interactive or headless Bash. It does not build an image,
+configure a firewall or network namespace, install coding-agent CLIs, or provide
+a security boundary. `--runtime auto` never selects it.
 
 ## File Layout
 

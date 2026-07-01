@@ -661,8 +661,6 @@ def _dry_run(
 def _validate_chroot_session(args, run_agent: str | None) -> None:
     if run_agent != "bash":
         raise SystemExit("--runtime chroot requires --agent bash")
-    if args.prompt or args.prompt_text:
-        raise SystemExit("--runtime chroot does not support prompt/headless sessions")
 
 
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -1288,6 +1286,8 @@ def _build_session_command(
             script=context_dir / "chroot-run.sh",
             jail_root=context_dir / "chroot-root",
             mounts=mounts,
+            agent=run_mode_agent,
+            extra_env=extra_env,
         )
         if runtime == container_cli.CHROOT
         else container_cli.build_run_argv(

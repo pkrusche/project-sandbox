@@ -55,13 +55,19 @@ class ContainerCliTests(TestCase):
             codex_credentials_dir=root / "secrets/codex", opencode_credentials_dir=None,
             extra_mounts=["type=bind,source=/tmp/prompt,target=/project-sandbox-prompt,readonly"],
         )
-        argv = build_chroot_argv(script=root / "run", jail_root=root / "root", mounts=mounts)
+        argv = build_chroot_argv(
+            script=root / "run", jail_root=root / "root", mounts=mounts,
+            agent="bash-headless", extra_env=("PROJECT_SANDBOX_PROMPT_FILE=/prompt",),
+        )
         self.assertEqual(argv[:4], ["unshare", "--map-root-user", "--mount", "--"])
         self.assertIn(
             MountSpec((root / "workspace").resolve(strict=False), "/workspace"), mounts
         )
         self.assertIn("/project-sandbox-prompt", argv)
-        self.assertEqual(argv[-1], "ro")
+        self.assertEqual(
+            argv[-3:],
+            ["--", "bash-headless", "PROJECT_SANDBOX_PROMPT_FILE=/prompt"],
+        )
 
     def test_chroot_argv_rejects_target_outside_jail(self) -> None:
         with self.assertRaisesRegex(ValueError, "absolute jail path"):

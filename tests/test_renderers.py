@@ -24,7 +24,7 @@ class RendererTests(TestCase):
         self.assertIn("mount --make-rprivate /", text)
         self.assertIn("/home/agent/.claude", text)
         self.assertIn("/project-sandbox-secrets/opencode", text)
-        self.assertIn("exec chroot", text)
+        self.assertIn('exec unshare --root="$jail" --wd=/workspace', text)
 
     def test_config_and_firewall_renderers_write_expected_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -153,7 +153,12 @@ def _mount_arg(mount: MountSpec) -> str:
 
 
 def build_chroot_argv(
-    *, script: Path, jail_root: Path, mounts: Sequence[MountSpec]
+    *,
+    script: Path,
+    jail_root: Path,
+    mounts: Sequence[MountSpec],
+    agent: str = "bash",
+    extra_env: Sequence[str] = (),
 ) -> list[str]:
     argv = [
         CHROOT.binary,
@@ -170,6 +175,7 @@ def build_chroot_argv(
                 f"Chroot mount target must be an absolute jail path: {mount.target}"
             )
         argv.extend((str(mount.source), mount.target, "ro" if mount.readonly else "rw"))
+    argv.extend(("--", agent, *extra_env))
     return argv
 
 

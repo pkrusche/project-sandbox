@@ -7,10 +7,10 @@
 #   3. e2e-jj-workflow.sh   — jj rebase/merge/nothing workflows (skipped if jj not on PATH)
 #
 # Usage:
-#   scripts/run-e2e-tests.sh [--runtime auto|apple-container|docker|podman]
+#   scripts/run-e2e-tests.sh [--runtime chroot|auto|apple-container|docker|podman]
 #                            [--base-image IMAGE] [--no-build] [--keep]
 #
-#   --runtime NAME   container runtime forwarded to workflow scripts (default: auto)
+#   --runtime NAME   runtime forwarded to workflow scripts (default: chroot)
 #   --base-image IMG base image forwarded to workflow scripts (default: python:3.12-slim)
 #   --no-build       forward --no-build to workflow scripts
 #   --keep           keep temporary directories on failure for debugging
@@ -18,7 +18,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-RUNTIME="auto"
+RUNTIME="chroot"
 BASE_IMAGE="python:3.12-slim"
 NO_BUILD=0
 KEEP=0

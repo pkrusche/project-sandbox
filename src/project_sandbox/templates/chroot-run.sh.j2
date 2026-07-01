@@ -16,10 +16,31 @@ bind() {
 for source in /usr /bin /lib /lib* /etc; do
     [ ! -e "$source" ] || bind "$source" "$source" ro
 done
+for source in /dev/null /dev/zero /dev/random /dev/urandom; do
+    bind "$source" "$source" rw
+done
 mkdir -p "$jail/home/agent/.claude" "$jail/home/agent/.codex" "$jail/home/agent/.config" \
     "$jail/project-sandbox-config/claude" "$jail/project-sandbox-config/codex" \
     "$jail/project-sandbox-secrets/claude" "$jail/project-sandbox-secrets/codex" \
     "$jail/project-sandbox-secrets/opencode" "$jail/tmp"
 
-while [ "$#" -gt 0 ]; do bind "$1" "$2" "$3"; shift 3; done
-exec chroot "$jail" /bin/bash -lc 'cd /workspace && exec /bin/bash'
+while [ "$1" != -- ]; do bind "$1" "$2" "$3"; shift 3; done
+shift
+agent=$1
+shift
+
+case "$agent" in
+    bash)
+        exec unshare --root="$jail" --wd=/workspace -- \
+            /usr/bin/env HOME=/home/agent "$@" /bin/bash
+        ;;
+    bash-headless)
+        exec unshare --root="$jail" --wd=/workspace -- \
+            /usr/bin/env HOME=/home/agent "$@" \
+            /bin/bash -lc 'prompt=$(cat "$PROJECT_SANDBOX_PROMPT_FILE"); exec /bin/bash -lc "$prompt"'
+        ;;
+    *)
+        echo "Unsupported chroot agent: $agent" >&2
+        exit 64
+        ;;
+esac

@@ -126,7 +126,7 @@ class CliTests(TestCase):
             self.assertFalse((project / ".devcontainer").exists())
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "chroot runtime is Linux-only")
-    def test_chroot_rejects_agent_and_headless_modes(self) -> None:
+    def test_chroot_rejects_non_bash_agent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
             (project / "README.md").write_text("# demo\n", encoding="utf-8")
@@ -136,17 +136,6 @@ class CliTests(TestCase):
             ):
                 with self.assertRaisesRegex(SystemExit, "requires --agent bash"):
                     cli.main([*common, "--agent", "claude", str(project)])
-                with self.assertRaisesRegex(SystemExit, "does not support prompt"):
-                    cli.main(
-                        [
-                            *common,
-                            "--agent",
-                            "bash",
-                            "--prompt-text",
-                            "inspect",
-                            str(project),
-                        ]
-                    )
 
     def test_default_run_initializes_files_without_starting_agent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
