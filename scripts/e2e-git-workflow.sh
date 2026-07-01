@@ -224,10 +224,6 @@ printf "base\n" > "$TMP_PROJECT/README.md"
 git -C "$TMP_PROJECT" add README.md
 git -C "$TMP_PROJECT" commit -qm "initial commit"
 
-# Let the sandbox's agent user write in this disposable repo on Docker/Podman
-# hosts where the container UID may not match the host user.
-chmod -R a+rwX "$TMP_PROJECT"
-
 # Default: work lands on the branch, main checkout is untouched, worktree removed.
 echo
 if ! run_ps "e2e-git-default" 0 "git-default.txt" "git default" "agent: git default"; then

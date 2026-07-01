@@ -55,7 +55,9 @@ def host_build_identity(runtime: Runtime) -> tuple[int, int] | None:
     uid, gid = os.getuid(), os.getgid()
     # UID 0 cannot be assigned to the non-root agent user. A root caller can
     # already access and clean up files owned by the image's default UID 1000.
-    return (uid, gid) if uid != 0 and gid != 0 else None
+    # GID 0 is valid for a non-root user and must still be matched: otherwise a
+    # host with that primary group would retain the same bind-mount mismatch.
+    return (uid, gid) if uid != 0 else None
 
 
 def select_runtime(requested: str, *, dry_run: bool = False) -> Runtime:

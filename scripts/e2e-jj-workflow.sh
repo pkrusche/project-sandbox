@@ -168,10 +168,6 @@ printf "base\n" > "$TMP_PROJECT/README.md"
 jj -R "$TMP_PROJECT" describe -m "initial commit"
 jj -R "$TMP_PROJECT" new
 
-# Let the sandbox's agent user write in this disposable repo on Docker/Podman
-# hosts where the container UID may not match the host user.
-chmod -R a+rwX "$TMP_PROJECT"
-
 # Default: work is captured on the bookmark, the default workspace revision is
 # untouched (no rebase into main), and the workspace is removed.
 echo

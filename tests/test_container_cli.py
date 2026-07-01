@@ -358,6 +358,26 @@ class ContainerCliTests(TestCase):
             out.getvalue(),
         )
 
+    @patch("project_sandbox.container_cli.os.getgid", return_value=0)
+    @patch("project_sandbox.container_cli.os.getuid", return_value=1234)
+    @patch("project_sandbox.container_cli.sys.platform", "linux")
+    def test_build_image_matches_host_gid_zero(self, _getuid, _getgid) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = build_image(
+                    runtime=DOCKER,
+                    context_dir=Path(tmp),
+                    image_tag="project-sandbox:test",
+                    dry_run=True,
+                )
+
+        self.assertEqual(rc, 0)
+        self.assertIn(
+            "--build-arg AGENT_UID=1234 --build-arg AGENT_GID=0",
+            out.getvalue(),
+        )
+
     def test_build_image_runs_from_the_build_context_dir(self) -> None:
         # apple/container mounts the working directory as the BuildKit context,
         # so the build must run with cwd set to the build context — otherwise

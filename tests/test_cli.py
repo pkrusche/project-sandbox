@@ -2165,11 +2165,16 @@ class PythonUvFlagTests(TestCase):
 
         self.assertIn("COPY pyproject.toml uv.lock", content)
         self.assertIn("uv sync --frozen", content)
-        # The cache must be baked into an image layer and owned by the agent
-        # user (UID 1000); a BuildKit cache mount would be ephemeral.
+        # The cache must be baked into an image layer and owned by the agent;
+        # a BuildKit cache mount would be ephemeral.
         self.assertNotIn("--mount=type=cache", content)
         self.assertNotIn("type=cache", content)
-        self.assertIn("chown -R 1000:1000 /opt/uv-cache /opt/venv", content)
+        self.assertIn("ARG AGENT_UID=1000", content)
+        self.assertIn("ARG AGENT_GID=1000", content)
+        self.assertIn(
+            'chown -R "${AGENT_UID}:${AGENT_GID}" /opt/uv-cache /opt/venv',
+            content,
+        )
         # venv must live outside /workspace so the host .venv is never touched
         self.assertIn("UV_PROJECT_ENVIRONMENT=/opt/venv", content)
         # project must be pre-installed at image build time so 'uv run' works
@@ -2453,7 +2458,12 @@ class RustCargoFlagTests(TestCase):
 
         self.assertIn("COPY Cargo.toml Cargo.lock", content)
         self.assertIn("cargo fetch --locked", content)
-        self.assertIn("chown -R 1000:1000 /opt/cargo-cache /opt/cargo-target", content)
+        self.assertIn("ARG AGENT_UID=1000", content)
+        self.assertIn("ARG AGENT_GID=1000", content)
+        self.assertIn(
+            'chown -R "${AGENT_UID}:${AGENT_GID}" /opt/cargo-cache /opt/cargo-target',
+            content,
+        )
         # cache/target must live outside /workspace so the host target/ is never touched
         self.assertIn("CARGO_HOME=/opt/cargo-cache", content)
         self.assertIn("CARGO_TARGET_DIR=/opt/cargo-target", content)

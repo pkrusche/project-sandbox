@@ -28,6 +28,10 @@ RUN set -eux; \
         userdel -r "$existing_uid_user" 2>/dev/null || userdel "$existing_uid_user"; \
     fi; \
     existing_gid_group="$(getent group "${AGENT_GID}" | cut -d: -f1 || true)"; \
+    agent_group_gid="$(getent group agent | cut -d: -f3 || true)"; \
+    if [ -n "$agent_group_gid" ] && [ "$agent_group_gid" != "${AGENT_GID}" ]; then \
+        groupdel agent; \
+    fi; \
     if [ -z "$existing_gid_group" ]; then \
         groupadd -g "${AGENT_GID}" agent; \
     else \

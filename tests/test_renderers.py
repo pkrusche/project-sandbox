@@ -58,6 +58,7 @@ class RendererTests(TestCase):
             self.assertIn("ARG AGENT_GID=1000", docker_text)
             self.assertIn('groupadd -g "${AGENT_GID}" agent', docker_text)
             self.assertIn('useradd -m -u "${AGENT_UID}"', docker_text)
+            self.assertIn('groupdel agent', docker_text)
             self.assertIn("npm install -g @anthropic-ai/claude-code", docker_text)
             self.assertIn("npm install -g @openai/codex", docker_text)
             self.assertIn("npm install -g opencode-ai", docker_text)
