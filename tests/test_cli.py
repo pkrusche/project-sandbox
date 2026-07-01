@@ -461,7 +461,9 @@ class CliTests(TestCase):
             self.assertEqual(rc, 0)
             output = out.getvalue()
             self.assertIn("WARNING: Removed 2 restricted user setup instructions", output)
-            self.assertIn("project-sandbox will create its own agent user with UID 1000", output)
+            self.assertIn(
+                "project-sandbox will create its own unprivileged agent user", output
+            )
             self.assertFalse((project / ".project-sandbox").exists())
 
     def test_dockerfile_and_base_image_are_mutually_exclusive(self) -> None:

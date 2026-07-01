@@ -112,13 +112,15 @@ COPY --from=ghcr.io/astral-sh/uv:0.11.23@sha256:d0a0a753ab981624b49c97abc98821c1
 
 # Pre-populate the uv package cache with all project dependencies so the agent
 # can run `uv sync` / `uv run` inside the sandbox without reaching PyPI.
-# UID 1000 is the agent user created by the sandbox layers that follow.
+ARG AGENT_UID=1000
+ARG AGENT_GID=1000
+# Match ownership to the agent user created by the sandbox layers that follow.
 COPY pyproject.toml uv.lock README.md /tmp/project-setup/
 COPY src/ /tmp/project-setup/src/
 RUN UV_CACHE_DIR=/opt/uv-cache uv sync \
         --frozen \
         --project /tmp/project-setup \
-    && chown -R 1000:1000 /opt/uv-cache \
+    && chown -R "${AGENT_UID}:${AGENT_GID}" /opt/uv-cache \
     && rm -rf /tmp/project-setup
 
 ENV UV_CACHE_DIR=/opt/uv-cache

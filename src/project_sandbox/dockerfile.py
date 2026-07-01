@@ -192,7 +192,7 @@ def _read_source_dockerfile(base_dockerfile: Path) -> tuple[str, tuple[str, ...]
         warnings.append(
             "WARNING: Removed "
             f"{removed} restricted user setup instruction{suffix} from {base_dockerfile}; "
-            "project-sandbox will create its own agent user with UID 1000."
+            "project-sandbox will create its own unprivileged agent user."
         )
     blocks = _dockerfile_blocks(text)
     base = _extract_last_from(blocks)
@@ -225,7 +225,7 @@ def _remove_restricted_user_setup(text: str) -> tuple[str, int]:
                     f"    {command}\n"
                     "Move the user-management commands into a separate RUN "
                     "instruction so project-sandbox can remove them safely; "
-                    "project-sandbox creates its own agent user with UID 1000."
+                    "project-sandbox creates its own unprivileged agent user."
                 )
             removed += 1
             continue

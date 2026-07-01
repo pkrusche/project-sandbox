@@ -776,9 +776,11 @@ class RendererTests(TestCase):
             self.assertNotIn("useradd --uid 1000", text)
             self.assertNotIn("USER $USERNAME", text)
             self.assertIn('groupadd -g "${AGENT_GID}" agent', text)
-            self.assertIn('useradd -m -u "${AGENT_UID}" -g agent', text)
+            self.assertIn(
+                'useradd -m -u "${AGENT_UID}" -g "${AGENT_GID}"', text
+            )
             self.assertIn("Removing existing UID ${AGENT_UID} user", text)
-            self.assertIn("Removing existing GID ${AGENT_GID} group", text)
+            self.assertIn("Reusing existing GID ${AGENT_GID} group", text)
             self.assertEqual(len(warnings), 1)
             self.assertIn("Removed 2 restricted user setup instructions", warnings[0])
 

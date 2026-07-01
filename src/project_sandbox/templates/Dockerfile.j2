@@ -28,22 +28,19 @@ RUN set -eux; \
         userdel -r "$existing_uid_user" 2>/dev/null || userdel "$existing_uid_user"; \
     fi; \
     existing_gid_group="$(getent group "${AGENT_GID}" | cut -d: -f1 || true)"; \
-    if [ -n "$existing_gid_group" ]; then \
-        echo "WARNING: Removing existing GID ${AGENT_GID} group '$existing_gid_group'; project-sandbox uses that GID for agent."; \
-        groupdel "$existing_gid_group" 2>/dev/null || true; \
+    if [ -z "$existing_gid_group" ]; then \
+        groupadd -g "${AGENT_GID}" agent; \
+    else \
+        echo "WARNING: Reusing existing GID ${AGENT_GID} group '$existing_gid_group' for agent."; \
     fi; \
-    if getent group agent >/dev/null 2>&1; then \
-        groupdel agent 2>/dev/null || true; \
-    fi; \
-    groupadd -g "${AGENT_GID}" agent; \
-    useradd -m -u "${AGENT_UID}" -g agent -s /bin/bash agent
+    useradd -m -u "${AGENT_UID}" -g "${AGENT_GID}" -s /bin/bash agent
 
 RUN install -d /project-sandbox-config/claude /project-sandbox-config/codex \
         /project-sandbox-secrets/claude /project-sandbox-secrets/codex \
         /project-sandbox-secrets/opencode && \
-    install -d -o agent -g agent /home/agent/.claude /home/agent/.codex /home/agent/.config && \
-    install -m 0644 -o agent -g agent /dev/null /home/agent/.claude/settings.json && \
-    install -m 0644 -o agent -g agent /dev/null /home/agent/.codex/config.toml
+    install -d -o agent -g "${AGENT_GID}" /home/agent/.claude /home/agent/.codex /home/agent/.config && \
+    install -m 0644 -o agent -g "${AGENT_GID}" /dev/null /home/agent/.claude/settings.json && \
+    install -m 0644 -o agent -g "${AGENT_GID}" /dev/null /home/agent/.codex/config.toml
 
 # Node.js is pinned to an exact release and verified by SHA256 rather than
 # piping the NodeSource installer through bash. To upgrade, bump NODE_VERSION
