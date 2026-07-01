@@ -154,12 +154,22 @@ The tool does not protect against:
   Docker Desktop or OrbStack; remote services may require rewriting local mounts
   and relaxing or replacing firewall capability requirements.
 - `--branch` creates an isolated workspace for the agent. In git repos it creates
-  a git worktree on the given branch, mounts the worktree at `/workspace`, and
-  bind-mounts the main repo's `.git/` so `git` works correctly inside the
-  container. In jj repos it creates a jj workspace plus bookmark, mounts that
-  workspace at `/workspace`, and bind-mounts the main repo's `.jj/` metadata so
-  `jj` works inside the container. After the session, `--after-session` controls
-  whether to ask interactively, merge/rebase back into the main workspace, open a
-  PR, or do nothing. Worktree-of-worktree setups are not supported.
+  (or reuses) a git worktree on the given branch, mounts the worktree at
+  `/workspace`, and bind-mounts the main repo's `.git/` so `git` works correctly
+  inside the container. In jj repos it creates (or reuses) a jj workspace plus
+  bookmark, mounts that workspace at `/workspace`, and bind-mounts the main repo's
+  `.jj/` metadata so `jj` works inside the container. Worktree-of-worktree setups
+  are not supported.
+- After the session there is a single, non-integrating action: the agent's work
+  is captured on the branch/bookmark (any uncommitted changes are committed for
+  git; the working copy is snapshotted and the bookmark advanced to the session
+  tip for jj), and the worktree/workspace is removed. Nothing is ever merged, rebased, or
+  pushed into the main checkout — the branch/bookmark holds the work for you to
+  integrate manually. `--keep-workspace` leaves the worktree/workspace in place so
+  a later `--branch <same>` run reuses it; a failed session is also left in place
+  for inspection.
+- `--branch-start-at <revision>` pins the starting commit/tag/branch/bookmark for
+  a **new** branch created by `--branch`. It errors if the branch/bookmark already
+  exists (delete or merge it first, or omit the flag to reuse the existing one).
 - `jj` is installed in the container and configured with the same global
   name/email identity passed to Git.

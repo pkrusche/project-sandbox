@@ -489,13 +489,13 @@ class CliTests(TestCase):
                 patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
                 patch.object(cli.jj_workspace_mod, "setup", return_value=fake_ws) as jj_setup,
                 patch.object(cli.worktree_mod, "setup") as git_setup,
-                patch.object(cli.jj_workspace_mod, "teardown"),
+                patch.object(cli.jj_workspace_mod, "finalize"),
                 contextlib.redirect_stdout(stdout_buf),
             ):
                 cli.main([
                     "--dry-run", "--no-build", "--no-firewall",
                     "--agent", "claude",
-                    "--branch", "feat/x", "--after-session", "nothing",
+                    "--branch", "feat/x",
                     str(project), "python:3.12-slim",
                 ])
 
@@ -544,7 +544,7 @@ class CliTests(TestCase):
                 rc = cli.main([
                     "--dry-run", "--no-build", "--no-firewall",
                     "--agent", "claude",
-                    "--branch", "feat/x", "--after-session", "nothing",
+                    "--branch", "feat/x",
                     str(project), "python:3.12-slim",
                 ])
 
@@ -577,7 +577,7 @@ class CliTests(TestCase):
                 rc = cli.main([
                     "--dry-run", "--no-build", "--no-firewall",
                     "--agent", "claude",
-                    "--branch", "feat/x", "--after-session", "nothing",
+                    "--branch", "feat/x",
                     str(project), "python:3.12-slim",
                 ])
 
@@ -607,7 +607,7 @@ class CliTests(TestCase):
                     cli.main([
                         "--dry-run", "--no-build", "--no-firewall",
                         "--agent", "claude",
-                        "--branch", "feat/x", "--after-session", "nothing",
+                        "--branch", "feat/x",
                         "--mount", f"type=bind,source={jj_dir},target=/jj",
                         str(project), "python:3.12-slim",
                     ])
@@ -635,7 +635,7 @@ class CliTests(TestCase):
                 cli.main([
                     "--dry-run", "--no-build", "--no-firewall",
                     "--agent", "claude",
-                    "--branch", "feat/x", "--after-session", "nothing",
+                    "--branch", "feat/x",
                     str(project), "python:3.12-slim",
                 ])
 
@@ -663,7 +663,7 @@ class CliTests(TestCase):
                     cli.main([
                         "--dry-run", "--no-build", "--no-firewall",
                         "--agent", "claude",
-                        "--branch", "feat/x", "--after-session", "nothing",
+                        "--branch", "feat/x",
                         "--mount", f"type=bind,source={git_dir},target=/git",
                         str(project), "python:3.12-slim",
                     ])
@@ -710,7 +710,7 @@ class CliTests(TestCase):
                     "claude": host_home / "c", "claude-devcontainer": host_home / "cd",
                 }),
                 patch.object(cli.worktree_mod, "setup", return_value=fake_wt),
-                patch.object(cli.worktree_mod, "teardown") as teardown,
+                patch.object(cli.worktree_mod, "finalize") as finalize,
                 patch.object(cli.container_cli, "select_runtime", return_value=cli.container_cli.DOCKER),
                 patch.object(cli.container_cli, "ensure_system_started", return_value=0),
                 patch.object(cli.container_cli, "build_image", return_value=1),
@@ -720,28 +720,33 @@ class CliTests(TestCase):
                 rc = cli.main([
                     "--no-firewall",
                     "--agent", "claude",
-                    "--branch", "feat/x", "--after-session", "merge",
+                    "--branch", "feat/x",
                     str(project), "python:3.12-slim",
                 ])
 
             self.assertEqual(rc, 1)
             run.assert_not_called()
-            # Build failed before the agent ran: teardown must NOT integrate
-            # (no merge of an empty/failed session), regardless of --after-session.
-            teardown.assert_called_once()
-            self.assertEqual(teardown.call_args.kwargs.get("after"), "nothing")
+            # Build failed before the agent ran: finalize must NOT run (no commit
+            # of an empty/failed session), the git worktree is left in place.
+            finalize.assert_not_called()
 
-    def test_after_session_ask_unsupervised_raises(self) -> None:
+    def test_branch_start_at_requires_branch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            # Validation fires before resolve_strict, so no git repo needed.
             with self.assertRaises(SystemExit) as raised:
                 cli.main([
-                    "--branch", "feat/x",
-                    "--prompt-text", "do something",
+                    "--agent", "claude", "--branch-start-at", "HEAD",
                     tmp, "python:3.12-slim",
                 ])
-        self.assertIn("ask", str(raised.exception).lower())
-        self.assertIn("unsupervised", str(raised.exception).lower())
+        self.assertIn("--branch-start-at requires --branch", str(raised.exception))
+
+    def test_keep_workspace_requires_branch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(SystemExit) as raised:
+                cli.main([
+                    "--agent", "claude", "--keep-workspace",
+                    tmp, "python:3.12-slim",
+                ])
+        self.assertIn("--keep-workspace requires --branch", str(raised.exception))
 
     def test_unsupervised_opencode_uses_headless_dispatch_when_available(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1709,10 +1714,10 @@ class VerboseAgentConfigTests(TestCase):
         self.assertIn("PROJECT_SANDBOX_QUIET=1", output)
 
 
-class TeardownWorktreeOnFailureTests(TestCase):
-    """_teardown_worktree must skip integration for all modes on nonzero exit."""
+class FinalizeWorktreeTests(TestCase):
+    """_finalize_worktree maps CLI flags/exit code onto the module finalize()."""
 
-    def _run_teardown(self, exit_code: int, after_session: str) -> tuple[str, str]:
+    def _run_finalize(self, *, exit_code: int, keep_workspace: bool) -> dict:
         import argparse
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
@@ -1721,41 +1726,42 @@ class TeardownWorktreeOnFailureTests(TestCase):
                 path=project.parent / "wt" / "feat-x",
                 branch="feat/x",
             )
-            args = argparse.Namespace(after_session=after_session)
-            out, err = io.StringIO(), io.StringIO()
+            args = argparse.Namespace(keep_workspace=keep_workspace)
             with (
-                patch.object(cli.worktree_mod, "teardown") as teardown,
-                contextlib.redirect_stdout(out),
-                contextlib.redirect_stderr(err),
+                patch.object(cli.worktree_mod, "finalize") as finalize,
+                contextlib.redirect_stdout(io.StringIO()),
             ):
-                cli._teardown_worktree(args, project=project, wt=fake_wt, exit_code=exit_code)
-            return out.getvalue(), teardown.call_args.kwargs.get("after")
+                cli._finalize_worktree(args, project=project, wt=fake_wt, exit_code=exit_code)
+            finalize.assert_called_once()
+            return finalize.call_args.kwargs
 
-    def test_merge_skipped_on_nonzero_exit(self) -> None:
-        output, after = self._run_teardown(exit_code=124, after_session="merge")
-        self.assertEqual(after, "nothing")
-        self.assertIn("124", output)
-        self.assertIn("merge", output)
+    def test_nonzero_exit_marks_session_failed(self) -> None:
+        kwargs = self._run_finalize(exit_code=124, keep_workspace=False)
+        self.assertTrue(kwargs["session_failed"])
+        self.assertFalse(kwargs["keep_workspace"])
+        # The commit message defaults to the branch name plus a timestamp.
+        self.assertIn("feat/x", kwargs["message"])
 
-    def test_rebase_skipped_on_nonzero_exit(self) -> None:
-        output, after = self._run_teardown(exit_code=1, after_session="rebase")
-        self.assertEqual(after, "nothing")
-        self.assertIn("1", output)
-        self.assertIn("rebase", output)
+    def test_zero_exit_is_not_failed(self) -> None:
+        kwargs = self._run_finalize(exit_code=0, keep_workspace=False)
+        self.assertFalse(kwargs["session_failed"])
 
-    def test_pr_skipped_on_nonzero_exit(self) -> None:
-        output, after = self._run_teardown(exit_code=1, after_session="pr")
-        self.assertEqual(after, "nothing")
-        self.assertIn("pr", output)
+    def test_keep_workspace_flag_is_forwarded(self) -> None:
+        kwargs = self._run_finalize(exit_code=0, keep_workspace=True)
+        self.assertTrue(kwargs["keep_workspace"])
 
-    def test_nothing_silent_on_nonzero_exit(self) -> None:
-        output, after = self._run_teardown(exit_code=1, after_session="nothing")
-        self.assertEqual(after, "nothing")
-        self.assertEqual(output, "")
-
-    def test_proceeds_on_zero_exit(self) -> None:
-        _, after = self._run_teardown(exit_code=0, after_session="merge")
-        self.assertEqual(after, "merge")
+    def test_jj_workspace_dispatches_to_jj_finalize(self) -> None:
+        import argparse
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            fake_ws = cli.jj_workspace_mod.JjWorkspace(
+                path=project.parent / "ws" / "feat-x", bookmark="feat/x"
+            )
+            args = argparse.Namespace(keep_workspace=False)
+            with patch.object(cli.jj_workspace_mod, "finalize") as finalize:
+                cli._finalize_worktree(args, project=project, wt=fake_ws, exit_code=0)
+            finalize.assert_called_once()
+            self.assertIn("feat/x", finalize.call_args.kwargs["message"])
 
 
 class DefaultImageTagTests(TestCase):
@@ -2160,7 +2166,7 @@ class PythonUvFlagTests(TestCase):
                 with self.assertRaises(SystemExit) as raised:
                     cli.main([
                         "--agent", "claude",
-                        "--branch", "feat/x", "--after-session", "nothing",
+                        "--branch", "feat/x",
                         "--python-uv",
                         str(project), "python:3.12-slim",
                     ])
@@ -2182,7 +2188,7 @@ class PythonUvFlagTests(TestCase):
                 with self.assertRaises((SystemExit, FileNotFoundError)):
                     cli.main([
                         "--agent", "claude",
-                        "--branch", "feat/x", "--after-session", "nothing",
+                        "--branch", "feat/x",
                         "--prompt", str(project / "missing-prompt.md"),
                         str(project), "python:3.12-slim",
                     ])
@@ -2738,7 +2744,7 @@ class RustCargoFlagTests(TestCase):
                 with self.assertRaises(SystemExit) as raised:
                     cli.main([
                         "--agent", "claude",
-                        "--branch", "feat/x", "--after-session", "nothing",
+                        "--branch", "feat/x",
                         "--rust-cargo",
                         str(project), "rust:slim",
                     ])

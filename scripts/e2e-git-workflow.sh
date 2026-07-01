@@ -2,8 +2,9 @@
 # End-to-end git workflow verification for headless bash-agent sessions.
 #
 # Creates a throwaway git repository, asks the sandboxed bash agent to commit
-# changes in a branch worktree, and verifies --after-session=rebase, merge, and
-# nothing.
+# changes in a branch worktree, and verifies the single after-session action:
+# the work lands on the branch (never on the main checkout), the worktree is
+# removed by default, and --keep-workspace leaves it in place for reuse.
 #
 # Requirements: uv, git, and a supported container runtime on PATH.
 #
@@ -19,7 +20,7 @@ BASE_IMAGE="python:3.12-slim"
 NO_BUILD=0
 KEEP=0
 
-usage() { sed -n '2,12p' "$0"; }
+usage() { sed -n '2,13p' "$0"; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -75,7 +76,7 @@ fail=0
 
 run_ps() {
   local branch="$1"
-  local after="$2"
+  local keep="$2"
   local file="$3"
   local text="$4"
   local message="$5"
@@ -95,17 +96,19 @@ run_ps() {
     --agent bash
     --prompt-text "$prompt"
     --branch "$branch"
-    --after-session "$after"
     --no-forward-credentials
     --no-firewall
     --verbose
   )
+  if [ "$keep" = 1 ]; then
+    cmd+=(--keep-workspace)
+  fi
   if [ "$NO_BUILD" = 1 ]; then
     cmd+=(--no-build)
   fi
   cmd+=("$TMP_PROJECT" "$BASE_IMAGE")
 
-  echo "Running git $after workflow on branch $branch"
+  echo "Running git workflow on branch $branch (keep-workspace=$keep)"
   (cd "$ROOT" && "${cmd[@]}")
 }
 
@@ -130,13 +133,24 @@ git_log_contains() {
   [ -n "$(git -C "$repo" log "$@" --fixed-strings --grep="$needle" --format=%s -1)" ]
 }
 
-assert_git_log_contains() {
+assert_branch_log_contains() {
+  local branch="$1"
+  local needle="$2"
+  if git_log_contains "$TMP_PROJECT" "$needle" "$branch"; then
+    echo "  ok    branch $branch history contains: $needle"
+  else
+    echo "  BAD   branch $branch history missing: $needle"
+    fail=1
+  fi
+}
+
+refute_main_log_contains() {
   local needle="$1"
   if git_log_contains "$TMP_PROJECT" "$needle" HEAD; then
-    echo "  ok    main HEAD history contains: $needle"
-  else
-    echo "  BAD   main HEAD history missing: $needle"
+    echo "  BAD   main HEAD history unexpectedly contains: $needle"
     fail=1
+  else
+    echo "  ok    main HEAD history does not contain: $needle"
   fi
 }
 
@@ -196,57 +210,41 @@ git -C "$TMP_PROJECT" commit -qm "initial commit"
 # hosts where the container UID may not match the host user.
 chmod -R a+rwX "$TMP_PROJECT"
 
+# Default: work lands on the branch, main checkout is untouched, worktree removed.
 echo
-if ! run_ps "e2e-git-rebase" "rebase" "git-rebase.txt" "git rebase" "agent: git rebase"; then
-  echo "  BAD   project-sandbox failed during the rebase workflow"
+if ! run_ps "e2e-git-default" 0 "git-default.txt" "git default" "agent: git default"; then
+  echo "  BAD   project-sandbox failed during the default workflow"
   exit_with_failure
 fi
-assert_file_contains "$TMP_PROJECT/git-rebase.txt" "git rebase"
-assert_git_log_contains "agent: git rebase"
-if [ -d "${TMP_PROJECT}-worktrees/e2e-git-rebase" ]; then
-  echo "  BAD   rebase worktree was not removed"
+if [ -e "$TMP_PROJECT/git-default.txt" ]; then
+  echo "  BAD   default action changed the main worktree"
   fail=1
 else
-  echo "  ok    rebase worktree was removed"
+  echo "  ok    default action left the main worktree unchanged"
+fi
+assert_branch_log_contains "e2e-git-default" "agent: git default"
+refute_main_log_contains "agent: git default"
+if [ -d "${TMP_PROJECT}-worktrees/e2e-git-default" ]; then
+  echo "  BAD   default worktree was not removed"
+  fail=1
+else
+  echo "  ok    default worktree was removed"
 fi
 
+# --keep-workspace: same branch capture, but the worktree is left in place.
 echo
-if ! run_ps "e2e-git-merge" "merge" "git-merge.txt" "git merge" "agent: git merge"; then
-  echo "  BAD   project-sandbox failed during the merge workflow"
+if ! run_ps "e2e-git-keep" 1 "git-keep.txt" "git keep" "agent: git keep"; then
+  echo "  BAD   project-sandbox failed during the keep-workspace workflow"
   exit_with_failure
 fi
-assert_file_contains "$TMP_PROJECT/git-merge.txt" "git merge"
-assert_git_log_contains "agent: git merge"
-if [ "$(git -C "$TMP_PROJECT" log -1 --format=%s)" = "Merge agent session: e2e-git-merge" ]; then
-  echo "  ok    merge produced the expected merge commit"
+assert_branch_log_contains "e2e-git-keep" "agent: git keep"
+refute_main_log_contains "agent: git keep"
+WT_KEEP="${TMP_PROJECT}-worktrees/e2e-git-keep"
+if [ -d "$WT_KEEP" ]; then
+  echo "  ok    keep-workspace left the worktree in place"
+  assert_file_contains "$WT_KEEP/git-keep.txt" "git keep"
 else
-  echo "  BAD   HEAD is not the expected merge commit"
-  fail=1
-fi
-if [ -d "${TMP_PROJECT}-worktrees/e2e-git-merge" ]; then
-  echo "  BAD   merge worktree was not removed"
-  fail=1
-else
-  echo "  ok    merge worktree was removed"
-fi
-
-echo
-if ! run_ps "e2e-git-nothing" "nothing" "git-nothing.txt" "git nothing" "agent: git nothing"; then
-  echo "  BAD   project-sandbox failed during the nothing workflow"
-  exit_with_failure
-fi
-if [ -e "$TMP_PROJECT/git-nothing.txt" ]; then
-  echo "  BAD   nothing action changed the main worktree"
-  fail=1
-else
-  echo "  ok    nothing action left the main worktree unchanged"
-fi
-WT_NOTHING="${TMP_PROJECT}-worktrees/e2e-git-nothing"
-assert_file_contains "$WT_NOTHING/git-nothing.txt" "git nothing"
-if git_log_contains "$WT_NOTHING" "agent: git nothing"; then
-  echo "  ok    nothing worktree contains the agent commit"
-else
-  echo "  BAD   nothing worktree is missing the agent commit"
+  echo "  BAD   keep-workspace removed the worktree"
   fail=1
 fi
 

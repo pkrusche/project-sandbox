@@ -120,7 +120,7 @@ class WorktreeSetupTests(TestCase):
         wt2 = worktree_mod.setup(self.repo, "feat/x", worktree_dir=custom)
         self.assertEqual(wt1.path, wt2.path)
 
-    def test_setup_existing_branch(self) -> None:
+    def test_setup_existing_branch_reused(self) -> None:
         subprocess.run(
             ["git", "-C", str(self.repo), "branch", "existing-branch"],
             check=True, capture_output=True,
@@ -129,9 +129,21 @@ class WorktreeSetupTests(TestCase):
 
         self.assertTrue(wt.path.is_dir())
 
-    def test_setup_respects_base_branch(self) -> None:
+    def test_setup_start_at_on_existing_branch_raises(self) -> None:
+        subprocess.run(
+            ["git", "-C", str(self.repo), "branch", "existing-branch"],
+            check=True, capture_output=True,
+        )
+        with self.assertRaises(SystemExit) as raised:
+            worktree_mod.setup(self.repo, "existing-branch", start_at="HEAD")
+
+        msg = str(raised.exception)
+        self.assertIn("existing-branch", msg)
+        self.assertIn("already exists", msg)
+
+    def test_setup_respects_start_at(self) -> None:
         # Record current branch, create a side branch with an extra commit,
-        # switch back, then create a worktree from that side branch.
+        # switch back, then create a worktree starting at that side branch.
         main_branch = subprocess.run(
             ["git", "-C", str(self.repo), "rev-parse", "--abbrev-ref", "HEAD"],
             capture_output=True, text=True, check=True,
@@ -152,7 +164,7 @@ class WorktreeSetupTests(TestCase):
             check=True, capture_output=True,
         )
 
-        wt = worktree_mod.setup(self.repo, "feat/from-base", base="base-branch")
+        wt = worktree_mod.setup(self.repo, "feat/from-base", start_at="base-branch")
 
         self.assertTrue((wt.path / "base.txt").exists())
 
@@ -177,144 +189,110 @@ class WorktreeTeardownTests(TestCase):
     def tearDown(self) -> None:
         self._td.cleanup()
 
-    def test_teardown_nothing_leaves_worktree_intact(self) -> None:
-        worktree_mod.teardown(self.repo, self.wt, after="nothing")
-
-        self.assertTrue(self.wt.path.is_dir())
-        out = subprocess.run(
-            ["git", "-C", str(self.repo), "branch", "--list", "feat/work"],
-            capture_output=True, text=True, check=True,
-        ).stdout
-        self.assertIn("feat/work", out)
-
-    def test_teardown_merge_brings_branch_into_main(self) -> None:
-        worktree_mod.teardown(self.repo, self.wt, after="merge")
-
-        log = subprocess.run(
-            ["git", "-C", str(self.repo), "log", "--oneline"],
-            capture_output=True, text=True, check=True,
-        ).stdout
-        self.assertIn("agent work", log)
-        self.assertFalse(self.wt.path.exists())
-
-    def test_teardown_rebase_replays_onto_main(self) -> None:
-        # Add a divergent commit on main so rebase actually has work to do.
-        (self.repo / "main.txt").write_text("main\n", encoding="utf-8")
-        subprocess.run(["git", "-C", str(self.repo), "add", "."], check=True, capture_output=True)
-        subprocess.run(
-            ["git", "-C", str(self.repo), "commit", "-m", "main commit"],
-            check=True, capture_output=True,
+    def _finalize(self, *, keep_workspace=False, session_failed=False, message="msg"):
+        worktree_mod.finalize(
+            self.repo,
+            self.wt,
+            keep_workspace=keep_workspace,
+            session_failed=session_failed,
+            message=message,
         )
 
-        worktree_mod.teardown(self.repo, self.wt, after="rebase")
-
-        log = subprocess.run(
+    def _main_log(self) -> str:
+        return subprocess.run(
             ["git", "-C", str(self.repo), "log", "--oneline"],
             capture_output=True, text=True, check=True,
         ).stdout
-        self.assertIn("agent work", log)
-        self.assertIn("main commit", log)
+
+    def _branch_log(self) -> str:
+        return subprocess.run(
+            ["git", "-C", str(self.repo), "log", "--oneline", "feat/work"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+
+    def test_finalize_removes_worktree_but_keeps_branch(self) -> None:
+        self._finalize()
+
+        # Worktree gone, branch retained with the agent's commit.
         self.assertFalse(self.wt.path.exists())
+        self.assertIn("agent work", self._branch_log())
+        # Never integrated into the main checkout.
+        self.assertNotIn("agent work", self._main_log())
 
-    def test_teardown_merge_conflict_leaves_worktree_and_prints_message(self) -> None:
+    def test_finalize_commit_failure_leaves_worktree_without_raising(self) -> None:
+        # finalize runs from main()'s finally block: a failed host-side commit
+        # must be reported, not raised (which would mask the session exit code).
+        (self.wt.path / "uncommitted.txt").write_text("later\n", encoding="utf-8")
         out = io.StringIO()
-        with (
-            patch.object(worktree_mod, "_git", side_effect=subprocess.CalledProcessError(1, "git merge")),
-            contextlib.redirect_stdout(out),
-        ):
-            # Should not raise
-            worktree_mod.teardown(self.repo, self.wt, after="merge")
+        real_git = worktree_mod._git
 
-        self.assertTrue(self.wt.path.is_dir(), "worktree must remain after conflict")
-        message = out.getvalue()
-        self.assertIn("merge conflict", message)
-        self.assertIn(str(self.wt.path), message)
-
-    def test_teardown_rebase_conflict_leaves_worktree_and_prints_message(self) -> None:
-        out = io.StringIO()
-        real_run = subprocess.run
-
-        def mock_run(cmd, **kwargs):
-            # Match the direct rebase call (not --abort) by checking element membership.
-            if "rebase" in cmd and "--abort" not in cmd:
-                raise subprocess.CalledProcessError(1, cmd)
-            return real_run(["true"], **{k: v for k, v in kwargs.items() if k != "check"})
+        def failing_git(repo, args, capture=False):
+            if args[:1] == ["commit"]:
+                raise subprocess.CalledProcessError(1, "git commit")
+            return real_git(repo, args, capture=capture)
 
         with (
-            patch("subprocess.run", side_effect=mock_run),
+            patch.object(worktree_mod, "_git", side_effect=failing_git),
             contextlib.redirect_stdout(out),
         ):
-            worktree_mod.teardown(self.repo, self.wt, after="rebase")
+            self._finalize()  # must not raise
 
-        self.assertTrue(self.wt.path.is_dir(), "worktree must remain after conflict")
-        message = out.getvalue()
-        self.assertIn("merge conflict", message)
-        self.assertIn(str(self.wt.path), message)
+        self.assertTrue(self.wt.path.is_dir(), "worktree kept so work is not lost")
+        self.assertIn("could not commit", out.getvalue())
 
-    def test_teardown_pr_runs_gh_in_repo_and_preserves_worktree_on_success(self) -> None:
-        real_run = subprocess.run
-        calls = []
+    def test_finalize_keep_workspace_leaves_worktree(self) -> None:
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self._finalize(keep_workspace=True)
 
-        def mock_run(cmd, **kwargs):
-            if cmd[:1] == ["gh"]:
-                calls.append((cmd, kwargs))
-                return subprocess.CompletedProcess(cmd, 0)
-            if "push" in cmd:
-                # No 'origin' remote in the test repo; stub a successful push.
-                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-            return real_run(cmd, **kwargs)
-
-        with patch("subprocess.run", side_effect=mock_run):
-            worktree_mod.teardown(self.repo, self.wt, after="pr")
-
-        self.assertEqual(len(calls), 1, "gh pr create should be invoked exactly once")
-        cmd, kwargs = calls[0]
-        self.assertEqual(cmd, ["gh", "pr", "create", "--head", self.wt.branch, "--fill"])
-        self.assertEqual(kwargs.get("cwd"), str(self.repo))
-        self.assertTrue(kwargs.get("check"))
-        # pr teardown never removes the worktree
         self.assertTrue(self.wt.path.is_dir())
+        self.assertIn("kept", out.getvalue())
+        self.assertIn("agent work", self._branch_log())
 
-    def test_teardown_pr_failure_leaves_worktree_and_prints_message(self) -> None:
+    def test_finalize_session_failed_leaves_worktree(self) -> None:
         out = io.StringIO()
-        real_run = subprocess.run
+        with contextlib.redirect_stdout(out):
+            self._finalize(session_failed=True)
 
-        def mock_run(cmd, **kwargs):
-            if cmd[:1] == ["gh"]:
-                raise subprocess.CalledProcessError(1, cmd)
-            if "push" in cmd:
-                # No 'origin' remote in the test repo; stub a successful push.
-                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-            return real_run(cmd, **kwargs)
+        self.assertTrue(self.wt.path.is_dir())
+        self.assertIn("failed", out.getvalue())
 
-        with (
-            patch("subprocess.run", side_effect=mock_run),
-            contextlib.redirect_stdout(out),
-        ):
-            # A failing gh pr create must be surfaced, not swallowed silently.
-            worktree_mod.teardown(self.repo, self.wt, after="pr")
+    def test_finalize_commits_uncommitted_work_before_removal(self) -> None:
+        # Leave dirty, uncommitted changes in the worktree; finalize must commit
+        # them onto the branch so the forced removal cannot discard them.
+        (self.wt.path / "uncommitted.txt").write_text("later\n", encoding="utf-8")
 
-        self.assertTrue(self.wt.path.is_dir(), "worktree must remain after PR failure")
-        message = out.getvalue()
-        self.assertIn("gh pr create", message)
-        self.assertIn(str(self.wt.path), message)
+        self._finalize(message="session — 2026-07-01T09:10")
 
-    def test_teardown_clears_stale_index_lock(self) -> None:
-        # Simulate a stale lock left by a crashed container.
+        self.assertFalse(self.wt.path.exists())
+        branch_log = self._branch_log()
+        self.assertIn("session — 2026-07-01T09:10", branch_log)
+        # The file is present in the branch tip tree.
+        files = subprocess.run(
+            ["git", "-C", str(self.repo), "ls-tree", "-r", "--name-only", "feat/work"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        self.assertIn("uncommitted.txt", files)
+
+    def test_finalize_clears_stale_index_lock(self) -> None:
+        # Simulate a stale lock left by a crashed container, plus dirty changes so
+        # finalize needs the index to commit.
+        (self.wt.path / "uncommitted.txt").write_text("later\n", encoding="utf-8")
         git_dir = self.repo.resolve() / ".git"
         wt_name = self.wt.path.name
         lock = git_dir / "worktrees" / wt_name / "index.lock"
         lock.write_text("locked\n", encoding="utf-8")
 
-        # merge should still succeed after clearing the lock
-        worktree_mod.teardown(self.repo, self.wt, after="merge")
+        self._finalize()
 
         self.assertFalse(lock.exists())
-        log = subprocess.run(
-            ["git", "-C", str(self.repo), "log", "--oneline"],
+        self.assertIn("uncommitted.txt", self._branch_log_files())
+
+    def _branch_log_files(self) -> str:
+        return subprocess.run(
+            ["git", "-C", str(self.repo), "ls-tree", "-r", "--name-only", "feat/work"],
             capture_output=True, text=True, check=True,
         ).stdout
-        self.assertIn("agent work", log)
 
 
 class WorktreeSetupStaleDirectoryTests(TestCase):
@@ -407,8 +385,8 @@ class GitWorktreeDockerEndToEndTests(TestCase):
         ).stdout
         self.assertIn("agent: add agent_output", log_out)
 
-    def test_container_commit_survives_rebase_teardown(self) -> None:
-        wt = worktree_mod.setup(self.repo, "feat/e2e-rebase")
+    def test_container_commit_survives_finalize(self) -> None:
+        wt = worktree_mod.setup(self.repo, "feat/e2e-finalize")
         self._docker(
             wt.path,
             "export HOME=/tmp && "
@@ -420,12 +398,19 @@ class GitWorktreeDockerEndToEndTests(TestCase):
             "git commit -m 'agent: add file'",
         )
 
-        worktree_mod.teardown(self.repo, wt, after="rebase")
+        worktree_mod.finalize(
+            self.repo, wt, keep_workspace=False, session_failed=False, message="msg"
+        )
 
         self.assertFalse(wt.path.exists())  # worktree removed
-        log_out = subprocess.run(
+        # The commit lives on the branch, not on the main checkout.
+        branch_log = subprocess.run(
+            ["git", "-C", str(self.repo), "log", "--oneline", "feat/e2e-finalize"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        self.assertIn("agent: add file", branch_log)
+        main_log = subprocess.run(
             ["git", "-C", str(self.repo), "log", "--oneline"],
             capture_output=True, text=True, check=True,
         ).stdout
-        self.assertIn("agent: add file", log_out)
-        self.assertTrue((self.repo / "agent_output.txt").exists())
+        self.assertNotIn("agent: add file", main_log)

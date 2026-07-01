@@ -193,11 +193,23 @@ class JjWorkspaceSetupTests(unittest.TestCase):
         self.assertIn("not registered", msg)
         self.assertTrue(ws_path.is_dir())  # must not be auto-deleted
 
-    def test_setup_reuses_existing_bookmark(self) -> None:
-        """Retry after rebase/merge teardown leaves bookmark but no workspace."""
+    def test_setup_reuses_existing_bookmark_starting_at_bookmark(self) -> None:
+        """Retry after teardown leaves the bookmark but no workspace; the reused
+        workspace must start at the bookmark's commit, not the default @."""
         ws = jj_workspace_mod.setup(self.repo, "feat/reuse")
         ws_name = ws.path.name
-        # Simulate what rebase/merge teardown does: forget workspace, keep bookmark
+        # Put work on the bookmark, then simulate teardown: advance the bookmark
+        # to @, forget the workspace, and remove the directory.
+        (ws.path / "reuse.txt").write_text("reuse\n", encoding="utf-8")
+        subprocess.run(
+            ["jj", "-R", str(ws.path), "describe", "-m", "reuse work"],
+            check=True, capture_output=True,
+        )
+        subprocess.run(
+            ["jj", "-R", str(ws.path), "bookmark", "set", "--allow-backwards",
+             "feat/reuse", "-r", "@"],
+            check=True, capture_output=True,
+        )
         subprocess.run(
             ["jj", "-R", str(self.repo), "workspace", "forget", ws_name],
             check=True, capture_output=True,
@@ -208,6 +220,25 @@ class JjWorkspaceSetupTests(unittest.TestCase):
 
         self.assertEqual(ws2.bookmark, "feat/reuse")
         self.assertTrue(ws2.path.is_dir())
+        # The bookmark's work must be reachable in the reused workspace (its @ is a
+        # descendant of the bookmark), not lost by starting from the default @.
+        self.assertTrue((ws2.path / "reuse.txt").is_file())
+
+    def test_setup_start_at_on_existing_bookmark_raises(self) -> None:
+        jj_workspace_mod.setup(self.repo, "feat/exists")
+        subprocess.run(
+            ["jj", "-R", str(self.repo), "workspace", "forget",
+             jj_workspace_mod.path_for(self.repo, "feat/exists").name],
+            check=True, capture_output=True,
+        )
+        shutil.rmtree(jj_workspace_mod.path_for(self.repo, "feat/exists"))
+
+        with self.assertRaises(SystemExit) as raised:
+            jj_workspace_mod.setup(self.repo, "feat/exists", start_at="@")
+
+        msg = str(raised.exception)
+        self.assertIn("feat/exists", msg)
+        self.assertIn("already exists", msg)
 
     def test_remove_cleans_up_workspace_and_bookmark(self) -> None:
         ws = jj_workspace_mod.setup(self.repo, "feat/cleanup")
@@ -227,6 +258,48 @@ class JjWorkspaceSetupTests(unittest.TestCase):
         ws = jj_workspace_mod.setup(self.repo, "feat/idempotent-remove")
         jj_workspace_mod.remove(self.repo, ws)
         jj_workspace_mod.remove(self.repo, ws)  # should not raise
+
+    def test_remove_preserves_reused_bookmark_after_build_failure(self) -> None:
+        """A build failure (agent never ran) on a *reused* bookmark must not
+        delete that bookmark: the prior session's work is only reachable through
+        it. Only the freshly-created empty workspace should be dropped."""
+        # First session: put real work on the bookmark, then simulate a
+        # no-keep teardown (bookmark survives, workspace forgotten + removed).
+        ws1 = jj_workspace_mod.setup(self.repo, "feat/reuse-fail")
+        (ws1.path / "work.txt").write_text("work\n", encoding="utf-8")
+        subprocess.run(
+            ["jj", "-R", str(ws1.path), "describe", "-m", "real work"],
+            check=True, capture_output=True,
+        )
+        subprocess.run(
+            ["jj", "-R", str(ws1.path), "bookmark", "set", "--allow-backwards",
+             "feat/reuse-fail", "-r", "@"],
+            check=True, capture_output=True,
+        )
+        subprocess.run(
+            ["jj", "-R", str(self.repo), "workspace", "forget", ws1.path.name],
+            check=True, capture_output=True,
+        )
+        shutil.rmtree(ws1.path)
+
+        # Second session reuses the bookmark, but the build fails before the
+        # agent runs, so cli calls remove() on the new workspace.
+        ws2 = jj_workspace_mod.setup(self.repo, "feat/reuse-fail")
+        self.assertFalse(ws2.created_bookmark)
+        self.assertTrue(ws2.created_workspace)
+
+        jj_workspace_mod.remove(self.repo, ws2)
+
+        # The empty new workspace is gone, but the bookmark and its work remain.
+        self.assertFalse(ws2.path.exists())
+        bookmark_out = subprocess.run(
+            ["jj", "-R", str(self.repo), "bookmark", "list"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        self.assertIn("feat/reuse-fail", bookmark_out)
+        self.assertTrue(
+            jj_workspace_mod._bookmark_exists(self.repo, "feat/reuse-fail")
+        )
 
 
 @unittest.skipUnless(JJ, "jj not installed")
@@ -248,117 +321,164 @@ class JjWorkspaceTeardownTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._td.cleanup()
 
-    def test_teardown_nothing_leaves_workspace_intact(self) -> None:
-        jj_workspace_mod.teardown(self.repo, self.ws, after="nothing")
+    def _finalize(self, ws=None, *, keep_workspace=False, session_failed=False, message="msg"):
+        jj_workspace_mod.finalize(
+            self.repo,
+            ws or self.ws,
+            keep_workspace=keep_workspace,
+            session_failed=session_failed,
+            message=message,
+        )
+
+    def _bookmark_file(self, bookmark: str, path: str) -> str:
+        return subprocess.run(
+            ["jj", "-R", str(self.repo), "file", "show", "-r", bookmark, path],
+            capture_output=True, text=True, check=True,
+        ).stdout
+
+    def test_finalize_removes_workspace_and_advances_bookmark(self) -> None:
+        self._finalize()
+
+        # Workspace gone; the bookmark holds the work but it is NOT rebased onto
+        # the default workspace's @ (no integration into main).
+        self.assertFalse(self.ws.path.exists())
+        self.assertEqual(self._bookmark_file("feat/work", "root:work.txt"), "work\n")
+
+    def test_finalize_snapshots_when_agent_never_ran_jj(self) -> None:
+        """The agent may edit files without ever running a jj command, leaving
+        the working copy un-snapshotted (its @ shows empty from outside). finalize
+        must force the snapshot itself (via ``jj status``) so the edits land on the
+        bookmark and survive workspace removal — otherwise work is silently lost.
+        """
+        ws = jj_workspace_mod.setup(self.repo, "feat/no-jj")
+        # Edit files directly on disk. Do NOT run any jj command in the workspace,
+        # so nothing snapshots @ before finalize does.
+        (ws.path / "silent.txt").write_text("unsnapshotted work\n", encoding="utf-8")
+        # Sanity check: from outside, @ is still empty (jj snapshots lazily).
+        empty_before = subprocess.run(
+            ["jj", "-R", str(self.repo), "log", "-r", "feat/no-jj", "--no-graph",
+             "--template", "empty"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        self.assertEqual(empty_before, "true")
+
+        self._finalize(ws)
+
+        self.assertFalse(ws.path.exists())
+        self.assertEqual(
+            self._bookmark_file("feat/no-jj", "root:silent.txt"),
+            "unsnapshotted work\n",
+        )
+
+    def _bookmark_is_empty(self, bookmark: str) -> bool:
+        return subprocess.run(
+            ["jj", "-R", str(self.repo), "log", "-r", bookmark, "--no-graph",
+             "--template", "empty"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip() == "true"
+
+    def test_finalize_empty_session_does_not_leave_empty_bookmark_tip(self) -> None:
+        """An empty session (agent changed nothing) must not advance the bookmark
+        onto an empty commit; it lands on @-'s non-empty revision instead."""
+        ws = jj_workspace_mod.setup(self.repo, "feat/nothing")
+        # No edits and no jj commands in the workspace: @ stays empty.
+        self._finalize(ws, message="feat/nothing — 2026-07-01T10:00")
+
+        self.assertFalse(ws.path.exists())
+        self.assertFalse(
+            self._bookmark_is_empty("feat/nothing"),
+            "bookmark must not point at an empty commit",
+        )
+        # The base commit it lands on must not be relabelled with the session
+        # message (we never describe when @ is empty).
+        desc = subprocess.run(
+            ["jj", "-R", str(self.repo), "log", "-r", "feat/nothing", "--no-graph",
+             "--template", "description"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        self.assertNotIn("feat/nothing — 2026-07-01T10:00", desc)
+
+    def test_finalize_captures_committed_work_under_empty_at(self) -> None:
+        """If the agent commits work and leaves an empty @ on top, finalize must
+        advance the bookmark to @- so the committed work is not stranded."""
+        ws = jj_workspace_mod.setup(self.repo, "feat/committed")
+        (ws.path / "committed.txt").write_text("committed\n", encoding="utf-8")
+        subprocess.run(
+            ["jj", "-R", str(ws.path), "commit", "-m", "agent commit"],
+            check=True, capture_output=True,
+        )
+        # @ is now a fresh empty commit on top of the agent's committed work.
+        self.assertTrue(jj_workspace_mod._is_empty(ws.path, "@"))
+
+        self._finalize(ws, message="feat/committed — 2026-07-01T10:00")
+
+        self.assertFalse(ws.path.exists())
+        self.assertEqual(
+            self._bookmark_file("feat/committed", "root:committed.txt"), "committed\n"
+        )
+        self.assertFalse(self._bookmark_is_empty("feat/committed"))
+
+    def test_finalize_capture_failure_leaves_workspace_without_raising(self) -> None:
+        # finalize runs from main()'s finally block: a failed jj command must be
+        # reported, not raised (which would mask the session exit code).
+        out = io.StringIO()
+
+        def failing_jj(repo, args, capture=False):
+            if "bookmark" in args:
+                raise subprocess.CalledProcessError(1, "jj bookmark set")
+            return ""
+
+        with (
+            patch.object(jj_workspace_mod, "_jj", side_effect=failing_jj),
+            contextlib.redirect_stdout(out),
+        ):
+            self._finalize()  # must not raise
+
+        self.assertTrue(self.ws.path.is_dir(), "workspace kept so work is not lost")
+        self.assertIn("could not capture", out.getvalue())
+
+    def test_finalize_keep_workspace_leaves_workspace(self) -> None:
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self._finalize(keep_workspace=True)
 
         self.assertTrue(self.ws.path.is_dir())
-        log_out = subprocess.run(
-            ["jj", "-R", str(self.repo), "log", "--no-pager"],
-            capture_output=True, text=True, check=True,
-        ).stdout
-        self.assertIn("feat/work", log_out)
+        self.assertIn("kept", out.getvalue())
+        self.assertEqual(self._bookmark_file("feat/work", "root:work.txt"), "work\n")
 
-    def test_teardown_rebase_integrates_into_main_and_removes_workspace(self) -> None:
-        jj_workspace_mod.teardown(self.repo, self.ws, after="rebase")
+    def test_finalize_session_failed_leaves_workspace(self) -> None:
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self._finalize(session_failed=True)
 
-        self.assertFalse(self.ws.path.exists())
-        log_out = subprocess.run(
-            ["jj", "-R", str(self.repo), "log", "--no-pager"],
-            capture_output=True, text=True, check=True,
-        ).stdout
-        self.assertIn("agent work", log_out)
-        self.assertIn("feat/work", log_out)
+        self.assertTrue(self.ws.path.is_dir())
+        self.assertIn("failed", out.getvalue())
+        # Work is still captured on the bookmark for inspection.
+        self.assertEqual(self._bookmark_file("feat/work", "root:work.txt"), "work\n")
 
-    def test_teardown_merge_behaves_like_rebase(self) -> None:
-        jj_workspace_mod.teardown(self.repo, self.ws, after="merge")
-
-        self.assertFalse(self.ws.path.exists())
-        log_out = subprocess.run(
-            ["jj", "-R", str(self.repo), "log", "--no-pager"],
-            capture_output=True, text=True, check=True,
-        ).stdout
-        self.assertIn("agent work", log_out)
-
-    def test_teardown_rebase_snapshots_plain_file_edits(self) -> None:
+    def test_finalize_snapshots_plain_file_edits(self) -> None:
         ws = jj_workspace_mod.setup(self.repo, "feat/plain-edits")
         (ws.path / "plain.txt").write_text("plain\n", encoding="utf-8")
 
-        jj_workspace_mod.teardown(self.repo, ws, after="rebase")
+        self._finalize(ws)
 
         self.assertFalse(ws.path.exists())
-        file_out = subprocess.run(
-            [
-                "jj",
-                "-R",
-                str(self.repo),
-                "file",
-                "show",
-                "-r",
-                "feat/plain-edits",
-                "root:plain.txt",
-            ],
+        self.assertEqual(
+            self._bookmark_file("feat/plain-edits", "root:plain.txt"), "plain\n"
+        )
+
+    def test_finalize_describes_empty_description_with_message(self) -> None:
+        # A workspace whose @ has no description gets described with the message.
+        ws = jj_workspace_mod.setup(self.repo, "feat/undescribed")
+        (ws.path / "undescribed.txt").write_text("x\n", encoding="utf-8")
+
+        self._finalize(ws, message="feat/undescribed — 2026-07-01T09:10")
+
+        log_out = subprocess.run(
+            ["jj", "-R", str(self.repo), "log", "--no-pager", "-r", "feat/undescribed"],
             capture_output=True, text=True, check=True,
         ).stdout
-        self.assertEqual(file_out, "plain\n")
-
-    def test_teardown_rebase_conflict_leaves_workspace_and_prints_message(self) -> None:
-        out = io.StringIO()
-
-        def mock_jj(repo, args, capture=False):
-            if "rebase" in args:
-                raise subprocess.CalledProcessError(1, "jj rebase")
-            return ""
-
-        with (
-            patch.object(jj_workspace_mod, "_jj", side_effect=mock_jj),
-            contextlib.redirect_stdout(out),
-        ):
-            jj_workspace_mod.teardown(self.repo, self.ws, after="rebase")
-
-        self.assertTrue(self.ws.path.is_dir(), "workspace must remain after conflict")
-        message = out.getvalue()
-        self.assertIn("rebase conflict", message)
-        self.assertIn(str(self.ws.path), message)
-
-    def test_teardown_pr_pushes_bookmark_and_creates_pr(self) -> None:
-        real_run = subprocess.run
-        calls = []
-
-        def mock_run(cmd, **kwargs):
-            if cmd[:1] == ["gh"]:
-                calls.append((cmd, kwargs))
-                return subprocess.CompletedProcess(cmd, 0)
-            if cmd[:3] == ["jj", "-R", str(self.repo)] and "push" in cmd:
-                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-            return real_run(cmd, **kwargs)
-
-        with patch("subprocess.run", side_effect=mock_run):
-            jj_workspace_mod.teardown(self.repo, self.ws, after="pr")
-
-        self.assertEqual(len(calls), 1, "gh pr create should be invoked exactly once")
-        cmd, kwargs = calls[0]
-        self.assertIn("--head", cmd)
-        self.assertIn(self.ws.bookmark, cmd)
-        self.assertEqual(kwargs.get("cwd"), str(self.repo))
-        # pr teardown never removes the workspace
-        self.assertTrue(self.ws.path.is_dir())
-
-    def test_teardown_pr_push_failure_leaves_workspace_and_prints_message(self) -> None:
-        out = io.StringIO()
-
-        def mock_jj(repo, args, capture=False):
-            if "push" in args:
-                raise subprocess.CalledProcessError(1, "jj git push")
-            return ""
-
-        with (
-            patch.object(jj_workspace_mod, "_jj", side_effect=mock_jj),
-            contextlib.redirect_stdout(out),
-        ):
-            jj_workspace_mod.teardown(self.repo, self.ws, after="pr")
-
-        self.assertTrue(self.ws.path.is_dir())
-        self.assertIn(str(self.ws.path), out.getvalue())
+        self.assertIn("feat/undescribed — 2026-07-01T09:10", log_out)
 
 
 @unittest.skipUnless(JJ and DOCKER, "jj and docker/podman both required")
@@ -418,20 +538,23 @@ class JjWorkspaceDockerEndToEndTests(unittest.TestCase):
         self.assertIn("agent: add agent_output", log_out)
         self.assertIn("feat/e2e", log_out)
 
-    def test_container_change_survives_rebase_teardown(self) -> None:
-        ws = jj_workspace_mod.setup(self.repo, "feat/e2e-rebase")
+    def test_container_change_survives_finalize(self) -> None:
+        ws = jj_workspace_mod.setup(self.repo, "feat/e2e-finalize")
         self._docker(ws.path, "echo 'hello from container' > agent_output.txt")
         subprocess.run(
             ["jj", "-R", str(ws.path), "describe", "-m", "agent: add file"],
             check=True, capture_output=True,
         )
 
-        jj_workspace_mod.teardown(self.repo, ws, after="rebase")
+        jj_workspace_mod.finalize(
+            self.repo, ws, keep_workspace=False, session_failed=False, message="msg"
+        )
 
         self.assertFalse(ws.path.exists())  # workspace removed
-        log_out = subprocess.run(
-            ["jj", "-R", str(self.repo), "log", "--no-pager"],
+        # The change is captured on the bookmark.
+        file_out = subprocess.run(
+            ["jj", "-R", str(self.repo), "file", "show", "-r", "feat/e2e-finalize",
+             "root:agent_output.txt"],
             capture_output=True, text=True, check=True,
         ).stdout
-        self.assertIn("agent: add file", log_out)
-        self.assertIn("feat/e2e-rebase", log_out)
+        self.assertEqual(file_out, "hello from container\n")
