@@ -1,0 +1,25 @@
+#!/bin/bash
+set -euo pipefail
+
+jail=$1
+shift
+mkdir -p "$jail"
+mount --make-rprivate /
+
+bind() {
+    local source=$1 target=$2 mode=$3 destination="$jail$2"
+    if [ -d "$source" ]; then mkdir -p "$destination"; else mkdir -p "$(dirname "$destination")"; touch "$destination"; fi
+    mount --bind "$source" "$destination"
+    if [ "$mode" = ro ]; then mount -o remount,bind,ro "$destination"; fi
+}
+
+for source in /usr /bin /lib /lib* /etc; do
+    [ ! -e "$source" ] || bind "$source" "$source" ro
+done
+mkdir -p "$jail/home/agent/.claude" "$jail/home/agent/.codex" "$jail/home/agent/.config" \
+    "$jail/project-sandbox-config/claude" "$jail/project-sandbox-config/codex" \
+    "$jail/project-sandbox-secrets/claude" "$jail/project-sandbox-secrets/codex" \
+    "$jail/project-sandbox-secrets/opencode" "$jail/tmp"
+
+while [ "$#" -gt 0 ]; do bind "$1" "$2" "$3"; shift 3; done
+exec chroot "$jail" /bin/bash -lc 'cd /workspace && exec /bin/bash'

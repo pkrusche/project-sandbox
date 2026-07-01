@@ -10,10 +10,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from unittest.mock import patch
 
 from project_sandbox.container_cli import (
+    CHROOT,
     DOCKER,
+    MountSpec,
     PODMAN,
     _run_quietable,
     build_image,
+    build_chroot_argv,
+    build_mount_specs,
     build_run_argv,
     build_stop_argv,
     ensure_system_started,
@@ -25,6 +29,44 @@ from project_sandbox.git_identity import GitIdentity
 
 
 class ContainerCliTests(TestCase):
+    def test_select_runtime_chroot_is_explicit_linux_only(self) -> None:
+        with patch("project_sandbox.container_cli.sys.platform", "linux"), patch(
+            "project_sandbox.container_cli.shutil.which", return_value="/usr/bin/unshare"
+        ):
+            self.assertEqual(select_runtime("chroot"), CHROOT)
+        with patch("project_sandbox.container_cli.sys.platform", "darwin"):
+            with self.assertRaisesRegex(SystemExit, "Linux only"):
+                select_runtime("chroot", dry_run=True)
+
+    def test_auto_never_selects_chroot(self) -> None:
+        with patch("project_sandbox.container_cli.sys.platform", "linux"), patch(
+            "project_sandbox.container_cli.shutil.which",
+            side_effect=lambda binary: "/usr/bin/unshare" if binary == "unshare" else None,
+        ):
+            with self.assertRaisesRegex(SystemExit, "No supported container runtime"):
+                select_runtime("auto")
+
+    def test_chroot_argv_consumes_shared_mount_specs(self) -> None:
+        root = Path("/tmp/layout")
+        mounts = build_mount_specs(
+            project_abs=root / "workspace", claude_cfg=root / "config/claude/settings.json",
+            claude_credentials_dir=root / "secrets/claude",
+            codex_cfg=root / "config/codex/config.toml",
+            codex_credentials_dir=root / "secrets/codex", opencode_credentials_dir=None,
+            extra_mounts=["type=bind,source=/tmp/prompt,target=/project-sandbox-prompt,readonly"],
+        )
+        argv = build_chroot_argv(script=root / "run", jail_root=root / "root", mounts=mounts)
+        self.assertEqual(argv[:4], ["unshare", "--map-root-user", "--mount", "--"])
+        self.assertIn(MountSpec(root / "workspace", "/workspace"), mounts)
+        self.assertIn("/project-sandbox-prompt", argv)
+        self.assertEqual(argv[-1], "ro")
+
+    def test_chroot_image_build_is_noop(self) -> None:
+        with patch("project_sandbox.container_cli.subprocess.run") as run_mock:
+            rc = build_image(runtime=CHROOT, context_dir=Path("/missing"), image_tag="unused")
+        self.assertEqual(rc, 0)
+        run_mock.assert_not_called()
+
     def test_build_run_argv_uses_arg_list_for_headless_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

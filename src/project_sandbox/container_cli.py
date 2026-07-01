@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .git_identity import GitIdentity
 
-RUNTIME_CHOICES = ("auto", "apple-container", "docker", "podman")
+RUNTIME_CHOICES = ("auto", "apple-container", "docker", "podman", "chroot")
 
 
 @dataclass(frozen=True)
@@ -17,14 +17,23 @@ class Runtime:
     binary: str
 
 
+@dataclass(frozen=True)
+class MountSpec:
+    source: Path
+    target: str
+    readonly: bool = False
+
+
 APPLE_CONTAINER = Runtime("apple-container", "container")
 DOCKER = Runtime("docker", "docker")
 PODMAN = Runtime("podman", "podman")
+CHROOT = Runtime("chroot", "unshare")
 
 _RUNTIMES = {
     APPLE_CONTAINER.name: APPLE_CONTAINER,
     DOCKER.name: DOCKER,
     PODMAN.name: PODMAN,
+    CHROOT.name: CHROOT,
 }
 
 
@@ -34,6 +43,8 @@ def select_runtime(requested: str, *, dry_run: bool = False) -> Runtime:
 
     if requested != "auto":
         runtime = _RUNTIMES[requested]
+        if runtime == CHROOT and not sys.platform.startswith("linux"):
+            raise SystemExit("The chroot runtime is supported on Linux only")
         if not dry_run and shutil.which(runtime.binary) is None:
             raise SystemExit(f"{runtime.binary} CLI not found on PATH")
         return runtime
@@ -55,6 +66,102 @@ def select_runtime(requested: str, *, dry_run: bool = False) -> Runtime:
         f"No supported container runtime found on PATH for {sys.platform}; "
         f"install one of: {names}, or pass --runtime explicitly."
     )
+
+
+def parse_mount(value: str) -> MountSpec:
+    fields: dict[str, str] = {}
+    flags: set[str] = set()
+    for part in value.split(","):
+        if "=" in part:
+            key, item = part.split("=", 1)
+            fields[key] = item
+        else:
+            flags.add(part)
+    if (
+        fields.get("type", "bind") != "bind"
+        or "source" not in fields
+        or "target" not in fields
+    ):
+        raise SystemExit(f"Only bind mounts are supported: {value}")
+    return MountSpec(
+        Path(fields["source"]).resolve(strict=False),
+        fields["target"],
+        "readonly" in flags or fields.get("readonly") == "true",
+    )
+
+
+def build_mount_specs(
+    *,
+    project_abs: Path,
+    claude_cfg: Path,
+    claude_credentials_dir: Path | None,
+    codex_cfg: Path,
+    codex_credentials_dir: Path | None,
+    opencode_credentials_dir: Path | None,
+    extra_mounts: Sequence[str] = (),
+    forward_credentials: bool = True,
+) -> list[MountSpec]:
+    mounts = [
+        MountSpec(project_abs.resolve(strict=False), "/workspace"),
+        MountSpec(
+            claude_cfg.parent.resolve(strict=False),
+            "/project-sandbox-config/claude",
+            True,
+        ),
+        MountSpec(
+            codex_cfg.parent.resolve(strict=False),
+            "/project-sandbox-config/codex",
+            True,
+        ),
+    ]
+    if forward_credentials:
+        if claude_credentials_dir is not None:
+            mounts.append(
+                MountSpec(
+                    claude_credentials_dir.resolve(strict=False),
+                    "/project-sandbox-secrets/claude",
+                    True,
+                )
+            )
+        if codex_credentials_dir is not None:
+            mounts.append(
+                MountSpec(
+                    codex_credentials_dir.resolve(strict=False),
+                    "/project-sandbox-secrets/codex",
+                    True,
+                )
+            )
+        if opencode_credentials_dir is not None:
+            mounts.append(
+                MountSpec(
+                    opencode_credentials_dir.resolve(strict=False),
+                    "/project-sandbox-secrets/opencode",
+                    True,
+                )
+            )
+    mounts.extend(parse_mount(item) for item in extra_mounts)
+    return mounts
+
+
+def _mount_arg(mount: MountSpec) -> str:
+    value = f"type=bind,source={mount.source},target={mount.target}"
+    return value + (",readonly" if mount.readonly else "")
+
+
+def build_chroot_argv(
+    *, script: Path, jail_root: Path, mounts: Sequence[MountSpec]
+) -> list[str]:
+    argv = [
+        CHROOT.binary,
+        "--map-root-user",
+        "--mount",
+        "--",
+        str(script),
+        str(jail_root),
+    ]
+    for mount in mounts:
+        argv.extend((str(mount.source), mount.target, "ro" if mount.readonly else "rw"))
+    return argv
 
 
 def build_run_argv(
@@ -99,29 +206,18 @@ def build_run_argv(
     # mounted; the staged host tokens under /project-sandbox-secrets are only
     # forwarded when forward_credentials is set. With it off, the container
     # starts unauthenticated and the user logs in inside the sandbox.
-    argv += [
-        "--mount",
-        f"type=bind,source={project_abs},target=/workspace",
-        "--mount",
-        f"type=bind,source={claude_cfg.parent},target=/project-sandbox-config/claude,readonly",
-        "--mount",
-        f"type=bind,source={codex_cfg.parent},target=/project-sandbox-config/codex,readonly",
-    ]
-    if forward_credentials:
-        argv += [
-            "--mount",
-            f"type=bind,source={claude_credentials_dir.resolve(strict=False)},target=/project-sandbox-secrets/claude,readonly",
-        ]
-        if codex_credentials_dir is not None:
-            argv += [
-                "--mount",
-                f"type=bind,source={codex_credentials_dir.resolve(strict=False)},target=/project-sandbox-secrets/codex,readonly",
-            ]
-        if opencode_credentials_dir is not None:
-            argv += [
-                "--mount",
-                f"type=bind,source={opencode_credentials_dir.resolve(strict=False)},target=/project-sandbox-secrets/opencode,readonly",
-            ]
+    mounts = build_mount_specs(
+        project_abs=project_abs,
+        claude_cfg=claude_cfg,
+        claude_credentials_dir=claude_credentials_dir,
+        codex_cfg=codex_cfg,
+        codex_credentials_dir=codex_credentials_dir,
+        opencode_credentials_dir=opencode_credentials_dir,
+        extra_mounts=extra_mounts,
+        forward_credentials=forward_credentials,
+    )
+    for mount in mounts:
+        argv += ["--mount", _mount_arg(mount)]
     if identity.name:
         argv += [
             "--env",
@@ -150,8 +246,6 @@ def build_run_argv(
         argv += ["--env", "PROJECT_SANDBOX_NO_FIREWALL=1"]
     for env in extra_env:
         argv += ["--env", env]
-    for m in extra_mounts:
-        argv += ["--mount", m]
     argv += [image, "project-sandbox-run", agent]
     return argv
 
@@ -179,6 +273,8 @@ def build_image(
     dry_run: bool = False,
     verbose: bool = True,
 ) -> int:
+    if runtime == CHROOT:
+        return 0
     build_context = (build_context or context_dir).resolve(strict=False)
     dockerfile_path = (dockerfile_path or context_dir / "Dockerfile").resolve(strict=False)
     # Build with the context as "." and run from inside it. apple/container only
