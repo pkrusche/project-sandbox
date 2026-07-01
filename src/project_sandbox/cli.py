@@ -419,9 +419,18 @@ def main(argv: list[str] | None = None) -> int:
             # --dockerfile) keep building and rely on the runtime's layer
             # cache + the generated .dockerignore instead of fingerprinting an
             # arbitrary source tree.
+            host_identity = container_cli.host_build_identity(runtime)
             fingerprint = build_cache.compute_fingerprint(
                 context_dir,
-                extra={"image_tag": args.image_tag, "base_image": base_image or ""},
+                extra={
+                    "image_tag": args.image_tag,
+                    "base_image": base_image or "",
+                    "host_identity": (
+                        "default"
+                        if host_identity is None
+                        else f"{host_identity[0]}:{host_identity[1]}"
+                    ),
+                },
             )
             context_is_sandbox = build_context.resolve(
                 strict=False

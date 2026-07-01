@@ -32,10 +32,11 @@ contents and appends the sandbox runtime, firewall, OpenSpec, and installed
 coding agents. The build context defaults to the project root so existing `COPY`
 instructions keep working; use `--docker-context` if that Dockerfile expects a
 different context. If the source Dockerfile defines its own non-root user or
-standalone UID/GID setup, project-sandbox removes those instructions, prints a
-warning, and creates its own `agent` user with UID 1000. If a `RUN` instruction
-mixes user-management commands with unrelated build steps, project-sandbox
-rejects it instead of silently dropping the unrelated work.
+standalone UID/GID setup, project-sandbox removes those instructions and prints a
+warning. It creates its own `agent` user, matching the host UID/GID for direct
+Docker/Podman runs on Linux and defaulting to UID/GID 1000 elsewhere. If a
+`RUN` instruction mixes user-management commands with unrelated build steps,
+project-sandbox rejects it instead of silently dropping the unrelated work.
 
 Use `--dry-run` to preview every action without writing files or starting the
 runtime:

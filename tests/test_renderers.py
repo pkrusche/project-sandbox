@@ -54,6 +54,10 @@ class RendererTests(TestCase):
 
             docker_text = (context / "Dockerfile").read_text(encoding="utf-8")
             self.assertIn("FROM python:3.12-slim", docker_text)
+            self.assertIn("ARG AGENT_UID=1000", docker_text)
+            self.assertIn("ARG AGENT_GID=1000", docker_text)
+            self.assertIn('groupadd -g "${AGENT_GID}" agent', docker_text)
+            self.assertIn('useradd -m -u "${AGENT_UID}"', docker_text)
             self.assertIn("npm install -g @anthropic-ai/claude-code", docker_text)
             self.assertIn("npm install -g @openai/codex", docker_text)
             self.assertIn("npm install -g opencode-ai", docker_text)
@@ -588,7 +592,7 @@ class RendererTests(TestCase):
             text = existing.read_text(encoding="utf-8")
             self.assertNotIn("if ! id -u agent", text)
             self.assertIn("existing_uid_user", text)
-            self.assertIn("Removing existing UID 1000 user", text)
+            self.assertIn("Removing existing UID ${AGENT_UID} user", text)
             self.assertEqual(warnings, [])
 
     def test_dockerfile_renderer_overwrites_existing_jj_install(self) -> None:
@@ -771,10 +775,10 @@ class RendererTests(TestCase):
             self.assertNotIn("groupadd --gid 1000", text)
             self.assertNotIn("useradd --uid 1000", text)
             self.assertNotIn("USER $USERNAME", text)
-            self.assertIn("groupadd -g 1000 agent", text)
-            self.assertIn("useradd -m -u 1000 -g agent -s /bin/bash agent", text)
-            self.assertIn("Removing existing UID 1000 user", text)
-            self.assertIn("Removing existing GID 1000 group", text)
+            self.assertIn('groupadd -g "${AGENT_GID}" agent', text)
+            self.assertIn('useradd -m -u "${AGENT_UID}" -g agent', text)
+            self.assertIn("Removing existing UID ${AGENT_UID} user", text)
+            self.assertIn("Removing existing GID ${AGENT_GID} group", text)
             self.assertEqual(len(warnings), 1)
             self.assertIn("Removed 2 restricted user setup instructions", warnings[0])
 

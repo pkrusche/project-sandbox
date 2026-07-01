@@ -4,6 +4,8 @@
 FROM {{ base_image }}
 {% endif %}
 SHELL ["/bin/bash", "-lc"]
+ARG AGENT_UID=1000
+ARG AGENT_GID=1000
 
 {% if source_dockerfile_text -%}
 USER root
@@ -20,21 +22,21 @@ RUN set -eux; \
     if id -u agent >/dev/null 2>&1; then \
         userdel -r agent 2>/dev/null || userdel agent; \
     fi; \
-    existing_uid_user="$(getent passwd 1000 | cut -d: -f1 || true)"; \
+    existing_uid_user="$(getent passwd "${AGENT_UID}" | cut -d: -f1 || true)"; \
     if [ -n "$existing_uid_user" ]; then \
-        echo "WARNING: Removing existing UID 1000 user '$existing_uid_user'; project-sandbox uses UID 1000 for agent."; \
+        echo "WARNING: Removing existing UID ${AGENT_UID} user '$existing_uid_user'; project-sandbox uses that UID for agent."; \
         userdel -r "$existing_uid_user" 2>/dev/null || userdel "$existing_uid_user"; \
     fi; \
-    existing_gid_group="$(getent group 1000 | cut -d: -f1 || true)"; \
+    existing_gid_group="$(getent group "${AGENT_GID}" | cut -d: -f1 || true)"; \
     if [ -n "$existing_gid_group" ]; then \
-        echo "WARNING: Removing existing GID 1000 group '$existing_gid_group'; project-sandbox uses GID 1000 for agent."; \
+        echo "WARNING: Removing existing GID ${AGENT_GID} group '$existing_gid_group'; project-sandbox uses that GID for agent."; \
         groupdel "$existing_gid_group" 2>/dev/null || true; \
     fi; \
     if getent group agent >/dev/null 2>&1; then \
         groupdel agent 2>/dev/null || true; \
     fi; \
-    groupadd -g 1000 agent; \
-    useradd -m -u 1000 -g agent -s /bin/bash agent
+    groupadd -g "${AGENT_GID}" agent; \
+    useradd -m -u "${AGENT_UID}" -g agent -s /bin/bash agent
 
 RUN install -d /project-sandbox-config/claude /project-sandbox-config/codex \
         /project-sandbox-secrets/claude /project-sandbox-secrets/codex \

