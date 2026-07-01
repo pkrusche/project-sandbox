@@ -3,12 +3,12 @@
 #
 # Creates a throwaway jj repository (matching tests/test_jj_workspace.py's
 # _make_jj_repo), asks the sandboxed bash agent to modify the jj workspace, and
-# verifies --after-session=rebase, merge, and nothing. The agent runs jj inside
-# the container, which works because project-sandbox mounts both the shared
-# .jj/repo store and the git backend it points at for an additional workspace.
-#
-# In jj, project-sandbox currently handles merge the same way as rebase: it
-# rebases the bookmarked agent change onto the default workspace revision.
+# verifies the single after-session action: the bookmark is advanced to the
+# session's revision (without rebasing onto the default workspace), the workspace
+# is removed by default, and --keep-workspace leaves it in place. The agent runs
+# jj inside the container, which works because project-sandbox mounts both the
+# shared .jj/repo store and the git backend it points at for an additional
+# workspace.
 #
 # Requirements: uv, jj, and a supported container runtime on PATH.
 #
@@ -80,7 +80,7 @@ fail=0
 
 run_ps() {
   local bookmark="$1"
-  local after="$2"
+  local keep="$2"
   local file="$3"
   local text="$4"
   local message="$5"
@@ -99,17 +99,19 @@ run_ps() {
     --agent bash
     --prompt-text "$prompt"
     --branch "$bookmark"
-    --after-session "$after"
     --no-forward-credentials
     --no-firewall
     --verbose
   )
+  if [ "$keep" = 1 ]; then
+    cmd+=(--keep-workspace)
+  fi
   if [ "$NO_BUILD" = 1 ]; then
     cmd+=(--no-build)
   fi
   cmd+=("$TMP_PROJECT" "$BASE_IMAGE")
 
-  echo "Running jj $after workflow on bookmark $bookmark"
+  echo "Running jj workflow on bookmark $bookmark (keep-workspace=$keep)"
   (cd "$ROOT" && "${cmd[@]}")
 }
 
@@ -152,45 +154,38 @@ jj -R "$TMP_PROJECT" new
 # hosts where the container UID may not match the host user.
 chmod -R a+rwX "$TMP_PROJECT"
 
+# Default: work is captured on the bookmark, the default workspace revision is
+# untouched (no rebase into main), and the workspace is removed.
 echo
-run_ps "e2e-jj-rebase" "rebase" "jj-rebase.txt" "jj rebase" "agent: jj rebase"
-assert_jj_file_contains "$TMP_PROJECT" "e2e-jj-rebase" "jj-rebase.txt" "jj rebase"
-assert_jj_log_contains "e2e-jj-rebase" "agent: jj rebase"
-if [ -d "${TMP_PROJECT}-workspaces/e2e-jj-rebase" ]; then
-  echo "  BAD   rebase workspace was not removed"
+run_ps "e2e-jj-default" 0 "jj-default.txt" "jj default" "agent: jj default"
+assert_jj_file_contains "$TMP_PROJECT" "e2e-jj-default" "jj-default.txt" "jj default"
+assert_jj_log_contains "e2e-jj-default" "agent: jj default"
+if jj -R "$TMP_PROJECT" file show -r @ "root:jj-default.txt" >/dev/null 2>&1; then
+  echo "  BAD   default action changed the default workspace revision"
   fail=1
 else
-  echo "  ok    rebase workspace was removed"
+  echo "  ok    default action left the default workspace revision unchanged"
+fi
+if [ -d "${TMP_PROJECT}-workspaces/e2e-jj-default" ]; then
+  echo "  BAD   default workspace was not removed"
+  fail=1
+else
+  echo "  ok    default workspace was removed"
 fi
 
+# --keep-workspace: same bookmark capture, but the workspace is left in place.
 echo
-run_ps "e2e-jj-merge" "merge" "jj-merge.txt" "jj merge" "agent: jj merge"
-assert_jj_file_contains "$TMP_PROJECT" "e2e-jj-merge" "jj-merge.txt" "jj merge"
-assert_jj_log_contains "e2e-jj-merge" "agent: jj merge"
-if [ -d "${TMP_PROJECT}-workspaces/e2e-jj-merge" ]; then
-  echo "  BAD   merge workspace was not removed"
-  fail=1
+run_ps "e2e-jj-keep" 1 "jj-keep.txt" "jj keep" "agent: jj keep"
+assert_jj_file_contains "$TMP_PROJECT" "e2e-jj-keep" "jj-keep.txt" "jj keep"
+assert_jj_log_contains "e2e-jj-keep" "agent: jj keep"
+WS_KEEP="${TMP_PROJECT}-workspaces/e2e-jj-keep"
+if [ -d "$WS_KEEP" ]; then
+  echo "  ok    keep-workspace left the workspace in place"
+  assert_jj_file_contains "$WS_KEEP" "e2e-jj-keep" "jj-keep.txt" "jj keep"
 else
-  echo "  ok    merge workspace was removed"
-fi
-
-echo
-run_ps "e2e-jj-nothing" "nothing" "jj-nothing.txt" "jj nothing" "agent: jj nothing"
-if jj -R "$TMP_PROJECT" file show -r @ "root:jj-nothing.txt" >/dev/null 2>&1; then
-  echo "  BAD   nothing action changed the default workspace revision"
-  fail=1
-else
-  echo "  ok    nothing action left the default workspace revision unchanged"
-fi
-WS_NOTHING="${TMP_PROJECT}-workspaces/e2e-jj-nothing"
-if [ -d "$WS_NOTHING" ]; then
-  echo "  ok    nothing workspace remains"
-else
-  echo "  BAD   nothing workspace was removed"
+  echo "  BAD   keep-workspace removed the workspace"
   fail=1
 fi
-assert_jj_file_contains "$WS_NOTHING" "e2e-jj-nothing" "jj-nothing.txt" "jj nothing"
-assert_jj_log_contains "e2e-jj-nothing" "agent: jj nothing"
 
 echo
 if [ "$fail" = 0 ]; then

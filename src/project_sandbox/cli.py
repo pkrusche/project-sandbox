@@ -7,6 +7,7 @@ import sys
 import time
 import uuid
 from argparse import ArgumentParser
+from datetime import datetime
 from pathlib import Path
 
 from . import (
@@ -134,14 +135,28 @@ def build_parser() -> ArgumentParser:
     p.add_argument("--no-firewall", action="store_true")
     p.add_argument(
         "--branch",
-        help="Run the agent in a git worktree on this branch (created if it doesn't exist).",
+        help=(
+            "Run the agent in a git worktree / jj workspace on this branch "
+            "(reused if it exists, else created)."
+        ),
     )
-    p.add_argument("--worktree-base")
+    p.add_argument(
+        "--branch-start-at",
+        metavar="REVISION",
+        help=(
+            "Starting commit/tag/branch/bookmark for a NEW branch created by "
+            "--branch. Errors if the branch/bookmark already exists (delete or "
+            "merge it first, or omit this flag to reuse it)."
+        ),
+    )
     p.add_argument("--worktree-dir")
     p.add_argument(
-        "--after-session",
-        choices=["ask", "merge", "rebase", "pr", "nothing"],
-        default="ask",
+        "--keep-workspace",
+        action="store_true",
+        help=(
+            "Leave the worktree/workspace in place after the session so a later "
+            "--branch run on the same branch can reuse it."
+        ),
     )
     p.add_argument("--prompt")
     p.add_argument("--prompt-text")
@@ -237,14 +252,10 @@ def main(argv: list[str] | None = None) -> int:
     _validate_api_key_injection_args(args, run_agent)
     if args.branch and run_agent is None:
         raise SystemExit("--branch requires --agent, --prompt, or --prompt-text")
-    if (
-        args.branch
-        and (args.prompt or args.prompt_text)
-        and args.after_session == "ask"
-    ):
-        raise SystemExit(
-            "--after-session=ask is not valid in unsupervised mode; use --after-session=nothing or another option."
-        )
+    if args.branch_start_at and not args.branch:
+        raise SystemExit("--branch-start-at requires --branch")
+    if args.keep_workspace and not args.branch:
+        raise SystemExit("--keep-workspace requires --branch")
 
     project = resolve_strict(args.project)
     if args.image_tag is None:
@@ -293,8 +304,9 @@ def main(argv: list[str] | None = None) -> int:
 
     # Once a worktree exists, every exit path must run teardown so a failed build
     # or early return does not orphan the worktree (and its branch). agent_ran
-    # distinguishes a genuine session (honor --after-session) from a setup/build
-    # failure before the agent ran (never integrate — just leave it in place).
+    # distinguishes a genuine session (finalize the branch/bookmark) from a
+    # setup/build failure before the agent ran (leave git in place, drop the
+    # empty jj workspace).
     agent_ran = False
     exit_code = 1
     try:
@@ -484,11 +496,9 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         if wt is not None:
             if agent_ran:
-                _teardown_worktree(args, project=project, wt=wt, exit_code=exit_code)
+                _finalize_worktree(args, project=project, wt=wt, exit_code=exit_code)
             elif isinstance(wt, jj_workspace_mod.JjWorkspace):
                 jj_workspace_mod.remove(project, wt)
-            else:
-                _teardown_any(project, wt, after="nothing")
 
 
 def _write_transcript_markdown(log_path: Path) -> None:
@@ -943,7 +953,7 @@ def _setup_worktree(args, project: Path):
         ws = jj_workspace_mod.setup(
             repo=project,
             bookmark=args.branch,
-            base=args.worktree_base,
+            start_at=args.branch_start_at,
             workspace_dir=_worktree_dir(args),
         )
         return ws, ws.path
@@ -951,7 +961,7 @@ def _setup_worktree(args, project: Path):
     wt = worktree_mod.setup(
         repo=project,
         branch=args.branch,
-        base=args.worktree_base,
+        start_at=args.branch_start_at,
         worktree_dir=_worktree_dir(args),
     )
     return wt, wt.path
@@ -994,22 +1004,33 @@ def _validate_worktree_project(project: Path) -> None:
         )
 
 
-def _teardown_worktree(args, *, project: Path, wt, exit_code: int) -> None:
-    after = args.after_session
-    if exit_code != 0:
-        if after != "nothing":
-            print(
-                f"session exited {exit_code}; skipping {after} — worktree left at {wt.path}"
-            )
-        after = "nothing"
-    _teardown_any(project, wt, after=after)
-
-
-def _teardown_any(project: Path, wt, *, after: str) -> None:
+def _finalize_worktree(args, *, project: Path, wt, exit_code: int) -> None:
+    session_failed = exit_code != 0
+    message = _session_commit_message(wt.branch if _is_git_worktree(wt) else wt.bookmark)
     if isinstance(wt, jj_workspace_mod.JjWorkspace):
-        jj_workspace_mod.teardown(project, wt, after=after)
+        jj_workspace_mod.finalize(
+            project,
+            wt,
+            keep_workspace=args.keep_workspace,
+            session_failed=session_failed,
+            message=message,
+        )
     else:
-        worktree_mod.teardown(project, wt, after=after)
+        worktree_mod.finalize(
+            project,
+            wt,
+            keep_workspace=args.keep_workspace,
+            session_failed=session_failed,
+            message=message,
+        )
+
+
+def _is_git_worktree(wt) -> bool:
+    return not isinstance(wt, jj_workspace_mod.JjWorkspace)
+
+
+def _session_commit_message(name: str) -> str:
+    return f"{name} — {datetime.now():%Y-%m-%dT%H:%M}"
 
 
 def _format_duration(seconds: float) -> str:

@@ -14,9 +14,17 @@ class Worktree:
     branch: str
 
 
-def setup(repo: Path, branch: str, base: str | None = None, worktree_dir: Path | None = None) -> Worktree:
+def setup(repo: Path, branch: str, start_at: str | None = None, worktree_dir: Path | None = None) -> Worktree:
     repo = repo.resolve()
     wt_path = path_for(repo, branch, worktree_dir=worktree_dir)
+
+    # --branch-start-at pins the starting point for a NEW branch only; reusing an
+    # existing branch with an explicit start point is ambiguous, so reject it.
+    if start_at is not None and _branch_exists(repo, branch):
+        raise SystemExit(
+            f"branch '{branch}' already exists; delete or merge it first, or omit "
+            f"--branch-start-at to reuse it."
+        )
 
     if wt_path.exists():
         _git(repo, ["worktree", "prune"])
@@ -30,16 +38,18 @@ def setup(repo: Path, branch: str, base: str | None = None, worktree_dir: Path |
             f"  Remove or rename it, then retry."
         )
 
-    branches = _git(repo, ["branch", "--list", branch], capture=True)
-    branch_exists = branch.strip() in branches
-
-    if branch_exists:
+    if _branch_exists(repo, branch):
         _git(repo, ["worktree", "add", str(wt_path), branch])
         return Worktree(path=wt_path, branch=branch)
 
-    base_ref = base or "HEAD"
+    base_ref = start_at or "HEAD"
     _git(repo, ["worktree", "add", "-b", branch, str(wt_path), base_ref])
     return Worktree(path=wt_path, branch=branch)
+
+
+def _branch_exists(repo: Path, branch: str) -> bool:
+    branches = _git(repo, ["branch", "--list", branch], capture=True)
+    return branch.strip() in branches
 
 
 def path_for(repo: Path, branch: str, worktree_dir: Path | None = None) -> Path:
@@ -73,61 +83,56 @@ def _teardown_lock(repo: Path) -> Iterator[None]:
             fcntl.flock(handle, fcntl.LOCK_UN)
 
 
-def teardown(repo: Path, wt: Worktree, *, after: str) -> None:
-    if after == "ask":
-        after = _prompt_user(wt)
+def finalize(
+    repo: Path,
+    wt: Worktree,
+    *,
+    keep_workspace: bool,
+    session_failed: bool,
+    message: str,
+) -> None:
+    """Capture the session's work on the branch, then remove the worktree.
 
-    if after == "nothing":
-        # Leave worktree and branch in place; nothing mutates the shared repo.
-        return
+    The single after-session action never integrates into the main checkout: it
+    commits any uncommitted work onto ``wt.branch`` (so ``worktree remove
+    --force`` cannot discard it) and, unless the session failed or the caller
+    asked to keep it, removes the worktree. The branch retains the commits for
+    the user to merge or open a PR from manually.
 
+    Runs from ``main()``'s ``finally`` block, so any git failure is caught and
+    reported rather than propagated (which would mask the session's exit code):
+    the worktree is left in place so no work is lost.
+    """
     with _teardown_lock(repo):
-        if after in ("merge", "rebase"):
-            _clear_stale_index_lock(repo, wt)
+        _clear_stale_index_lock(repo, wt)
+        try:
+            if _is_dirty(wt):
+                _git(wt.path, ["add", "-A"])
+                _git(wt.path, ["commit", "-m", message])
+        except subprocess.CalledProcessError:
+            print(
+                f"could not commit session changes — worktree left in place at {wt.path}"
+            )
+            return
 
-        if after == "merge":
-            try:
-                _git(repo, ["merge", "--no-ff", wt.branch, "-m", f"Merge agent session: {wt.branch}"])
-            except subprocess.CalledProcessError:
-                subprocess.run(["git", "-C", str(repo), "merge", "--abort"], check=False, capture_output=True)
-                print(f"merge conflict — worktree left in place at {wt.path}; integrate manually")
-                return
-        elif after == "rebase":
-            current = _git(repo, ["rev-parse", "--abbrev-ref", "HEAD"], capture=True).strip()
-            try:
-                subprocess.run(
-                    ["git", "-C", str(wt.path), "rebase", current],
-                    check=True,
-                )
-                _git(repo, ["merge", "--ff-only", wt.branch])
-            except subprocess.CalledProcessError:
-                subprocess.run(["git", "-C", str(wt.path), "rebase", "--abort"], check=False, capture_output=True)
-                print(f"merge conflict — worktree left in place at {wt.path}; integrate manually")
-                return
-        elif after == "pr":
-            try:
-                _git(repo, ["push", "-u", "origin", wt.branch])
-            except subprocess.CalledProcessError:
-                print(
-                    f"  Could not push '{wt.branch}' to 'origin' (is a remote configured?). "
-                    f"Worktree left in place at {wt.path}."
-                )
-                return
-            try:
-                subprocess.run(
-                    ["gh", "pr", "create", "--head", wt.branch, "--fill"],
-                    cwd=str(repo),
-                    check=True,
-                )
-            except subprocess.CalledProcessError:
-                print(
-                    f"  'gh pr create' failed for branch '{wt.branch}'. "
-                    f"Worktree left in place at {wt.path}; create the PR manually."
-                )
-                return
+        if session_failed:
+            print(f"session failed — worktree left in place at {wt.path}")
+            return
+        if keep_workspace:
+            print(f"worktree kept at {wt.path} (branch '{wt.branch}')")
+            return
 
-        if after in ("merge", "rebase"):
+        try:
             _git(repo, ["worktree", "remove", "--force", str(wt.path)])
+        except subprocess.CalledProcessError:
+            print(
+                f"could not remove worktree at {wt.path}; remove it manually with "
+                f"`git worktree remove --force`."
+            )
+
+
+def _is_dirty(wt: Worktree) -> bool:
+    return bool(_git(wt.path, ["status", "--porcelain"], capture=True).strip())
 
 
 def _git(repo: Path, args: list[str], capture: bool = False) -> str:
@@ -162,13 +167,3 @@ def _clear_stale_index_lock(repo: Path, wt: Worktree) -> None:
     lock = git_dir / "worktrees" / wt_name / "index.lock"
     if lock.exists():
         lock.unlink()
-
-
-def _prompt_user(wt: Worktree) -> str:
-    print(f"\n  Agent session ended. Branch: {wt.branch}")
-    print(f"  Worktree: {wt.path}")
-    choices = {"m": "merge", "r": "rebase", "p": "pr", "n": "nothing"}
-    while True:
-        ans = input("  Integrate? [m]erge / [r]ebase / [p]r / [n]othing: ").strip().lower()
-        if ans in choices:
-            return choices[ans]

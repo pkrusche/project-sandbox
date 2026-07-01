@@ -182,6 +182,40 @@ rebuilt and the build duration is reported (`Built image in 12.3s`).
 - `--force-build` rebuilds even when the cache is valid.
 - `--no-build` skips the build entirely, assuming the image already exists.
 
+## Branch Mode
+
+`--branch <name>` runs the agent in an isolated git worktree (or jj workspace, if
+the project root has a `.jj/` directory) checked out on `<name>`, instead of on
+your working tree. The worktree/workspace is mounted at `/workspace` in the
+sandbox and the repo's VCS metadata is bind-mounted so `git`/`jj` work inside.
+
+```bash
+uv run project-sandbox \
+  --branch feature/login \
+  --agent claude --prompt /absolute/path/to/prompt.txt \
+  /absolute/path/to/repo python:3.12-slim
+```
+
+After the session there is one action, and it never touches your main checkout:
+
+- The agent's work is captured on the branch/bookmark. For git, any uncommitted
+  changes are committed onto `<name>`. For jj, the working copy is snapshotted,
+  `@` is described if it has no message, and the bookmark is advanced to it.
+- The worktree/workspace is then removed. The branch/bookmark keeps the commits
+  for you to merge, rebase, or open a PR from manually.
+
+Related flags:
+
+- `--branch-start-at <revision>` — starting commit/tag/branch/bookmark for a
+  **new** branch. Errors if the branch/bookmark already exists (delete or merge it
+  first, or omit the flag to reuse it). Without it, a new branch starts at `HEAD`
+  (git) / `@` (jj), and an existing branch/bookmark is reused.
+- `--keep-workspace` — leave the worktree/workspace in place after the session so
+  a later `--branch <name>` run reuses it (the reused workspace resumes from the
+  branch/bookmark tip). A failed session is always left in place for inspection.
+- `--worktree-dir <path>` — where to place the worktree/workspace root (default:
+  a sibling `<repo>-worktrees` / `<repo>-workspaces` directory).
+
 ## Unsupervised Sessions
 
 Run the agent without a TTY, starting from a prompt and writing all output to a

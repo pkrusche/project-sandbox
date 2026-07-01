@@ -21,11 +21,21 @@ class JjWorkspace:
 def setup(
     repo: Path,
     bookmark: str,
-    base: str | None = None,
+    start_at: str | None = None,
     workspace_dir: Path | None = None,
 ) -> JjWorkspace:
     repo = repo.resolve()
     ws_path = path_for(repo, bookmark, workspace_dir=workspace_dir)
+
+    bookmark_exists = _bookmark_exists(repo, bookmark)
+
+    # --branch-start-at pins the starting point for a NEW bookmark only; reusing
+    # an existing bookmark with an explicit start point is ambiguous, so reject.
+    if start_at is not None and bookmark_exists:
+        raise SystemExit(
+            f"bookmark '{bookmark}' already exists; delete or merge it first, or "
+            f"omit --branch-start-at to reuse it."
+        )
 
     if ws_path.exists():
         existing = _list_workspaces(repo)
@@ -38,19 +48,22 @@ def setup(
 
     ws_path.parent.mkdir(parents=True, exist_ok=True)
     add_args = ["workspace", "add"]
-    if base:
-        add_args += ["-r", base]
+    if start_at:
+        add_args += ["-r", start_at]
+    elif bookmark_exists:
+        # Reuse: start the workspace at the bookmark's commit so the agent
+        # continues from where the last session left off (the bookmark is then
+        # advanced to @ at teardown), rather than off the default workspace's @.
+        add_args += ["-r", bookmark]
     elif not _current_revision_is_empty(repo):
         add_args += ["-r", "@"]
     add_args.append(str(ws_path))
     _jj(repo, add_args)
 
-    # Create or move the bookmark to this workspace's working-copy commit.
-    # After a rebase/merge teardown the bookmark survives but the workspace does
-    # not, so a fresh workspace must set rather than create.
-    if _bookmark_exists(ws_path, bookmark):
-        _jj(ws_path, ["bookmark", "set", "--allow-backwards", bookmark, "-r", "@"])
-    else:
+    # Point the bookmark at this workspace's working-copy commit. When reusing an
+    # existing bookmark, @ was created on top of it (above), so leave it where it
+    # is until teardown advances it.
+    if not bookmark_exists:
         _jj(ws_path, ["bookmark", "create", bookmark])
 
     return JjWorkspace(path=ws_path, bookmark=bookmark)
@@ -147,49 +160,57 @@ def _teardown_lock(repo: Path) -> Iterator[None]:
             fcntl.flock(handle, fcntl.LOCK_UN)
 
 
-def teardown(repo: Path, ws: JjWorkspace, *, after: str) -> None:
-    if after == "ask":
-        after = _prompt_user(ws)
+def finalize(
+    repo: Path,
+    ws: JjWorkspace,
+    *,
+    keep_workspace: bool,
+    session_failed: bool,
+    message: str,
+) -> None:
+    """Capture the session's work on the bookmark, then remove the workspace.
 
-    if after == "nothing":
-        # Leave workspace and bookmark in place; nothing mutates the shared store.
-        return
+    The single after-session action never integrates into the default
+    workspace: it snapshots the working copy, describes @ if it has no
+    description, and advances the bookmark to @. Unless the session failed or the
+    caller asked to keep it, the workspace is then forgotten and removed. The
+    bookmark retains the work for the user to rebase or push manually.
 
+    Runs from ``main()``'s ``finally`` block, so any jj failure is caught and
+    reported rather than propagated (which would mask the session's exit code):
+    the workspace is left in place so no work is lost.
+    """
     with _teardown_lock(repo):
         ws_name = ws.path.name
 
-        if after in ("rebase", "merge"):
-            _snapshot_workspace(ws)
-            # Rebase bookmark commits onto the default workspace's current @
-            try:
-                _jj(repo, ["rebase", "-b", ws.bookmark, "-d", "@"])
-            except subprocess.CalledProcessError:
-                print(f"rebase conflict — workspace left in place at {ws.path}; integrate manually")
-                return
-            _jj(repo, ["workspace", "forget", ws_name])
-            shutil.rmtree(ws.path, ignore_errors=True)
+        try:
+            # A no-op jj command forces a working-copy snapshot; describe @ if it
+            # carries no message, then point the bookmark at the final revision.
+            _jj(ws.path, ["status"], capture=True)
+            if not _description(ws.path):
+                _jj(ws.path, ["describe", "-r", "@", "-m", message])
+            _jj(ws.path, ["bookmark", "set", "--allow-backwards", ws.bookmark, "-r", "@"])
+        except subprocess.CalledProcessError:
+            print(
+                f"could not capture session changes — workspace left in place at {ws.path}"
+            )
+            return
 
-        elif after == "pr":
-            _snapshot_workspace(ws)
-            try:
-                _jj(repo, ["git", "push", "-b", ws.bookmark, "--allow-new"])
-            except subprocess.CalledProcessError:
-                print(
-                    f"  Could not push '{ws.bookmark}' (is a git remote configured?). "
-                    f"Workspace left in place at {ws.path}."
-                )
-                return
-            try:
-                subprocess.run(
-                    ["gh", "pr", "create", "--head", ws.bookmark, "--fill"],
-                    cwd=str(repo),
-                    check=True,
-                )
-            except subprocess.CalledProcessError:
-                print(
-                    f"  'gh pr create' failed for bookmark '{ws.bookmark}'. "
-                    f"Workspace left in place at {ws.path}; create the PR manually."
-                )
+        if session_failed:
+            print(f"session failed — workspace left in place at {ws.path}")
+            return
+        if keep_workspace:
+            print(f"workspace kept at {ws.path} (bookmark '{ws.bookmark}')")
+            return
+
+        try:
+            _jj(repo, ["workspace", "forget", ws_name])
+        except subprocess.CalledProcessError:
+            print(
+                f"could not forget workspace {ws_name}; workspace left in place at {ws.path}"
+            )
+            return
+        shutil.rmtree(ws.path, ignore_errors=True)
 
 
 def remove(repo: Path, ws: JjWorkspace) -> None:
@@ -233,13 +254,13 @@ def _current_revision_is_empty(repo: Path) -> bool:
     return out.strip() == "true"
 
 
-def _snapshot_workspace(ws: JjWorkspace) -> None:
-    _jj(ws.path, ["status"], capture=True)
-    _jj(
-        ws.path,
-        ["bookmark", "set", "--allow-backwards", ws.bookmark, "-r", "@"],
+def _description(ws_path: Path) -> str:
+    out = _jj(
+        ws_path,
+        ["log", "-r", "@", "--no-graph", "--template", "description"],
         capture=True,
     )
+    return out.strip()
 
 
 def _list_workspaces(repo: Path) -> list[str]:
@@ -265,13 +286,3 @@ def _list_workspaces(repo: Path) -> list[str]:
             path = rest.split(" (")[0].strip()
             paths.append(path)
     return paths
-
-
-def _prompt_user(ws: JjWorkspace) -> str:
-    print(f"\n  Agent session ended. Bookmark: {ws.bookmark}")
-    print(f"  Workspace: {ws.path}")
-    choices = {"r": "rebase", "p": "pr", "n": "nothing"}
-    while True:
-        ans = input("  Integrate? [r]ebase / [p]r / [n]othing: ").strip().lower()
-        if ans in choices:
-            return choices[ans]
