@@ -10,7 +10,7 @@
 #   scripts/run-e2e-tests.sh [--runtime chroot|auto|apple-container|docker|podman]
 #                            [--base-image IMAGE] [--no-build] [--keep]
 #
-#   --runtime NAME   runtime forwarded to workflow scripts (default: chroot)
+#   --runtime NAME   runtime forwarded to workflow scripts (default: chroot on Linux, auto otherwise)
 #   --base-image IMG base image forwarded to workflow scripts (default: python:3.12-slim)
 #   --no-build       forward --no-build to workflow scripts
 #   --keep           keep temporary directories on failure for debugging
@@ -18,7 +18,11 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-RUNTIME="chroot"
+if [ "$(uname -s)" = Linux ]; then
+  RUNTIME="chroot"
+else
+  RUNTIME="auto"
+fi
 BASE_IMAGE="python:3.12-slim"
 NO_BUILD=0
 KEEP=0
