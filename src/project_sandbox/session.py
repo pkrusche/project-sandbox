@@ -29,7 +29,7 @@ def run(
     verbose: bool = False,
 ) -> int:
     if dry_run:
-        redirect = "2>&1 | tee" if verbose else "> "
+        redirect = "2>&1 | tee" if verbose else ">"
         print(shlex.join(argv), redirect, shlex.quote(str(log_path)))
         if timeout:
             print(f"# timeout: {timeout}s")
@@ -45,6 +45,7 @@ def run(
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            errors="replace",
             start_new_session=True,
         )
         assert proc.stdout is not None
@@ -132,7 +133,11 @@ def _tee_output(stream, handle, verbose: bool = True) -> None:
 
 
 def count_lines(path: Path) -> int:
-    """Count newlines in a file without loading it all into memory."""
+    """Count lines in a file without loading it all into memory.
+
+    A trailing unterminated line (no final newline) is still counted, matching
+    the behavior of iterating over the file's lines.
+    """
     try:
         with path.open("rb") as fh:
             return sum(1 for _ in fh)
