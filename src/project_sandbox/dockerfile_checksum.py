@@ -74,8 +74,12 @@ def changed_warnings(context_dir: Path, dockerfiles: list[Path]) -> list[str]:
 
 def record(context_dir: Path, dockerfiles: list[Path]) -> None:
     """Persist the current checksum of each tracked Dockerfile as the trusted
-    baseline. Unreadable files are skipped rather than recorded."""
-    data: dict[str, str] = {}
+    baseline. Unreadable files are skipped rather than recorded.
+
+    Merges into any existing state file rather than overwriting it, so that
+    baselines previously recorded for other Dockerfiles (for example a
+    different ``--dockerfile`` used in an earlier run) are preserved."""
+    data = _read(context_dir)
     for path in dockerfiles:
         try:
             data[_key(path)] = checksum(path)
