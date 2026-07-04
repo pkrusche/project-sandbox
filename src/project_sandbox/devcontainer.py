@@ -204,8 +204,7 @@ def render(
         "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=delegated",
         "workspaceFolder": "/workspace",
     }
-    if initialize_command:
-        config["initializeCommand"] = initialize_command
+    config["initializeCommand"] = initialize_command
     config["remoteUser"] = "agent"
     config["containerEnv"] = container_env
     config["remoteEnv"] = {

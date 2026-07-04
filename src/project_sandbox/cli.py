@@ -324,6 +324,11 @@ def main(argv: list[str] | None = None) -> int:
         )
     if run_agent is not None:
         _validate_session_inputs(args)
+    # Resolve the injected API key values once, before any worktree or image
+    # work: a missing env var or env file fails fast here, and the argv
+    # construction plus the subprocess environment below then agree on a
+    # single snapshot instead of re-reading the files.
+    api_key_values = _api_key_env_values(args)
     allow_github = _allow_github(args, run_agent)
     _warn_opencode_provider_allowlist(args, run_agent)
 
@@ -507,7 +512,7 @@ def main(argv: list[str] | None = None) -> int:
             # surface its own raw runtime error for a nonexistent image.
             raise SystemExit(
                 f"--no-build was given but image {args.image_tag!r} does not exist; "
-                "build it first (drop --no-build) or use --force-build."
+                "drop --no-build so the image can be built."
             )
 
         cmd, log_path, unsupervised, container_stop_argv = _build_session_command(
@@ -523,6 +528,7 @@ def main(argv: list[str] | None = None) -> int:
             codex_cfg=cfg["codex"],
             runtime=runtime,
             create_prompt_files=True,
+            api_key_values=api_key_values,
         )
 
         if not unsupervised:
@@ -540,7 +546,6 @@ def main(argv: list[str] | None = None) -> int:
         # Injected API key values are never baked into cmd's argv (see
         # _build_session_command); supply them through the subprocess
         # environment instead so they don't show up via `ps`/process listings.
-        api_key_values = _api_key_env_values(args)
         if unsupervised:
             assert log_path is not None
             if not args.verbose:
@@ -625,8 +630,6 @@ def _dry_run(
         },
     }
     run_agent = _requested_agent(args)
-    # _validate_api_key_injection_args already ran in main() before dispatching
-    # here; re-running it would be redundant.
     _warn_opencode_provider_allowlist(args, run_agent)
     if args.runtime == container_cli.CHROOT.name:
         _validate_chroot_session(run_agent)
@@ -765,6 +768,26 @@ def _api_key_env_values(args) -> dict[str, str]:
             )
         values[name] = os.environ[name]
     return values
+
+
+def _write_staged_api_key_env_file(path: Path, values: dict[str, str]) -> None:
+    """Stage resolved --api-key-env values as a key=value env file, mode 0600.
+
+    Used for runtimes (apple `container`) whose CLI is not documented to
+    inherit a bare ``--env NAME`` from the client environment; the file keeps
+    the secret out of argv while still reaching the container via --env-file.
+    """
+    for name, value in values.items():
+        if "\n" in value or "\r" in value:
+            raise SystemExit(
+                f"--api-key-env {name}: value contains a newline and cannot be "
+                "passed via an env file"
+            )
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write("".join(f"{name}={value}\n" for name, value in values.items()))
+    # os.open's mode only applies on creation; tighten a pre-existing file too.
+    path.chmod(0o600)
 
 
 def _read_api_key_env_file(path: Path) -> dict[str, str]:
@@ -907,11 +930,13 @@ def _resolve_build_source(
     if args.dockerfile:
         if args.base_image:
             raise SystemExit("Use either base_image or --dockerfile, not both")
-        base_dockerfile = resolve_strict(args.dockerfile)
+        base_dockerfile = _resolve_required_path(args.dockerfile, what="--dockerfile")
         if not base_dockerfile.is_file():
             raise SystemExit(f"--dockerfile must point to a file: {base_dockerfile}")
         build_context = (
-            resolve_strict(args.docker_context) if args.docker_context else project
+            _resolve_required_path(args.docker_context, what="--docker-context")
+            if args.docker_context
+            else project
         )
         if not build_context.is_dir():
             raise SystemExit(
@@ -1193,10 +1218,11 @@ def _mount_touches_path(mount_value: str, vcs_dir: Path) -> bool:
         # An invalid mount value is reported separately when it is actually
         # used; here it simply can't be judged as conflicting or not.
         return False
-    if spec.raw is not None:
-        # A mount form we don't model structurally (not a bind mount, or
-        # missing source/target) can't be compared to vcs_dir.
-        return False
+    # Raw (non-bind / partially modeled) mounts still carry any source/target
+    # fields parse_mount saw, so e.g. a tmpfs mount targeting the metadata
+    # path is caught here instead of failing later with the runtime's own
+    # duplicate-mount error; absent fields are relative placeholders that can
+    # never match the absolute vcs_dir.
     candidates = [spec.source]
     target_path = Path(spec.target)
     if target_path.is_absolute():
@@ -1220,6 +1246,7 @@ def _build_session_command(
     codex_cfg: Path,
     runtime: container_cli.Runtime,
     create_prompt_files: bool,
+    api_key_values: dict[str, str] | None = None,
 ) -> tuple[list[str], Path | None, bool, list[str] | None]:
     # Agent availability is validated up front in main() via _ensure_agent_available.
     extra_mounts = list(args.extra_mounts)
@@ -1251,13 +1278,31 @@ def _build_session_command(
             raise SystemExit(conflict_msg)
         extra_mounts.extend(metadata_mounts)
     extra_env: list[str] = []
-    api_key_values = _api_key_env_values(args)
-    if runtime.is_container:
-        # Pass bare names (no "=VALUE") so docker/podman/apple-container look
-        # the value up from *this process's* environment — set via env= on
-        # the subprocess call in main()/_dry_run() — instead of the secret
-        # appearing directly in argv, where it would be visible via `ps`.
-        extra_env.extend(api_key_values.keys())
+    if api_key_values is None:
+        api_key_values = _api_key_env_values(args)
+    staged_api_key_env_file = context_dir / "api-keys.env"
+    use_api_key_env_file = bool(api_key_values) and (
+        runtime.name == container_cli.APPLE_CONTAINER.name
+    )
+    if use_api_key_env_file:
+        # apple `container` documents only `--env key=value` and `--env-file`;
+        # unlike docker/podman, a bare `--env NAME` is not documented to
+        # inherit the value from the client's environment. Stage the values in
+        # a 0600 env file instead, so the secret still never appears in argv.
+        if create_prompt_files:
+            _write_staged_api_key_env_file(staged_api_key_env_file, api_key_values)
+        else:
+            print(f"Would write API key env file: {staged_api_key_env_file}")
+    else:
+        if create_prompt_files:
+            # Don't leave a previous apple-container run's staged keys behind.
+            staged_api_key_env_file.unlink(missing_ok=True)
+        if runtime.is_container:
+            # Pass bare names (no "=VALUE") so docker/podman look the value up
+            # from *this process's* environment — set via env= on the
+            # subprocess call in main()/_dry_run() — instead of the secret
+            # appearing directly in argv, where it would be visible via `ps`.
+            extra_env.extend(api_key_values.keys())
     # For the chroot runtime there is no separate daemon to hand a bare name
     # to: the value must already be inherited from the parent process
     # environment through the unshare/env chain, so nothing is added to argv.
@@ -1403,6 +1448,7 @@ def _build_session_command(
             firewall_enabled=not args.no_firewall,
             interactive=not unsupervised,
             extra_env=extra_env,
+            env_file=staged_api_key_env_file if use_api_key_env_file else None,
             container_name=container_name,
             forward_credentials=forward_credentials,
         )

@@ -1,5 +1,17 @@
 # TODO - outstanding items
 
+## Verify API key injection on a real Apple `container` host
+
+`--api-key-env` / `--api-key-env-file` now stage a 0600 `api-keys.env` file and
+pass `--env-file` for the apple-container runtime, because unlike docker/podman
+a bare `--env NAME` is not documented to inherit the value from the client's
+environment. The argv/staging behavior is covered by
+`tests/test_cli.py::ApiKeyInjectionTests`, but unit tests do not exercise the
+real CLI by policy. Outstanding: on macOS, confirm `container run --env-file`
+delivers the variable into the container, and check whether bare `--env NAME`
+inheritance actually works there (if it does, the env-file path can be dropped
+for symmetry with docker/podman).
+
 ## Firewall: verify multi-resolver rules on a real iptables host
 
 Code is complete and the render path is covered by

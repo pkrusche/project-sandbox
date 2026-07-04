@@ -1658,6 +1658,30 @@ class CliTests(TestCase):
 
         self.assertIn("--mount conflicts", str(raised.exception))
 
+    def test_mount_conflict_check_handles_raw_mount_forms(self) -> None:
+        """A mount form we don't model structurally (tmpfs/volume, or a bind
+        mount with an unrecognized option) can still name the metadata path in
+        its source/target fields; it must conflict cleanly here instead of
+        failing later with the runtime's own duplicate-mount error."""
+        vcs_dir = Path("/repo/.git")
+        self.assertTrue(
+            cli._mount_touches_path("type=tmpfs,target=/repo/.git", vcs_dir)
+        )
+        self.assertTrue(
+            cli._mount_touches_path("type=tmpfs,target=/repo/.git/hooks", vcs_dir)
+        )
+        self.assertTrue(
+            cli._mount_touches_path(
+                "type=bind,source=/repo/.git,target=/elsewhere,bind-propagation=rshared",
+                vcs_dir,
+            )
+        )
+        # Sibling paths and raw forms without path fields must not conflict.
+        self.assertFalse(
+            cli._mount_touches_path("type=tmpfs,target=/repo/.git-backup", vcs_dir)
+        )
+        self.assertFalse(cli._mount_touches_path("type=tmpfs", vcs_dir))
+
     def test_no_build_and_force_build_are_mutually_exclusive(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(SystemExit) as raised:
@@ -1742,6 +1766,45 @@ class CliTests(TestCase):
 
         self.assertNotIsInstance(raised.exception, FileNotFoundError)
         self.assertIn("--api-key-env-file does not exist", str(raised.exception))
+
+    def test_missing_dockerfile_raises_clean_system_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+
+            with patch.object(
+                cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")
+            ):
+                with self.assertRaises(SystemExit) as raised:
+                    cli.main([
+                        "--dry-run",
+                        "--dockerfile", str(project / "no-such-Dockerfile"),
+                        str(project),
+                    ])
+
+        self.assertNotIsInstance(raised.exception, FileNotFoundError)
+        self.assertIn("--dockerfile does not exist", str(raised.exception))
+
+    def test_missing_docker_context_raises_clean_system_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            dockerfile = project / "Dockerfile"
+            dockerfile.write_text("FROM debian:bookworm\n", encoding="utf-8")
+
+            with patch.object(
+                cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")
+            ):
+                with self.assertRaises(SystemExit) as raised:
+                    cli.main([
+                        "--dry-run",
+                        "--dockerfile", str(dockerfile),
+                        "--docker-context", str(project / "no-such-context"),
+                        str(project),
+                    ])
+
+        self.assertNotIsInstance(raised.exception, FileNotFoundError)
+        self.assertIn("--docker-context does not exist", str(raised.exception))
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "chroot runtime is Linux-only")
     def test_invalid_mount_under_chroot_raises_clean_system_exit(self) -> None:
@@ -3423,6 +3486,161 @@ class ApiKeyInjectionTests(TestCase):
             self.assertFalse(
                 any(token == "ANTHROPIC_API_KEY=super-secret-value" for token in cmd)
             )
+
+    def test_api_key_env_uses_env_file_for_apple_container_runtime(self) -> None:
+        """apple `container` documents only `--env key=value` and `--env-file`;
+        a bare `--env NAME` is not documented to inherit the client's
+        environment, so the key must travel via a 0600 staged env file that
+        keeps the secret out of argv."""
+        import argparse
+
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            context_dir = project / ".project-sandbox"
+            context_dir.mkdir()
+            claude_cfg = context_dir / "claude" / "settings.json"
+            codex_cfg = context_dir / "codex" / "config.toml"
+            args = argparse.Namespace(
+                branch=None,
+                cpus=4,
+                extra_mounts=[],
+                image_tag="project-sandbox:test",
+                log=None,
+                memory="8g",
+                no_firewall=True,
+                no_forward_credentials=True,
+                api_key_env=["ANTHROPIC_API_KEY"],
+                api_key_env_file=[],
+                prompt=None,
+                prompt_text="echo ok",
+                verbose=False,
+            )
+
+            with patch.dict(
+                os.environ, {"ANTHROPIC_API_KEY": "super-secret-value"}, clear=False
+            ):
+                cmd, _log_path, _unsupervised, _stop_argv = cli._build_session_command(
+                    args,
+                    project=project,
+                    context_dir=context_dir,
+                    workspace=project,
+                    worktree=None,
+                    identity=GitIdentity(None, None),
+                    run_agent="bash",
+                    claude_cfg=claude_cfg,
+                    credential_dirs={},
+                    codex_cfg=codex_cfg,
+                    runtime=cli.container_cli.APPLE_CONTAINER,
+                    create_prompt_files=True,
+                )
+
+            self.assertIn("--env-file", cmd)
+            env_file = Path(cmd[cmd.index("--env-file") + 1])
+            self.assertEqual(
+                env_file.read_text(encoding="utf-8"),
+                "ANTHROPIC_API_KEY=super-secret-value\n",
+            )
+            self.assertEqual(env_file.stat().st_mode & 0o777, 0o600)
+            # Neither the bare name nor the value may appear in argv.
+            self.assertNotIn("ANTHROPIC_API_KEY", cmd)
+            self.assertFalse(any("super-secret-value" in token for token in cmd))
+
+    def test_api_key_env_file_not_written_in_dry_run_for_apple_container(self) -> None:
+        import argparse
+
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            context_dir = project / ".project-sandbox"
+            claude_cfg = context_dir / "claude" / "settings.json"
+            codex_cfg = context_dir / "codex" / "config.toml"
+            args = argparse.Namespace(
+                branch=None,
+                cpus=4,
+                extra_mounts=[],
+                image_tag="project-sandbox:test",
+                log=None,
+                memory="8g",
+                no_firewall=True,
+                no_forward_credentials=True,
+                api_key_env=["ANTHROPIC_API_KEY"],
+                api_key_env_file=[],
+                prompt=None,
+                prompt_text="echo ok",
+                verbose=False,
+            )
+
+            out = io.StringIO()
+            with (
+                patch.dict(
+                    os.environ, {"ANTHROPIC_API_KEY": "super-secret-value"}, clear=False
+                ),
+                contextlib.redirect_stdout(out),
+            ):
+                cmd, _log_path, _unsupervised, _stop_argv = cli._build_session_command(
+                    args,
+                    project=project,
+                    context_dir=context_dir,
+                    workspace=project,
+                    worktree=None,
+                    identity=GitIdentity(None, None),
+                    run_agent="bash",
+                    claude_cfg=claude_cfg,
+                    credential_dirs={},
+                    codex_cfg=codex_cfg,
+                    runtime=cli.container_cli.APPLE_CONTAINER,
+                    create_prompt_files=False,
+                )
+
+            self.assertIn("--env-file", cmd)
+            self.assertFalse((context_dir / "api-keys.env").exists())
+            self.assertIn("Would write API key env file", out.getvalue())
+            self.assertNotIn("super-secret-value", out.getvalue())
+
+    def test_stale_api_key_env_file_is_removed_when_unused(self) -> None:
+        """A previous apple-container run's staged keys must not linger once a
+        later run stops using the env-file path."""
+        import argparse
+
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            context_dir = project / ".project-sandbox"
+            context_dir.mkdir()
+            stale = context_dir / "api-keys.env"
+            stale.write_text("OLD_KEY=old-secret\n", encoding="utf-8")
+            claude_cfg = context_dir / "claude" / "settings.json"
+            codex_cfg = context_dir / "codex" / "config.toml"
+            args = argparse.Namespace(
+                branch=None,
+                cpus=4,
+                extra_mounts=[],
+                image_tag="project-sandbox:test",
+                log=None,
+                memory="8g",
+                no_firewall=True,
+                no_forward_credentials=True,
+                api_key_env=[],
+                api_key_env_file=[],
+                prompt=None,
+                prompt_text="echo ok",
+                verbose=False,
+            )
+
+            cli._build_session_command(
+                args,
+                project=project,
+                context_dir=context_dir,
+                workspace=project,
+                worktree=None,
+                identity=GitIdentity(None, None),
+                run_agent="bash",
+                claude_cfg=claude_cfg,
+                credential_dirs={},
+                codex_cfg=codex_cfg,
+                runtime=cli.container_cli.DOCKER,
+                create_prompt_files=True,
+            )
+
+            self.assertFalse(stale.exists())
 
     def test_api_key_env_value_supplied_via_subprocess_env_not_argv(self) -> None:
         """main() must hand the secret to the docker/podman CLI through the

@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import session
 from .git_identity import GitIdentity
 
 RUNTIME_CHOICES = ("auto", "apple-container", "docker", "podman", "chroot")
@@ -132,7 +133,15 @@ def parse_mount(value: str) -> MountSpec:
         # bind mount missing source/target even after alias lookup) is passed
         # through to the container runtime unchanged. Only chroot, which
         # performs its own bind mounts, requires a fully structured mount.
-        return MountSpec(Path("."), "", raw=value)
+        # Preserve whatever source/target fields were present so callers can
+        # still compare paths (e.g. the metadata-mount conflict check); the
+        # relative placeholders used for absent fields can never match an
+        # absolute path.
+        return MountSpec(
+            Path(source).resolve(strict=False) if source else Path("."),
+            target or "",
+            raw=value,
+        )
     target_path = Path(target)
     if not target_path.is_absolute() or ".." in target_path.parts:
         raise SystemExit(f"Bind mount target must be an absolute jail path: {target}")
@@ -264,6 +273,7 @@ def build_run_argv(
     firewall_enabled: bool,
     interactive: bool,
     extra_env: Sequence[str] = (),
+    env_file: Path | None = None,
     opencode_credentials_dir: Path | None = None,
     container_name: str | None = None,
     forward_credentials: bool = True,
@@ -313,6 +323,8 @@ def build_run_argv(
         argv += ["--env", "PROJECT_SANDBOX_NO_FIREWALL=1"]
     for env in extra_env:
         argv += ["--env", env]
+    if env_file is not None:
+        argv += ["--env-file", str(env_file)]
     argv += [image, "project-sandbox-run", agent]
     return argv
 
@@ -433,22 +445,8 @@ def run(
         return 0
     try:
         return subprocess.run(
-            argv, check=False, env=_merged_env(env)
+            argv, check=False, env=session.merged_env(env)
         ).returncode
     except FileNotFoundError:
         print(f"{argv[0]} CLI not found on PATH")
         return 127
-
-
-def _merged_env(env: dict[str, str] | None) -> dict[str, str] | None:
-    """Return a subprocess env with ``env`` layered on top of the current
-    process environment, or None (inherit as-is) when there is nothing to add.
-
-    Used to hand a runtime CLI (docker/podman/container) a secret value
-    without it ever appearing in argv: the caller passes a bare `--env NAME`
-    and the value is supplied here, in the child process's environment, where
-    it is not visible via `ps`/process listings.
-    """
-    if not env:
-        return None
-    return {**os.environ, **env}
