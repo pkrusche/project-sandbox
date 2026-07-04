@@ -350,7 +350,9 @@ def main(argv: list[str] | None = None) -> int:
         # refreshes the claude token; opencode has no delegated refresh (no-op).
         if run_agent is not None and forward_credentials and not args.no_token_refresh:
             oauth_refresh.refresh_host_token(
-                "claude" if run_agent == "bash" else run_agent, home=Path.home()
+                "claude" if run_agent == "bash" else run_agent,
+                home=Path.home(),
+                verbose=args.verbose,
             )
         if forward_credentials:
             credential_dirs = config_agents.sync_credentials(context_dir)
