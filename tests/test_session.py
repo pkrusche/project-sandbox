@@ -51,6 +51,27 @@ class SessionTests(TestCase):
             self.assertIn("hello from agent", log_path.read_text(encoding="utf-8"))
             self.assertNotIn("hello from agent", out.getvalue())
 
+    def test_env_argument_is_merged_into_child_environment(self) -> None:
+        """A value passed via env= must reach the child process even though it
+        never appears in argv (so a secret injected this way isn't visible via
+        `ps`/process listings)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "session.log"
+            argv = [
+                sys.executable,
+                "-c",
+                "import os; print(os.environ['MY_SECRET'])",
+            ]
+            rc = session.run(
+                argv,
+                log_path=log_path,
+                env={"MY_SECRET": "top-secret-value"},
+            )
+
+            self.assertEqual(rc, 0)
+            self.assertIn("top-secret-value", log_path.read_text(encoding="utf-8"))
+            self.assertNotIn("top-secret-value", " ".join(argv))
+
     def test_verbose_run_echoes_to_terminal(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             log_path = Path(tmp) / "session.log"

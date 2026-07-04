@@ -284,7 +284,11 @@ class DevcontainerTests(TestCase):
             context_dir = Path(tmp)
             cli._write_project_sandbox_gitignore(context_dir)
             content = (context_dir / ".gitignore").read_text(encoding="utf-8")
-            self.assertIn("history/", content)
+            # history/ is already excluded by the leading "*" glob (nothing
+            # negates it back in), so an explicit "history/" entry would be
+            # redundant and is no longer written.
+            self.assertIn("*\n", content)
+            self.assertNotIn("history/", content)
 
     def test_render_creates_relative_symlinks_into_project_sandbox(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

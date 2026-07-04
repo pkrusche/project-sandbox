@@ -116,3 +116,45 @@ class WriteProjectSandboxGitignoreTests(TestCase):
                 "!entrypoint.sh",
             ):
                 self.assertIn(keep, content)
+
+    def test_has_no_redundant_history_entry(self) -> None:
+        """history/ is already excluded by the leading "*" glob (nothing
+        negates it back in), so an explicit entry for it would be dead
+        weight."""
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+
+            cli._write_project_sandbox_gitignore(context)
+            content = (context / ".gitignore").read_text(encoding="utf-8")
+
+            self.assertNotIn("history/", content)
+
+
+class GitignoreMechanismInteractionTests(TestCase):
+    """_update_project_gitignore unconditionally ignores the whole
+    .project-sandbox/ directory from the project's root .gitignore. Git never
+    descends into an already-ignored directory, so the "!"-negation patterns
+    written by _write_project_sandbox_gitignore into the nested
+    .project-sandbox/.gitignore can never re-include anything while that
+    root-level rule is in place. This is inherent to how the two mechanisms
+    interact, so the nested file must clearly document that its negations
+    only matter if a user manually removes/edits the root rule.
+    """
+
+    def test_nested_gitignore_documents_dependency_on_root_rule(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            cli._write_project_sandbox_gitignore(context)
+            nested_content = (context / ".gitignore").read_text(encoding="utf-8")
+
+        project = context.parent
+        cli._update_project_gitignore(project)
+        root_content = (project / ".gitignore").read_text(encoding="utf-8")
+
+        # The root rule that makes the nested negations inert in the normal
+        # case.
+        self.assertIn(".project-sandbox/", root_content)
+        # The nested file must explain, in the file itself, that its
+        # negations only take effect if that root rule is removed/edited.
+        self.assertIn("only have an effect if you have manually removed", nested_content)
+        self.assertIn("!Dockerfile", nested_content)

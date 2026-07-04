@@ -425,12 +425,30 @@ def _run_quietable(cmd: list[str], *, verbose: bool, cwd: str | None = None) -> 
         return 127
 
 
-def run(argv: list[str], *, dry_run: bool = False) -> int:
+def run(
+    argv: list[str], *, dry_run: bool = False, env: dict[str, str] | None = None
+) -> int:
     if dry_run:
         print(shlex.join(argv))
         return 0
     try:
-        return subprocess.run(argv, check=False).returncode
+        return subprocess.run(
+            argv, check=False, env=_merged_env(env)
+        ).returncode
     except FileNotFoundError:
         print(f"{argv[0]} CLI not found on PATH")
         return 127
+
+
+def _merged_env(env: dict[str, str] | None) -> dict[str, str] | None:
+    """Return a subprocess env with ``env`` layered on top of the current
+    process environment, or None (inherit as-is) when there is nothing to add.
+
+    Used to hand a runtime CLI (docker/podman/container) a secret value
+    without it ever appearing in argv: the caller passes a bare `--env NAME`
+    and the value is supplied here, in the child process's environment, where
+    it is not visible via `ps`/process listings.
+    """
+    if not env:
+        return None
+    return {**os.environ, **env}

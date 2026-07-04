@@ -27,6 +27,7 @@ def run(
     container_stop_argv: list[str] | None = None,
     dry_run: bool = False,
     verbose: bool = False,
+    env: dict[str, str] | None = None,
 ) -> int:
     if dry_run:
         redirect = "2>&1 | tee" if verbose else ">"
@@ -47,6 +48,10 @@ def run(
             text=True,
             errors="replace",
             start_new_session=True,
+            # Merge in any extra values (e.g. injected API keys) rather than
+            # baking them into argv, so they never appear via `ps`/process
+            # listings; None (the default) inherits the parent env unchanged.
+            env=({**os.environ, **env} if env else None),
         )
         assert proc.stdout is not None
         output_thread = threading.Thread(
