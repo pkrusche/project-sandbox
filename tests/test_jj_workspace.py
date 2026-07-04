@@ -107,6 +107,50 @@ class PathForCollisionTests(unittest.TestCase):
         self.assertIsNone(jj_workspace_mod.git_backend_mount(repo, ws))
 
 
+class ListWorkspacesTests(unittest.TestCase):
+    """_list_workspaces() must trust a successful templated call outright,
+    never re-classify its output by scanning for ':' — a character that can
+    legitimately appear in a workspace path."""
+
+    def test_colon_in_workspace_path_is_not_misparsed(self) -> None:
+        repo = Path("/tmp/fake/repo")
+        # Simulates `jj workspace list --template 'root ++ "\n"'` succeeding
+        # with one workspace path that happens to contain a colon.
+        templated_out = "/tmp/fake/repo\n/tmp/fake/repo-workspaces/other:place\n"
+
+        def fake_jj(_repo, args, capture=False):
+            self.assertIn("--template", args)
+            return templated_out
+
+        with patch.object(jj_workspace_mod, "_jj", side_effect=fake_jj):
+            paths = jj_workspace_mod._list_workspaces(repo)
+
+        self.assertEqual(
+            paths,
+            ["/tmp/fake/repo", "/tmp/fake/repo-workspaces/other:place"],
+        )
+
+    def test_falls_back_to_human_format_only_when_template_call_fails(self) -> None:
+        repo = Path("/tmp/fake/repo")
+        human_out = (
+            'default: nmptpmps 11fc3403 (empty) (no description set)\n'
+            '"other:place": zupokots 1b71df22 (empty) (no description set)\n'
+        )
+
+        def fake_jj(_repo, args, capture=False):
+            if "--template" in args:
+                raise subprocess.CalledProcessError(1, "jj workspace list")
+            return human_out
+
+        with patch.object(jj_workspace_mod, "_jj", side_effect=fake_jj):
+            paths = jj_workspace_mod._list_workspaces(repo)
+
+        self.assertEqual(
+            paths,
+            ["nmptpmps 11fc3403", "zupokots 1b71df22"],
+        )
+
+
 @unittest.skipUnless(JJ, "jj not installed")
 class JjWorkspaceSetupTests(unittest.TestCase):
     def setUp(self) -> None:
