@@ -783,11 +783,13 @@ def _write_staged_api_key_env_file(path: Path, values: dict[str, str]) -> None:
                 f"--api-key-env {name}: value contains a newline and cannot be "
                 "passed via an env file"
             )
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    path.unlink(missing_ok=True)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(path, flags, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write("".join(f"{name}={value}\n" for name, value in values.items()))
-    # os.open's mode only applies on creation; tighten a pre-existing file too.
-    path.chmod(0o600)
 
 
 def _read_api_key_env_file(path: Path) -> dict[str, str]:

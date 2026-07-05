@@ -3545,6 +3545,29 @@ class ApiKeyInjectionTests(TestCase):
             self.assertNotIn("ANTHROPIC_API_KEY", cmd)
             self.assertFalse(any("super-secret-value" in token for token in cmd))
 
+    def test_staged_api_key_env_file_replaces_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            target = tmp_path / "target.env"
+            target.write_text("SHOULD_NOT_CHANGE=1\n", encoding="utf-8")
+            env_file = tmp_path / "api-keys.env"
+            env_file.symlink_to(target)
+
+            cli._write_staged_api_key_env_file(
+                env_file, {"ANTHROPIC_API_KEY": "super-secret-value"}
+            )
+
+            self.assertFalse(env_file.is_symlink())
+            self.assertEqual(
+                env_file.read_text(encoding="utf-8"),
+                "ANTHROPIC_API_KEY=super-secret-value\n",
+            )
+            self.assertEqual(env_file.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(
+                target.read_text(encoding="utf-8"),
+                "SHOULD_NOT_CHANGE=1\n",
+            )
+
     def test_api_key_env_file_not_written_in_dry_run_for_apple_container(self) -> None:
         import argparse
 
