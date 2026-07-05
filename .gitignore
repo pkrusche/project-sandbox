@@ -18,3 +18,5 @@ dist/
 .claude/skills
 # project-sandbox — do not commit agent secrets
 .devcontainer/
+# release state tracking
+.release-status/

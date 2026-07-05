@@ -65,3 +65,18 @@ All three scripts default to `--runtime chroot` on Linux and accept
 `--runtime chroot|auto|apple-container|docker|podman`, `--base-image IMAGE`,
 `--no-build`, and `--keep`. Run `./scripts/run-e2e-tests.sh` to execute the
 smoke, env-injection, git, and jj suites together with the same defaults.
+
+## Releasing
+
+`scripts/make-release.sh` creates a GitHub release interactively:
+
+1. Verifies the working copy is clean (jj-aware).
+2. Runs Ruff and pytest checks.
+3. Prompts to confirm or bump the version in `pyproject.toml`.  If you change the
+   version the script exits so you can commit the bump, then re-run.
+4. Creates a GitHub release and tag via the `gh` CLI (`gh` must be installed and
+   authenticated).
+
+Progress is tracked in `.release-status/` (git-ignored).  Re-running the script
+after a failure resumes from the last incomplete step.  Delete `.release-status/`
+to start a fresh release cycle.
