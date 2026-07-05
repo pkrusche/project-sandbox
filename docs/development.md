@@ -53,11 +53,12 @@ throwaway git and jj repositories. They verify the finish actions that integrate
 or leave agent work after the session:
 
 ```bash
+./scripts/e2e-env-injection.sh
 ./scripts/e2e-git-workflow.sh
 ./scripts/e2e-jj-workflow.sh
 ```
 
-Both scripts default to `--runtime chroot` on Linux and accept
+All three scripts default to `--runtime chroot` on Linux and accept
 `--runtime chroot|auto|apple-container|docker|podman`, `--base-image IMAGE`,
 `--no-build`, and `--keep`. Run `./scripts/run-e2e-tests.sh` to execute the
-smoke, git, and jj suites together with the same defaults.
+smoke, env-injection, git, and jj suites together with the same defaults.
