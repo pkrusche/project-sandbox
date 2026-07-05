@@ -58,7 +58,7 @@ class RendererTests(TestCase):
             self.assertIn("ARG AGENT_GID=1000", docker_text)
             self.assertIn('groupadd -g "${AGENT_GID}" agent', docker_text)
             self.assertIn('useradd -m -u "${AGENT_UID}"', docker_text)
-            self.assertIn('groupdel agent', docker_text)
+            self.assertIn("groupdel agent", docker_text)
             self.assertIn("npm install -g @anthropic-ai/claude-code", docker_text)
             self.assertIn("npm install -g @openai/codex", docker_text)
             self.assertIn("npm install -g opencode-ai", docker_text)
@@ -69,7 +69,7 @@ class RendererTests(TestCase):
             self.assertIn('JJ_VERSION="v0.42.0"', docker_text)
             self.assertNotIn("releases/latest", docker_text)
             self.assertIn(
-                'jj-${JJ_VERSION}-${JJ_ARCH}-unknown-linux-musl.tar.gz',
+                "jj-${JJ_VERSION}-${JJ_ARCH}-unknown-linux-musl.tar.gz",
                 docker_text,
             )
             self.assertNotIn("releases/download//jj--", docker_text)
@@ -79,10 +79,10 @@ class RendererTests(TestCase):
             self.assertIn("bypassPermissions", claude.read_text(encoding="utf-8"))
             self.assertIn('"theme"', claude.read_text(encoding="utf-8"))
             codex_text = codex.read_text(encoding="utf-8")
+            self.assertIn('approval_policy = "never"', codex_text)
             self.assertIn(
-                'approval_policy = "never"', codex_text
+                '[projects."/workspace"]\ntrust_level = "trusted"', codex_text
             )
-            self.assertIn('[projects."/workspace"]\ntrust_level = "trusted"', codex_text)
             self.assertIn("[analytics]\nenabled = false", codex_text)
             self.assertIn("[feedback]\nenabled = false", codex_text)
             firewall_text = fw.read_text(encoding="utf-8")
@@ -139,10 +139,12 @@ class RendererTests(TestCase):
             self.assertIn("NODE_SHA256=", docker_text)
             self.assertIn("JJ_SHA256=", docker_text)
             self.assertRegex(
-                docker_text, r'echo "\$\{NODE_SHA256\}  \$\{node_tarball\}" \| sha256sum -c -'
+                docker_text,
+                r'echo "\$\{NODE_SHA256\}  \$\{node_tarball\}" \| sha256sum -c -',
             )
             self.assertRegex(
-                docker_text, r'echo "\$\{JJ_SHA256\}  \$\{jj_tarball\}" \| sha256sum -c -'
+                docker_text,
+                r'echo "\$\{JJ_SHA256\}  \$\{jj_tarball\}" \| sha256sum -c -',
             )
 
     def test_entrypoint_requires_prompt_file_for_headless_mode(self) -> None:
@@ -163,8 +165,12 @@ class RendererTests(TestCase):
             context = root / ".project-sandbox"
             (home / ".claude").mkdir(parents=True)
             (context / "claude").mkdir(parents=True)
-            (context / "claude" / ".credentials.json").write_text("stale\n", encoding="utf-8")
-            (context / "claude" / ".claude.json").write_text("stale\n", encoding="utf-8")
+            (context / "claude" / ".credentials.json").write_text(
+                "stale\n", encoding="utf-8"
+            )
+            (context / "claude" / ".claude.json").write_text(
+                "stale\n", encoding="utf-8"
+            )
             (home / ".claude" / ".credentials.json").write_text(
                 '{"token":"dir"}\n',
                 encoding="utf-8",
@@ -178,7 +184,9 @@ class RendererTests(TestCase):
 
             config = config_agents.render(context)["claude"]
             with _credentials_root(root):
-                staged_dir = config_agents.sync_credentials(context, home=home)["claude"]
+                staged_dir = config_agents.sync_credentials(context, home=home)[
+                    "claude"
+                ]
 
             staged_credentials = staged_dir / ".credentials.json"
             staged_home_credentials = staged_dir / ".claude.json"
@@ -215,7 +223,9 @@ class RendererTests(TestCase):
             self.assertEqual(staged_credentials.stat().st_mode & 0o777, 0o600)
             self.assertEqual(staged_home_credentials.stat().st_mode & 0o777, 0o600)
 
-    def test_claude_config_dir_account_state_is_staged_when_root_json_is_missing(self) -> None:
+    def test_claude_config_dir_account_state_is_staged_when_root_json_is_missing(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             home = root / "home"
@@ -227,7 +237,9 @@ class RendererTests(TestCase):
             )
 
             with _credentials_root(root):
-                staged_dir = config_agents.sync_credentials(context, home=home)["claude"]
+                staged_dir = config_agents.sync_credentials(context, home=home)[
+                    "claude"
+                ]
 
             staged_home_credentials = staged_dir / ".claude.json"
             self.assertEqual(
@@ -287,7 +299,9 @@ class RendererTests(TestCase):
                 encoding="utf-8",
             )
             (context / "opencode" / "auth.json").write_text("stale\n", encoding="utf-8")
-            (codex_home / "auth.json").write_text('{"token":"codex"}\n', encoding="utf-8")
+            (codex_home / "auth.json").write_text(
+                '{"token":"codex"}\n', encoding="utf-8"
+            )
             (codex_home / "config.toml").write_text("secret = true\n", encoding="utf-8")
 
             with _credentials_root(root):
@@ -304,9 +318,9 @@ class RendererTests(TestCase):
             )
             self.assertFalse((codex_staged / "config.toml").exists())
             self.assertEqual(
-                (
-                    opencode_staged / ".config" / "opencode" / "opencode.jsonc"
-                ).read_text(encoding="utf-8"),
+                (opencode_staged / ".config" / "opencode" / "opencode.jsonc").read_text(
+                    encoding="utf-8"
+                ),
                 '{"model":"test"}\n',
             )
             self.assertFalse(
@@ -335,7 +349,9 @@ class RendererTests(TestCase):
             home.mkdir()
 
             with _credentials_root(root):
-                staged_dir = config_agents.sync_credentials(context, home=home)["claude"]
+                staged_dir = config_agents.sync_credentials(context, home=home)[
+                    "claude"
+                ]
 
             staged_home_credentials = staged_dir / ".claude.json"
             self.assertEqual(
@@ -367,7 +383,9 @@ class RendererTests(TestCase):
             )
 
             with _credentials_root(root):
-                staged_dir = config_agents.sync_credentials(context, home=home)["claude"]
+                staged_dir = config_agents.sync_credentials(context, home=home)[
+                    "claude"
+                ]
 
             staged_home_credentials = staged_dir / ".claude.json"
             self.assertEqual(
@@ -410,7 +428,10 @@ class RendererTests(TestCase):
 
             with (
                 patch("project_sandbox.config_agents.sys.platform", "darwin"),
-                patch("project_sandbox.config_agents.shutil.which", return_value="/usr/bin/security"),
+                patch(
+                    "project_sandbox.config_agents.shutil.which",
+                    return_value="/usr/bin/security",
+                ),
                 patch(
                     "project_sandbox.config_agents._keychain_account",
                     return_value="test-user",
@@ -464,7 +485,9 @@ class RendererTests(TestCase):
             context.mkdir()
             home = root / "home"
             (home / ".claude").mkdir(parents=True)
-            (home / ".claude" / ".credentials.json").write_text("{}\n", encoding="utf-8")
+            (home / ".claude" / ".credentials.json").write_text(
+                "{}\n", encoding="utf-8"
+            )
             with _credentials_root(root):
                 staged = config_agents.sync_credentials(context, home=home)["claude"]
                 digest_dir = staged.parent
@@ -534,9 +557,13 @@ class RendererTests(TestCase):
             (home / ".claude.json").write_text("{not json\n", encoding="utf-8")
 
             with _credentials_root(root):
-                staged_dir = config_agents.sync_credentials(context, home=home)["claude"]
+                staged_dir = config_agents.sync_credentials(context, home=home)[
+                    "claude"
+                ]
 
-            state = json.loads((staged_dir / ".claude.json").read_text(encoding="utf-8"))
+            state = json.loads(
+                (staged_dir / ".claude.json").read_text(encoding="utf-8")
+            )
             self.assertEqual(state["permissions"]["defaultMode"], "bypassPermissions")
             self.assertEqual(state["installMethod"], "npm")
             self.assertNotIn("not json", json.dumps(state))
@@ -546,13 +573,18 @@ class RendererTests(TestCase):
             out_dir = Path(tmp)
             with (
                 patch("project_sandbox.config_agents.sys.platform", "darwin"),
-                patch("project_sandbox.config_agents.shutil.which", return_value="/usr/bin/security"),
+                patch(
+                    "project_sandbox.config_agents.shutil.which",
+                    return_value="/usr/bin/security",
+                ),
                 patch(
                     "project_sandbox.config_agents.subprocess.run",
                     side_effect=subprocess.TimeoutExpired(["security"], timeout=2),
                 ),
             ):
-                self.assertFalse(config_agents._stage_macos_keychain_credentials(out_dir))
+                self.assertFalse(
+                    config_agents._stage_macos_keychain_credentials(out_dir)
+                )
 
             self.assertFalse((out_dir / ".credentials.json").exists())
 
@@ -603,7 +635,7 @@ class RendererTests(TestCase):
             existing.write_text(
                 "FROM python:3.12-slim\n"
                 "RUN JJ_ARCH=$(uname -m) && \\\n"
-                "    curl -fsSL \"https://github.com/jj-vcs/jj/releases/latest/download/jj-${JJ_ARCH}-unknown-linux-musl.tar.gz\" \\\n"
+                '    curl -fsSL "https://github.com/jj-vcs/jj/releases/latest/download/jj-${JJ_ARCH}-unknown-linux-musl.tar.gz" \\\n'
                 "    | tar -xz -C /usr/local/bin jj && \\\n"
                 "    chmod 0755 /usr/local/bin/jj\n",
                 encoding="utf-8",
@@ -700,9 +732,7 @@ class RendererTests(TestCase):
             self.assertNotIn(".git", patterns)
             # Must not exclude the generated dir whose scripts are COPY'd in.
             self.assertNotIn(".project-sandbox", patterns)
-            self.assertTrue(
-                (context / "Dockerfile.devcontainer.dockerignore").exists()
-            )
+            self.assertTrue((context / "Dockerfile.devcontainer.dockerignore").exists())
 
     def test_render_dockerignore_skips_when_context_is_sandbox(self) -> None:
         # When the build context is just .project-sandbox/ there is nothing heavy
@@ -777,9 +807,7 @@ class RendererTests(TestCase):
             self.assertNotIn("useradd --uid 1000", text)
             self.assertNotIn("USER $USERNAME", text)
             self.assertIn('groupadd -g "${AGENT_GID}" agent', text)
-            self.assertIn(
-                'useradd -m -u "${AGENT_UID}" -g "${AGENT_GID}"', text
-            )
+            self.assertIn('useradd -m -u "${AGENT_UID}" -g "${AGENT_GID}"', text)
             self.assertIn("Removing existing UID ${AGENT_UID} user", text)
             self.assertIn("Reusing existing GID ${AGENT_GID} group", text)
             self.assertEqual(len(warnings), 1)
@@ -827,15 +855,19 @@ class RendererTests(TestCase):
             self.assertIn("/project-sandbox-config/codex/config.toml", text)
             self.assertIn("/project-sandbox-secrets/codex/auth.json", text)
             self.assertIn("/project-sandbox-secrets/opencode/.config/opencode", text)
-            self.assertIn("/project-sandbox-secrets/opencode/.local/share/opencode", text)
-            self.assertIn("/project-sandbox-secrets/opencode/.local/state/opencode", text)
+            self.assertIn(
+                "/project-sandbox-secrets/opencode/.local/share/opencode", text
+            )
+            self.assertIn(
+                "/project-sandbox-secrets/opencode/.local/state/opencode", text
+            )
             self.assertNotIn(".codex.host", text)
             self.assertNotIn("opencode.host", text)
             self.assertIn("sudo -n /usr/local/bin/project-sandbox-init-firewall", text)
             # Quiet mode suppresses the firewall banner but re-surfaces output on
             # failure (then aborts, since the firewall is the sandbox boundary).
             self.assertIn('"${PROJECT_SANDBOX_QUIET:-0}" = "1"', text)
-            self.assertIn('printf \'%s\\n\' "$fw_out" >&2', text)
+            self.assertIn("printf '%s\\n' \"$fw_out\" >&2", text)
             self.assertNotIn("sudo chown", text)
             self.assertIn('jj config set --user user.name "$NAME"', text)
             self.assertIn('jj config set --user user.email "$EMAIL"', text)
@@ -927,9 +959,7 @@ class RendererTests(TestCase):
             # The verbose echo is gated on PROJECT_SANDBOX_VERBOSE and reports the
             # resolved model/effort plus the full agent argv.
             self.assertIn("log_project_sandbox_agent_command() {", text)
-            self.assertIn(
-                'if [ "${PROJECT_SANDBOX_VERBOSE:-0}" != "1" ]; then', text
-            )
+            self.assertIn('if [ "${PROJECT_SANDBOX_VERBOSE:-0}" != "1" ]; then', text)
             self.assertIn(
                 "printf '  model:  %s\\n' \"${PROJECT_SANDBOX_MODEL:-(agent default)}\"",
                 text,
@@ -949,9 +979,9 @@ class RendererTests(TestCase):
             existing = context / "entrypoint.sh"
             existing.write_text(
                 "#!/bin/sh\n"
-                "[ -n \"${PROJECT_SANDBOX_USER_NAME:-}\" ] "
+                '[ -n "${PROJECT_SANDBOX_USER_NAME:-}" ] '
                 "&& git config --global user.name "
-                "\"$PROJECT_SANDBOX_USER_NAME\"\n",
+                '"$PROJECT_SANDBOX_USER_NAME"\n',
                 encoding="utf-8",
             )
 
@@ -967,8 +997,8 @@ class RendererTests(TestCase):
             existing = context / "entrypoint.sh"
             existing.write_text(
                 "#!/bin/sh\n"
-                "if [ -f \"/project-sandbox-config/claude/.claude.json\" ]; then\n"
-                "  cp \"/project-sandbox-config/claude/.claude.json\" \"$HOME/.claude.json\"\n"
+                'if [ -f "/project-sandbox-config/claude/.claude.json" ]; then\n'
+                '  cp "/project-sandbox-config/claude/.claude.json" "$HOME/.claude.json"\n'
                 "fi\n",
                 encoding="utf-8",
             )
@@ -997,8 +1027,12 @@ class RendererTests(TestCase):
             self.assertIn("/project-sandbox-config/codex/config.toml", text)
             self.assertIn("/project-sandbox-secrets/codex/auth.json", text)
             self.assertIn("/project-sandbox-secrets/opencode/.config/opencode", text)
-            self.assertIn("/project-sandbox-secrets/opencode/.local/share/opencode", text)
-            self.assertIn("/project-sandbox-secrets/opencode/.local/state/opencode", text)
+            self.assertIn(
+                "/project-sandbox-secrets/opencode/.local/share/opencode", text
+            )
+            self.assertIn(
+                "/project-sandbox-secrets/opencode/.local/state/opencode", text
+            )
             self.assertNotIn(".codex.host", text)
             self.assertNotIn("opencode.host", text)
             self.assertIn('jj config set --user user.name "$NAME"', text)
@@ -1012,8 +1046,8 @@ class RendererTests(TestCase):
             existing = context / "project-sandbox-devcontainer-init"
             existing.write_text(
                 "#!/bin/sh\n"
-                "if [ -f \"/project-sandbox-config/claude/.claude.json\" ]; then\n"
-                "  cp \"/project-sandbox-config/claude/.claude.json\" \"$HOME/.claude.json\"\n"
+                'if [ -f "/project-sandbox-config/claude/.claude.json" ]; then\n'
+                '  cp "/project-sandbox-config/claude/.claude.json" "$HOME/.claude.json"\n'
                 "fi\n",
                 encoding="utf-8",
             )
@@ -1030,7 +1064,7 @@ class RendererTests(TestCase):
             existing = context / "entrypoint.sh"
             existing.write_text(
                 "#!/bin/sh\n"
-                "export CLAUDE_CONFIG_DIR=\"${CLAUDE_CONFIG_DIR:-$HOME/.claude}\"\n",
+                'export CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"\n',
                 encoding="utf-8",
             )
 
@@ -1045,8 +1079,7 @@ class RendererTests(TestCase):
             context = Path(tmp)
             existing = context / "project-sandbox-devcontainer-init"
             existing.write_text(
-                "#!/bin/sh\n"
-                "[ -n \"$NAME\" ] && git config --global user.name \"$NAME\"\n",
+                '#!/bin/sh\n[ -n "$NAME" ] && git config --global user.name "$NAME"\n',
                 encoding="utf-8",
             )
 
@@ -1056,12 +1089,16 @@ class RendererTests(TestCase):
             self.assertIn('jj config set --user user.name "$NAME"', text)
             self.assertIn('jj config set --user user.email "$EMAIL"', text)
 
-    def test_firewall_render_writes_both_container_and_devcontainer_scripts(self) -> None:
+    def test_firewall_render_writes_both_container_and_devcontainer_scripts(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             context = Path(tmp)
             fw = firewall.render(context, extra_domains=[])
             container_text = (context / "init-firewall.sh").read_text(encoding="utf-8")
-            devcontainer_text = (context / "init-firewall-devcontainer.sh").read_text(encoding="utf-8")
+            devcontainer_text = (context / "init-firewall-devcontainer.sh").read_text(
+                encoding="utf-8"
+            )
 
             self.assertEqual(fw, context / "init-firewall.sh")
             self.assertNotIn("HOST_GW4", container_text)
@@ -1236,9 +1273,15 @@ class RendererTests(TestCase):
             context = Path(tmp)
             cfg = config_agents.render(context)
             self.assertEqual(cfg["claude"], context / "claude" / "settings.json")
-            self.assertEqual(cfg["claude-devcontainer"], context / "claude-devcontainer" / "settings.json")
+            self.assertEqual(
+                cfg["claude-devcontainer"],
+                context / "claude-devcontainer" / "settings.json",
+            )
             self.assertEqual(cfg["codex"], context / "codex" / "config.toml")
-            self.assertEqual(cfg["codex-devcontainer"], context / "codex-devcontainer" / "config.toml")
+            self.assertEqual(
+                cfg["codex-devcontainer"],
+                context / "codex-devcontainer" / "config.toml",
+            )
 
     def test_render_claude_devcontainer_uses_auto_permission_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1254,13 +1297,17 @@ class RendererTests(TestCase):
             context = Path(tmp)
             out = config_agents.render(context)["claude"]
             settings = json.loads(out.read_text(encoding="utf-8"))
-            self.assertEqual(settings["permissions"]["defaultMode"], "bypassPermissions")
+            self.assertEqual(
+                settings["permissions"]["defaultMode"], "bypassPermissions"
+            )
 
     def test_render_codex_devcontainer_uses_on_request_approval(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             context = Path(tmp)
             out = config_agents.render(context)["codex-devcontainer"]
-            self.assertIn('approval_policy = "on-request"', out.read_text(encoding="utf-8"))
+            self.assertIn(
+                'approval_policy = "on-request"', out.read_text(encoding="utf-8")
+            )
 
     def test_render_codex_container_uses_never_approval(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1277,7 +1324,10 @@ class RendererTests(TestCase):
             source.write_text("FROM alpine:3.19\nRUN echo hello\n", encoding="utf-8")
             warnings: list[str] = []
             dockerfile.render(
-                context, base_dockerfile=source, build_context=project, warn=warnings.append
+                context,
+                base_dockerfile=source,
+                build_context=project,
+                warn=warnings.append,
             )
             self.assertEqual(len(warnings), 1)
             self.assertIn("alpine", warnings[0])
@@ -1295,7 +1345,10 @@ class RendererTests(TestCase):
             )
             warnings: list[str] = []
             dockerfile.render(
-                context, base_dockerfile=source, build_context=project, warn=warnings.append
+                context,
+                base_dockerfile=source,
+                build_context=project,
+                warn=warnings.append,
             )
             self.assertEqual(len(warnings), 1)
             self.assertIn("alpine", warnings[0])
@@ -1308,11 +1361,15 @@ class RendererTests(TestCase):
             context.mkdir()
             source = project / "Dockerfile"
             source.write_text(
-                "FROM gcr.io/distroless/python3:latest\nRUN echo hello\n", encoding="utf-8"
+                "FROM gcr.io/distroless/python3:latest\nRUN echo hello\n",
+                encoding="utf-8",
             )
             warnings: list[str] = []
             dockerfile.render(
-                context, base_dockerfile=source, build_context=project, warn=warnings.append
+                context,
+                base_dockerfile=source,
+                build_context=project,
+                warn=warnings.append,
             )
             self.assertEqual(len(warnings), 1)
             self.assertIn("distroless", warnings[0])
@@ -1324,10 +1381,15 @@ class RendererTests(TestCase):
             context = project / ".project-sandbox"
             context.mkdir()
             source = project / "Dockerfile"
-            source.write_text("FROM debian:bookworm-slim\nRUN echo hello\n", encoding="utf-8")
+            source.write_text(
+                "FROM debian:bookworm-slim\nRUN echo hello\n", encoding="utf-8"
+            )
             warnings: list[str] = []
             dockerfile.render(
-                context, base_dockerfile=source, build_context=project, warn=warnings.append
+                context,
+                base_dockerfile=source,
+                build_context=project,
+                warn=warnings.append,
             )
             self.assertEqual(warnings, [])
 
@@ -1343,7 +1405,10 @@ class RendererTests(TestCase):
             )
             warnings: list[str] = []
             dockerfile.render(
-                context, base_dockerfile=source, build_context=project, warn=warnings.append
+                context,
+                base_dockerfile=source,
+                build_context=project,
+                warn=warnings.append,
             )
             self.assertEqual(len(warnings), 1)
             self.assertIn("/app", warnings[0])
@@ -1361,7 +1426,10 @@ class RendererTests(TestCase):
             )
             warnings: list[str] = []
             dockerfile.render(
-                context, base_dockerfile=source, build_context=project, warn=warnings.append
+                context,
+                base_dockerfile=source,
+                build_context=project,
+                warn=warnings.append,
             )
             self.assertEqual(len(warnings), 1)
             self.assertIn("/code", warnings[0])
@@ -1377,7 +1445,10 @@ class RendererTests(TestCase):
             )
             warnings: list[str] = []
             dockerfile.render(
-                context, base_dockerfile=source, build_context=project, warn=warnings.append
+                context,
+                base_dockerfile=source,
+                build_context=project,
+                warn=warnings.append,
             )
             self.assertEqual(len(warnings), 1)
             self.assertIn("/workspace", warnings[0])
@@ -1393,7 +1464,10 @@ class RendererTests(TestCase):
             )
             warnings: list[str] = []
             dockerfile.render(
-                context, base_dockerfile=source, build_context=project, warn=warnings.append
+                context,
+                base_dockerfile=source,
+                build_context=project,
+                warn=warnings.append,
             )
             self.assertEqual(len(warnings), 1)
             self.assertIn("/workspace", warnings[0])
@@ -1410,7 +1484,10 @@ class RendererTests(TestCase):
             )
             warnings: list[str] = []
             dockerfile.render(
-                context, base_dockerfile=source, build_context=project, warn=warnings.append
+                context,
+                base_dockerfile=source,
+                build_context=project,
+                warn=warnings.append,
             )
             self.assertEqual(warnings, [])
 
@@ -1426,7 +1503,10 @@ class RendererTests(TestCase):
             )
             warnings: list[str] = []
             dockerfile.render(
-                context, base_dockerfile=source, build_context=project, warn=warnings.append
+                context,
+                base_dockerfile=source,
+                build_context=project,
+                warn=warnings.append,
             )
             self.assertEqual(warnings, [])
 
@@ -1437,11 +1517,15 @@ class RendererTests(TestCase):
             context.mkdir()
             source = project / "Dockerfile"
             source.write_text(
-                "FROM alpine:3.19\nWORKDIR /app\nRUN uv sync --frozen\n", encoding="utf-8"
+                "FROM alpine:3.19\nWORKDIR /app\nRUN uv sync --frozen\n",
+                encoding="utf-8",
             )
             warnings: list[str] = []
             dockerfile.render(
-                context, base_dockerfile=source, build_context=project, warn=warnings.append
+                context,
+                base_dockerfile=source,
+                build_context=project,
+                warn=warnings.append,
             )
             self.assertEqual(len(warnings), 2)
             self.assertTrue(any("apt-get" in w for w in warnings))
@@ -1465,14 +1549,22 @@ class RendererTests(TestCase):
             context = root / ".project-sandbox"
             home.mkdir()
             with _credentials_root(root):
-                staged_dir = config_agents.sync_credentials(context, home=home)["claude-devcontainer"]
-            state = json.loads((staged_dir / ".claude.json").read_text(encoding="utf-8"))
+                staged_dir = config_agents.sync_credentials(context, home=home)[
+                    "claude-devcontainer"
+                ]
+            state = json.loads(
+                (staged_dir / ".claude.json").read_text(encoding="utf-8")
+            )
             self.assertEqual(state["permissions"]["defaultMode"], "auto")
             self.assertNotIn("bypassPermissionsModeAccepted", state)
-            self.assertNotIn("skipDangerousModePermissionPrompt", state.get("permissions", {}))
+            self.assertNotIn(
+                "skipDangerousModePermissionPrompt", state.get("permissions", {})
+            )
             self.assertEqual(staged_dir.stat().st_mode & 0o777, 0o700)
 
-    def test_dockerfile_renderer_produces_separate_container_and_devcontainer_dockerfiles(self) -> None:
+    def test_dockerfile_renderer_produces_separate_container_and_devcontainer_dockerfiles(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
             context = project / ".project-sandbox"
@@ -1486,7 +1578,9 @@ class RendererTests(TestCase):
                 install_agents=("claude",),
             )
             container_text = (context / "Dockerfile").read_text(encoding="utf-8")
-            devcontainer_text = (context / "Dockerfile.devcontainer").read_text(encoding="utf-8")
+            devcontainer_text = (context / "Dockerfile.devcontainer").read_text(
+                encoding="utf-8"
+            )
 
             self.assertIn(
                 "COPY .project-sandbox/init-firewall.sh /usr/local/bin/project-sandbox-init-firewall",
@@ -1497,9 +1591,17 @@ class RendererTests(TestCase):
                 "COPY .project-sandbox/init-firewall-devcontainer.sh /usr/local/bin/project-sandbox-init-firewall",
                 devcontainer_text,
             )
-            self.assertNotIn("init-firewall.sh", devcontainer_text.replace("init-firewall-devcontainer.sh", ""))
+            self.assertNotIn(
+                "init-firewall.sh",
+                devcontainer_text.replace("init-firewall-devcontainer.sh", ""),
+            )
             # Both Dockerfiles have the same binary name — only one sudoers entry each
             self.assertEqual(container_text.count("NOPASSWD"), 1)
             self.assertEqual(devcontainer_text.count("NOPASSWD"), 1)
-            self.assertIn("NOPASSWD: /usr/local/bin/project-sandbox-init-firewall", container_text)
-            self.assertIn("NOPASSWD: /usr/local/bin/project-sandbox-init-firewall", devcontainer_text)
+            self.assertIn(
+                "NOPASSWD: /usr/local/bin/project-sandbox-init-firewall", container_text
+            )
+            self.assertIn(
+                "NOPASSWD: /usr/local/bin/project-sandbox-init-firewall",
+                devcontainer_text,
+            )

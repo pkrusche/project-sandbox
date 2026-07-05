@@ -88,11 +88,17 @@ class TokenExpiryTests(TestCase):
                 auth,
                 {
                     "openai": {"type": "oauth", "access": "a", "expires": _ms(later)},
-                    "anthropic": {"type": "oauth", "access": "a", "expires": _ms(sooner)},
+                    "anthropic": {
+                        "type": "oauth",
+                        "access": "a",
+                        "expires": _ms(sooner),
+                    },
                     "some-api-key-provider": {"type": "api", "key": "sk-..."},
                 },
             )
-            expiry = token_expiry.staged_token_expiry({"opencode": cred_dir}, "opencode-headless")
+            expiry = token_expiry.staged_token_expiry(
+                {"opencode": cred_dir}, "opencode-headless"
+            )
         self.assertEqual(expiry, sooner)
 
     def test_opencode_long_lived_provider_has_no_expiry(self) -> None:
@@ -100,7 +106,9 @@ class TokenExpiryTests(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             cred_dir = Path(tmp) / "opencode"
             auth = cred_dir / ".local" / "share" / "opencode" / "auth.json"
-            _write(auth, {"github-copilot": {"type": "oauth", "access": "a", "expires": 0}})
+            _write(
+                auth, {"github-copilot": {"type": "oauth", "access": "a", "expires": 0}}
+            )
             self.assertIsNone(
                 token_expiry.staged_token_expiry({"opencode": cred_dir}, "opencode")
             )

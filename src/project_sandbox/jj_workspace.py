@@ -211,7 +211,10 @@ def finalize(
                 target = "@"
                 if not _description(ws.path, target):
                     _jj(ws.path, ["describe", "-r", target, "-m", message])
-            _jj(ws.path, ["bookmark", "set", "--allow-backwards", ws.bookmark, "-r", target])
+            _jj(
+                ws.path,
+                ["bookmark", "set", "--allow-backwards", ws.bookmark, "-r", target],
+            )
         except subprocess.CalledProcessError:
             print(
                 f"could not capture session changes — workspace left in place at {ws.path}"
@@ -256,7 +259,9 @@ def remove(repo: Path, ws: JjWorkspace) -> None:
 
 def _bookmark_exists(repo: Path, bookmark: str) -> bool:
     try:
-        out = _jj(repo, ["bookmark", "list", "--template", 'name ++ "\n"'], capture=True)
+        out = _jj(
+            repo, ["bookmark", "list", "--template", 'name ++ "\n"'], capture=True
+        )
         return bookmark in out.splitlines()
     except subprocess.CalledProcessError:
         return False

@@ -9,8 +9,19 @@ _USER_SETUP_COMMAND_RE = re.compile(
 )
 
 _NON_APT_IMAGE_FRAGMENTS = (
-    "alpine", "scratch", "distroless", "centos", "rhel", "fedora",
-    "rocky", "almalinux", "opensuse", "suse", "busybox", "wolfi", "chainguard",
+    "alpine",
+    "scratch",
+    "distroless",
+    "centos",
+    "rhel",
+    "fedora",
+    "rocky",
+    "almalinux",
+    "opensuse",
+    "suse",
+    "busybox",
+    "wolfi",
+    "chainguard",
 )
 
 _LOCAL_INSTALL_RE = re.compile(
@@ -61,8 +72,18 @@ def render(
         install_codex="codex" in install_agents,
         install_opencode="opencode" in install_agents,
     )
-    container = _write_dockerfile(tmpl, context_dir / "Dockerfile", **shared, firewall_src_filename="init-firewall.sh")
-    _write_dockerfile(tmpl, context_dir / "Dockerfile.devcontainer", **shared, firewall_src_filename="init-firewall-devcontainer.sh")
+    container = _write_dockerfile(
+        tmpl,
+        context_dir / "Dockerfile",
+        **shared,
+        firewall_src_filename="init-firewall.sh",
+    )
+    _write_dockerfile(
+        tmpl,
+        context_dir / "Dockerfile.devcontainer",
+        **shared,
+        firewall_src_filename="init-firewall-devcontainer.sh",
+    )
     return container
 
 
@@ -120,7 +141,10 @@ def render_dockerignore(
 
 
 def _write_dockerfile(tmpl, out: Path, *, firewall_src_filename: str, **kwargs) -> Path:
-    out.write_text(tmpl.render(firewall_src_filename=firewall_src_filename, **kwargs) + "\n", encoding="utf-8")
+    out.write_text(
+        tmpl.render(firewall_src_filename=firewall_src_filename, **kwargs) + "\n",
+        encoding="utf-8",
+    )
     return out
 
 

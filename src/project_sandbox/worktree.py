@@ -14,7 +14,12 @@ class Worktree:
     branch: str
 
 
-def setup(repo: Path, branch: str, start_at: str | None = None, worktree_dir: Path | None = None) -> Worktree:
+def setup(
+    repo: Path,
+    branch: str,
+    start_at: str | None = None,
+    worktree_dir: Path | None = None,
+) -> Worktree:
     repo = repo.resolve()
     wt_path = path_for(repo, branch, worktree_dir=worktree_dir)
 
@@ -153,7 +158,7 @@ def _list_worktrees(repo: Path) -> list[str]:
     # Porcelain lines look like "worktree <path>"; the path may contain spaces, so
     # strip the fixed prefix rather than splitting on whitespace.
     return [
-        line[len(_WORKTREE_PREFIX):]
+        line[len(_WORKTREE_PREFIX) :]
         for line in out.splitlines()
         if line.startswith(_WORKTREE_PREFIX)
     ]

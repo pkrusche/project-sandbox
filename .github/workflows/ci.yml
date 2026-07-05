@@ -16,4 +16,5 @@ jobs:
       - uses: astral-sh/setup-uv@v5
       - run: uv sync
       - run: uv run python -m compileall src tests
+      - run: scripts/check-ruff.sh
       - run: uv run pytest -q

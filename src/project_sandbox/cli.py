@@ -425,7 +425,9 @@ def main(argv: list[str] | None = None) -> int:
 
         tracked_dockerfiles = _tracked_project_dockerfiles(base_dockerfile, context_dir)
         if runtime.is_container and not args.no_verify_dockerfile:
-            warnings = dockerfile_checksum.changed_warnings(context_dir, tracked_dockerfiles)
+            warnings = dockerfile_checksum.changed_warnings(
+                context_dir, tracked_dockerfiles
+            )
             if warnings:
                 for warning in warnings:
                     print(warning)
@@ -1133,7 +1135,9 @@ def _validate_worktree_project(project: Path) -> None:
 
 def _finalize_worktree(args, *, project: Path, wt, exit_code: int) -> None:
     session_failed = exit_code != 0
-    message = _session_commit_message(wt.branch if _is_git_worktree(wt) else wt.bookmark)
+    message = _session_commit_message(
+        wt.branch if _is_git_worktree(wt) else wt.bookmark
+    )
     if isinstance(wt, jj_workspace_mod.JjWorkspace):
         jj_workspace_mod.finalize(
             project,

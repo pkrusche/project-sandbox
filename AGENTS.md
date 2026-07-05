@@ -27,7 +27,7 @@ Tests use `pytest` with standard `unittest` assertions. Name files `test_*.py` a
 
 ## Commit & Pull Request Guidelines
 
-This repository uses Jujutsu. Before editing, create or move onto an empty jj change for your work and give it a clear description, for example:
+This repository uses Jujutsu (jj), not plain git, for version control. Use `jj` commands (`jj st`, `jj diff`, `jj log`, `jj new`, etc.) instead of `git status`/`git diff`/`git stash`/`git log` when inspecting or changing repo state — even though it's a colocated git repo, jj is the source of truth here. Before editing, create or move onto an empty jj change for your work and give it a clear description, for example:
 
 ```bash
 jj new -m "Add repository contributor guide"

@@ -32,8 +32,12 @@ from project_sandbox.git_identity import GitIdentity
 
 class ContainerCliTests(TestCase):
     def test_select_runtime_chroot_is_explicit_linux_only(self) -> None:
-        with patch("project_sandbox.container_cli.sys.platform", "linux"), patch(
-            "project_sandbox.container_cli.shutil.which", return_value="/usr/bin/unshare"
+        with (
+            patch("project_sandbox.container_cli.sys.platform", "linux"),
+            patch(
+                "project_sandbox.container_cli.shutil.which",
+                return_value="/usr/bin/unshare",
+            ),
         ):
             self.assertEqual(select_runtime("chroot"), CHROOT)
         with patch("project_sandbox.container_cli.sys.platform", "darwin"):
@@ -41,9 +45,14 @@ class ContainerCliTests(TestCase):
                 select_runtime("chroot", dry_run=True)
 
     def test_auto_never_selects_chroot(self) -> None:
-        with patch("project_sandbox.container_cli.sys.platform", "linux"), patch(
-            "project_sandbox.container_cli.shutil.which",
-            side_effect=lambda binary: "/usr/bin/unshare" if binary == "unshare" else None,
+        with (
+            patch("project_sandbox.container_cli.sys.platform", "linux"),
+            patch(
+                "project_sandbox.container_cli.shutil.which",
+                side_effect=lambda binary: (
+                    "/usr/bin/unshare" if binary == "unshare" else None
+                ),
+            ),
         ):
             with self.assertRaisesRegex(SystemExit, "No supported container runtime"):
                 select_runtime("auto")
@@ -51,15 +60,22 @@ class ContainerCliTests(TestCase):
     def test_chroot_argv_consumes_shared_mount_specs(self) -> None:
         root = Path("/tmp/layout")
         mounts = build_mount_specs(
-            project_abs=root / "workspace", claude_cfg=root / "config/claude/settings.json",
+            project_abs=root / "workspace",
+            claude_cfg=root / "config/claude/settings.json",
             claude_credentials_dir=root / "secrets/claude",
             codex_cfg=root / "config/codex/config.toml",
-            codex_credentials_dir=root / "secrets/codex", opencode_credentials_dir=None,
-            extra_mounts=["type=bind,source=/tmp/prompt,target=/project-sandbox-prompt,readonly"],
+            codex_credentials_dir=root / "secrets/codex",
+            opencode_credentials_dir=None,
+            extra_mounts=[
+                "type=bind,source=/tmp/prompt,target=/project-sandbox-prompt,readonly"
+            ],
         )
         argv = build_chroot_argv(
-            script=root / "run", jail_root=root / "root", mounts=mounts,
-            agent="bash-headless", extra_env=("PROJECT_SANDBOX_PROMPT_FILE=/prompt",),
+            script=root / "run",
+            jail_root=root / "root",
+            mounts=mounts,
+            agent="bash-headless",
+            extra_env=("PROJECT_SANDBOX_PROMPT_FILE=/prompt",),
         )
         self.assertEqual(argv[:4], ["unshare", "--map-root-user", "--mount", "--"])
         self.assertIn(
@@ -93,7 +109,9 @@ class ContainerCliTests(TestCase):
 
     def test_chroot_image_build_is_noop(self) -> None:
         with patch("project_sandbox.container_cli.subprocess.run") as run_mock:
-            rc = build_image(runtime=CHROOT, context_dir=Path("/missing"), image_tag="unused")
+            rc = build_image(
+                runtime=CHROOT, context_dir=Path("/missing"), image_tag="unused"
+            )
         self.assertEqual(rc, 0)
         run_mock.assert_not_called()
 
@@ -263,7 +281,9 @@ class ContainerCliTests(TestCase):
             cmd,
         )
 
-    def test_build_image_can_use_generated_dockerfile_with_project_context(self) -> None:
+    def test_build_image_can_use_generated_dockerfile_with_project_context(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             context = root / ".project-sandbox"
@@ -314,9 +334,7 @@ class ContainerCliTests(TestCase):
     @patch("project_sandbox.container_cli.os.getgid", return_value=2345)
     @patch("project_sandbox.container_cli.os.getuid", return_value=1234)
     @patch("project_sandbox.container_cli.sys.platform", "linux")
-    def test_build_image_matches_linux_host_identity(
-        self, _getuid, _getgid
-    ) -> None:
+    def test_build_image_matches_linux_host_identity(self, _getuid, _getgid) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             context = Path(tmp)
             out = io.StringIO()
@@ -337,9 +355,7 @@ class ContainerCliTests(TestCase):
     @patch("project_sandbox.container_cli.os.getgid", return_value=4567)
     @patch("project_sandbox.container_cli.os.getuid", return_value=3456)
     @patch("project_sandbox.container_cli.sys.platform", "linux")
-    def test_podman_build_matches_linux_host_identity(
-        self, _getuid, _getgid
-    ) -> None:
+    def test_podman_build_matches_linux_host_identity(self, _getuid, _getgid) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
@@ -386,9 +402,7 @@ class ContainerCliTests(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             context = Path(tmp) / ".project-sandbox"
             context.mkdir()
-            with patch(
-                "project_sandbox.container_cli.subprocess.run"
-            ) as run_mock:
+            with patch("project_sandbox.container_cli.subprocess.run") as run_mock:
                 run_mock.return_value.returncode = 0
                 rc = build_image(
                     context_dir=context,
@@ -494,9 +508,7 @@ class ContainerCliTests(TestCase):
     def test_run_quietable_surfaces_output_on_failure(self) -> None:
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            rc = _run_quietable(
-                ["sh", "-c", "echo oops >&2; exit 7"], verbose=False
-            )
+            rc = _run_quietable(["sh", "-c", "echo oops >&2; exit 7"], verbose=False)
         self.assertEqual(rc, 7)
         self.assertIn("oops", err.getvalue())
 
@@ -512,7 +524,9 @@ class ContainerCliTests(TestCase):
         out = io.StringIO()
         with patch("subprocess.run", side_effect=FileNotFoundError):
             with contextlib.redirect_stdout(out):
-                rc = _run_quietable(["container", "build", "-t", "x", "."], verbose=False)
+                rc = _run_quietable(
+                    ["container", "build", "-t", "x", "."], verbose=False
+                )
         self.assertEqual(rc, 127)
         self.assertIn("container CLI not found on PATH", out.getvalue())
 

@@ -33,7 +33,9 @@ class BuildCacheTests(TestCase):
             _seed_context(context)
             extra = {"image_tag": "img:latest", "base_image": "python:3.12-slim"}
             before = build_cache.compute_fingerprint(context, extra=extra)
-            (context / "entrypoint.sh").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            (context / "entrypoint.sh").write_text(
+                "#!/bin/sh\nexit 0\n", encoding="utf-8"
+            )
             after = build_cache.compute_fingerprint(context, extra=extra)
             self.assertNotEqual(before, after)
 

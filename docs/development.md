@@ -9,12 +9,15 @@ uv sync
 uv run project-sandbox --help
 uv run python -m compileall src tests
 uv run pytest -q
+./scripts/check-ruff.sh
 ```
 
 `uv sync` installs dependencies from `pyproject.toml` / `uv.lock`. The compile
-command catches syntax errors. `pytest -q` runs the full test suite. For behavior
-previews, use `uv run project-sandbox --dry-run ...`; dry-run must not write
-files or start containers.
+command catches syntax errors. `pytest -q` runs the full test suite.
+`scripts/check-ruff.sh` verifies that Python files have Ruff formatting applied
+and contain no Ruff lint violations. For behavior previews, use
+`uv run project-sandbox --dry-run ...`; dry-run must not write files or start
+containers.
 
 ## Image build cache
 
