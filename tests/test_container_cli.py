@@ -538,3 +538,27 @@ class ContainerCliTests(TestCase):
                 rc = run(["container", "run", "--rm", "some-image", "cmd"])
         self.assertEqual(rc, 127)
         self.assertIn("container CLI not found on PATH", out.getvalue())
+
+    def test_run_without_env_inherits_parent_environment(self) -> None:
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value.returncode = 0
+            rc = run(["docker", "run", "image"])
+        self.assertEqual(rc, 0)
+        self.assertIsNone(mock_run.call_args.kwargs["env"])
+
+    def test_run_merges_extra_env_without_leaking_into_argv(self) -> None:
+        import os
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value.returncode = 0
+            argv = ["docker", "run", "--env", "MY_SECRET", "image"]
+            rc = run(argv, env={"MY_SECRET": "top-secret-value"})
+
+        self.assertEqual(rc, 0)
+        called_argv, called_kwargs = mock_run.call_args.args, mock_run.call_args.kwargs
+        self.assertEqual(called_argv[0], argv)
+        self.assertFalse(any("top-secret-value" in token for token in called_argv[0]))
+        merged_env = called_kwargs["env"]
+        self.assertEqual(merged_env["MY_SECRET"], "top-secret-value")
+        # The rest of the parent environment must still be present.
+        self.assertEqual(merged_env.get("PATH"), os.environ.get("PATH"))

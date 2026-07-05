@@ -68,6 +68,31 @@ class DockerfileChecksumTests(unittest.TestCase):
                 dockerfile_checksum.changed_warnings(context_dir, [dockerfile]), []
             )
 
+    def test_record_preserves_baselines_for_other_dockerfiles(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project, context_dir = self._project(tmp)
+            dockerfile_a = project / "Dockerfile.a"
+            dockerfile_a.write_text("FROM debian\n", encoding="utf-8")
+            dockerfile_b = project / "Dockerfile.b"
+            dockerfile_b.write_text("FROM alpine\n", encoding="utf-8")
+
+            # Record a baseline for A, then separately for B (mirrors alternating
+            # --dockerfile runs, or a custom --dockerfile followed by the
+            # default base_image Dockerfile). Recording B must not erase A's
+            # previously recorded baseline.
+            dockerfile_checksum.record(context_dir, [dockerfile_a])
+            dockerfile_checksum.record(context_dir, [dockerfile_b])
+
+            # Both baselines survive: tampering with either is still detected.
+            dockerfile_a.write_text("FROM debian\nRUN echo pwned\n", encoding="utf-8")
+            dockerfile_b.write_text("FROM alpine\nRUN echo pwned\n", encoding="utf-8")
+            warnings = dockerfile_checksum.changed_warnings(
+                context_dir, [dockerfile_a, dockerfile_b]
+            )
+            self.assertEqual(len(warnings), 2)
+            self.assertTrue(any(str(dockerfile_a) in w for w in warnings))
+            self.assertTrue(any(str(dockerfile_b) in w for w in warnings))
+
     def test_missing_dockerfile_is_skipped(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             _, context_dir = self._project(tmp)

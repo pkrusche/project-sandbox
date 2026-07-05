@@ -42,6 +42,9 @@ jobs:
       - name: Run e2e smoke test
         run: scripts/e2e-test.sh
 
+      - name: Run env injection e2e test
+        run: scripts/e2e-env-injection.sh --runtime docker
+
       - name: Run git workflow e2e test
         run: scripts/e2e-git-workflow.sh --runtime docker
 

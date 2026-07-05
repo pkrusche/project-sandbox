@@ -1233,6 +1233,7 @@ class CliTests(TestCase):
                 ),
                 patch.object(cli.container_cli, "select_runtime", return_value=cli.container_cli.DOCKER),
                 patch.object(cli.container_cli, "ensure_system_started", return_value=0),
+                patch.object(cli.container_cli, "image_exists", return_value=True),
                 patch.object(cli.session, "run", return_value=0),
                 contextlib.redirect_stdout(out),
             ):
@@ -1502,7 +1503,11 @@ class CliTests(TestCase):
             context_dir = Path(tmp)
             cli._write_project_sandbox_gitignore(context_dir)
             content = (context_dir / ".gitignore").read_text(encoding="utf-8")
-            self.assertIn("history/", content)
+            # history/ is already excluded by the leading "*" glob (nothing
+            # negates it back in), so an explicit "history/" entry would be
+            # redundant and is no longer written.
+            self.assertIn("*\n", content)
+            self.assertNotIn("history/", content)
 
     def test_unavailable_agent_raises_with_available_list(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1529,6 +1534,333 @@ class CliTests(TestCase):
         self.assertIn("unavailable", str(raised.exception).lower())
         self.assertIn("claude", str(raised.exception).lower())
         self.assertIn("bash", str(raised.exception).lower())
+
+    def test_log_path_expands_tilde(self) -> None:
+        """--log ~/... must be expanded consistently; a literal "~" component
+        would otherwise make session.run() try to open $CWD/~/... and crash
+        mid-run, after the worktree/build already happened."""
+        import argparse
+
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            context_dir = project / ".project-sandbox"
+            claude_cfg = context_dir / "claude" / "settings.json"
+            codex_cfg = context_dir / "codex" / "config.toml"
+            credential_dirs = {"claude": context_dir / "claude-secrets"}
+            args = argparse.Namespace(
+                branch=None,
+                cpus=4,
+                extra_mounts=[],
+                image_tag="project-sandbox:test",
+                log="~/sandbox-logs/session.log",
+                memory="8g",
+                no_firewall=True,
+                prompt=None,
+                prompt_text="echo ok",
+                verbose=False,
+            )
+
+            with patch.dict(os.environ, {"HOME": "/fake/home/for/test"}):
+                _cmd, log_path, unsupervised, _stop_argv = cli._build_session_command(
+                    args,
+                    project=project,
+                    context_dir=context_dir,
+                    workspace=project,
+                    worktree=None,
+                    identity=GitIdentity(None, None),
+                    run_agent="bash",
+                    claude_cfg=claude_cfg,
+                    credential_dirs=credential_dirs,
+                    codex_cfg=codex_cfg,
+                    runtime=cli.container_cli.DOCKER,
+                    create_prompt_files=True,
+                )
+
+            self.assertTrue(unsupervised)
+            self.assertIsNotNone(log_path)
+            self.assertNotIn("~", str(log_path))
+            self.assertEqual(
+                log_path, Path("/fake/home/for/test/sandbox-logs/session.log")
+            )
+
+    def test_uses_github_copilot_cli_ignores_unsupported_agent_value(self) -> None:
+        """"copilot" is not a valid --agent value (SUPPORTED_AGENTS has no such
+        entry), so detection only happens via the bash + prompt-text path."""
+        parser = cli.build_parser()
+        args = parser.parse_args([
+            "--agent", "bash", "--prompt-text", "copilot -p 'hi'",
+            "/tmp/project", "python:3.12-slim",
+        ])
+        self.assertFalse(cli._uses_github_copilot_cli(args, "copilot"))
+        self.assertTrue(cli._uses_github_copilot_cli(args, "bash"))
+
+    def test_effort_help_does_not_claim_a_forced_default(self) -> None:
+        with (
+            patch.dict(os.environ, {"COLUMNS": "240"}),
+            self.assertRaises(SystemExit),
+            contextlib.redirect_stdout(io.StringIO()) as stdout,
+        ):
+            cli.build_parser().parse_args(["--help"])
+        help_text = " ".join(stdout.getvalue().split())
+        self.assertNotIn("default: xhigh", help_text)
+        self.assertIn("does not force a default", help_text)
+
+    def test_mount_conflict_check_does_not_false_positive_on_similar_path(self) -> None:
+        """A mount like /repo/.git-backup must not be flagged just because
+        "/repo/.git" is a textual substring of it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            _make_git_repo(project)
+            host_home = project / "home"
+            paths = _agent_paths(host_home)
+            paths["claude"].mkdir(parents=True)
+            backup_dir = project / ".git-backup"
+            backup_dir.mkdir()
+
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("A", "a@b.com")),
+                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                rc = cli.main([
+                    "--dry-run", "--no-build", "--no-firewall",
+                    "--agent", "claude",
+                    "--branch", "feat/x",
+                    "--mount", f"type=bind,source={backup_dir},target=/backup",
+                    str(project), "python:3.12-slim",
+                ])
+
+        self.assertEqual(rc, 0, "a sibling path must not be treated as a conflict")
+
+    def test_mount_conflict_check_flags_nested_path(self) -> None:
+        """A mount nested inside the .git metadata dir must still conflict."""
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            _make_git_repo(project)
+            host_home = project / "home"
+            paths = _agent_paths(host_home)
+            paths["claude"].mkdir(parents=True)
+            nested = (project / ".git" / "hooks").resolve()
+
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("A", "a@b.com")),
+                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                with self.assertRaises(SystemExit) as raised:
+                    cli.main([
+                        "--dry-run", "--no-build", "--no-firewall",
+                        "--agent", "claude",
+                        "--branch", "feat/x",
+                        "--mount", f"type=bind,source={nested},target=/hooks",
+                        str(project), "python:3.12-slim",
+                    ])
+
+        self.assertIn("--mount conflicts", str(raised.exception))
+
+    def test_mount_conflict_check_handles_raw_mount_forms(self) -> None:
+        """A mount form we don't model structurally (tmpfs/volume, or a bind
+        mount with an unrecognized option) can still name the metadata path in
+        its source/target fields; it must conflict cleanly here instead of
+        failing later with the runtime's own duplicate-mount error."""
+        vcs_dir = Path("/repo/.git")
+        self.assertTrue(
+            cli._mount_touches_path("type=tmpfs,target=/repo/.git", vcs_dir)
+        )
+        self.assertTrue(
+            cli._mount_touches_path("type=tmpfs,target=/repo/.git/hooks", vcs_dir)
+        )
+        self.assertTrue(
+            cli._mount_touches_path(
+                "type=bind,source=/repo/.git,target=/elsewhere,bind-propagation=rshared",
+                vcs_dir,
+            )
+        )
+        # Sibling paths and raw forms without path fields must not conflict.
+        self.assertFalse(
+            cli._mount_touches_path("type=tmpfs,target=/repo/.git-backup", vcs_dir)
+        )
+        self.assertFalse(cli._mount_touches_path("type=tmpfs", vcs_dir))
+
+    def test_no_build_and_force_build_are_mutually_exclusive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(SystemExit) as raised:
+                cli.main([
+                    "--no-build", "--force-build", "--agent", "claude",
+                    tmp, "python:3.12-slim",
+                ])
+        self.assertIn("--no-build and --force-build are mutually exclusive", str(raised.exception))
+
+    def test_no_build_fails_early_when_image_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            host_home = project / "home"
+            paths = _agent_paths(host_home)
+            paths["claude"].mkdir(parents=True)
+
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                patch.object(cli.container_cli, "select_runtime", return_value=cli.container_cli.DOCKER),
+                patch.object(cli.container_cli, "ensure_system_started", return_value=0),
+                patch.object(cli.container_cli, "image_exists", return_value=False),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                with self.assertRaises(SystemExit) as raised:
+                    cli.main([
+                        "--no-build", "--agent", "bash", "--prompt-text", "echo ok",
+                        str(project), "python:3.12-slim",
+                    ])
+
+        self.assertIn("--no-build", str(raised.exception))
+        self.assertIn("does not exist", str(raised.exception))
+
+    def test_missing_project_path_raises_clean_system_exit(self) -> None:
+        with self.assertRaises(SystemExit) as raised:
+            cli.main(["/no/such/project/path", "python:3.12-slim"])
+        self.assertNotIsInstance(raised.exception, FileNotFoundError)
+        self.assertIn("project path does not exist", str(raised.exception))
+
+    def test_missing_prompt_file_raises_clean_system_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            host_home = project / "home"
+            paths = _agent_paths(host_home)
+            paths["claude"].mkdir(parents=True)
+
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+            ):
+                with self.assertRaises(SystemExit) as raised:
+                    cli.main([
+                        "--dry-run", "--no-build", "--agent", "claude",
+                        "--prompt", str(project / "no-such-prompt.txt"),
+                        str(project), "python:3.12-slim",
+                    ])
+
+        self.assertNotIsInstance(raised.exception, FileNotFoundError)
+        self.assertIn("--prompt file does not exist", str(raised.exception))
+
+    def test_missing_api_key_env_file_raises_clean_system_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            host_home = project / "home"
+            paths = _agent_paths(host_home)
+            paths["claude"].mkdir(parents=True)
+
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+            ):
+                with self.assertRaises(SystemExit) as raised:
+                    cli.main([
+                        "--dry-run", "--no-build", "--no-forward-credentials",
+                        "--agent", "bash", "--prompt-text", "echo ok",
+                        "--api-key-env-file", str(project / "missing.env"),
+                        str(project), "python:3.12-slim",
+                    ])
+
+        self.assertNotIsInstance(raised.exception, FileNotFoundError)
+        self.assertIn("--api-key-env-file does not exist", str(raised.exception))
+
+    def test_missing_dockerfile_raises_clean_system_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+
+            with patch.object(
+                cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")
+            ):
+                with self.assertRaises(SystemExit) as raised:
+                    cli.main([
+                        "--dry-run",
+                        "--dockerfile", str(project / "no-such-Dockerfile"),
+                        str(project),
+                    ])
+
+        self.assertNotIsInstance(raised.exception, FileNotFoundError)
+        self.assertIn("--dockerfile does not exist", str(raised.exception))
+
+    def test_missing_docker_context_raises_clean_system_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            dockerfile = project / "Dockerfile"
+            dockerfile.write_text("FROM debian:bookworm\n", encoding="utf-8")
+
+            with patch.object(
+                cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")
+            ):
+                with self.assertRaises(SystemExit) as raised:
+                    cli.main([
+                        "--dry-run",
+                        "--dockerfile", str(dockerfile),
+                        "--docker-context", str(project / "no-such-context"),
+                        str(project),
+                    ])
+
+        self.assertNotIsInstance(raised.exception, FileNotFoundError)
+        self.assertIn("--docker-context does not exist", str(raised.exception))
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "chroot runtime is Linux-only")
+    def test_invalid_mount_under_chroot_raises_clean_system_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                with self.assertRaises(SystemExit) as raised:
+                    cli.main([
+                        "--dry-run", "--runtime", "chroot", "--agent", "bash",
+                        # A non-bind mount (no source/target) parses to a "raw"
+                        # MountSpec, which build_chroot_argv cannot honor.
+                        "--mount", "type=tmpfs,target=/tmp/scratch",
+                        str(project),
+                    ])
+
+        self.assertNotIsInstance(raised.exception, ValueError)
+        self.assertIn("Invalid --mount for --runtime chroot", str(raised.exception))
+
+    def test_eof_at_dockerfile_changed_prompt_raises_clean_system_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            dockerfile = project / "Dockerfile"
+            dockerfile.write_text("FROM debian:bookworm\n", encoding="utf-8")
+            context_dir = project / ".project-sandbox"
+            context_dir.mkdir()
+            cli.dockerfile_checksum.record(context_dir, [dockerfile])
+            dockerfile.write_text("FROM debian:bookworm\nRUN echo pwned\n", encoding="utf-8")
+
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(
+                    cli.config_agents,
+                    "_agent_host_paths",
+                    return_value=_agent_paths(project / "home"),
+                ),
+                patch.object(cli.container_cli, "select_runtime", return_value=cli.container_cli.DOCKER),
+                patch.object(cli.container_cli, "ensure_system_started", return_value=0),
+                patch("sys.stdin.isatty", return_value=True),
+                patch("builtins.input", side_effect=EOFError),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                with self.assertRaises(SystemExit) as raised:
+                    cli.main([
+                        "--no-build", "--agent", "bash",
+                        "--dockerfile", str(dockerfile),
+                        str(project),
+                    ])
+
+        self.assertNotIsInstance(raised.exception, EOFError)
+        self.assertIn("No input available", str(raised.exception))
 
 
 class ModelSelectionTests(TestCase):
@@ -2958,6 +3290,39 @@ class NoForwardCredentialsTests(TestCase):
             sync.assert_not_called()
             purge.assert_called_once()
 
+    def test_allows_missing_host_agent_config(self) -> None:
+        """--no-forward-credentials promises to start unauthenticated and log
+        in inside the sandbox; it must not still require the chosen agent's
+        host config dir to exist, and the agent CLI must still get installed
+        into the image."""
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            host_home = project / "home"
+            # Note: no ~/.claude directory is created under host_home.
+            paths = _agent_paths(host_home)
+
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                patch.object(cli.container_cli, "select_runtime", return_value=cli.container_cli.DOCKER),
+                patch.object(cli.container_cli, "ensure_system_started", return_value=0),
+                patch.object(cli.dockerfile, "render") as render,
+                patch.object(cli.container_cli, "image_exists", return_value=True),
+                patch.object(cli.container_cli, "run", return_value=0),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                rc = cli.main([
+                    "--no-build",
+                    "--no-forward-credentials",
+                    "--agent", "claude",
+                    str(project), "python:3.12-slim",
+                ])
+
+            self.assertEqual(rc, 0)
+            render.assert_called_once()
+            self.assertIn("claude", render.call_args.kwargs["install_agents"])
+
 
 class ApiKeyInjectionTests(TestCase):
     def test_api_key_env_requires_no_forward_credentials(self) -> None:
@@ -3006,7 +3371,7 @@ class ApiKeyInjectionTests(TestCase):
 
             self.assertIn("require --agent", str(raised.exception))
 
-    def test_api_key_env_dry_run_redacts_secret(self) -> None:
+    def test_api_key_env_dry_run_does_not_leak_secret_value(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
             (project / "README.md").write_text("# demo\n", encoding="utf-8")
@@ -3032,7 +3397,12 @@ class ApiKeyInjectionTests(TestCase):
 
             self.assertEqual(rc, 0)
             output = out.getvalue()
-            self.assertIn("ANTHROPIC_API_KEY=<redacted>", output)
+            # The bare name is passed via --env (docker/podman/apple-container
+            # inherit the value from project-sandbox's own process env), never
+            # "NAME=VALUE" — so the secret value itself never appears in the
+            # printed/executed argv.
+            self.assertIn("--env ANTHROPIC_API_KEY", output)
+            self.assertNotIn("ANTHROPIC_API_KEY=", output)
             self.assertNotIn("super-secret", output)
 
     def test_api_key_env_file_parses_dotenv_values(self) -> None:
@@ -3061,3 +3431,278 @@ class ApiKeyInjectionTests(TestCase):
                 "AWS_SECRET_ACCESS_KEY": "quoted secret",
             },
         )
+
+    def test_api_key_env_uses_bare_name_in_argv_for_container_runtime(self) -> None:
+        """The constructed argv must carry a bare "--env NAME" (no "=VALUE")
+        for an injected API key, so the secret never shows up via `ps`."""
+        import argparse
+
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            context_dir = project / ".project-sandbox"
+            claude_cfg = context_dir / "claude" / "settings.json"
+            codex_cfg = context_dir / "codex" / "config.toml"
+            args = argparse.Namespace(
+                branch=None,
+                cpus=4,
+                extra_mounts=[],
+                image_tag="project-sandbox:test",
+                log=None,
+                memory="8g",
+                no_firewall=True,
+                no_forward_credentials=True,
+                api_key_env=["ANTHROPIC_API_KEY"],
+                api_key_env_file=[],
+                prompt=None,
+                prompt_text="echo ok",
+                verbose=False,
+            )
+
+            with patch.dict(
+                os.environ, {"ANTHROPIC_API_KEY": "super-secret-value"}, clear=False
+            ):
+                cmd, _log_path, unsupervised, _stop_argv = cli._build_session_command(
+                    args,
+                    project=project,
+                    context_dir=context_dir,
+                    workspace=project,
+                    worktree=None,
+                    identity=GitIdentity(None, None),
+                    run_agent="bash",
+                    claude_cfg=claude_cfg,
+                    credential_dirs={},
+                    codex_cfg=codex_cfg,
+                    runtime=cli.container_cli.DOCKER,
+                    create_prompt_files=True,
+                )
+                values = cli._api_key_env_values(args)
+
+            self.assertTrue(unsupervised)
+            self.assertEqual(values, {"ANTHROPIC_API_KEY": "super-secret-value"})
+            self.assertIn("ANTHROPIC_API_KEY", cmd)
+            idx = cmd.index("ANTHROPIC_API_KEY")
+            self.assertEqual(cmd[idx - 1], "--env")
+            self.assertFalse(any("super-secret-value" in token for token in cmd))
+            self.assertFalse(
+                any(token == "ANTHROPIC_API_KEY=super-secret-value" for token in cmd)
+            )
+
+    def test_api_key_env_uses_env_file_for_apple_container_runtime(self) -> None:
+        """apple `container` documents only `--env key=value` and `--env-file`;
+        a bare `--env NAME` is not documented to inherit the client's
+        environment, so the key must travel via a 0600 staged env file that
+        keeps the secret out of argv."""
+        import argparse
+
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            context_dir = project / ".project-sandbox"
+            context_dir.mkdir()
+            claude_cfg = context_dir / "claude" / "settings.json"
+            codex_cfg = context_dir / "codex" / "config.toml"
+            args = argparse.Namespace(
+                branch=None,
+                cpus=4,
+                extra_mounts=[],
+                image_tag="project-sandbox:test",
+                log=None,
+                memory="8g",
+                no_firewall=True,
+                no_forward_credentials=True,
+                api_key_env=["ANTHROPIC_API_KEY"],
+                api_key_env_file=[],
+                prompt=None,
+                prompt_text="echo ok",
+                verbose=False,
+            )
+
+            with patch.dict(
+                os.environ, {"ANTHROPIC_API_KEY": "super-secret-value"}, clear=False
+            ):
+                cmd, _log_path, _unsupervised, _stop_argv = cli._build_session_command(
+                    args,
+                    project=project,
+                    context_dir=context_dir,
+                    workspace=project,
+                    worktree=None,
+                    identity=GitIdentity(None, None),
+                    run_agent="bash",
+                    claude_cfg=claude_cfg,
+                    credential_dirs={},
+                    codex_cfg=codex_cfg,
+                    runtime=cli.container_cli.APPLE_CONTAINER,
+                    create_prompt_files=True,
+                )
+
+            self.assertIn("--env-file", cmd)
+            env_file = Path(cmd[cmd.index("--env-file") + 1])
+            self.assertEqual(
+                env_file.read_text(encoding="utf-8"),
+                "ANTHROPIC_API_KEY=super-secret-value\n",
+            )
+            self.assertEqual(env_file.stat().st_mode & 0o777, 0o600)
+            # Neither the bare name nor the value may appear in argv.
+            self.assertNotIn("ANTHROPIC_API_KEY", cmd)
+            self.assertFalse(any("super-secret-value" in token for token in cmd))
+
+    def test_staged_api_key_env_file_replaces_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            target = tmp_path / "target.env"
+            target.write_text("SHOULD_NOT_CHANGE=1\n", encoding="utf-8")
+            env_file = tmp_path / "api-keys.env"
+            env_file.symlink_to(target)
+
+            cli._write_staged_api_key_env_file(
+                env_file, {"ANTHROPIC_API_KEY": "super-secret-value"}
+            )
+
+            self.assertFalse(env_file.is_symlink())
+            self.assertEqual(
+                env_file.read_text(encoding="utf-8"),
+                "ANTHROPIC_API_KEY=super-secret-value\n",
+            )
+            self.assertEqual(env_file.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(
+                target.read_text(encoding="utf-8"),
+                "SHOULD_NOT_CHANGE=1\n",
+            )
+
+    def test_api_key_env_file_not_written_in_dry_run_for_apple_container(self) -> None:
+        import argparse
+
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            context_dir = project / ".project-sandbox"
+            claude_cfg = context_dir / "claude" / "settings.json"
+            codex_cfg = context_dir / "codex" / "config.toml"
+            args = argparse.Namespace(
+                branch=None,
+                cpus=4,
+                extra_mounts=[],
+                image_tag="project-sandbox:test",
+                log=None,
+                memory="8g",
+                no_firewall=True,
+                no_forward_credentials=True,
+                api_key_env=["ANTHROPIC_API_KEY"],
+                api_key_env_file=[],
+                prompt=None,
+                prompt_text="echo ok",
+                verbose=False,
+            )
+
+            out = io.StringIO()
+            with (
+                patch.dict(
+                    os.environ, {"ANTHROPIC_API_KEY": "super-secret-value"}, clear=False
+                ),
+                contextlib.redirect_stdout(out),
+            ):
+                cmd, _log_path, _unsupervised, _stop_argv = cli._build_session_command(
+                    args,
+                    project=project,
+                    context_dir=context_dir,
+                    workspace=project,
+                    worktree=None,
+                    identity=GitIdentity(None, None),
+                    run_agent="bash",
+                    claude_cfg=claude_cfg,
+                    credential_dirs={},
+                    codex_cfg=codex_cfg,
+                    runtime=cli.container_cli.APPLE_CONTAINER,
+                    create_prompt_files=False,
+                )
+
+            self.assertIn("--env-file", cmd)
+            self.assertFalse((context_dir / "api-keys.env").exists())
+            self.assertIn("Would write API key env file", out.getvalue())
+            self.assertNotIn("super-secret-value", out.getvalue())
+
+    def test_stale_api_key_env_file_is_removed_when_unused(self) -> None:
+        """A previous apple-container run's staged keys must not linger once a
+        later run stops using the env-file path."""
+        import argparse
+
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            context_dir = project / ".project-sandbox"
+            context_dir.mkdir()
+            stale = context_dir / "api-keys.env"
+            stale.write_text("OLD_KEY=old-secret\n", encoding="utf-8")
+            claude_cfg = context_dir / "claude" / "settings.json"
+            codex_cfg = context_dir / "codex" / "config.toml"
+            args = argparse.Namespace(
+                branch=None,
+                cpus=4,
+                extra_mounts=[],
+                image_tag="project-sandbox:test",
+                log=None,
+                memory="8g",
+                no_firewall=True,
+                no_forward_credentials=True,
+                api_key_env=[],
+                api_key_env_file=[],
+                prompt=None,
+                prompt_text="echo ok",
+                verbose=False,
+            )
+
+            cli._build_session_command(
+                args,
+                project=project,
+                context_dir=context_dir,
+                workspace=project,
+                worktree=None,
+                identity=GitIdentity(None, None),
+                run_agent="bash",
+                claude_cfg=claude_cfg,
+                credential_dirs={},
+                codex_cfg=codex_cfg,
+                runtime=cli.container_cli.DOCKER,
+                create_prompt_files=True,
+            )
+
+            self.assertFalse(stale.exists())
+
+    def test_api_key_env_value_supplied_via_subprocess_env_not_argv(self) -> None:
+        """main() must hand the secret to the docker/podman CLI through the
+        subprocess environment, not by embedding it in argv."""
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            host_home = project / "home"
+            paths = _agent_paths(host_home)
+            paths["claude"].mkdir(parents=True)
+
+            captured: dict = {}
+
+            def fake_run(argv, **kwargs):
+                captured["argv"] = argv
+                captured["env"] = kwargs.get("env")
+                return 0
+
+            with (
+                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                patch.object(cli.container_cli, "select_runtime", return_value=cli.container_cli.DOCKER),
+                patch.object(cli.container_cli, "ensure_system_started", return_value=0),
+                patch.object(cli.container_cli, "image_exists", return_value=True),
+                patch.object(cli.container_cli, "run", side_effect=fake_run),
+                patch.dict(os.environ, {"ANTHROPIC_API_KEY": "super-secret-value"}, clear=False),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                rc = cli.main([
+                    "--no-build",
+                    "--no-forward-credentials",
+                    "--agent", "bash",
+                    "--api-key-env", "ANTHROPIC_API_KEY",
+                    str(project), "python:3.12-slim",
+                ])
+
+            self.assertEqual(rc, 0)
+            self.assertFalse(
+                any("super-secret-value" in token for token in captured["argv"])
+            )
+            self.assertIsNotNone(captured["env"])
+            self.assertEqual(captured["env"]["ANTHROPIC_API_KEY"], "super-secret-value")

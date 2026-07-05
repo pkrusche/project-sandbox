@@ -284,7 +284,11 @@ class DevcontainerTests(TestCase):
             context_dir = Path(tmp)
             cli._write_project_sandbox_gitignore(context_dir)
             content = (context_dir / ".gitignore").read_text(encoding="utf-8")
-            self.assertIn("history/", content)
+            # history/ is already excluded by the leading "*" glob (nothing
+            # negates it back in), so an explicit "history/" entry would be
+            # redundant and is no longer written.
+            self.assertIn("*\n", content)
+            self.assertNotIn("history/", content)
 
     def test_render_creates_relative_symlinks_into_project_sandbox(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -420,6 +424,102 @@ class DevcontainerTests(TestCase):
             )
             self.assertNotIn("${localEnv:HOME}/.codex", mounts)
             self.assertNotIn("${localEnv:HOME}/.config/opencode", mounts)
+
+    def test_initialize_command_recreates_missing_credential_dirs(self) -> None:
+        # Staged credentials live under a tmp-style directory (see
+        # config_agents.CREDENTIALS_ROOT) that a host reboot or tmp-reaper can
+        # remove. Without recreating these sources, "Reopen in Container"
+        # fails with a bind-mount error until the CLI is re-run from scratch.
+        # initializeCommand must mkdir -p the credential dirs too, not just
+        # the history/mask dirs, so the bind mounts always succeed (empty
+        # dirs self-heal; real content still requires re-running the CLI).
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_home = Path(tmp) / "home"
+            project = Path(tmp) / "project"
+            (project / ".project-sandbox").mkdir(parents=True)
+            (fake_home / ".codex").mkdir(parents=True)
+            (fake_home / ".config" / "opencode").mkdir(parents=True)
+            credentials = {
+                "claude-devcontainer": Path(tmp) / "secrets" / "claude-devcontainer",
+                "codex": Path(tmp) / "secrets" / "codex",
+                "opencode": Path(tmp) / "secrets" / "opencode",
+            }
+            # Simulate credentials that were staged once but whose /tmp
+            # directory has since been reaped/rebooted away.
+            for path in credentials.values():
+                path.mkdir(parents=True)
+
+            with patch.object(devcontainer.Path, "home", return_value=fake_home):
+                devcontainer.render(
+                    project,
+                    identity=GitIdentity("Ada", "ada@example.com"),
+                    firewall_enabled=True,
+                    memory="8g",
+                    cpus=4,
+                    extra_mounts=[],
+                    credential_dirs=credentials,
+                )
+
+            spec = json.loads(
+                (project / ".devcontainer" / "devcontainer.json").read_text()
+            )
+            command = spec["initializeCommand"]
+            self.assertIsInstance(command, list)
+
+            resolved_claude = credentials["claude-devcontainer"].resolve(strict=False).as_posix()
+            resolved_codex = credentials["codex"].resolve(strict=False).as_posix()
+            resolved_opencode = credentials["opencode"].resolve(strict=False).as_posix()
+            self.assertIn(resolved_claude, command)
+            self.assertIn(resolved_codex, command)
+            self.assertIn(resolved_opencode, command)
+
+            # Now actually reap the staged credential directories, as a
+            # tmp-cleaner or reboot would, and confirm the host-run
+            # initializeCommand recreates them so the bind mounts would
+            # succeed.
+            for path in credentials.values():
+                shutil.rmtree(path)
+                self.assertFalse(path.exists())
+
+            resolved = [
+                arg.replace("${localWorkspaceFolder}", str(project)) for arg in command
+            ]
+            subprocess.run(resolved, check=True)
+
+            for path in credentials.values():
+                self.assertTrue(path.is_dir())
+
+    def test_initialize_command_omits_credential_dirs_without_forwarding(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_home = Path(tmp) / "home"
+            project = Path(tmp) / "project"
+            (project / ".project-sandbox").mkdir(parents=True)
+            credentials = {
+                "claude-devcontainer": Path(tmp) / "secrets" / "claude-devcontainer",
+                "codex": Path(tmp) / "secrets" / "codex",
+                "opencode": Path(tmp) / "secrets" / "opencode",
+            }
+
+            with patch.object(devcontainer.Path, "home", return_value=fake_home):
+                devcontainer.render(
+                    project,
+                    identity=GitIdentity("Ada", "ada@example.com"),
+                    firewall_enabled=True,
+                    memory="8g",
+                    cpus=4,
+                    extra_mounts=[],
+                    credential_dirs=credentials,
+                    forward_credentials=False,
+                )
+
+            spec = json.loads(
+                (project / ".devcontainer" / "devcontainer.json").read_text()
+            )
+            command = spec["initializeCommand"]
+            for path in credentials.values():
+                self.assertNotIn(path.resolve(strict=False).as_posix(), command)
+            # Only the history/mask dirs remain: mkdir, -p, and three targets.
+            self.assertEqual(len(command), 5)
 
     def test_render_escapes_injection_in_strings(self) -> None:
         # Quotes, braces, and newlines in the project name, git identity, and an

@@ -2,9 +2,10 @@
 # Run all project-sandbox end-to-end tests.
 #
 # Sequentially executes:
-#   1. e2e-test.sh          — artifact-generation smoke test (no container needed)
-#   2. e2e-git-workflow.sh  — git rebase/merge/nothing workflows
-#   3. e2e-jj-workflow.sh   — jj rebase/merge/nothing workflows (skipped if jj not on PATH)
+#   1. e2e-test.sh           — artifact-generation smoke test (no container needed)
+#   2. e2e-env-injection.sh  — bash-agent env/API-key forwarding
+#   3. e2e-git-workflow.sh   — git rebase/merge/nothing workflows
+#   4. e2e-jj-workflow.sh    — jj rebase/merge/nothing workflows (skipped if jj not on PATH)
 #
 # Usage:
 #   scripts/run-e2e-tests.sh [--runtime chroot|auto|apple-container|docker|podman]
@@ -63,10 +64,13 @@ WORKFLOW_ARGS=(--runtime "$RUNTIME" --base-image "$BASE_IMAGE")
 # 1. Basic artifact-generation smoke test (no container required)
 run_suite "smoke" "$ROOT/scripts/e2e-test.sh"
 
-# 2. Git workflow: rebase / merge / nothing
+# 2. Env/API-key forwarding via headless bash-agent
+run_suite "env-injection" "$ROOT/scripts/e2e-env-injection.sh" "${WORKFLOW_ARGS[@]}"
+
+# 3. Git workflow: rebase / merge / nothing
 run_suite "git-workflow" "$ROOT/scripts/e2e-git-workflow.sh" "${WORKFLOW_ARGS[@]}"
 
-# 3. Jj workflow: rebase / merge / nothing (only if jj is on PATH)
+# 4. Jj workflow: rebase / merge / nothing (only if jj is on PATH)
 if command -v jj >/dev/null 2>&1; then
   run_suite "jj-workflow" "$ROOT/scripts/e2e-jj-workflow.sh" "${WORKFLOW_ARGS[@]}"
 else

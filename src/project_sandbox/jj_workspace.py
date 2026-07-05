@@ -291,6 +291,17 @@ def _description(ws_path: Path, rev: str = "@") -> str:
 
 
 def _list_workspaces(repo: Path) -> list[str]:
+    """Return the absolute root path of every workspace registered on ``repo``.
+
+    ``--template 'root ++ "\\n"'`` renders exactly one line per workspace with
+    nothing but the path, so a successful call is unambiguous: every line
+    *is* a path, whatever characters (including ``:``) it happens to
+    contain. Only when the template call itself fails outright — e.g. a jj
+    version too old to know the ``root`` keyword for ``workspace list`` — do
+    we fall back to parsing the human-readable ``<name>: ...`` format. Which
+    branch ran is decided by whether the subprocess call raised, never by
+    scanning the output for incidental characters like ``:``.
+    """
     try:
         out = _jj(
             repo,
@@ -299,17 +310,15 @@ def _list_workspaces(repo: Path) -> list[str]:
         )
     except subprocess.CalledProcessError:
         out = _jj(repo, ["workspace", "list"], capture=True)
-    paths = [line.strip() for line in out.splitlines() if line.strip()]
-    if paths and all(":" not in line for line in paths):
+        # Older/default human output may include paths after "<name>: ". Fall
+        # back to parsing that format since templating is unavailable.
+        paths = []
+        for line in out.splitlines():
+            if ": " in line:
+                _, _, rest = line.partition(": ")
+                # Path may be followed by " (<change-id>)" — strip anything after " ("
+                path = rest.split(" (")[0].strip()
+                paths.append(path)
         return paths
 
-    # Older/default human output may include paths after "<name>: ". Fall back
-    # to parsing that format if templating is unavailable.
-    paths = []
-    for line in out.splitlines():
-        if ": " in line:
-            _, _, rest = line.partition(": ")
-            # Path may be followed by " (<change-id>)" — strip anything after " ("
-            path = rest.split(" (")[0].strip()
-            paths.append(path)
-    return paths
+    return [line.strip() for line in out.splitlines() if line.strip()]

@@ -7,6 +7,20 @@ import subprocess
 import threading
 
 
+def merged_env(env: dict[str, str] | None) -> dict[str, str] | None:
+    """Return a subprocess env with ``env`` layered on top of the current
+    process environment, or None (inherit as-is) when there is nothing to add.
+
+    Lets a caller hand a child process a secret value without it ever
+    appearing in argv (where it would be visible via `ps`/process listings):
+    pass a bare name in argv and supply the value here, in the child's
+    environment.
+    """
+    if not env:
+        return None
+    return {**os.environ, **env}
+
+
 def default_log_path(project: Path, branch: str | None, agent: str, *, create: bool = True) -> Path:
     now = dt.datetime.now()
     # Include microseconds so two same-agent sessions started within the same
@@ -27,9 +41,10 @@ def run(
     container_stop_argv: list[str] | None = None,
     dry_run: bool = False,
     verbose: bool = False,
+    env: dict[str, str] | None = None,
 ) -> int:
     if dry_run:
-        redirect = "2>&1 | tee" if verbose else "> "
+        redirect = "2>&1 | tee" if verbose else ">"
         print(shlex.join(argv), redirect, shlex.quote(str(log_path)))
         if timeout:
             print(f"# timeout: {timeout}s")
@@ -45,7 +60,11 @@ def run(
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            errors="replace",
             start_new_session=True,
+            # Merge in any extra values (e.g. injected API keys) rather than
+            # baking them into argv; see merged_env.
+            env=merged_env(env),
         )
         assert proc.stdout is not None
         output_thread = threading.Thread(
@@ -132,7 +151,11 @@ def _tee_output(stream, handle, verbose: bool = True) -> None:
 
 
 def count_lines(path: Path) -> int:
-    """Count newlines in a file without loading it all into memory."""
+    """Count lines in a file without loading it all into memory.
+
+    A trailing unterminated line (no final newline) is still counted, matching
+    the behavior of iterating over the file's lines.
+    """
     try:
         with path.open("rb") as fh:
             return sum(1 for _ in fh)

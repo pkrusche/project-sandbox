@@ -190,7 +190,9 @@ def build_parser() -> ArgumentParser:
         help=(
             "Reasoning effort level for Claude, Codex, and OpenCode, in both "
             "interactive and unsupervised (batch) runs. "
-            "One of: low, medium, high, xhigh, max (default: xhigh). "
+            "One of: low, medium, high, xhigh, max. project-sandbox does not "
+            "force a default; when omitted, the underlying agent CLI's own "
+            "default applies. "
             "Examples for Claude: --agent claude --model sonnet --effort low "
             "or --agent claude --model sonnet --effort high. "
             "Examples for Codex: --agent codex --model gpt-5.4-mini --effort low "
@@ -247,8 +249,17 @@ def build_parser() -> ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
+    # Expand a leading "~" once, up front, so every later use of args.log (both
+    # validation and session-command construction) agrees on the same absolute
+    # path instead of one seeing the raw "~/..." string and the other an
+    # already-expanded path.
+    if args.log:
+        args.log = str(Path(args.log).expanduser())
+
     if args.prompt and args.prompt_text:
         raise SystemExit("Use only one of --prompt or --prompt-text")
+    if args.no_build and args.force_build:
+        raise SystemExit("--no-build and --force-build are mutually exclusive")
     run_agent = _requested_agent(args)
     _validate_api_key_injection_args(args, run_agent)
     is_chroot = args.runtime == container_cli.CHROOT.name
@@ -261,11 +272,22 @@ def main(argv: list[str] | None = None) -> int:
     if args.keep_workspace and not args.branch:
         raise SystemExit("--keep-workspace requires --branch")
 
-    project = resolve_strict(args.project)
+    project = _resolve_required_path(args.project, what="project path")
     if args.image_tag is None:
         args.image_tag = _default_image_tag(project)
     identity = read_identity()
     available_agents = config_agents.available_agents()
+    # --no-forward-credentials promises to start unauthenticated and let the
+    # user log in inside the sandbox, so the requested agent must be treated
+    # as available/installable even when its host config dir is missing —
+    # that config dir is exactly what --no-forward-credentials means to not
+    # depend on.
+    if (
+        run_agent is not None
+        and args.no_forward_credentials
+        and run_agent not in available_agents
+    ):
+        available_agents = (*available_agents, run_agent)
 
     if run_agent is not None and args.branch:
         _validate_worktree_project(project)
@@ -302,6 +324,11 @@ def main(argv: list[str] | None = None) -> int:
         )
     if run_agent is not None:
         _validate_session_inputs(args)
+    # Resolve the injected API key values once, before any worktree or image
+    # work: a missing env var or env file fails fast here, and the argv
+    # construction plus the subprocess environment below then agree on a
+    # single snapshot instead of re-reading the files.
+    api_key_values = _api_key_env_values(args)
     allow_github = _allow_github(args, run_agent)
     _warn_opencode_provider_allowlist(args, run_agent)
 
@@ -350,7 +377,9 @@ def main(argv: list[str] | None = None) -> int:
         # refreshes the claude token; opencode has no delegated refresh (no-op).
         if run_agent is not None and forward_credentials and not args.no_token_refresh:
             oauth_refresh.refresh_host_token(
-                "claude" if run_agent == "bash" else run_agent, home=Path.home()
+                "claude" if run_agent == "bash" else run_agent,
+                home=Path.home(),
+                verbose=args.verbose,
             )
         if forward_credentials:
             credential_dirs = config_agents.sync_credentials(context_dir)
@@ -407,7 +436,13 @@ def main(argv: list[str] | None = None) -> int:
                         "Use --no-verify-dockerfile to skip this check."
                     )
                     return 1
-                answer = input("Rebuild from the changed Dockerfile anyway? [y/N] ")
+                try:
+                    answer = input("Rebuild from the changed Dockerfile anyway? [y/N] ")
+                except EOFError:
+                    raise SystemExit(
+                        "No input available to confirm rebuilding from the changed "
+                        "Dockerfile. Use --no-verify-dockerfile to skip this check."
+                    ) from None
                 if answer.strip().lower() not in ("y", "yes"):
                     return 1
 
@@ -470,6 +505,15 @@ def main(argv: list[str] | None = None) -> int:
                 # .project-sandbox dir the sandbox cannot reach.
                 dockerfile_checksum.record(context_dir, tracked_dockerfiles)
                 print(f"Built image in {time.monotonic() - start:.1f}s")
+        elif runtime.is_container and not container_cli.image_exists(
+            runtime, args.image_tag
+        ):
+            # Fail early with a clear message instead of letting `container run`
+            # surface its own raw runtime error for a nonexistent image.
+            raise SystemExit(
+                f"--no-build was given but image {args.image_tag!r} does not exist; "
+                "drop --no-build so the image can be built."
+            )
 
         cmd, log_path, unsupervised, container_stop_argv = _build_session_command(
             args,
@@ -484,6 +528,7 @@ def main(argv: list[str] | None = None) -> int:
             codex_cfg=cfg["codex"],
             runtime=runtime,
             create_prompt_files=True,
+            api_key_values=api_key_values,
         )
 
         if not unsupervised:
@@ -498,6 +543,9 @@ def main(argv: list[str] | None = None) -> int:
                 print("Starting container…")
 
         agent_ran = True
+        # Injected API key values are never baked into cmd's argv (see
+        # _build_session_command); supply them through the subprocess
+        # environment instead so they don't show up via `ps`/process listings.
         if unsupervised:
             assert log_path is not None
             if not args.verbose:
@@ -508,13 +556,14 @@ def main(argv: list[str] | None = None) -> int:
                 timeout=args.timeout,
                 container_stop_argv=container_stop_argv,
                 verbose=args.verbose,
+                env=api_key_values or None,
             )
             if not args.verbose:
                 print(f"Wrote {session.count_lines(log_path)} lines to {log_path}")
             if run_agent in ("claude", "codex"):
                 _write_transcript_markdown(log_path)
         else:
-            exit_code = container_cli.run(cmd)
+            exit_code = container_cli.run(cmd, env=api_key_values or None)
 
         return exit_code
     finally:
@@ -581,7 +630,6 @@ def _dry_run(
         },
     }
     run_agent = _requested_agent(args)
-    _validate_api_key_injection_args(args, run_agent)
     _warn_opencode_provider_allowlist(args, run_agent)
     if args.runtime == container_cli.CHROOT.name:
         _validate_chroot_session(run_agent)
@@ -696,10 +744,22 @@ def _validate_api_key_injection_args(args, run_agent: str | None) -> None:
         )
 
 
-def _api_key_env(args, *, redact: bool = False) -> list[str]:
+def _api_key_env_values(args) -> dict[str, str]:
+    """Resolve the requested --api-key-env / --api-key-env-file values.
+
+    Returns an actual name -> value mapping. Callers must not bake these
+    values into subprocess argv (visible via `ps`/process listings); instead
+    pass bare names in argv (e.g. docker/podman `--env NAME`) and supply this
+    mapping through the subprocess environment so the runtime CLI inherits it
+    from project-sandbox's own process environment.
+    """
     values: dict[str, str] = {}
     for env_file in getattr(args, "api_key_env_file", []):
-        values.update(_read_api_key_env_file(resolve_strict(env_file)))
+        values.update(
+            _read_api_key_env_file(
+                _resolve_required_path(env_file, what="--api-key-env-file")
+            )
+        )
     for name in getattr(args, "api_key_env", []):
         _validate_env_name(name, source="--api-key-env")
         if name not in os.environ:
@@ -707,9 +767,29 @@ def _api_key_env(args, *, redact: bool = False) -> list[str]:
                 f"--api-key-env {name}: host environment variable is not set"
             )
         values[name] = os.environ[name]
-    if redact:
-        return [f"{name}=<redacted>" for name in values]
-    return [f"{name}={value}" for name, value in values.items()]
+    return values
+
+
+def _write_staged_api_key_env_file(path: Path, values: dict[str, str]) -> None:
+    """Stage resolved --api-key-env values as a key=value env file, mode 0600.
+
+    Used for runtimes (apple `container`) whose CLI is not documented to
+    inherit a bare ``--env NAME`` from the client environment; the file keeps
+    the secret out of argv while still reaching the container via --env-file.
+    """
+    for name, value in values.items():
+        if "\n" in value or "\r" in value:
+            raise SystemExit(
+                f"--api-key-env {name}: value contains a newline and cannot be "
+                "passed via an env file"
+            )
+    path.unlink(missing_ok=True)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(path, flags, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write("".join(f"{name}={value}\n" for name, value in values.items()))
 
 
 def _read_api_key_env_file(path: Path) -> dict[str, str]:
@@ -852,11 +932,13 @@ def _resolve_build_source(
     if args.dockerfile:
         if args.base_image:
             raise SystemExit("Use either base_image or --dockerfile, not both")
-        base_dockerfile = resolve_strict(args.dockerfile)
+        base_dockerfile = _resolve_required_path(args.dockerfile, what="--dockerfile")
         if not base_dockerfile.is_file():
             raise SystemExit(f"--dockerfile must point to a file: {base_dockerfile}")
         build_context = (
-            resolve_strict(args.docker_context) if args.docker_context else project
+            _resolve_required_path(args.docker_context, what="--docker-context")
+            if args.docker_context
+            else project
         )
         if not build_context.is_dir():
             raise SystemExit(
@@ -928,6 +1010,15 @@ def _tracked_project_dockerfiles(
     return []
 
 
+def _resolve_required_path(path_str: str, *, what: str) -> Path:
+    """Resolve a required, user-supplied path, converting a missing path into a
+    clean SystemExit instead of a raw FileNotFoundError traceback."""
+    try:
+        return resolve_strict(path_str)
+    except FileNotFoundError:
+        raise SystemExit(f"{what} does not exist: {path_str}") from None
+
+
 def _validate_session_inputs(args) -> None:
     """Validate fatal session inputs before any worktree is created.
 
@@ -936,7 +1027,7 @@ def _validate_session_inputs(args) -> None:
     written or staged here — the actual prompt/log handling still happens later.
     """
     if args.prompt:
-        source_prompt = resolve_strict(args.prompt)
+        source_prompt = _resolve_required_path(args.prompt, what="--prompt file")
         if not source_prompt.is_file():
             raise SystemExit(f"--prompt must point to a file: {source_prompt}")
     if args.log:
@@ -950,8 +1041,9 @@ def _allow_github(args, run_agent: str | None) -> bool:
 
 
 def _uses_github_copilot_cli(args, run_agent: str | None) -> bool:
-    if run_agent == "copilot":
-        return True
+    # "copilot" is not a supported --agent value (see SUPPORTED_AGENTS); the
+    # only way to run the GitHub Copilot CLI is via `--agent bash` with a
+    # prompt that invokes it, detected below.
     if run_agent != "bash":
         return False
     command = args.prompt_text
@@ -1113,6 +1205,35 @@ def _warn_forwarded_credential_lifetime(
     )
 
 
+def _mount_touches_path(mount_value: str, vcs_dir: Path) -> bool:
+    """Return True if a --mount value's source or target is ``vcs_dir`` itself
+    or nested inside it.
+
+    Structured comparison of parsed fields, not a raw substring search over the
+    whole mount spec string: a mount like
+    ``source=/repo/.git-backup,target=/x`` must NOT be flagged just because
+    "/repo/.git" is a textual substring of "/repo/.git-backup".
+    """
+    try:
+        spec = container_cli.parse_mount(mount_value)
+    except SystemExit:
+        # An invalid mount value is reported separately when it is actually
+        # used; here it simply can't be judged as conflicting or not.
+        return False
+    # Raw (non-bind / partially modeled) mounts still carry any source/target
+    # fields parse_mount saw, so e.g. a tmpfs mount targeting the metadata
+    # path is caught here instead of failing later with the runtime's own
+    # duplicate-mount error; absent fields are relative placeholders that can
+    # never match the absolute vcs_dir.
+    candidates = [spec.source]
+    target_path = Path(spec.target)
+    if target_path.is_absolute():
+        candidates.append(target_path)
+    return any(
+        candidate == vcs_dir or vcs_dir in candidate.parents for candidate in candidates
+    )
+
+
 def _build_session_command(
     args,
     *,
@@ -1127,6 +1248,7 @@ def _build_session_command(
     codex_cfg: Path,
     runtime: container_cli.Runtime,
     create_prompt_files: bool,
+    api_key_values: dict[str, str] | None = None,
 ) -> tuple[list[str], Path | None, bool, list[str] | None]:
     # Agent availability is validated up front in main() via _ensure_agent_available.
     extra_mounts = list(args.extra_mounts)
@@ -1154,12 +1276,38 @@ def _build_session_command(
                 f"--mount conflicts with the worktree .git metadata mount at {vcs_dir}"
             )
             metadata_mounts = [f"type=bind,source={vcs_dir},target={vcs_dir}"]
-        vcs_dir_str = str(vcs_dir)
-        if any(vcs_dir_str in m for m in extra_mounts):
+        if any(_mount_touches_path(m, vcs_dir) for m in extra_mounts):
             raise SystemExit(conflict_msg)
         extra_mounts.extend(metadata_mounts)
     extra_env: list[str] = []
-    extra_env.extend(_api_key_env(args, redact=not create_prompt_files))
+    if api_key_values is None:
+        api_key_values = _api_key_env_values(args)
+    staged_api_key_env_file = context_dir / "api-keys.env"
+    use_api_key_env_file = bool(api_key_values) and (
+        runtime.name == container_cli.APPLE_CONTAINER.name
+    )
+    if use_api_key_env_file:
+        # apple `container` documents only `--env key=value` and `--env-file`;
+        # unlike docker/podman, a bare `--env NAME` is not documented to
+        # inherit the value from the client's environment. Stage the values in
+        # a 0600 env file instead, so the secret still never appears in argv.
+        if create_prompt_files:
+            _write_staged_api_key_env_file(staged_api_key_env_file, api_key_values)
+        else:
+            print(f"Would write API key env file: {staged_api_key_env_file}")
+    else:
+        if create_prompt_files:
+            # Don't leave a previous apple-container run's staged keys behind.
+            staged_api_key_env_file.unlink(missing_ok=True)
+        if runtime.is_container:
+            # Pass bare names (no "=VALUE") so docker/podman look the value up
+            # from *this process's* environment — set via env= on the
+            # subprocess call in main()/_dry_run() — instead of the secret
+            # appearing directly in argv, where it would be visible via `ps`.
+            extra_env.extend(api_key_values.keys())
+    # For the chroot runtime there is no separate daemon to hand a bare name
+    # to: the value must already be inherited from the parent process
+    # environment through the unshare/env chain, so nothing is added to argv.
     if not args.verbose:
         # Silence the in-container firewall/startup banner; the entrypoint still
         # surfaces firewall errors on failure.
@@ -1192,7 +1340,7 @@ def _build_session_command(
 
     if unsupervised:
         log_path = (
-            Path(args.log).resolve()
+            Path(args.log).expanduser().resolve()
             if args.log
             else session.default_log_path(
                 project, args.branch, run_agent, create=create_prompt_files
@@ -1200,7 +1348,7 @@ def _build_session_command(
         )
         run_mode_agent = f"{run_agent}-headless"
         if args.prompt:
-            source_prompt = resolve_strict(args.prompt)
+            source_prompt = _resolve_required_path(args.prompt, what="--prompt file")
             # Copy the prompt into a private staging dir so we mount only the
             # prompt file, not its source parent (which could be $HOME).
             prompt_staging = context_dir / "prompt"
@@ -1248,10 +1396,8 @@ def _build_session_command(
         project,
         create=create_prompt_files,
     )
-    if create_prompt_files:
-        mask_source = workspace_mask.resolve(strict=False)
-    else:
-        mask_source = workspace_mask.resolve(strict=False)
+    mask_source = workspace_mask.resolve(strict=False)
+    if not create_prompt_files:
         print(f"Would mask workspace sandbox files with: {mask_source}")
     # Keep this after user-supplied mounts so a writable --mount cannot expose
     # the generated files at /workspace/.project-sandbox again.
@@ -1304,6 +1450,7 @@ def _build_session_command(
             firewall_enabled=not args.no_firewall,
             interactive=not unsupervised,
             extra_env=extra_env,
+            env_file=staged_api_key_env_file if use_api_key_env_file else None,
             container_name=container_name,
             forward_credentials=forward_credentials,
         )
@@ -1318,14 +1465,17 @@ def _build_session_command(
             extra_mounts=extra_mounts,
             forward_credentials=forward_credentials,
         )
-        command = container_cli.build_chroot_argv(
-            script=context_dir / "chroot-run.sh",
-            jail_root=context_dir / "chroot-root",
-            mounts=mounts,
-            identity=identity,
-            agent=run_mode_agent,
-            extra_env=extra_env,
-        )
+        try:
+            command = container_cli.build_chroot_argv(
+                script=context_dir / "chroot-run.sh",
+                jail_root=context_dir / "chroot-root",
+                mounts=mounts,
+                identity=identity,
+                agent=run_mode_agent,
+                extra_env=extra_env,
+            )
+        except ValueError as exc:
+            raise SystemExit(f"Invalid --mount for --runtime chroot: {exc}") from exc
     return (
         command,
         log_path,
@@ -1393,7 +1543,23 @@ def _update_project_gitignore(project: Path) -> None:
 
 
 def _write_project_sandbox_gitignore(context_dir: Path) -> None:
-    content = """*
+    # _update_project_gitignore (see below) unconditionally adds
+    # ".project-sandbox/" to the *project's* root .gitignore on every run, and
+    # git never descends into an already-ignored directory. So while that root
+    # rule is in place, none of the "!"-negation patterns below can ever
+    # re-include anything from inside .project-sandbox/ — they are inert by
+    # construction. This is documented in the file itself (below) rather than
+    # only in this comment, since it's the nested file a user would actually
+    # open to understand why a file they expect to be tracked still isn't.
+    content = """\
+# These "!" patterns only have an effect if you have manually removed or
+# edited the ".project-sandbox/" line from this project's root .gitignore.
+# Git does not descend into an already-ignored directory, so as long as that
+# root-level rule is in place, nothing below can re-include a file — it is
+# inert. It only matters if you deliberately opt out of the root ignore rule
+# and want to track select, non-secret generated files (Dockerfile,
+# settings.json, etc.) instead of ignoring this whole directory.
+*
 !.gitignore
 !claude/
 !claude/settings.json
@@ -1409,6 +1575,5 @@ def _write_project_sandbox_gitignore(context_dir: Path) -> None:
 !Dockerfile.devcontainer
 !entrypoint.sh
 !project-sandbox-devcontainer-init
-history/
 """
     (context_dir / ".gitignore").write_text(content, encoding="utf-8")

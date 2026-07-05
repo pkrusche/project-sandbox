@@ -92,22 +92,6 @@ def render(
     devcontainer_mask_mount = (
         f"source={workspace_mask_root},target={WORKSPACE_DEVCONTAINER_TARGET},type=bind,readonly"
     )
-    # The history dir is gitignored and ephemeral, so the bind sources can be
-    # absent at container-create time (fresh clone, cleaned .project-sandbox, or
-    # an upgrade that added history mounts). A missing source makes the runtime
-    # fail to start. initializeCommand runs on the host before the container is
-    # created, recreating the directories so the mounts always succeed. Use the
-    # argv (array) form so each path is passed as a single literal argument with
-    # no shell parsing: a workspace path containing an apostrophe (or any shell
-    # metacharacter) is then safe and cannot create the wrong directories.
-    history_init_command = [
-        "mkdir",
-        "-p",
-        f"{history_root}/shell",
-        f"{history_root}/claude_projects",
-        workspace_mask_root,
-    ]
-
     # Build the config as a Python dict and emit it with json.dumps so every
     # interpolated value (project name, git identity, mount specs, including the
     # user-supplied --mount values in extra_mounts) is JSON-escaped. Rendering
@@ -149,8 +133,7 @@ def render(
     }
     if firewall_enabled:
         container_env["UV_OFFLINE"] = "1"
-    if HISTORY_HISTFILE:
-        container_env["HISTFILE"] = HISTORY_HISTFILE
+    container_env["HISTFILE"] = HISTORY_HISTFILE
 
     # Generated, non-secret config is always mounted; the staged host tokens
     # under /project-sandbox-secrets are only wired when forwarding credentials.
@@ -179,6 +162,32 @@ def render(
     mounts.append(workspace_mask_mount)
     mounts.append(devcontainer_mask_mount)
 
+    # Several bind-mount sources live under ephemeral host directories: the
+    # gitignored history dir under the workspace, and the staged credential
+    # dirs under /tmp (see config_agents.CREDENTIALS_ROOT). Both can vanish
+    # between "project-sandbox run" and "Reopen in Container" (fresh clone,
+    # cleaned .project-sandbox, or a host reboot/tmp-reaper clearing /tmp), and
+    # a missing bind source makes the runtime fail to start. initializeCommand
+    # runs on the host before the container is created, recreating all of
+    # these directories so the mounts always succeed; self-healed credential
+    # directories come back empty (unauthenticated) until the CLI is re-run to
+    # restage real content. Use the argv (array) form so each path is passed
+    # as a single literal argument with no shell parsing: a workspace path
+    # containing an apostrophe (or any shell metacharacter) is then safe and
+    # cannot create the wrong directories.
+    initialize_command_dirs = [
+        f"{history_root}/shell",
+        f"{history_root}/claude_projects",
+        workspace_mask_root,
+    ]
+    if forward_credentials:
+        initialize_command_dirs.append(str(claude_credentials_mount))
+        if mount_codex_secrets:
+            initialize_command_dirs.append(str(codex_credentials_mount))
+        if mount_opencode_secrets:
+            initialize_command_dirs.append(str(opencode_credentials_mount))
+    initialize_command = ["mkdir", "-p", *initialize_command_dirs]
+
     post_start_command = (
         "sudo -n /usr/local/bin/project-sandbox-init-firewall && "
         if firewall_enabled
@@ -195,8 +204,7 @@ def render(
         "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=delegated",
         "workspaceFolder": "/workspace",
     }
-    if history_init_command:
-        config["initializeCommand"] = history_init_command
+    config["initializeCommand"] = initialize_command
     config["remoteUser"] = "agent"
     config["containerEnv"] = container_env
     config["remoteEnv"] = {
