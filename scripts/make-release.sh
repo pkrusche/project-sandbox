@@ -6,6 +6,9 @@
 #   2. Run Ruff and pytest checks.
 #   3. Confirm / bump the version and record the bump in version control.
 #   4. Create a GitHub release and tag via the gh CLI.
+#   5. Build the wheel and source distribution.
+#   6. Publish to test.pypi.org (requires user confirmation).
+#   7. Publish to pypi.org (requires user confirmation).
 #
 # Progress is tracked in .release-status/ (git-ignored) so that you can
 # resume after a failed step without re-running earlier ones.
@@ -30,7 +33,18 @@ while [[ $# -gt 0 ]]; do
             echo "  2. Run Ruff and pytest checks."
             echo "  3. Confirm / bump the version and record the bump in version control."
             echo "  4. Create a GitHub release and tag via the gh CLI."
+            echo "  5. Build the wheel and source distribution."
+            echo "  6. Publish to test.pypi.org (requires user confirmation)."
+            echo "  7. Publish to pypi.org (requires user confirmation)."
             exit 0
+            ;;
+        --test-pypi-token)
+            export PYPI_TOKEN_TESTPYPI="$2"
+            shift 2
+            ;;
+        --pypi-token)
+            export PYPI_TOKEN="$2"
+            shift 2
             ;;
         *)
             die "Unknown argument: $1"
@@ -42,6 +56,13 @@ done
 
 step_done() { [[ -f "$STATUS_DIR/$1" ]]; }
 mark_done() { touch "$STATUS_DIR/$1"; }
+
+confirm() {
+    local prompt="$1"
+    local reply
+    read -r -p "$prompt [y/N] " reply
+    [[ "${reply,,}" == "y" ]]
+}
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
@@ -102,7 +123,7 @@ check_clean() {
 
 # ── step 1: working copy clean (always checked) ───────────────────────────────
 
-echo "==> [1/4] Checking working copy is clean …"
+echo "==> [1/7] Checking working copy is clean …"
 check_clean
 mark_done "01-clean"
 echo "    OK"
@@ -117,7 +138,7 @@ fi
 # ── step 2: run checks ────────────────────────────────────────────────────────
 
 if ! step_done "02-checks-${COMMIT_ID}"; then
-    echo "==> [2/4] Running Ruff and pytest …"
+    echo "==> [2/7] Running Ruff and pytest …"
     "$ROOT/scripts/check-ruff.sh"
     uv run pytest -q
     mark_done "02-checks-${COMMIT_ID}"
@@ -128,7 +149,7 @@ fi
 
 if ! step_done "03-version"; then
     CURRENT_VERSION=$(uv version --short)
-    echo "==> [3/4] Version bump"
+    echo "==> [3/7] Version bump"
     echo "    Current version: $CURRENT_VERSION"
     read -r -p "    Bump (major/minor/patch/alpha/beta/rc/post/dev; blank to keep): " VERSION_BUMP
 
@@ -180,12 +201,56 @@ if ! step_done "04-gh-release"; then
         die "Could not check whether GitHub release $RELEASE_TAG exists."
     fi
 
-    echo "==> [4/4] Creating GitHub release $RELEASE_TAG …"
+    echo "==> [4/7] Creating GitHub release $RELEASE_TAG …"
     gh release create "v$RELEASE_VERSION" \
         --title "v$RELEASE_VERSION" \
         --generate-notes
     mark_done "04-gh-release"
     echo "    GitHub release v$RELEASE_VERSION created."
+fi
+
+# ── step 5: build distributions ───────────────────────────────────────────────
+
+if ! step_done "05-build"; then
+    echo "==> [5/7] Building wheel and source distribution …"
+    rm -rf "$ROOT/dist"
+    uv build
+    mark_done "05-build"
+    echo "    Build artifacts in dist/:"
+    ls dist/
+fi
+
+# ── step 6: publish to TestPyPI ───────────────────────────────────────────────
+
+if ! step_done "06-testpypi"; then
+    echo
+    echo "==> [6/7] Publish to test.pypi.org"
+    ls dist/
+    if confirm "    Publish the above artifacts to test.pypi.org?"; then
+        uv publish --token "$PYPI_TOKEN_TESTPYPI" --publish-url https://test.pypi.org/legacy/ dist/*
+        mark_done "06-testpypi"
+        echo "    Published to test.pypi.org."
+    else
+        echo "    Skipped. Re-run the script to retry."
+        exit 0
+    fi
+fi
+
+# ── step 7: publish to PyPI ───────────────────────────────────────────────────
+
+if ! step_done "07-pypi"; then
+    echo
+    echo "==> [7/7] Publish to pypi.org"
+    ls dist/
+    echo "    WARNING: This is the public PyPI registry. Packages cannot be deleted."
+    if confirm "    Publish the above artifacts to pypi.org?"; then
+        uv publish --token "$PYPI_TOKEN" dist/*
+        mark_done "07-pypi"
+        echo "    Published to pypi.org."
+    else
+        echo "    Skipped. Re-run the script to retry."
+        exit 0
+    fi
 fi
 
 # ── done ──────────────────────────────────────────────────────────────────────

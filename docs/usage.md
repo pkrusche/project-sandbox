@@ -2,13 +2,21 @@
 
 ## Install
 
-Directly from GitHub:
+Install the command from PyPI with uv:
 
 ```bash
-uvx --from git+https://github.com/pkrusche/project-sandbox.git project-sandbox --help
+uv tool install project-sandbox
+project-sandbox --help
 ```
 
-From a checkout:
+To run the PyPI package without installing it:
+
+```bash
+uvx project-sandbox --help
+uvx project-sandbox /absolute/path/to/repo python:3.12-slim
+```
+
+From a source checkout:
 
 ```bash
 uv sync

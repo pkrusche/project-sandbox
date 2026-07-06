@@ -1,5 +1,7 @@
 # project-sandbox
 
+![PyPI](https://img.shields.io/pypi/v/project-sandbox.svg)](https://pypi.org/project/project-sandbox/)
+
 `project-sandbox` runs Claude Code, Codex CLI, OpenCode, Pi, or a plain Bash shell
 inside per-project Linux containers. On macOS, direct CLI runs default to Apple's
 [`container`](https://github.com/apple/container) runtime, where each container
@@ -25,13 +27,21 @@ Many sandboxes exist - this is the one with a feature-set / configureable agency
 
 ## Quick Start
 
-Run directly from GitHub (if you trust the code):
+Install from PyPI:
 
 ```bash
-uvx --from git+https://github.com/pkrusche/project-sandbox.git project-sandbox --help
+uv tool install project-sandbox
+project-sandbox --help
 ```
 
-From a checkout:
+Or run directly from PyPI without installing:
+
+```bash
+uvx project-sandbox --help
+uvx project-sandbox /absolute/path/to/repo python:3.12-slim
+```
+
+From a source checkout:
 
 ```bash
 uv sync
@@ -41,25 +51,25 @@ uv run project-sandbox --help
 Generate sandbox files for a project:
 
 ```bash
-uv run project-sandbox /absolute/path/to/repo python:3.12-slim
+project-sandbox /absolute/path/to/repo python:3.12-slim
 ```
 
 Preview every action without writing files or starting a runtime:
 
 ```bash
-uv run project-sandbox --dry-run /absolute/path/to/repo python:3.12-slim
+project-sandbox --dry-run /absolute/path/to/repo python:3.12-slim
 ```
 
 Start an agent in the sandbox:
 
 ```bash
-uv run project-sandbox --agent codex /absolute/path/to/repo python:3.12-slim
+project-sandbox --agent codex /absolute/path/to/repo python:3.12-slim
 ```
 
 Build on top of an existing project Dockerfile:
 
 ```bash
-uv run project-sandbox /absolute/path/to/repo --dockerfile /absolute/path/to/repo/Dockerfile
+project-sandbox /absolute/path/to/repo --dockerfile /absolute/path/to/repo/Dockerfile
 ```
 
 ## Documentation

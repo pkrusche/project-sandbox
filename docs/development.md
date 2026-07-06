@@ -68,7 +68,7 @@ smoke, env-injection, git, and jj suites together with the same defaults.
 
 ## Releasing
 
-`scripts/make-release.sh` creates a GitHub release interactively:
+`scripts/make-release.sh` drives the full release workflow interactively:
 
 1. Verifies the working copy is clean (jj-aware).
 2. Runs Ruff and pytest checks.
@@ -77,6 +77,10 @@ smoke, env-injection, git, and jj suites together with the same defaults.
    commit, then exits so you can push the bump and re-run.
 4. Creates a GitHub release and tag via the `gh` CLI (`gh` must be installed and
    authenticated).
+
+5. Builds the wheel and source distribution with `uv build`.
+6. Publishes to `test.pypi.org` after explicit confirmation.
+7. Publishes to `pypi.org` after explicit confirmation.
 
 Progress is tracked in `.release-status/` (git-ignored).  Re-running the script
 after a failure resumes from the last incomplete step.  Delete `.release-status/`
