@@ -16,7 +16,9 @@ _EXPIRY = dt.datetime(2030, 1, 1, tzinfo=dt.timezone.utc)
 def _warn(*, forward=True, expiry=_EXPIRY, remaining=3600, run_mode_agent="claude"):
     out = io.StringIO()
     with (
-        patch.object(cli.token_expiry, "staged_token_expiry", return_value=expiry) as staged,
+        patch.object(
+            cli.token_expiry, "staged_token_expiry", return_value=expiry
+        ) as staged,
         patch.object(
             cli.token_expiry, "remaining", return_value=dt.timedelta(seconds=remaining)
         ),

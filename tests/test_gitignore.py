@@ -76,8 +76,7 @@ class UpdateProjectGitignoreTests(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
             existing = (
-                "# project-sandbox — do not commit agent secrets\n"
-                ".project-sandbox/\n"
+                "# project-sandbox — do not commit agent secrets\n.project-sandbox/\n"
             )
             (project / ".gitignore").write_text(existing, encoding="utf-8")
 
@@ -92,7 +91,9 @@ class RepoGitignoreTests(TestCase):
         repo_root = Path(__file__).resolve().parents[1]
         entries = {
             line.strip()
-            for line in (repo_root / ".gitignore").read_text(encoding="utf-8").splitlines()
+            for line in (repo_root / ".gitignore")
+            .read_text(encoding="utf-8")
+            .splitlines()
             if line.strip() and not line.strip().startswith("#")
         }
 
@@ -156,5 +157,7 @@ class GitignoreMechanismInteractionTests(TestCase):
         self.assertIn(".project-sandbox/", root_content)
         # The nested file must explain, in the file itself, that its
         # negations only take effect if that root rule is removed/edited.
-        self.assertIn("only have an effect if you have manually removed", nested_content)
+        self.assertIn(
+            "only have an effect if you have manually removed", nested_content
+        )
         self.assertIn("!Dockerfile", nested_content)

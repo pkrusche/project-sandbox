@@ -38,6 +38,7 @@ def _claude_config_state(permission_mode: str) -> dict:
         state["permissions"] = {"defaultMode": permission_mode}
     return state
 
+
 CLAUDE_CREDENTIAL_STATE_KEYS = frozenset(
     (
         "claudeAiOauth",
@@ -64,7 +65,9 @@ def _agent_host_paths(home: Path) -> dict[str, Path]:
 def available_agents(home: Path | None = None) -> tuple[str, ...]:
     """Return agents present on this host. Always includes 'bash'."""
     _home = home or Path.home()
-    present = tuple(a for a in _CONFIGURED_AGENTS if _agent_host_paths(_home)[a].exists())
+    present = tuple(
+        a for a in _CONFIGURED_AGENTS if _agent_host_paths(_home)[a].exists()
+    )
     return (*present, "bash")
 
 
@@ -377,7 +380,9 @@ def _copy_if_file(source: Path, target: Path) -> bool:
     return True
 
 
-def _stage_config_state(sources: tuple[Path, ...], target: Path, *, config_state: dict) -> None:
+def _stage_config_state(
+    sources: tuple[Path, ...], target: Path, *, config_state: dict
+) -> None:
     state: dict[str, object] = {}
     for source in sources:
         if not source.is_file():

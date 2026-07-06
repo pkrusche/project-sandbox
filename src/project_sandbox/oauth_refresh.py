@@ -87,7 +87,9 @@ def refresh_host_token(
         return
     if verbose and result.returncode != 0:
         stderr_text = result.stderr.decode(errors="replace") if result.stderr else ""
-        if any(marker in stderr_text.lower() for marker in _UNRECOGNIZED_COMMAND_MARKERS):
+        if any(
+            marker in stderr_text.lower() for marker in _UNRECOGNIZED_COMMAND_MARKERS
+        ):
             print(
                 f"[W] Host {agent} token refresh delegate {' '.join(command)!r} was "
                 f"not recognized by the installed CLI (exit {result.returncode}); "

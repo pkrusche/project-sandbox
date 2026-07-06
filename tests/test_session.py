@@ -28,10 +28,14 @@ class SessionTests(TestCase):
             self.assertEqual(rc, 124)
             self.assertTrue(log_path.exists())
 
-    def test_default_log_path_can_be_computed_without_creating_directories(self) -> None:
+    def test_default_log_path_can_be_computed_without_creating_directories(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
-            path = session.default_log_path(project, "agent/demo", "claude", create=False)
+            path = session.default_log_path(
+                project, "agent/demo", "claude", create=False
+            )
 
             self.assertEqual(path.parent, project / ".project-sandbox" / "sessions")
             self.assertFalse(path.parent.exists())
@@ -136,14 +140,8 @@ class SessionTests(TestCase):
             out = io.StringIO()
             # Write an invalid UTF-8 byte (a lone continuation byte) between
             # two valid markers, then flush stdout as a binary stream.
-            script = (
-                "import sys\n"
-                "sys.stdout.buffer.write(b'before-")
-            script += (
-                "\\x80"
-                "-after\\n')\n"
-                "sys.stdout.buffer.flush()\n"
-            )
+            script = "import sys\nsys.stdout.buffer.write(b'before-"
+            script += "\\x80-after\\n')\nsys.stdout.buffer.flush()\n"
             with contextlib.redirect_stdout(out):
                 rc = session.run(
                     [sys.executable, "-c", script],
@@ -192,9 +190,7 @@ class SessionTests(TestCase):
             log_path = Path(tmp) / "session.log"
             with (
                 patch("project_sandbox.session.subprocess.Popen", return_value=proc),
-                patch(
-                    "project_sandbox.session._terminate_process_group"
-                ) as terminate,
+                patch("project_sandbox.session._terminate_process_group") as terminate,
             ):
                 with self.assertRaises(KeyboardInterrupt):
                     session.run(
@@ -208,12 +204,18 @@ class SessionTests(TestCase):
     def test_default_log_path_is_unique_within_the_same_second(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
-            first = session.default_log_path(project, "agent/demo", "claude", create=False)
-            second = session.default_log_path(project, "agent/demo", "claude", create=False)
+            first = session.default_log_path(
+                project, "agent/demo", "claude", create=False
+            )
+            second = session.default_log_path(
+                project, "agent/demo", "claude", create=False
+            )
 
             self.assertNotEqual(first, second)
 
-    def test_terminate_process_group_runs_container_stop_before_signalling(self) -> None:
+    def test_terminate_process_group_runs_container_stop_before_signalling(
+        self,
+    ) -> None:
         proc = Mock()
         proc.pid = 1234
         proc.wait.return_value = 0

@@ -11,31 +11,52 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from project_sandbox import worktree as worktree_mod
+
+
 def _find_docker() -> str | None:
     for cmd in ("docker", "podman"):
         path = shutil.which(cmd)
         if path is None:
             continue
         try:
-            if subprocess.run([path, "info"], capture_output=True, timeout=5).returncode == 0:
+            if (
+                subprocess.run(
+                    [path, "info"], capture_output=True, timeout=5
+                ).returncode
+                == 0
+            ):
                 return path
         except (subprocess.TimeoutExpired, OSError):
             continue
     return None
 
+
 DOCKER = _find_docker()
 DOCKER_IMAGE = "alpine/git:v2.45.2"
-
-from project_sandbox import worktree as worktree_mod
 
 
 def _make_repo(path: Path) -> None:
     subprocess.run(["git", "init", str(path)], check=True, capture_output=True)
-    subprocess.run(["git", "-C", str(path), "config", "user.email", "t@test.com"], check=True, capture_output=True)
-    subprocess.run(["git", "-C", str(path), "config", "user.name", "Test"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(path), "config", "user.email", "t@test.com"],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(path), "config", "user.name", "Test"],
+        check=True,
+        capture_output=True,
+    )
     (path / "a.txt").write_text("init\n", encoding="utf-8")
-    subprocess.run(["git", "-C", str(path), "add", "."], check=True, capture_output=True)
-    subprocess.run(["git", "-C", str(path), "commit", "-m", "init"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(path), "add", "."], check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "-C", str(path), "commit", "-m", "init"],
+        check=True,
+        capture_output=True,
+    )
 
 
 class PathForCollisionTests(TestCase):
@@ -58,7 +79,6 @@ class PathForCollisionTests(TestCase):
         self.assertEqual(p.name, "my-feature")
 
     def test_slash_branch_ends_with_six_char_hex_suffix(self) -> None:
-        import re
         p = worktree_mod.path_for(self._fake_repo(), "feat/x")
         # Expected: "feat-x-<6 hex chars>"
         self.assertRegex(p.name, r"^feat-x-[0-9a-f]{6}$")
@@ -72,6 +92,7 @@ class PathForCollisionTests(TestCase):
 class WorktreeSetupTests(TestCase):
     def setUp(self) -> None:
         import tempfile
+
         self._td = tempfile.TemporaryDirectory()
         self.root = Path(self._td.name)
         self.repo = self.root / "repo"
@@ -123,7 +144,8 @@ class WorktreeSetupTests(TestCase):
     def test_setup_existing_branch_reused(self) -> None:
         subprocess.run(
             ["git", "-C", str(self.repo), "branch", "existing-branch"],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
         wt = worktree_mod.setup(self.repo, "existing-branch")
 
@@ -132,7 +154,8 @@ class WorktreeSetupTests(TestCase):
     def test_setup_start_at_on_existing_branch_raises(self) -> None:
         subprocess.run(
             ["git", "-C", str(self.repo), "branch", "existing-branch"],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
         with self.assertRaises(SystemExit) as raised:
             worktree_mod.setup(self.repo, "existing-branch", start_at="HEAD")
@@ -146,22 +169,29 @@ class WorktreeSetupTests(TestCase):
         # switch back, then create a worktree starting at that side branch.
         main_branch = subprocess.run(
             ["git", "-C", str(self.repo), "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True, text=True, check=True,
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout.strip()
 
         subprocess.run(
             ["git", "-C", str(self.repo), "checkout", "-b", "base-branch"],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
         (self.repo / "base.txt").write_text("base\n", encoding="utf-8")
-        subprocess.run(["git", "-C", str(self.repo), "add", "."], check=True, capture_output=True)
+        subprocess.run(
+            ["git", "-C", str(self.repo), "add", "."], check=True, capture_output=True
+        )
         subprocess.run(
             ["git", "-C", str(self.repo), "commit", "-m", "base commit"],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
         subprocess.run(
             ["git", "-C", str(self.repo), "checkout", main_branch],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
 
         wt = worktree_mod.setup(self.repo, "feat/from-base", start_at="base-branch")
@@ -172,6 +202,7 @@ class WorktreeSetupTests(TestCase):
 class WorktreeTeardownTests(TestCase):
     def setUp(self) -> None:
         import tempfile
+
         self._td = tempfile.TemporaryDirectory()
         self.root = Path(self._td.name)
         self.repo = self.root / "repo"
@@ -180,10 +211,15 @@ class WorktreeTeardownTests(TestCase):
         self.wt = worktree_mod.setup(self.repo, "feat/work")
         # Make a commit in the worktree
         (self.wt.path / "work.txt").write_text("work\n", encoding="utf-8")
-        subprocess.run(["git", "-C", str(self.wt.path), "add", "."], check=True, capture_output=True)
+        subprocess.run(
+            ["git", "-C", str(self.wt.path), "add", "."],
+            check=True,
+            capture_output=True,
+        )
         subprocess.run(
             ["git", "-C", str(self.wt.path), "commit", "-m", "agent work"],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
 
     def tearDown(self) -> None:
@@ -201,13 +237,17 @@ class WorktreeTeardownTests(TestCase):
     def _main_log(self) -> str:
         return subprocess.run(
             ["git", "-C", str(self.repo), "log", "--oneline"],
-            capture_output=True, text=True, check=True,
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout
 
     def _branch_log(self) -> str:
         return subprocess.run(
             ["git", "-C", str(self.repo), "log", "--oneline", "feat/work"],
-            capture_output=True, text=True, check=True,
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout
 
     def test_finalize_removes_worktree_but_keeps_branch(self) -> None:
@@ -270,7 +310,9 @@ class WorktreeTeardownTests(TestCase):
         # The file is present in the branch tip tree.
         files = subprocess.run(
             ["git", "-C", str(self.repo), "ls-tree", "-r", "--name-only", "feat/work"],
-            capture_output=True, text=True, check=True,
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout
         self.assertIn("uncommitted.txt", files)
 
@@ -291,13 +333,16 @@ class WorktreeTeardownTests(TestCase):
     def _branch_log_files(self) -> str:
         return subprocess.run(
             ["git", "-C", str(self.repo), "ls-tree", "-r", "--name-only", "feat/work"],
-            capture_output=True, text=True, check=True,
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout
 
 
 class WorktreeSetupStaleDirectoryTests(TestCase):
     def setUp(self) -> None:
         import tempfile
+
         self._td = tempfile.TemporaryDirectory()
         self.root = Path(self._td.name)
         self.repo = self.root / "repo"
@@ -329,6 +374,7 @@ class GitWorktreeDockerEndToEndTests(TestCase):
 
     def setUp(self) -> None:
         import tempfile
+
         self._td = tempfile.TemporaryDirectory()
         self.root = Path(self._td.name)
         self.repo = self.root / "repo"
@@ -343,13 +389,22 @@ class GitWorktreeDockerEndToEndTests(TestCase):
         uid = os.getuid()
         subprocess.run(
             [
-                DOCKER, "run", "--rm", "-u", str(uid),
-                "--mount", f"type=bind,source={wt_path},target=/workspace",
-                "--mount", f"type=bind,source={git_dir},target={git_dir}",
-                "--workdir", "/workspace",
-                "--entrypoint", "sh",
+                DOCKER,
+                "run",
+                "--rm",
+                "-u",
+                str(uid),
+                "--mount",
+                f"type=bind,source={wt_path},target=/workspace",
+                "--mount",
+                f"type=bind,source={git_dir},target={git_dir}",
+                "--workdir",
+                "/workspace",
+                "--entrypoint",
+                "sh",
                 DOCKER_IMAGE,
-                "-c", bash_cmd,
+                "-c",
+                bash_cmd,
             ],
             check=True,
         )
@@ -374,14 +429,18 @@ class GitWorktreeDockerEndToEndTests(TestCase):
         self.assertTrue((wt.path / "agent_output.txt").exists())
         tree_out = subprocess.run(
             ["find", str(wt.path), "-not", "-path", f"{wt.path}/.git*", "-type", "f"],
-            capture_output=True, text=True, check=True,
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout
         self.assertIn("agent_output.txt", tree_out)
 
         # 4. Show revision — commit in branch log
         log_out = subprocess.run(
             ["git", "-C", str(wt.path), "log", "--oneline"],
-            capture_output=True, text=True, check=True,
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout
         self.assertIn("agent: add agent_output", log_out)
 
@@ -406,11 +465,15 @@ class GitWorktreeDockerEndToEndTests(TestCase):
         # The commit lives on the branch, not on the main checkout.
         branch_log = subprocess.run(
             ["git", "-C", str(self.repo), "log", "--oneline", "feat/e2e-finalize"],
-            capture_output=True, text=True, check=True,
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout
         self.assertIn("agent: add file", branch_log)
         main_log = subprocess.run(
             ["git", "-C", str(self.repo), "log", "--oneline"],
-            capture_output=True, text=True, check=True,
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout
         self.assertNotIn("agent: add file", main_log)

@@ -26,11 +26,25 @@ def _agent_paths(home: Path) -> dict[str, Path]:
 
 def _make_git_repo(path: Path) -> None:
     subprocess.run(["git", "init", str(path)], check=True, capture_output=True)
-    subprocess.run(["git", "-C", str(path), "config", "user.email", "t@test.com"], check=True, capture_output=True)
-    subprocess.run(["git", "-C", str(path), "config", "user.name", "Test"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(path), "config", "user.email", "t@test.com"],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(path), "config", "user.name", "Test"],
+        check=True,
+        capture_output=True,
+    )
     (path / "README.md").write_text("init\n", encoding="utf-8")
-    subprocess.run(["git", "-C", str(path), "add", "."], check=True, capture_output=True)
-    subprocess.run(["git", "-C", str(path), "commit", "-m", "init"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(path), "add", "."], check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "-C", str(path), "commit", "-m", "init"],
+        check=True,
+        capture_output=True,
+    )
 
 
 class CliTests(TestCase):
@@ -68,9 +82,15 @@ class CliTests(TestCase):
         self.assertIn("--agent codex --model gpt-5.4-mini --prompt-text", flat_help)
         self.assertIn("--agent codex --model gpt-5.4-mini --effort low", flat_help)
         self.assertIn("--agent codex --model gpt-5.4-mini --effort high", flat_help)
-        self.assertIn("--agent opencode --model openai/gpt-5.4-mini --prompt-text", flat_help)
-        self.assertIn("--agent opencode --model openai/gpt-5.4-mini --effort low", flat_help)
-        self.assertIn("--agent opencode --model openai/gpt-5.4-mini --effort high", flat_help)
+        self.assertIn(
+            "--agent opencode --model openai/gpt-5.4-mini --prompt-text", flat_help
+        )
+        self.assertIn(
+            "--agent opencode --model openai/gpt-5.4-mini --effort low", flat_help
+        )
+        self.assertIn(
+            "--agent opencode --model openai/gpt-5.4-mini --effort high", flat_help
+        )
         self.assertNotIn("claude models", flat_help)
         self.assertNotIn("codex models list", flat_help)
         self.assertNotIn("opencode models", flat_help)
@@ -95,16 +115,26 @@ class CliTests(TestCase):
             paths["claude"].mkdir(parents=True)
 
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
-                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
+                patch.object(
+                    cli.config_agents, "_agent_host_paths", return_value=paths
+                ),
             ):
-                rc = cli.main(["--dry-run", "--no-build", str(project), "python:3.12-slim"])
+                rc = cli.main(
+                    ["--dry-run", "--no-build", str(project), "python:3.12-slim"]
+                )
 
             self.assertEqual(rc, 0)
             self.assertFalse((project / ".project-sandbox").exists())
             self.assertFalse((project / ".gitignore").exists())
 
-    @unittest.skipUnless(sys.platform.startswith("linux"), "chroot runtime is Linux-only")
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"), "chroot runtime is Linux-only"
+    )
     def test_chroot_dry_run_prints_layout_without_writing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
@@ -112,13 +142,24 @@ class CliTests(TestCase):
             out = io.StringIO()
             with (
                 patch.object(
-                    cli, "read_identity", return_value=GitIdentity("Ada Lovelace", "ada@example.com")
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada Lovelace", "ada@example.com"),
                 ),
-                patch.object(cli.config_agents, "available_agents", return_value=("bash",)),
+                patch.object(
+                    cli.config_agents, "available_agents", return_value=("bash",)
+                ),
                 contextlib.redirect_stdout(out),
             ):
                 rc = cli.main(
-                    ["--dry-run", "--runtime", "chroot", "--agent", "bash", str(project)]
+                    [
+                        "--dry-run",
+                        "--runtime",
+                        "chroot",
+                        "--agent",
+                        "bash",
+                        str(project),
+                    ]
                 )
 
             self.assertEqual(rc, 0)
@@ -131,7 +172,9 @@ class CliTests(TestCase):
             self.assertFalse((project / ".project-sandbox").exists())
             self.assertFalse((project / ".devcontainer").exists())
 
-    @unittest.skipUnless(sys.platform.startswith("linux"), "chroot runtime is Linux-only")
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"), "chroot runtime is Linux-only"
+    )
     def test_chroot_rejects_non_bash_agent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
@@ -143,7 +186,9 @@ class CliTests(TestCase):
                 with self.assertRaisesRegex(SystemExit, "requires --agent bash"):
                     cli.main([*common, "--agent", "claude", str(project)])
 
-    @unittest.skipUnless(sys.platform.startswith("linux"), "chroot runtime is Linux-only")
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"), "chroot runtime is Linux-only"
+    )
     def test_chroot_rejects_missing_agent_before_writing_files(self) -> None:
         """--runtime chroot with no --agent must fail fast, not silently fall
         back to rendering a Dockerfile/firewall for a runtime that never
@@ -159,26 +204,34 @@ class CliTests(TestCase):
             with self.assertRaisesRegex(SystemExit, "requires --agent bash"):
                 cli.main(["--dry-run", "--runtime", "chroot", str(project)])
 
-    @unittest.skipUnless(sys.platform.startswith("linux"), "chroot runtime is Linux-only")
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"), "chroot runtime is Linux-only"
+    )
     def test_chroot_real_run_skips_devcontainer_render(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
             (project / "README.md").write_text("# demo\n", encoding="utf-8")
 
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity(None, None)),
+                patch.object(
+                    cli, "read_identity", return_value=GitIdentity(None, None)
+                ),
                 patch.object(
                     cli.config_agents,
                     "_agent_host_paths",
                     return_value=_agent_paths(project / "home"),
                 ),
-                patch.object(cli.config_agents, "available_agents", return_value=("bash",)),
+                patch.object(
+                    cli.config_agents, "available_agents", return_value=("bash",)
+                ),
                 patch.object(cli.container_cli, "run", return_value=0) as run_mock,
             ):
                 rc = cli.main(
                     [
-                        "--runtime", "chroot",
-                        "--agent", "bash",
+                        "--runtime",
+                        "chroot",
+                        "--agent",
+                        "bash",
                         "--no-forward-credentials",
                         "--no-firewall",
                         str(project),
@@ -202,10 +255,18 @@ class CliTests(TestCase):
             out = io.StringIO()
 
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
-                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
+                patch.object(
+                    cli.config_agents, "_agent_host_paths", return_value=paths
+                ),
                 patch.object(cli.config_agents, "sync_credentials"),
-                patch.object(cli.container_cli, "ensure_system_started") as ensure_system_started,
+                patch.object(
+                    cli.container_cli, "ensure_system_started"
+                ) as ensure_system_started,
                 patch.object(cli.container_cli, "build_image") as build_image,
                 patch.object(cli.container_cli, "run") as run,
                 contextlib.redirect_stdout(out),
@@ -256,8 +317,14 @@ class CliTests(TestCase):
             paths["claude"].mkdir(parents=True)
 
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
-                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
+                patch.object(
+                    cli.config_agents, "_agent_host_paths", return_value=paths
+                ),
                 patch.object(cli.config_agents, "sync_credentials"),
             ):
                 rc = cli.main([str(project), "python:3.12-slim"])
@@ -297,19 +364,29 @@ class CliTests(TestCase):
             out = io.StringIO()
 
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
-                patch.object(cli.config_agents, "_agent_host_paths", return_value=_agent_paths(project / "home")),
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
+                patch.object(
+                    cli.config_agents,
+                    "_agent_host_paths",
+                    return_value=_agent_paths(project / "home"),
+                ),
                 contextlib.redirect_stdout(out),
             ):
-                rc = cli.main([
-                    "--dry-run",
-                    "--no-build",
-                    "--no-firewall",
-                    "--agent",
-                    "bash",
-                    str(project),
-                    "python:3.12-slim",
-                ])
+                rc = cli.main(
+                    [
+                        "--dry-run",
+                        "--no-build",
+                        "--no-firewall",
+                        "--agent",
+                        "bash",
+                        str(project),
+                        "python:3.12-slim",
+                    ]
+                )
 
             self.assertEqual(rc, 0)
             output = out.getvalue()
@@ -323,20 +400,30 @@ class CliTests(TestCase):
             out = io.StringIO()
 
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
-                patch.object(cli.config_agents, "_agent_host_paths", return_value=_agent_paths(project / "home")),
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
+                patch.object(
+                    cli.config_agents,
+                    "_agent_host_paths",
+                    return_value=_agent_paths(project / "home"),
+                ),
                 contextlib.redirect_stdout(out),
             ):
-                rc = cli.main([
-                    "--dry-run",
-                    "--no-build",
-                    "--runtime",
-                    "docker",
-                    "--agent",
-                    "bash",
-                    str(project),
-                    "python:3.12-slim",
-                ])
+                rc = cli.main(
+                    [
+                        "--dry-run",
+                        "--no-build",
+                        "--runtime",
+                        "docker",
+                        "--agent",
+                        "bash",
+                        str(project),
+                        "python:3.12-slim",
+                    ]
+                )
 
             self.assertEqual(rc, 0)
             self.assertIn("docker run", out.getvalue())
@@ -350,24 +437,34 @@ class CliTests(TestCase):
             (project / "README.md").write_text("# demo\n", encoding="utf-8")
 
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
-                patch.object(cli.config_agents, "_agent_host_paths", return_value=_agent_paths(project / "home")),
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
+                patch.object(
+                    cli.config_agents,
+                    "_agent_host_paths",
+                    return_value=_agent_paths(project / "home"),
+                ),
                 patch.object(
                     cli.container_cli,
                     "build_mount_specs",
                     wraps=cli.container_cli.build_mount_specs,
                 ) as build_mount_specs,
             ):
-                rc = cli.main([
-                    "--dry-run",
-                    "--no-build",
-                    "--runtime",
-                    "docker",
-                    "--agent",
-                    "bash",
-                    str(project),
-                    "python:3.12-slim",
-                ])
+                rc = cli.main(
+                    [
+                        "--dry-run",
+                        "--no-build",
+                        "--runtime",
+                        "docker",
+                        "--agent",
+                        "bash",
+                        str(project),
+                        "python:3.12-slim",
+                    ]
+                )
 
             self.assertEqual(rc, 0)
             build_mount_specs.assert_called_once()
@@ -378,19 +475,29 @@ class CliTests(TestCase):
             (project / "README.md").write_text("# demo\n", encoding="utf-8")
 
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
-                patch.object(cli.config_agents, "_agent_host_paths", return_value=_agent_paths(project / "home")),
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
+                patch.object(
+                    cli.config_agents,
+                    "_agent_host_paths",
+                    return_value=_agent_paths(project / "home"),
+                ),
                 patch("project_sandbox.container_cli.shutil.which", return_value=None),
             ):
                 with self.assertRaises(SystemExit) as raised:
-                    cli.main([
-                        "--runtime",
-                        "docker",
-                        "--agent",
-                        "bash",
-                        str(project),
-                        "python:3.12-slim",
-                    ])
+                    cli.main(
+                        [
+                            "--runtime",
+                            "docker",
+                            "--agent",
+                            "bash",
+                            str(project),
+                            "python:3.12-slim",
+                        ]
+                    )
 
             self.assertIn("docker CLI not found", str(raised.exception))
             self.assertFalse((project / ".project-sandbox").exists())
@@ -408,17 +515,25 @@ class CliTests(TestCase):
             out = io.StringIO()
 
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
-                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
+                patch.object(
+                    cli.config_agents, "_agent_host_paths", return_value=paths
+                ),
                 contextlib.redirect_stdout(out),
             ):
-                rc = cli.main([
-                    "--dry-run",
-                    "--no-build",
-                    "--dockerfile",
-                    str(source),
-                    str(project),
-                ])
+                rc = cli.main(
+                    [
+                        "--dry-run",
+                        "--no-build",
+                        "--dockerfile",
+                        str(source),
+                        str(project),
+                    ]
+                )
 
             self.assertEqual(rc, 0)
             output = out.getvalue()
@@ -435,9 +550,7 @@ class CliTests(TestCase):
             (project / "README.md").write_text("# demo\n", encoding="utf-8")
             source = project / "Dockerfile"
             source.write_text(
-                "FROM python:3.12-slim\n"
-                "RUN useradd -m -u 1000 app\n"
-                "USER app\n",
+                "FROM python:3.12-slim\nRUN useradd -m -u 1000 app\nUSER app\n",
                 encoding="utf-8",
             )
             host_home = project / "home"
@@ -446,21 +559,31 @@ class CliTests(TestCase):
             out = io.StringIO()
 
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
-                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
+                patch.object(
+                    cli.config_agents, "_agent_host_paths", return_value=paths
+                ),
                 contextlib.redirect_stdout(out),
             ):
-                rc = cli.main([
-                    "--dry-run",
-                    "--no-build",
-                    "--dockerfile",
-                    str(source),
-                    str(project),
-                ])
+                rc = cli.main(
+                    [
+                        "--dry-run",
+                        "--no-build",
+                        "--dockerfile",
+                        str(source),
+                        str(project),
+                    ]
+                )
 
             self.assertEqual(rc, 0)
             output = out.getvalue()
-            self.assertIn("WARNING: Removed 2 restricted user setup instructions", output)
+            self.assertIn(
+                "WARNING: Removed 2 restricted user setup instructions", output
+            )
             self.assertIn(
                 "project-sandbox will create its own unprivileged agent user", output
             )
@@ -473,13 +596,15 @@ class CliTests(TestCase):
             source.write_text("FROM python:3.12-slim\n", encoding="utf-8")
 
             with self.assertRaises(SystemExit) as raised:
-                cli.main([
-                    "--dry-run",
-                    "--dockerfile",
-                    str(source),
-                    str(project),
-                    "python:3.12-slim",
-                ])
+                cli.main(
+                    [
+                        "--dry-run",
+                        "--dockerfile",
+                        str(source),
+                        str(project),
+                        "python:3.12-slim",
+                    ]
+                )
 
             self.assertIn("either base_image or --dockerfile", str(raised.exception))
 
@@ -496,7 +621,9 @@ class CliTests(TestCase):
             )
 
             with self.assertRaises(SystemExit) as raised:
-                cli._resolve_build_source(args, project=project, context_dir=context_dir)
+                cli._resolve_build_source(
+                    args, project=project, context_dir=context_dir
+                )
 
         self.assertIn("--docker-context requires --dockerfile", str(raised.exception))
 
@@ -544,7 +671,9 @@ class CliTests(TestCase):
                     context_dir=project / ".project-sandbox",
                 )
 
-        self.assertIn("--docker-context must point to a directory", str(raised.exception))
+        self.assertIn(
+            "--docker-context must point to a directory", str(raised.exception)
+        )
 
     def test_docker_context_must_contain_generated_sandbox_dir(self) -> None:
         import argparse
@@ -570,7 +699,9 @@ class CliTests(TestCase):
                     context_dir=project / ".project-sandbox",
                 )
 
-        self.assertIn("must contain the generated .project-sandbox", str(raised.exception))
+        self.assertIn(
+            "must contain the generated .project-sandbox", str(raised.exception)
+        )
 
     def test_base_image_is_required_without_dockerfile(self) -> None:
         import argparse
@@ -606,19 +737,32 @@ class CliTests(TestCase):
             )
             stdout_buf = io.StringIO()
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("A", "a@b.com")),
-                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
-                patch.object(cli.jj_workspace_mod, "setup", return_value=fake_ws) as jj_setup,
+                patch.object(
+                    cli, "read_identity", return_value=GitIdentity("A", "a@b.com")
+                ),
+                patch.object(
+                    cli.config_agents, "_agent_host_paths", return_value=paths
+                ),
+                patch.object(
+                    cli.jj_workspace_mod, "setup", return_value=fake_ws
+                ) as jj_setup,
                 patch.object(cli.worktree_mod, "setup") as git_setup,
                 patch.object(cli.jj_workspace_mod, "finalize"),
                 contextlib.redirect_stdout(stdout_buf),
             ):
-                cli.main([
-                    "--dry-run", "--no-build", "--no-firewall",
-                    "--agent", "claude",
-                    "--branch", "feat/x",
-                    str(project), "python:3.12-slim",
-                ])
+                cli.main(
+                    [
+                        "--dry-run",
+                        "--no-build",
+                        "--no-firewall",
+                        "--agent",
+                        "claude",
+                        "--branch",
+                        "feat/x",
+                        str(project),
+                        "python:3.12-slim",
+                    ]
+                )
 
         jj_setup.assert_not_called()  # dry-run uses path_for, not setup
         git_setup.assert_not_called()
@@ -629,20 +773,30 @@ class CliTests(TestCase):
     def test_branch_file_git_raises(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
-            (project / ".git").write_text("gitdir: ../some/.git/worktrees/x\n", encoding="utf-8")
+            (project / ".git").write_text(
+                "gitdir: ../some/.git/worktrees/x\n", encoding="utf-8"
+            )
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("A", "a@b.com")),
-                patch.object(cli.config_agents, "_agent_host_paths", return_value=_agent_paths(project / "home")),
+                patch.object(
+                    cli, "read_identity", return_value=GitIdentity("A", "a@b.com")
+                ),
+                patch.object(
+                    cli.config_agents,
+                    "_agent_host_paths",
+                    return_value=_agent_paths(project / "home"),
+                ),
             ):
                 with self.assertRaises(SystemExit) as raised:
-                    cli.main([
-                        "--agent",
-                        "claude",
-                        "--branch",
-                        "feat/x",
-                        str(project),
-                        "python:3.12-slim",
-                    ])
+                    cli.main(
+                        [
+                            "--agent",
+                            "claude",
+                            "--branch",
+                            "feat/x",
+                            str(project),
+                            "python:3.12-slim",
+                        ]
+                    )
         self.assertIn(".git is a file or missing", str(raised.exception))
 
     def test_branch_dry_run_argv_includes_git_metadata_mount(self) -> None:
@@ -657,17 +811,28 @@ class CliTests(TestCase):
 
             stdout_buf = io.StringIO()
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("A", "a@b.com")),
+                patch.object(
+                    cli, "read_identity", return_value=GitIdentity("A", "a@b.com")
+                ),
                 patch.object(cli.worktree_mod, "setup") as setup_worktree,
-                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                patch.object(
+                    cli.config_agents, "_agent_host_paths", return_value=paths
+                ),
                 contextlib.redirect_stdout(stdout_buf),
             ):
-                rc = cli.main([
-                    "--dry-run", "--no-build", "--no-firewall",
-                    "--agent", "claude",
-                    "--branch", "feat/x",
-                    str(project), "python:3.12-slim",
-                ])
+                rc = cli.main(
+                    [
+                        "--dry-run",
+                        "--no-build",
+                        "--no-firewall",
+                        "--agent",
+                        "claude",
+                        "--branch",
+                        "feat/x",
+                        str(project),
+                        "python:3.12-slim",
+                    ]
+                )
 
         self.assertEqual(rc, 0)
         setup_worktree.assert_not_called()
@@ -691,16 +856,27 @@ class CliTests(TestCase):
 
             stdout_buf = io.StringIO()
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("A", "a@b.com")),
-                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                patch.object(
+                    cli, "read_identity", return_value=GitIdentity("A", "a@b.com")
+                ),
+                patch.object(
+                    cli.config_agents, "_agent_host_paths", return_value=paths
+                ),
                 contextlib.redirect_stdout(stdout_buf),
             ):
-                rc = cli.main([
-                    "--dry-run", "--no-build", "--no-firewall",
-                    "--agent", "claude",
-                    "--branch", "feat/x",
-                    str(project), "python:3.12-slim",
-                ])
+                rc = cli.main(
+                    [
+                        "--dry-run",
+                        "--no-build",
+                        "--no-firewall",
+                        "--agent",
+                        "claude",
+                        "--branch",
+                        "feat/x",
+                        str(project),
+                        "python:3.12-slim",
+                    ]
+                )
 
         self.assertEqual(rc, 0)
         output = stdout_buf.getvalue()
@@ -720,18 +896,30 @@ class CliTests(TestCase):
             jj_dir = str((project / ".jj").resolve())
 
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("A", "a@b.com")),
-                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                patch.object(
+                    cli, "read_identity", return_value=GitIdentity("A", "a@b.com")
+                ),
+                patch.object(
+                    cli.config_agents, "_agent_host_paths", return_value=paths
+                ),
                 contextlib.redirect_stdout(io.StringIO()),
             ):
                 with self.assertRaises(SystemExit) as raised:
-                    cli.main([
-                        "--dry-run", "--no-build", "--no-firewall",
-                        "--agent", "claude",
-                        "--branch", "feat/x",
-                        "--mount", f"type=bind,source={jj_dir},target=/jj",
-                        str(project), "python:3.12-slim",
-                    ])
+                    cli.main(
+                        [
+                            "--dry-run",
+                            "--no-build",
+                            "--no-firewall",
+                            "--agent",
+                            "claude",
+                            "--branch",
+                            "feat/x",
+                            "--mount",
+                            f"type=bind,source={jj_dir},target=/jj",
+                            str(project),
+                            "python:3.12-slim",
+                        ]
+                    )
 
         self.assertIn("--mount conflicts", str(raised.exception))
         self.assertIn(jj_dir, str(raised.exception))
@@ -748,17 +936,28 @@ class CliTests(TestCase):
 
             stdout_buf = io.StringIO()
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("A", "a@b.com")),
+                patch.object(
+                    cli, "read_identity", return_value=GitIdentity("A", "a@b.com")
+                ),
                 patch.object(cli.worktree_mod, "setup") as setup_worktree,
-                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                patch.object(
+                    cli.config_agents, "_agent_host_paths", return_value=paths
+                ),
                 contextlib.redirect_stdout(stdout_buf),
             ):
-                cli.main([
-                    "--dry-run", "--no-build", "--no-firewall",
-                    "--agent", "claude",
-                    "--branch", "feat/x",
-                    str(project), "python:3.12-slim",
-                ])
+                cli.main(
+                    [
+                        "--dry-run",
+                        "--no-build",
+                        "--no-firewall",
+                        "--agent",
+                        "claude",
+                        "--branch",
+                        "feat/x",
+                        str(project),
+                        "python:3.12-slim",
+                    ]
+                )
 
         output = stdout_buf.getvalue()
         setup_worktree.assert_not_called()
@@ -776,18 +975,30 @@ class CliTests(TestCase):
             git_dir = (project / ".git").resolve()
 
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("A", "a@b.com")),
-                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                patch.object(
+                    cli, "read_identity", return_value=GitIdentity("A", "a@b.com")
+                ),
+                patch.object(
+                    cli.config_agents, "_agent_host_paths", return_value=paths
+                ),
                 contextlib.redirect_stdout(io.StringIO()),
             ):
                 with self.assertRaises(SystemExit) as raised:
-                    cli.main([
-                        "--dry-run", "--no-build", "--no-firewall",
-                        "--agent", "claude",
-                        "--branch", "feat/x",
-                        "--mount", f"type=bind,source={git_dir},target=/git",
-                        str(project), "python:3.12-slim",
-                    ])
+                    cli.main(
+                        [
+                            "--dry-run",
+                            "--no-build",
+                            "--no-firewall",
+                            "--agent",
+                            "claude",
+                            "--branch",
+                            "feat/x",
+                            "--mount",
+                            f"type=bind,source={git_dir},target=/git",
+                            str(project),
+                            "python:3.12-slim",
+                        ]
+                    )
 
         self.assertIn("--mount conflicts", str(raised.exception))
         self.assertIn(str(git_dir), str(raised.exception))
@@ -798,16 +1009,24 @@ class CliTests(TestCase):
             _make_git_repo(project)
 
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("A", "a@b.com")),
-                patch.object(cli.config_agents, "_agent_host_paths", return_value=_agent_paths(project / "home")),
+                patch.object(
+                    cli, "read_identity", return_value=GitIdentity("A", "a@b.com")
+                ),
+                patch.object(
+                    cli.config_agents,
+                    "_agent_host_paths",
+                    return_value=_agent_paths(project / "home"),
+                ),
             ):
                 with self.assertRaises(SystemExit) as raised:
-                    cli.main([
-                        "--branch",
-                        "feat/x",
-                        str(project),
-                        "python:3.12-slim",
-                    ])
+                    cli.main(
+                        [
+                            "--branch",
+                            "feat/x",
+                            str(project),
+                            "python:3.12-slim",
+                        ]
+                    )
 
         self.assertIn("--branch requires", str(raised.exception))
 
@@ -825,25 +1044,45 @@ class CliTests(TestCase):
             )
 
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("A", "a@b.com")),
-                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
-                patch.object(cli.config_agents, "sync_credentials", return_value={
-                    "claude": host_home / "c", "claude-devcontainer": host_home / "cd",
-                }),
+                patch.object(
+                    cli, "read_identity", return_value=GitIdentity("A", "a@b.com")
+                ),
+                patch.object(
+                    cli.config_agents, "_agent_host_paths", return_value=paths
+                ),
+                patch.object(
+                    cli.config_agents,
+                    "sync_credentials",
+                    return_value={
+                        "claude": host_home / "c",
+                        "claude-devcontainer": host_home / "cd",
+                    },
+                ),
                 patch.object(cli.worktree_mod, "setup", return_value=fake_wt),
                 patch.object(cli.worktree_mod, "finalize") as finalize,
-                patch.object(cli.container_cli, "select_runtime", return_value=cli.container_cli.DOCKER),
-                patch.object(cli.container_cli, "ensure_system_started", return_value=0),
+                patch.object(
+                    cli.container_cli,
+                    "select_runtime",
+                    return_value=cli.container_cli.DOCKER,
+                ),
+                patch.object(
+                    cli.container_cli, "ensure_system_started", return_value=0
+                ),
                 patch.object(cli.container_cli, "build_image", return_value=1),
                 patch.object(cli.container_cli, "run") as run,
                 contextlib.redirect_stdout(io.StringIO()),
             ):
-                rc = cli.main([
-                    "--no-firewall",
-                    "--agent", "claude",
-                    "--branch", "feat/x",
-                    str(project), "python:3.12-slim",
-                ])
+                rc = cli.main(
+                    [
+                        "--no-firewall",
+                        "--agent",
+                        "claude",
+                        "--branch",
+                        "feat/x",
+                        str(project),
+                        "python:3.12-slim",
+                    ]
+                )
 
             self.assertEqual(rc, 1)
             run.assert_not_called()
@@ -854,19 +1093,30 @@ class CliTests(TestCase):
     def test_branch_start_at_requires_branch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(SystemExit) as raised:
-                cli.main([
-                    "--agent", "claude", "--branch-start-at", "HEAD",
-                    tmp, "python:3.12-slim",
-                ])
+                cli.main(
+                    [
+                        "--agent",
+                        "claude",
+                        "--branch-start-at",
+                        "HEAD",
+                        tmp,
+                        "python:3.12-slim",
+                    ]
+                )
         self.assertIn("--branch-start-at requires --branch", str(raised.exception))
 
     def test_keep_workspace_requires_branch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(SystemExit) as raised:
-                cli.main([
-                    "--agent", "claude", "--keep-workspace",
-                    tmp, "python:3.12-slim",
-                ])
+                cli.main(
+                    [
+                        "--agent",
+                        "claude",
+                        "--keep-workspace",
+                        tmp,
+                        "python:3.12-slim",
+                    ]
+                )
         self.assertIn("--keep-workspace requires --branch", str(raised.exception))
 
     def test_unsupervised_opencode_uses_headless_dispatch_when_available(self) -> None:
@@ -879,20 +1129,28 @@ class CliTests(TestCase):
             out = io.StringIO()
 
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
-                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
+                patch.object(
+                    cli.config_agents, "_agent_host_paths", return_value=paths
+                ),
                 contextlib.redirect_stdout(out),
             ):
-                rc = cli.main([
-                    "--dry-run",
-                    "--no-build",
-                    "--agent",
-                    "opencode",
-                    "--prompt-text",
-                    "fix this",
-                    str(project),
-                    "python:3.12-slim",
-                ])
+                rc = cli.main(
+                    [
+                        "--dry-run",
+                        "--no-build",
+                        "--agent",
+                        "opencode",
+                        "--prompt-text",
+                        "fix this",
+                        str(project),
+                        "python:3.12-slim",
+                    ]
+                )
 
         self.assertEqual(rc, 0)
         output = out.getvalue()
@@ -907,56 +1165,72 @@ class CliTests(TestCase):
             out = io.StringIO()
 
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
-                patch.object(cli.config_agents, "_agent_host_paths", return_value=_agent_paths(project / "home")),
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
+                patch.object(
+                    cli.config_agents,
+                    "_agent_host_paths",
+                    return_value=_agent_paths(project / "home"),
+                ),
                 contextlib.redirect_stdout(out),
             ):
-                rc = cli.main([
-                    "--dry-run",
-                    "--no-build",
-                    "--agent",
-                    "bash",
-                    "--prompt-text",
-                    "echo ok",
-                    str(project),
-                    "python:3.12-slim",
-                ])
+                rc = cli.main(
+                    [
+                        "--dry-run",
+                        "--no-build",
+                        "--agent",
+                        "bash",
+                        "--prompt-text",
+                        "echo ok",
+                        str(project),
+                        "python:3.12-slim",
+                    ]
+                )
 
         self.assertEqual(rc, 0)
         self.assertIn("bash-headless", out.getvalue())
 
     def test_github_allowlist_is_enabled_for_headless_copilot_cli_command(self) -> None:
         parser = cli.build_parser()
-        args = parser.parse_args([
-            "--agent",
-            "bash",
-            "--prompt-text",
-            "copilot -p 'summarize this repo'",
-            "/tmp/project",
-            "python:3.12-slim",
-        ])
+        args = parser.parse_args(
+            [
+                "--agent",
+                "bash",
+                "--prompt-text",
+                "copilot -p 'summarize this repo'",
+                "/tmp/project",
+                "python:3.12-slim",
+            ]
+        )
 
         self.assertTrue(cli._allow_github(args, "bash"))
 
     def test_github_allowlist_is_explicit_for_non_copilot_commands(self) -> None:
         parser = cli.build_parser()
-        args = parser.parse_args([
-            "--agent",
-            "bash",
-            "--prompt-text",
-            "git status",
-            "/tmp/project",
-            "python:3.12-slim",
-        ])
-        explicit = parser.parse_args([
-            "--allow-github",
-            "--agent",
-            "bash",
-            "--prompt-text",
-            "git status",
-            "/tmp/project",
-            "python:3.12-slim",
-        ])
+        args = parser.parse_args(
+            [
+                "--agent",
+                "bash",
+                "--prompt-text",
+                "git status",
+                "/tmp/project",
+                "python:3.12-slim",
+            ]
+        )
+        explicit = parser.parse_args(
+            [
+                "--allow-github",
+                "--agent",
+                "bash",
+                "--prompt-text",
+                "git status",
+                "/tmp/project",
+                "python:3.12-slim",
+            ]
+        )
 
         self.assertFalse(cli._allow_github(args, "bash"))
         self.assertTrue(cli._allow_github(explicit, "bash"))
@@ -967,7 +1241,11 @@ class CliTests(TestCase):
             (project / "README.md").write_text("# demo\n", encoding="utf-8")
             out = io.StringIO()
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
                 patch.object(
                     cli.config_agents,
                     "_agent_host_paths",
@@ -975,12 +1253,19 @@ class CliTests(TestCase):
                 ),
                 contextlib.redirect_stdout(out),
             ):
-                rc = cli.main([
-                    "--dry-run", "--no-build", "--agent", "bash",
-                    "--prompt-text", "echo ok",
-                    *extra_args,
-                    str(project), "python:3.12-slim",
-                ])
+                rc = cli.main(
+                    [
+                        "--dry-run",
+                        "--no-build",
+                        "--agent",
+                        "bash",
+                        "--prompt-text",
+                        "echo ok",
+                        *extra_args,
+                        str(project),
+                        "python:3.12-slim",
+                    ]
+                )
             self.assertEqual(rc, 0)
             return out.getvalue()
 
@@ -1027,7 +1312,11 @@ class CliTests(TestCase):
             (project / ".devcontainer").mkdir()
             out = io.StringIO()
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
                 patch.object(
                     cli.config_agents,
                     "_agent_host_paths",
@@ -1035,11 +1324,18 @@ class CliTests(TestCase):
                 ),
                 contextlib.redirect_stdout(out),
             ):
-                rc = cli.main([
-                    "--dry-run", "--no-build", "--agent", "bash",
-                    "--prompt-text", "echo ok",
-                    str(project), "python:3.12-slim",
-                ])
+                rc = cli.main(
+                    [
+                        "--dry-run",
+                        "--no-build",
+                        "--agent",
+                        "bash",
+                        "--prompt-text",
+                        "echo ok",
+                        str(project),
+                        "python:3.12-slim",
+                    ]
+                )
             self.assertEqual(rc, 0)
             self.assertIn("target=/workspace/.devcontainer,readonly", out.getvalue())
 
@@ -1060,7 +1356,11 @@ class CliTests(TestCase):
 
             out = io.StringIO()
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
                 patch.object(
                     cli.config_agents,
                     "_agent_host_paths",
@@ -1068,12 +1368,19 @@ class CliTests(TestCase):
                 ),
                 contextlib.redirect_stdout(out),
             ):
-                rc = cli.main([
-                    "--dry-run", "--no-build", "--agent", "bash",
-                    "--prompt-text", "echo ok",
-                    "--dockerfile", str(dockerfile),
-                    str(project),
-                ])
+                rc = cli.main(
+                    [
+                        "--dry-run",
+                        "--no-build",
+                        "--agent",
+                        "bash",
+                        "--prompt-text",
+                        "echo ok",
+                        "--dockerfile",
+                        str(dockerfile),
+                        str(project),
+                    ]
+                )
             self.assertEqual(rc, 0)
             self.assertIn("changed since it was last built", out.getvalue())
 
@@ -1088,12 +1395,18 @@ class CliTests(TestCase):
             cli.dockerfile_checksum.record(context_dir, [dockerfile])
 
             # Mutate the Dockerfile (simulates agent tamper).
-            dockerfile.write_text("FROM debian:bookworm\nRUN echo pwned\n", encoding="utf-8")
+            dockerfile.write_text(
+                "FROM debian:bookworm\nRUN echo pwned\n", encoding="utf-8"
+            )
 
             # --no-build with --no-verify-dockerfile so the run doesn't abort.
             out = io.StringIO()
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
                 patch.object(
                     cli.config_agents,
                     "_agent_host_paths",
@@ -1101,18 +1414,28 @@ class CliTests(TestCase):
                 ),
                 contextlib.redirect_stdout(out),
             ):
-                rc = cli.main([
-                    "--dry-run", "--no-build", "--agent", "bash",
-                    "--no-verify-dockerfile",
-                    "--dockerfile", str(dockerfile),
-                    str(project),
-                ])
+                rc = cli.main(
+                    [
+                        "--dry-run",
+                        "--no-build",
+                        "--agent",
+                        "bash",
+                        "--no-verify-dockerfile",
+                        "--dockerfile",
+                        str(dockerfile),
+                        str(project),
+                    ]
+                )
             self.assertEqual(rc, 0)
 
             # The baseline must still reflect the original content so a subsequent
             # run without --no-verify-dockerfile still detects the tamper.
-            warnings = cli.dockerfile_checksum.changed_warnings(context_dir, [dockerfile])
-            self.assertEqual(len(warnings), 1, "tamper must still be detectable after --no-build run")
+            warnings = cli.dockerfile_checksum.changed_warnings(
+                context_dir, [dockerfile]
+            )
+            self.assertEqual(
+                len(warnings), 1, "tamper must still be detectable after --no-build run"
+            )
 
     def test_unsupervised_run_aborts_when_dockerfile_changed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1123,27 +1446,47 @@ class CliTests(TestCase):
             context_dir = project / ".project-sandbox"
             context_dir.mkdir()
             cli.dockerfile_checksum.record(context_dir, [dockerfile])
-            dockerfile.write_text("FROM debian:bookworm\nRUN echo pwned\n", encoding="utf-8")
+            dockerfile.write_text(
+                "FROM debian:bookworm\nRUN echo pwned\n", encoding="utf-8"
+            )
 
             out = io.StringIO()
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
                 patch.object(
                     cli.config_agents,
                     "_agent_host_paths",
                     return_value=_agent_paths(project / "home"),
                 ),
-                patch.object(cli.container_cli, "select_runtime", return_value=cli.container_cli.DOCKER),
-                patch.object(cli.container_cli, "ensure_system_started", return_value=0),
+                patch.object(
+                    cli.container_cli,
+                    "select_runtime",
+                    return_value=cli.container_cli.DOCKER,
+                ),
+                patch.object(
+                    cli.container_cli, "ensure_system_started", return_value=0
+                ),
                 contextlib.redirect_stdout(out),
             ):
-                rc = cli.main([
-                    "--no-build", "--agent", "bash",
-                    "--prompt-text", "echo ok",
-                    "--dockerfile", str(dockerfile),
-                    str(project),
-                ])
-            self.assertEqual(rc, 1, "unsupervised run with changed Dockerfile must abort")
+                rc = cli.main(
+                    [
+                        "--no-build",
+                        "--agent",
+                        "bash",
+                        "--prompt-text",
+                        "echo ok",
+                        "--dockerfile",
+                        str(dockerfile),
+                        str(project),
+                    ]
+                )
+            self.assertEqual(
+                rc, 1, "unsupervised run with changed Dockerfile must abort"
+            )
             self.assertIn("changed since it was last built", out.getvalue())
             self.assertNotIn("stdin", out.getvalue())  # must not hang on input
 
@@ -1156,26 +1499,40 @@ class CliTests(TestCase):
             context_dir = project / ".project-sandbox"
             context_dir.mkdir()
             cli.dockerfile_checksum.record(context_dir, [dockerfile])
-            dockerfile.write_text("FROM debian:bookworm\nRUN echo pwned\n", encoding="utf-8")
+            dockerfile.write_text(
+                "FROM debian:bookworm\nRUN echo pwned\n", encoding="utf-8"
+            )
 
             out = io.StringIO()
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
                 patch.object(
                     cli.config_agents,
                     "_agent_host_paths",
                     return_value=_agent_paths(project / "home"),
                 ),
-                patch.object(cli.container_cli, "ensure_system_started", return_value=0),
+                patch.object(
+                    cli.container_cli, "ensure_system_started", return_value=0
+                ),
                 patch("sys.stdin.isatty", return_value=True),
                 patch("builtins.input", return_value="y"),
                 contextlib.redirect_stdout(out),
             ):
-                rc = cli.main([
-                    "--dry-run", "--no-build", "--agent", "bash",
-                    "--dockerfile", str(dockerfile),
-                    str(project),
-                ])
+                rc = cli.main(
+                    [
+                        "--dry-run",
+                        "--no-build",
+                        "--agent",
+                        "bash",
+                        "--dockerfile",
+                        str(dockerfile),
+                        str(project),
+                    ]
+                )
             # dry-run never prompts; the interactive prompt only fires on real runs.
             # Here we test the real path: rc 0 means it continued past the prompt.
             self.assertEqual(rc, 0)
@@ -1189,27 +1546,44 @@ class CliTests(TestCase):
             context_dir = project / ".project-sandbox"
             context_dir.mkdir()
             cli.dockerfile_checksum.record(context_dir, [dockerfile])
-            dockerfile.write_text("FROM debian:bookworm\nRUN echo pwned\n", encoding="utf-8")
+            dockerfile.write_text(
+                "FROM debian:bookworm\nRUN echo pwned\n", encoding="utf-8"
+            )
 
             out = io.StringIO()
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
                 patch.object(
                     cli.config_agents,
                     "_agent_host_paths",
                     return_value=_agent_paths(project / "home"),
                 ),
-                patch.object(cli.container_cli, "select_runtime", return_value=cli.container_cli.DOCKER),
-                patch.object(cli.container_cli, "ensure_system_started", return_value=0),
+                patch.object(
+                    cli.container_cli,
+                    "select_runtime",
+                    return_value=cli.container_cli.DOCKER,
+                ),
+                patch.object(
+                    cli.container_cli, "ensure_system_started", return_value=0
+                ),
                 patch("sys.stdin.isatty", return_value=True),
                 patch("builtins.input", return_value="n"),
                 contextlib.redirect_stdout(out),
             ):
-                rc = cli.main([
-                    "--no-build", "--agent", "bash",
-                    "--dockerfile", str(dockerfile),
-                    str(project),
-                ])
+                rc = cli.main(
+                    [
+                        "--no-build",
+                        "--agent",
+                        "bash",
+                        "--dockerfile",
+                        str(dockerfile),
+                        str(project),
+                    ]
+                )
             self.assertEqual(rc, 1, "answering 'no' at prompt must abort")
 
     def test_no_verify_dockerfile_suppresses_warning_and_abort(self) -> None:
@@ -1221,29 +1595,47 @@ class CliTests(TestCase):
             context_dir = project / ".project-sandbox"
             context_dir.mkdir()
             cli.dockerfile_checksum.record(context_dir, [dockerfile])
-            dockerfile.write_text("FROM debian:bookworm\nRUN echo pwned\n", encoding="utf-8")
+            dockerfile.write_text(
+                "FROM debian:bookworm\nRUN echo pwned\n", encoding="utf-8"
+            )
 
             out = io.StringIO()
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
                 patch.object(
                     cli.config_agents,
                     "_agent_host_paths",
                     return_value=_agent_paths(project / "home"),
                 ),
-                patch.object(cli.container_cli, "select_runtime", return_value=cli.container_cli.DOCKER),
-                patch.object(cli.container_cli, "ensure_system_started", return_value=0),
+                patch.object(
+                    cli.container_cli,
+                    "select_runtime",
+                    return_value=cli.container_cli.DOCKER,
+                ),
+                patch.object(
+                    cli.container_cli, "ensure_system_started", return_value=0
+                ),
                 patch.object(cli.container_cli, "image_exists", return_value=True),
                 patch.object(cli.session, "run", return_value=0),
                 contextlib.redirect_stdout(out),
             ):
-                rc = cli.main([
-                    "--no-build", "--agent", "bash",
-                    "--prompt-text", "echo ok",
-                    "--no-verify-dockerfile",
-                    "--dockerfile", str(dockerfile),
-                    str(project),
-                ])
+                rc = cli.main(
+                    [
+                        "--no-build",
+                        "--agent",
+                        "bash",
+                        "--prompt-text",
+                        "echo ok",
+                        "--no-verify-dockerfile",
+                        "--dockerfile",
+                        str(dockerfile),
+                        str(project),
+                    ]
+                )
             # The run should not abort due to the changed Dockerfile.
             self.assertNotEqual(rc, 1, "no-verify-dockerfile must suppress abort")
             self.assertNotIn("changed since it was last built", out.getvalue())
@@ -1257,31 +1649,49 @@ class CliTests(TestCase):
             context_dir = project / ".project-sandbox"
             context_dir.mkdir()
             cli.dockerfile_checksum.record(context_dir, [dockerfile])
-            dockerfile.write_text("FROM debian:bookworm\nRUN echo pwned\n", encoding="utf-8")
+            dockerfile.write_text(
+                "FROM debian:bookworm\nRUN echo pwned\n", encoding="utf-8"
+            )
 
             out = io.StringIO()
             called_input: list[str] = []
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
                 patch.object(
                     cli.config_agents,
                     "_agent_host_paths",
                     return_value=_agent_paths(project / "home"),
                 ),
-                patch("builtins.input", side_effect=lambda _: called_input.append("called") or "n"),
+                patch(
+                    "builtins.input",
+                    side_effect=lambda _: called_input.append("called") or "n",
+                ),
                 contextlib.redirect_stdout(out),
             ):
-                rc = cli.main([
-                    "--dry-run", "--no-build", "--agent", "bash",
-                    "--prompt-text", "echo ok",
-                    "--dockerfile", str(dockerfile),
-                    str(project),
-                ])
+                rc = cli.main(
+                    [
+                        "--dry-run",
+                        "--no-build",
+                        "--agent",
+                        "bash",
+                        "--prompt-text",
+                        "echo ok",
+                        "--dockerfile",
+                        str(dockerfile),
+                        str(project),
+                    ]
+                )
             self.assertEqual(rc, 0, "dry-run must not abort")
             self.assertIn("changed since it was last built", out.getvalue())
             self.assertEqual(called_input, [], "dry-run must never call input()")
             # State file must not have been mutated.
-            warnings = cli.dockerfile_checksum.changed_warnings(context_dir, [dockerfile])
+            warnings = cli.dockerfile_checksum.changed_warnings(
+                context_dir, [dockerfile]
+            )
             self.assertEqual(len(warnings), 1, "dry-run must not update baseline")
 
     def test_prompt_text_writes_prompt_file_for_short_prompt(self) -> None:
@@ -1518,18 +1928,26 @@ class CliTests(TestCase):
             paths["claude"].mkdir(parents=True)
 
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
-                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
+                patch.object(
+                    cli.config_agents, "_agent_host_paths", return_value=paths
+                ),
             ):
                 with self.assertRaises(SystemExit) as raised:
-                    cli.main([
-                        "--dry-run",
-                        "--no-build",
-                        "--agent",
-                        "opencode",
-                        str(project),
-                        "python:3.12-slim",
-                    ])
+                    cli.main(
+                        [
+                            "--dry-run",
+                            "--no-build",
+                            "--agent",
+                            "opencode",
+                            str(project),
+                            "python:3.12-slim",
+                        ]
+                    )
 
         self.assertIn("unavailable", str(raised.exception).lower())
         self.assertIn("claude", str(raised.exception).lower())
@@ -1584,13 +2002,19 @@ class CliTests(TestCase):
             )
 
     def test_uses_github_copilot_cli_ignores_unsupported_agent_value(self) -> None:
-        """"copilot" is not a valid --agent value (SUPPORTED_AGENTS has no such
+        """ "copilot" is not a valid --agent value (SUPPORTED_AGENTS has no such
         entry), so detection only happens via the bash + prompt-text path."""
         parser = cli.build_parser()
-        args = parser.parse_args([
-            "--agent", "bash", "--prompt-text", "copilot -p 'hi'",
-            "/tmp/project", "python:3.12-slim",
-        ])
+        args = parser.parse_args(
+            [
+                "--agent",
+                "bash",
+                "--prompt-text",
+                "copilot -p 'hi'",
+                "/tmp/project",
+                "python:3.12-slim",
+            ]
+        )
         self.assertFalse(cli._uses_github_copilot_cli(args, "copilot"))
         self.assertTrue(cli._uses_github_copilot_cli(args, "bash"))
 
@@ -1618,17 +2042,29 @@ class CliTests(TestCase):
             backup_dir.mkdir()
 
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("A", "a@b.com")),
-                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                patch.object(
+                    cli, "read_identity", return_value=GitIdentity("A", "a@b.com")
+                ),
+                patch.object(
+                    cli.config_agents, "_agent_host_paths", return_value=paths
+                ),
                 contextlib.redirect_stdout(io.StringIO()),
             ):
-                rc = cli.main([
-                    "--dry-run", "--no-build", "--no-firewall",
-                    "--agent", "claude",
-                    "--branch", "feat/x",
-                    "--mount", f"type=bind,source={backup_dir},target=/backup",
-                    str(project), "python:3.12-slim",
-                ])
+                rc = cli.main(
+                    [
+                        "--dry-run",
+                        "--no-build",
+                        "--no-firewall",
+                        "--agent",
+                        "claude",
+                        "--branch",
+                        "feat/x",
+                        "--mount",
+                        f"type=bind,source={backup_dir},target=/backup",
+                        str(project),
+                        "python:3.12-slim",
+                    ]
+                )
 
         self.assertEqual(rc, 0, "a sibling path must not be treated as a conflict")
 
@@ -1643,18 +2079,30 @@ class CliTests(TestCase):
             nested = (project / ".git" / "hooks").resolve()
 
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("A", "a@b.com")),
-                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                patch.object(
+                    cli, "read_identity", return_value=GitIdentity("A", "a@b.com")
+                ),
+                patch.object(
+                    cli.config_agents, "_agent_host_paths", return_value=paths
+                ),
                 contextlib.redirect_stdout(io.StringIO()),
             ):
                 with self.assertRaises(SystemExit) as raised:
-                    cli.main([
-                        "--dry-run", "--no-build", "--no-firewall",
-                        "--agent", "claude",
-                        "--branch", "feat/x",
-                        "--mount", f"type=bind,source={nested},target=/hooks",
-                        str(project), "python:3.12-slim",
-                    ])
+                    cli.main(
+                        [
+                            "--dry-run",
+                            "--no-build",
+                            "--no-firewall",
+                            "--agent",
+                            "claude",
+                            "--branch",
+                            "feat/x",
+                            "--mount",
+                            f"type=bind,source={nested},target=/hooks",
+                            str(project),
+                            "python:3.12-slim",
+                        ]
+                    )
 
         self.assertIn("--mount conflicts", str(raised.exception))
 
@@ -1685,11 +2133,19 @@ class CliTests(TestCase):
     def test_no_build_and_force_build_are_mutually_exclusive(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(SystemExit) as raised:
-                cli.main([
-                    "--no-build", "--force-build", "--agent", "claude",
-                    tmp, "python:3.12-slim",
-                ])
-        self.assertIn("--no-build and --force-build are mutually exclusive", str(raised.exception))
+                cli.main(
+                    [
+                        "--no-build",
+                        "--force-build",
+                        "--agent",
+                        "claude",
+                        tmp,
+                        "python:3.12-slim",
+                    ]
+                )
+        self.assertIn(
+            "--no-build and --force-build are mutually exclusive", str(raised.exception)
+        )
 
     def test_no_build_fails_early_when_image_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1700,18 +2156,37 @@ class CliTests(TestCase):
             paths["claude"].mkdir(parents=True)
 
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
-                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
-                patch.object(cli.container_cli, "select_runtime", return_value=cli.container_cli.DOCKER),
-                patch.object(cli.container_cli, "ensure_system_started", return_value=0),
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
+                patch.object(
+                    cli.config_agents, "_agent_host_paths", return_value=paths
+                ),
+                patch.object(
+                    cli.container_cli,
+                    "select_runtime",
+                    return_value=cli.container_cli.DOCKER,
+                ),
+                patch.object(
+                    cli.container_cli, "ensure_system_started", return_value=0
+                ),
                 patch.object(cli.container_cli, "image_exists", return_value=False),
                 contextlib.redirect_stdout(io.StringIO()),
             ):
                 with self.assertRaises(SystemExit) as raised:
-                    cli.main([
-                        "--no-build", "--agent", "bash", "--prompt-text", "echo ok",
-                        str(project), "python:3.12-slim",
-                    ])
+                    cli.main(
+                        [
+                            "--no-build",
+                            "--agent",
+                            "bash",
+                            "--prompt-text",
+                            "echo ok",
+                            str(project),
+                            "python:3.12-slim",
+                        ]
+                    )
 
         self.assertIn("--no-build", str(raised.exception))
         self.assertIn("does not exist", str(raised.exception))
@@ -1731,15 +2206,28 @@ class CliTests(TestCase):
             paths["claude"].mkdir(parents=True)
 
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
-                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
+                patch.object(
+                    cli.config_agents, "_agent_host_paths", return_value=paths
+                ),
             ):
                 with self.assertRaises(SystemExit) as raised:
-                    cli.main([
-                        "--dry-run", "--no-build", "--agent", "claude",
-                        "--prompt", str(project / "no-such-prompt.txt"),
-                        str(project), "python:3.12-slim",
-                    ])
+                    cli.main(
+                        [
+                            "--dry-run",
+                            "--no-build",
+                            "--agent",
+                            "claude",
+                            "--prompt",
+                            str(project / "no-such-prompt.txt"),
+                            str(project),
+                            "python:3.12-slim",
+                        ]
+                    )
 
         self.assertNotIsInstance(raised.exception, FileNotFoundError)
         self.assertIn("--prompt file does not exist", str(raised.exception))
@@ -1753,16 +2241,31 @@ class CliTests(TestCase):
             paths["claude"].mkdir(parents=True)
 
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
-                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
+                patch.object(
+                    cli.config_agents, "_agent_host_paths", return_value=paths
+                ),
             ):
                 with self.assertRaises(SystemExit) as raised:
-                    cli.main([
-                        "--dry-run", "--no-build", "--no-forward-credentials",
-                        "--agent", "bash", "--prompt-text", "echo ok",
-                        "--api-key-env-file", str(project / "missing.env"),
-                        str(project), "python:3.12-slim",
-                    ])
+                    cli.main(
+                        [
+                            "--dry-run",
+                            "--no-build",
+                            "--no-forward-credentials",
+                            "--agent",
+                            "bash",
+                            "--prompt-text",
+                            "echo ok",
+                            "--api-key-env-file",
+                            str(project / "missing.env"),
+                            str(project),
+                            "python:3.12-slim",
+                        ]
+                    )
 
         self.assertNotIsInstance(raised.exception, FileNotFoundError)
         self.assertIn("--api-key-env-file does not exist", str(raised.exception))
@@ -1776,11 +2279,14 @@ class CliTests(TestCase):
                 cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")
             ):
                 with self.assertRaises(SystemExit) as raised:
-                    cli.main([
-                        "--dry-run",
-                        "--dockerfile", str(project / "no-such-Dockerfile"),
-                        str(project),
-                    ])
+                    cli.main(
+                        [
+                            "--dry-run",
+                            "--dockerfile",
+                            str(project / "no-such-Dockerfile"),
+                            str(project),
+                        ]
+                    )
 
         self.assertNotIsInstance(raised.exception, FileNotFoundError)
         self.assertIn("--dockerfile does not exist", str(raised.exception))
@@ -1796,34 +2302,51 @@ class CliTests(TestCase):
                 cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")
             ):
                 with self.assertRaises(SystemExit) as raised:
-                    cli.main([
-                        "--dry-run",
-                        "--dockerfile", str(dockerfile),
-                        "--docker-context", str(project / "no-such-context"),
-                        str(project),
-                    ])
+                    cli.main(
+                        [
+                            "--dry-run",
+                            "--dockerfile",
+                            str(dockerfile),
+                            "--docker-context",
+                            str(project / "no-such-context"),
+                            str(project),
+                        ]
+                    )
 
         self.assertNotIsInstance(raised.exception, FileNotFoundError)
         self.assertIn("--docker-context does not exist", str(raised.exception))
 
-    @unittest.skipUnless(sys.platform.startswith("linux"), "chroot runtime is Linux-only")
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"), "chroot runtime is Linux-only"
+    )
     def test_invalid_mount_under_chroot_raises_clean_system_exit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
             (project / "README.md").write_text("# demo\n", encoding="utf-8")
 
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
                 contextlib.redirect_stdout(io.StringIO()),
             ):
                 with self.assertRaises(SystemExit) as raised:
-                    cli.main([
-                        "--dry-run", "--runtime", "chroot", "--agent", "bash",
-                        # A non-bind mount (no source/target) parses to a "raw"
-                        # MountSpec, which build_chroot_argv cannot honor.
-                        "--mount", "type=tmpfs,target=/tmp/scratch",
-                        str(project),
-                    ])
+                    cli.main(
+                        [
+                            "--dry-run",
+                            "--runtime",
+                            "chroot",
+                            "--agent",
+                            "bash",
+                            # A non-bind mount (no source/target) parses to a "raw"
+                            # MountSpec, which build_chroot_argv cannot honor.
+                            "--mount",
+                            "type=tmpfs,target=/tmp/scratch",
+                            str(project),
+                        ]
+                    )
 
         self.assertNotIsInstance(raised.exception, ValueError)
         self.assertIn("Invalid --mount for --runtime chroot", str(raised.exception))
@@ -1837,27 +2360,44 @@ class CliTests(TestCase):
             context_dir = project / ".project-sandbox"
             context_dir.mkdir()
             cli.dockerfile_checksum.record(context_dir, [dockerfile])
-            dockerfile.write_text("FROM debian:bookworm\nRUN echo pwned\n", encoding="utf-8")
+            dockerfile.write_text(
+                "FROM debian:bookworm\nRUN echo pwned\n", encoding="utf-8"
+            )
 
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
                 patch.object(
                     cli.config_agents,
                     "_agent_host_paths",
                     return_value=_agent_paths(project / "home"),
                 ),
-                patch.object(cli.container_cli, "select_runtime", return_value=cli.container_cli.DOCKER),
-                patch.object(cli.container_cli, "ensure_system_started", return_value=0),
+                patch.object(
+                    cli.container_cli,
+                    "select_runtime",
+                    return_value=cli.container_cli.DOCKER,
+                ),
+                patch.object(
+                    cli.container_cli, "ensure_system_started", return_value=0
+                ),
                 patch("sys.stdin.isatty", return_value=True),
                 patch("builtins.input", side_effect=EOFError),
                 contextlib.redirect_stdout(io.StringIO()),
             ):
                 with self.assertRaises(SystemExit) as raised:
-                    cli.main([
-                        "--no-build", "--agent", "bash",
-                        "--dockerfile", str(dockerfile),
-                        str(project),
-                    ])
+                    cli.main(
+                        [
+                            "--no-build",
+                            "--agent",
+                            "bash",
+                            "--dockerfile",
+                            str(dockerfile),
+                            str(project),
+                        ]
+                    )
 
         self.assertNotIsInstance(raised.exception, EOFError)
         self.assertIn("No input available", str(raised.exception))
@@ -1877,17 +2417,30 @@ class ModelSelectionTests(TestCase):
             out = io.StringIO()
             extra = ["--model", model] if model else []
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
-                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
+                patch.object(
+                    cli.config_agents, "_agent_host_paths", return_value=paths
+                ),
                 contextlib.redirect_stdout(out),
             ):
-                rc = cli.main([
-                    "--dry-run", "--no-build", "--no-firewall",
-                    "--agent", agent,
-                    "--prompt-text", "do something",
-                    *extra,
-                    str(project), "python:3.12-slim",
-                ])
+                rc = cli.main(
+                    [
+                        "--dry-run",
+                        "--no-build",
+                        "--no-firewall",
+                        "--agent",
+                        agent,
+                        "--prompt-text",
+                        "do something",
+                        *extra,
+                        str(project),
+                        "python:3.12-slim",
+                    ]
+                )
             self.assertEqual(rc, 0)
             return out.getvalue()
 
@@ -1918,16 +2471,29 @@ class ModelSelectionTests(TestCase):
             paths["claude"].mkdir(parents=True, exist_ok=True)
             out = io.StringIO()
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
-                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
+                patch.object(
+                    cli.config_agents, "_agent_host_paths", return_value=paths
+                ),
                 contextlib.redirect_stdout(out),
             ):
-                rc = cli.main([
-                    "--dry-run", "--no-build", "--no-firewall",
-                    "--agent", "claude",
-                    "--model", "claude-opus-4-5",
-                    str(project), "python:3.12-slim",
-                ])
+                rc = cli.main(
+                    [
+                        "--dry-run",
+                        "--no-build",
+                        "--no-firewall",
+                        "--agent",
+                        "claude",
+                        "--model",
+                        "claude-opus-4-5",
+                        str(project),
+                        "python:3.12-slim",
+                    ]
+                )
             self.assertEqual(rc, 0)
             self.assertIn("PROJECT_SANDBOX_MODEL=claude-opus-4-5", out.getvalue())
 
@@ -1946,17 +2512,30 @@ class EffortSelectionTests(TestCase):
             out = io.StringIO()
             extra = ["--effort", effort] if effort else []
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
-                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
+                patch.object(
+                    cli.config_agents, "_agent_host_paths", return_value=paths
+                ),
                 contextlib.redirect_stdout(out),
             ):
-                rc = cli.main([
-                    "--dry-run", "--no-build", "--no-firewall",
-                    "--agent", agent,
-                    "--prompt-text", "do something",
-                    *extra,
-                    str(project), "python:3.12-slim",
-                ])
+                rc = cli.main(
+                    [
+                        "--dry-run",
+                        "--no-build",
+                        "--no-firewall",
+                        "--agent",
+                        agent,
+                        "--prompt-text",
+                        "do something",
+                        *extra,
+                        str(project),
+                        "python:3.12-slim",
+                    ]
+                )
             self.assertEqual(rc, 0)
             return out.getvalue()
 
@@ -1998,16 +2577,29 @@ class EffortSelectionTests(TestCase):
             paths["claude"].mkdir(parents=True, exist_ok=True)
             out = io.StringIO()
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
-                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
+                patch.object(
+                    cli.config_agents, "_agent_host_paths", return_value=paths
+                ),
                 contextlib.redirect_stdout(out),
             ):
-                rc = cli.main([
-                    "--dry-run", "--no-build", "--no-firewall",
-                    "--agent", "claude",
-                    "--effort", "max",
-                    str(project), "python:3.12-slim",
-                ])
+                rc = cli.main(
+                    [
+                        "--dry-run",
+                        "--no-build",
+                        "--no-firewall",
+                        "--agent",
+                        "claude",
+                        "--effort",
+                        "max",
+                        str(project),
+                        "python:3.12-slim",
+                    ]
+                )
             self.assertEqual(rc, 0)
             self.assertIn("PROJECT_SANDBOX_EFFORT=max", out.getvalue())
 
@@ -2017,10 +2609,14 @@ class EffortSelectionTests(TestCase):
             self.assertRaises(SystemExit),
             contextlib.redirect_stderr(io.StringIO()),
         ):
-            parser.parse_args([
-                "--effort", "ultra",
-                "/tmp/project", "python:3.12-slim",
-            ])
+            parser.parse_args(
+                [
+                    "--effort",
+                    "ultra",
+                    "/tmp/project",
+                    "python:3.12-slim",
+                ]
+            )
 
     def test_effort_and_model_can_be_combined(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2032,18 +2628,33 @@ class EffortSelectionTests(TestCase):
                 paths[key].mkdir(parents=True, exist_ok=True)
             out = io.StringIO()
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
-                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
+                patch.object(
+                    cli.config_agents, "_agent_host_paths", return_value=paths
+                ),
                 contextlib.redirect_stdout(out),
             ):
-                rc = cli.main([
-                    "--dry-run", "--no-build", "--no-firewall",
-                    "--agent", "claude",
-                    "--prompt-text", "do something",
-                    "--model", "sonnet",
-                    "--effort", "high",
-                    str(project), "python:3.12-slim",
-                ])
+                rc = cli.main(
+                    [
+                        "--dry-run",
+                        "--no-build",
+                        "--no-firewall",
+                        "--agent",
+                        "claude",
+                        "--prompt-text",
+                        "do something",
+                        "--model",
+                        "sonnet",
+                        "--effort",
+                        "high",
+                        str(project),
+                        "python:3.12-slim",
+                    ]
+                )
             self.assertEqual(rc, 0)
             result = out.getvalue()
             self.assertIn("PROJECT_SANDBOX_MODEL=sonnet", result)
@@ -2059,18 +2670,33 @@ class EffortSelectionTests(TestCase):
                 paths[key].mkdir(parents=True, exist_ok=True)
             out = io.StringIO()
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
-                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
+                patch.object(
+                    cli.config_agents, "_agent_host_paths", return_value=paths
+                ),
                 contextlib.redirect_stdout(out),
             ):
-                rc = cli.main([
-                    "--dry-run", "--no-build", "--no-firewall",
-                    "--agent", "codex",
-                    "--prompt-text", "do something",
-                    "--model", "gpt-5.4-mini",
-                    "--effort", "high",
-                    str(project), "python:3.12-slim",
-                ])
+                rc = cli.main(
+                    [
+                        "--dry-run",
+                        "--no-build",
+                        "--no-firewall",
+                        "--agent",
+                        "codex",
+                        "--prompt-text",
+                        "do something",
+                        "--model",
+                        "gpt-5.4-mini",
+                        "--effort",
+                        "high",
+                        str(project),
+                        "python:3.12-slim",
+                    ]
+                )
             self.assertEqual(rc, 0)
             result = out.getvalue()
             self.assertIn("PROJECT_SANDBOX_MODEL=gpt-5.4-mini", result)
@@ -2086,18 +2712,33 @@ class EffortSelectionTests(TestCase):
                 paths[key].mkdir(parents=True, exist_ok=True)
             out = io.StringIO()
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
-                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
+                patch.object(
+                    cli.config_agents, "_agent_host_paths", return_value=paths
+                ),
                 contextlib.redirect_stdout(out),
             ):
-                rc = cli.main([
-                    "--dry-run", "--no-build", "--no-firewall",
-                    "--agent", "opencode",
-                    "--prompt-text", "do something",
-                    "--model", "openai/gpt-5.4-mini",
-                    "--effort", "high",
-                    str(project), "python:3.12-slim",
-                ])
+                rc = cli.main(
+                    [
+                        "--dry-run",
+                        "--no-build",
+                        "--no-firewall",
+                        "--agent",
+                        "opencode",
+                        "--prompt-text",
+                        "do something",
+                        "--model",
+                        "openai/gpt-5.4-mini",
+                        "--effort",
+                        "high",
+                        str(project),
+                        "python:3.12-slim",
+                    ]
+                )
             self.assertEqual(rc, 0)
             result = out.getvalue()
             self.assertIn("PROJECT_SANDBOX_MODEL=openai/gpt-5.4-mini", result)
@@ -2129,8 +2770,14 @@ class VerboseAgentConfigTests(TestCase):
                 argv += ["--effort", effort]
             argv += [str(project), "python:3.12-slim"]
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
-                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
+                patch.object(
+                    cli.config_agents, "_agent_host_paths", return_value=paths
+                ),
                 contextlib.redirect_stdout(out),
             ):
                 rc = cli.main(argv)
@@ -2172,6 +2819,7 @@ class FinalizeWorktreeTests(TestCase):
 
     def _run_finalize(self, *, exit_code: int, keep_workspace: bool) -> dict:
         import argparse
+
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
             _make_git_repo(project)
@@ -2184,7 +2832,9 @@ class FinalizeWorktreeTests(TestCase):
                 patch.object(cli.worktree_mod, "finalize") as finalize,
                 contextlib.redirect_stdout(io.StringIO()),
             ):
-                cli._finalize_worktree(args, project=project, wt=fake_wt, exit_code=exit_code)
+                cli._finalize_worktree(
+                    args, project=project, wt=fake_wt, exit_code=exit_code
+                )
             finalize.assert_called_once()
             return finalize.call_args.kwargs
 
@@ -2205,6 +2855,7 @@ class FinalizeWorktreeTests(TestCase):
 
     def test_jj_workspace_dispatches_to_jj_finalize(self) -> None:
         import argparse
+
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
             fake_ws = cli.jj_workspace_mod.JjWorkspace(
@@ -2219,7 +2870,10 @@ class FinalizeWorktreeTests(TestCase):
 
 class DefaultImageTagTests(TestCase):
     def test_differs_per_project(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp1, tempfile.TemporaryDirectory() as tmp2:
+        with (
+            tempfile.TemporaryDirectory() as tmp1,
+            tempfile.TemporaryDirectory() as tmp2,
+        ):
             tag1 = cli._default_image_tag(Path(tmp1))
             tag2 = cli._default_image_tag(Path(tmp2))
         self.assertNotEqual(tag1, tag2)
@@ -2239,20 +2893,39 @@ class DefaultImageTagTests(TestCase):
             out = io.StringIO()
 
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
-                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
+                patch.object(
+                    cli.config_agents, "_agent_host_paths", return_value=paths
+                ),
                 patch.object(cli.config_agents, "sync_credentials"),
-                patch.object(cli.container_cli, "select_runtime", return_value=cli.container_cli.DOCKER),
-                patch.object(cli.container_cli, "ensure_system_started", return_value=0),
-                patch.object(cli.container_cli, "build_image", return_value=0) as build_image,
+                patch.object(
+                    cli.container_cli,
+                    "select_runtime",
+                    return_value=cli.container_cli.DOCKER,
+                ),
+                patch.object(
+                    cli.container_cli, "ensure_system_started", return_value=0
+                ),
+                patch.object(
+                    cli.container_cli, "build_image", return_value=0
+                ) as build_image,
                 patch.object(cli.container_cli, "run", return_value=0),
                 contextlib.redirect_stdout(out),
             ):
-                cli.main([
-                    "--image-tag", "my-custom:v1",
-                    "--agent", "claude",
-                    str(project), "python:3.12-slim",
-                ])
+                cli.main(
+                    [
+                        "--image-tag",
+                        "my-custom:v1",
+                        "--agent",
+                        "claude",
+                        str(project),
+                        "python:3.12-slim",
+                    ]
+                )
 
             call_kwargs = build_image.call_args.kwargs
             self.assertEqual(call_kwargs["image_tag"], "my-custom:v1")
@@ -2275,21 +2948,32 @@ class BuildCacheReuseTests(TestCase):
         out = io.StringIO()
         positional = [str(project)] + ([base_image] if base_image else [])
         with (
-            patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
+            patch.object(
+                cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")
+            ),
             patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
             patch.object(cli.config_agents, "sync_credentials"),
-            patch.object(cli.container_cli, "select_runtime", return_value=cli.container_cli.DOCKER),
+            patch.object(
+                cli.container_cli,
+                "select_runtime",
+                return_value=cli.container_cli.DOCKER,
+            ),
             patch.object(cli.container_cli, "ensure_system_started", return_value=0),
             patch.object(cli.container_cli, "image_exists", return_value=image_exists),
-            patch.object(cli.container_cli, "build_image", return_value=0) as build_image,
+            patch.object(
+                cli.container_cli, "build_image", return_value=0
+            ) as build_image,
             patch.object(cli.container_cli, "run", return_value=0),
             contextlib.redirect_stdout(out),
         ):
-            rc = cli.main([
-                "--agent", "claude",
-                *(extra_args or []),
-                *positional,
-            ])
+            rc = cli.main(
+                [
+                    "--agent",
+                    "claude",
+                    *(extra_args or []),
+                    *positional,
+                ]
+            )
         return rc, out.getvalue(), build_image
 
     def _make_project(self, tmp: str) -> Path:
@@ -2304,7 +2988,9 @@ class BuildCacheReuseTests(TestCase):
             self.assertEqual(rc, 0)
             build_image.assert_called_once()
             self.assertIn("Built image in", out)
-            self.assertTrue((project / ".project-sandbox" / ".build-state.json").exists())
+            self.assertTrue(
+                (project / ".project-sandbox" / ".build-state.json").exists()
+            )
 
     def test_second_run_reuses_cached_image(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2339,7 +3025,9 @@ class BuildCacheReuseTests(TestCase):
             self._run(project, image_exists=False)  # seed state
             # Corrupt the recorded fingerprint so it no longer matches.
             state = project / ".project-sandbox" / ".build-state.json"
-            state.write_text('{"image_tag": "x", "fingerprint": "stale"}\n', encoding="utf-8")
+            state.write_text(
+                '{"image_tag": "x", "fingerprint": "stale"}\n', encoding="utf-8"
+            )
             rc, out, build_image = self._run(project, image_exists=True)
             self.assertEqual(rc, 0)
             build_image.assert_called_once()
@@ -2354,9 +3042,13 @@ class BuildCacheReuseTests(TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             project = self._make_project(tmp)
-            (project / "pyproject.toml").write_text("[project]\nname='d'\n", encoding="utf-8")
+            (project / "pyproject.toml").write_text(
+                "[project]\nname='d'\n", encoding="utf-8"
+            )
             (project / "uv.lock").write_text("version = 1\n", encoding="utf-8")
-            self._run(project, image_exists=False, extra_args=["--python-uv"], base_image=None)
+            self._run(
+                project, image_exists=False, extra_args=["--python-uv"], base_image=None
+            )
             self.assertTrue(
                 (project / ".project-sandbox" / "Dockerfile.dockerignore").exists()
             )
@@ -2364,11 +3056,15 @@ class BuildCacheReuseTests(TestCase):
     def test_python_uv_whole_project_context_never_skips(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = self._make_project(tmp)
-            (project / "pyproject.toml").write_text("[project]\nname='d'\n", encoding="utf-8")
+            (project / "pyproject.toml").write_text(
+                "[project]\nname='d'\n", encoding="utf-8"
+            )
             (project / "uv.lock").write_text("version = 1\n", encoding="utf-8")
             # Even with a matching state file and an existing image, the
             # whole-project build context disables the auto-skip.
-            self._run(project, image_exists=False, extra_args=["--python-uv"], base_image=None)
+            self._run(
+                project, image_exists=False, extra_args=["--python-uv"], base_image=None
+            )
             rc, out, build_image = self._run(
                 project, image_exists=True, extra_args=["--python-uv"], base_image=None
             )
@@ -2396,10 +3092,14 @@ class PythonUvFlagTests(TestCase):
             (project / "uv.lock").write_text("version = 1\n", encoding="utf-8")
         return project
 
-    def _dry_run_python_uv(self, project: Path, extra_args: list[str] | None = None) -> tuple[int, str]:
+    def _dry_run_python_uv(
+        self, project: Path, extra_args: list[str] | None = None
+    ) -> tuple[int, str]:
         out = io.StringIO()
         with (
-            patch.object(cli, "read_identity", return_value=GitIdentity("A", "a@b.com")),
+            patch.object(
+                cli, "read_identity", return_value=GitIdentity("A", "a@b.com")
+            ),
             patch.object(
                 cli.config_agents,
                 "_agent_host_paths",
@@ -2586,12 +3286,15 @@ class PythonUvFlagTests(TestCase):
             source.write_text("FROM python:3.11-slim\n", encoding="utf-8")
 
             with self.assertRaises(SystemExit) as raised:
-                cli.main([
-                    "--dry-run",
-                    "--python-uv",
-                    "--dockerfile", str(source),
-                    str(project),
-                ])
+                cli.main(
+                    [
+                        "--dry-run",
+                        "--python-uv",
+                        "--dockerfile",
+                        str(source),
+                        str(project),
+                    ]
+                )
 
         self.assertIn("mutually exclusive", str(raised.exception))
 
@@ -2600,12 +3303,14 @@ class PythonUvFlagTests(TestCase):
             project = Path(tmp)
 
             with self.assertRaises(SystemExit) as raised:
-                cli.main([
-                    "--dry-run",
-                    "--python-uv",
-                    str(project),
-                    "python:3.12-slim",
-                ])
+                cli.main(
+                    [
+                        "--dry-run",
+                        "--python-uv",
+                        str(project),
+                        "python:3.12-slim",
+                    ]
+                )
 
         self.assertIn("mutually exclusive", str(raised.exception))
 
@@ -2616,18 +3321,31 @@ class PythonUvFlagTests(TestCase):
             project = Path(tmp)
             _make_git_repo(project)
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("A", "a@b.com")),
+                patch.object(
+                    cli, "read_identity", return_value=GitIdentity("A", "a@b.com")
+                ),
                 patch.object(cli, "_setup_worktree") as setup_wt,
-                patch.object(cli.config_agents, "available_agents", return_value=("claude",)),
-                patch.object(cli.container_cli, "select_runtime", return_value=cli.container_cli.DOCKER),
+                patch.object(
+                    cli.config_agents, "available_agents", return_value=("claude",)
+                ),
+                patch.object(
+                    cli.container_cli,
+                    "select_runtime",
+                    return_value=cli.container_cli.DOCKER,
+                ),
             ):
                 with self.assertRaises(SystemExit) as raised:
-                    cli.main([
-                        "--agent", "claude",
-                        "--branch", "feat/x",
-                        "--python-uv",
-                        str(project), "python:3.12-slim",
-                    ])
+                    cli.main(
+                        [
+                            "--agent",
+                            "claude",
+                            "--branch",
+                            "feat/x",
+                            "--python-uv",
+                            str(project),
+                            "python:3.12-slim",
+                        ]
+                    )
 
             setup_wt.assert_not_called()
             self.assertIn("mutually exclusive", str(raised.exception))
@@ -2638,18 +3356,32 @@ class PythonUvFlagTests(TestCase):
             project = Path(tmp)
             _make_git_repo(project)
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("A", "a@b.com")),
+                patch.object(
+                    cli, "read_identity", return_value=GitIdentity("A", "a@b.com")
+                ),
                 patch.object(cli, "_setup_worktree") as setup_wt,
-                patch.object(cli.config_agents, "available_agents", return_value=("claude",)),
-                patch.object(cli.container_cli, "select_runtime", return_value=cli.container_cli.DOCKER),
+                patch.object(
+                    cli.config_agents, "available_agents", return_value=("claude",)
+                ),
+                patch.object(
+                    cli.container_cli,
+                    "select_runtime",
+                    return_value=cli.container_cli.DOCKER,
+                ),
             ):
                 with self.assertRaises((SystemExit, FileNotFoundError)):
-                    cli.main([
-                        "--agent", "claude",
-                        "--branch", "feat/x",
-                        "--prompt", str(project / "missing-prompt.md"),
-                        str(project), "python:3.12-slim",
-                    ])
+                    cli.main(
+                        [
+                            "--agent",
+                            "claude",
+                            "--branch",
+                            "feat/x",
+                            "--prompt",
+                            str(project / "missing-prompt.md"),
+                            str(project),
+                            "python:3.12-slim",
+                        ]
+                    )
 
             setup_wt.assert_not_called()
 
@@ -2668,16 +3400,20 @@ class RustCargoFlagTests(TestCase):
         (project / "README.md").write_text("# demo\n", encoding="utf-8")
         if with_cargo_toml:
             (project / "Cargo.toml").write_text(
-                "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n", encoding="utf-8"
+                '[package]\nname = "demo"\nversion = "0.1.0"\n', encoding="utf-8"
             )
         if with_cargo_lock:
             (project / "Cargo.lock").write_text("version = 3\n", encoding="utf-8")
         return project
 
-    def _dry_run_rust_cargo(self, project: Path, extra_args: list[str] | None = None) -> tuple[int, str]:
+    def _dry_run_rust_cargo(
+        self, project: Path, extra_args: list[str] | None = None
+    ) -> tuple[int, str]:
         out = io.StringIO()
         with (
-            patch.object(cli, "read_identity", return_value=GitIdentity("A", "a@b.com")),
+            patch.object(
+                cli, "read_identity", return_value=GitIdentity("A", "a@b.com")
+            ),
             patch.object(
                 cli.config_agents,
                 "_agent_host_paths",
@@ -2841,9 +3577,7 @@ class RustCargoFlagTests(TestCase):
         self.assertIn("RUN cargo build || true", content)
         # chown target dirs are created first so chown -R cannot fail on a
         # build that exited before cargo materialised CARGO_TARGET_DIR
-        self.assertIn(
-            "mkdir -p /opt/cargo-cache /opt/cargo-target", content
-        )
+        self.assertIn("mkdir -p /opt/cargo-cache /opt/cargo-target", content)
 
     def test_render_omits_cache_warm_when_cargo_toml_missing(self) -> None:
         from project_sandbox import dockerfile as df
@@ -2883,7 +3617,9 @@ class RustCargoFlagTests(TestCase):
 
     def test_rust_cargo_warns_when_cargo_toml_absent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            project = self._make_project(tmp, with_cargo_toml=False, with_cargo_lock=True)
+            project = self._make_project(
+                tmp, with_cargo_toml=False, with_cargo_lock=True
+            )
             rc, output = self._dry_run_rust_cargo(project)
 
         self.assertEqual(rc, 0)
@@ -2892,7 +3628,9 @@ class RustCargoFlagTests(TestCase):
 
     def test_rust_cargo_warns_when_cargo_lock_absent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            project = self._make_project(tmp, with_cargo_toml=True, with_cargo_lock=False)
+            project = self._make_project(
+                tmp, with_cargo_toml=True, with_cargo_lock=False
+            )
             rc, output = self._dry_run_rust_cargo(project)
 
         self.assertEqual(rc, 0)
@@ -2901,7 +3639,9 @@ class RustCargoFlagTests(TestCase):
 
     def test_rust_cargo_warns_when_both_absent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            project = self._make_project(tmp, with_cargo_toml=False, with_cargo_lock=False)
+            project = self._make_project(
+                tmp, with_cargo_toml=False, with_cargo_lock=False
+            )
             rc, output = self._dry_run_rust_cargo(project)
 
         self.assertEqual(rc, 0)
@@ -2917,12 +3657,15 @@ class RustCargoFlagTests(TestCase):
             source.write_text("FROM rust:slim\n", encoding="utf-8")
 
             with self.assertRaises(SystemExit) as raised:
-                cli.main([
-                    "--dry-run",
-                    "--rust-cargo",
-                    "--dockerfile", str(source),
-                    str(project),
-                ])
+                cli.main(
+                    [
+                        "--dry-run",
+                        "--rust-cargo",
+                        "--dockerfile",
+                        str(source),
+                        str(project),
+                    ]
+                )
 
         self.assertIn("mutually exclusive", str(raised.exception))
 
@@ -2931,12 +3674,14 @@ class RustCargoFlagTests(TestCase):
             project = Path(tmp)
 
             with self.assertRaises(SystemExit) as raised:
-                cli.main([
-                    "--dry-run",
-                    "--rust-cargo",
-                    str(project),
-                    "rust:slim",
-                ])
+                cli.main(
+                    [
+                        "--dry-run",
+                        "--rust-cargo",
+                        str(project),
+                        "rust:slim",
+                    ]
+                )
 
         self.assertIn("mutually exclusive", str(raised.exception))
 
@@ -2945,12 +3690,14 @@ class RustCargoFlagTests(TestCase):
             project = Path(tmp)
 
             with self.assertRaises(SystemExit) as raised:
-                cli.main([
-                    "--dry-run",
-                    "--rust-cargo",
-                    "--python-uv",
-                    str(project),
-                ])
+                cli.main(
+                    [
+                        "--dry-run",
+                        "--rust-cargo",
+                        "--python-uv",
+                        str(project),
+                    ]
+                )
 
         self.assertIn("mutually exclusive", str(raised.exception))
 
@@ -2959,12 +3706,15 @@ class RustCargoFlagTests(TestCase):
             project = Path(tmp)
 
             with self.assertRaises(SystemExit) as raised:
-                cli.main([
-                    "--dry-run",
-                    "--rust", "1.87",
-                    str(project),
-                    "rust:slim",
-                ])
+                cli.main(
+                    [
+                        "--dry-run",
+                        "--rust",
+                        "1.87",
+                        str(project),
+                        "rust:slim",
+                    ]
+                )
 
         self.assertIn("only valid with --rust-cargo", str(raised.exception))
 
@@ -3112,7 +3862,9 @@ class RustCargoFlagTests(TestCase):
 
     # --- target/ masking ---
 
-    def _build_session_cmd_for_masking(self, project: Path, *, rust_cargo: bool) -> list[str]:
+    def _build_session_cmd_for_masking(
+        self, project: Path, *, rust_cargo: bool
+    ) -> list[str]:
         import argparse
 
         context_dir = project / ".project-sandbox"
@@ -3199,18 +3951,31 @@ class RustCargoFlagTests(TestCase):
             project = Path(tmp)
             _make_git_repo(project)
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("A", "a@b.com")),
+                patch.object(
+                    cli, "read_identity", return_value=GitIdentity("A", "a@b.com")
+                ),
                 patch.object(cli, "_setup_worktree") as setup_wt,
-                patch.object(cli.config_agents, "available_agents", return_value=("claude",)),
-                patch.object(cli.container_cli, "select_runtime", return_value=cli.container_cli.DOCKER),
+                patch.object(
+                    cli.config_agents, "available_agents", return_value=("claude",)
+                ),
+                patch.object(
+                    cli.container_cli,
+                    "select_runtime",
+                    return_value=cli.container_cli.DOCKER,
+                ),
             ):
                 with self.assertRaises(SystemExit) as raised:
-                    cli.main([
-                        "--agent", "claude",
-                        "--branch", "feat/x",
-                        "--rust-cargo",
-                        str(project), "rust:slim",
-                    ])
+                    cli.main(
+                        [
+                            "--agent",
+                            "claude",
+                            "--branch",
+                            "feat/x",
+                            "--rust-cargo",
+                            str(project),
+                            "rust:slim",
+                        ]
+                    )
 
             setup_wt.assert_not_called()
             self.assertIn("mutually exclusive", str(raised.exception))
@@ -3226,18 +3991,32 @@ class HostTokenRefreshGatingTests(TestCase):
             paths["claude"].mkdir(parents=True)
             paths["codex"].mkdir(parents=True)
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
-                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
+                patch.object(
+                    cli.config_agents, "_agent_host_paths", return_value=paths
+                ),
                 patch.object(cli.config_agents, "sync_credentials"),
-                patch.object(cli.container_cli, "select_runtime", return_value=cli.container_cli.DOCKER),
-                patch.object(cli.container_cli, "ensure_system_started", return_value=0),
+                patch.object(
+                    cli.container_cli,
+                    "select_runtime",
+                    return_value=cli.container_cli.DOCKER,
+                ),
+                patch.object(
+                    cli.container_cli, "ensure_system_started", return_value=0
+                ),
                 patch.object(cli.container_cli, "build_image", return_value=0),
                 patch.object(cli.container_cli, "run", return_value=0),
                 # Re-patch over the suite-wide autouse stub to observe the call.
                 patch.object(cli.oauth_refresh, "refresh_host_token") as refresh,
                 contextlib.redirect_stdout(io.StringIO()),
             ):
-                cli.main(["--agent", agent, *extra_args, str(project), "python:3.12-slim"])
+                cli.main(
+                    ["--agent", agent, *extra_args, str(project), "python:3.12-slim"]
+                )
             return refresh
 
     def test_claude_run_refreshes_claude(self) -> None:
@@ -3256,7 +4035,9 @@ class HostTokenRefreshGatingTests(TestCase):
         self.assertEqual(refresh.call_args.args[0], "claude")
 
     def test_no_token_refresh_skips_refresh(self) -> None:
-        self.assertEqual(self._run_with_refresh_mock(["--no-token-refresh"]).call_count, 0)
+        self.assertEqual(
+            self._run_with_refresh_mock(["--no-token-refresh"]).call_count, 0
+        )
 
     def test_no_forward_credentials_skips_refresh(self) -> None:
         self.assertEqual(
@@ -3273,20 +4054,37 @@ class NoForwardCredentialsTests(TestCase):
             paths = _agent_paths(host_home)
             paths["claude"].mkdir(parents=True)
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
-                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
+                patch.object(
+                    cli.config_agents, "_agent_host_paths", return_value=paths
+                ),
                 patch.object(cli.config_agents, "sync_credentials") as sync,
                 patch.object(cli.config_agents, "purge_staged_credentials") as purge,
-                patch.object(cli.container_cli, "select_runtime", return_value=cli.container_cli.DOCKER),
-                patch.object(cli.container_cli, "ensure_system_started", return_value=0),
+                patch.object(
+                    cli.container_cli,
+                    "select_runtime",
+                    return_value=cli.container_cli.DOCKER,
+                ),
+                patch.object(
+                    cli.container_cli, "ensure_system_started", return_value=0
+                ),
                 patch.object(cli.container_cli, "build_image", return_value=0),
                 patch.object(cli.container_cli, "run", return_value=0),
                 contextlib.redirect_stdout(io.StringIO()),
             ):
-                cli.main([
-                    "--agent", "claude", "--no-forward-credentials",
-                    str(project), "python:3.12-slim",
-                ])
+                cli.main(
+                    [
+                        "--agent",
+                        "claude",
+                        "--no-forward-credentials",
+                        str(project),
+                        "python:3.12-slim",
+                    ]
+                )
             sync.assert_not_called()
             purge.assert_called_once()
 
@@ -3303,21 +4101,37 @@ class NoForwardCredentialsTests(TestCase):
             paths = _agent_paths(host_home)
 
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
-                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
-                patch.object(cli.container_cli, "select_runtime", return_value=cli.container_cli.DOCKER),
-                patch.object(cli.container_cli, "ensure_system_started", return_value=0),
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
+                patch.object(
+                    cli.config_agents, "_agent_host_paths", return_value=paths
+                ),
+                patch.object(
+                    cli.container_cli,
+                    "select_runtime",
+                    return_value=cli.container_cli.DOCKER,
+                ),
+                patch.object(
+                    cli.container_cli, "ensure_system_started", return_value=0
+                ),
                 patch.object(cli.dockerfile, "render") as render,
                 patch.object(cli.container_cli, "image_exists", return_value=True),
                 patch.object(cli.container_cli, "run", return_value=0),
                 contextlib.redirect_stdout(io.StringIO()),
             ):
-                rc = cli.main([
-                    "--no-build",
-                    "--no-forward-credentials",
-                    "--agent", "claude",
-                    str(project), "python:3.12-slim",
-                ])
+                rc = cli.main(
+                    [
+                        "--no-build",
+                        "--no-forward-credentials",
+                        "--agent",
+                        "claude",
+                        str(project),
+                        "python:3.12-slim",
+                    ]
+                )
 
             self.assertEqual(rc, 0)
             render.assert_called_once()
@@ -3331,21 +4145,31 @@ class ApiKeyInjectionTests(TestCase):
             (project / "README.md").write_text("# demo\n", encoding="utf-8")
 
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
-                patch.object(cli.config_agents, "_agent_host_paths", return_value=_agent_paths(project / "home")),
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
+                patch.object(
+                    cli.config_agents,
+                    "_agent_host_paths",
+                    return_value=_agent_paths(project / "home"),
+                ),
                 patch.dict(os.environ, {"ANTHROPIC_API_KEY": "secret"}, clear=False),
             ):
                 with self.assertRaises(SystemExit) as raised:
-                    cli.main([
-                        "--dry-run",
-                        "--no-build",
-                        "--agent",
-                        "bash",
-                        "--api-key-env",
-                        "ANTHROPIC_API_KEY",
-                        str(project),
-                        "python:3.12-slim",
-                    ])
+                    cli.main(
+                        [
+                            "--dry-run",
+                            "--no-build",
+                            "--agent",
+                            "bash",
+                            "--api-key-env",
+                            "ANTHROPIC_API_KEY",
+                            str(project),
+                            "python:3.12-slim",
+                        ]
+                    )
 
             self.assertIn("require --no-forward-credentials", str(raised.exception))
 
@@ -3355,19 +4179,29 @@ class ApiKeyInjectionTests(TestCase):
             (project / "README.md").write_text("# demo\n", encoding="utf-8")
 
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
-                patch.object(cli.config_agents, "_agent_host_paths", return_value=_agent_paths(project / "home")),
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
+                patch.object(
+                    cli.config_agents,
+                    "_agent_host_paths",
+                    return_value=_agent_paths(project / "home"),
+                ),
                 patch.dict(os.environ, {"ANTHROPIC_API_KEY": "secret"}, clear=False),
             ):
                 with self.assertRaises(SystemExit) as raised:
-                    cli.main([
-                        "--dry-run",
-                        "--no-forward-credentials",
-                        "--api-key-env",
-                        "ANTHROPIC_API_KEY",
-                        str(project),
-                        "python:3.12-slim",
-                    ])
+                    cli.main(
+                        [
+                            "--dry-run",
+                            "--no-forward-credentials",
+                            "--api-key-env",
+                            "ANTHROPIC_API_KEY",
+                            str(project),
+                            "python:3.12-slim",
+                        ]
+                    )
 
             self.assertIn("require --agent", str(raised.exception))
 
@@ -3378,30 +4212,97 @@ class ApiKeyInjectionTests(TestCase):
             out = io.StringIO()
 
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
-                patch.object(cli.config_agents, "_agent_host_paths", return_value=_agent_paths(project / "home")),
-                patch.dict(os.environ, {"ANTHROPIC_API_KEY": "super-secret"}, clear=False),
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
+                patch.object(
+                    cli.config_agents,
+                    "_agent_host_paths",
+                    return_value=_agent_paths(project / "home"),
+                ),
+                patch.dict(
+                    os.environ, {"ANTHROPIC_API_KEY": "super-secret"}, clear=False
+                ),
                 contextlib.redirect_stdout(out),
             ):
-                rc = cli.main([
-                    "--dry-run",
-                    "--no-build",
-                    "--no-forward-credentials",
-                    "--agent",
-                    "bash",
-                    "--api-key-env",
-                    "ANTHROPIC_API_KEY",
-                    str(project),
-                    "python:3.12-slim",
-                ])
+                rc = cli.main(
+                    [
+                        "--dry-run",
+                        "--no-build",
+                        "--no-forward-credentials",
+                        "--runtime",
+                        "apple-container",
+                        "--agent",
+                        "bash",
+                        "--api-key-env",
+                        "ANTHROPIC_API_KEY",
+                        str(project),
+                        "python:3.12-slim",
+                    ]
+                )
 
             self.assertEqual(rc, 0)
             output = out.getvalue()
-            # The bare name is passed via --env (docker/podman/apple-container
-            # inherit the value from project-sandbox's own process env), never
-            # "NAME=VALUE" — so the secret value itself never appears in the
-            # printed/executed argv.
+            # On the apple-container runtime the key travels via a staged env
+            # file rather than a bare "--env NAME" (see
+            # test_api_key_env_uses_env_file_for_apple_container_runtime), so
+            # dry-run only reports that it *would* write that file — the
+            # secret value itself never appears in the printed/executed argv.
+            # Pin --runtime explicitly: "auto" only resolves to
+            # apple-container on macOS, so this test must not rely on the
+            # host platform to reach that code path.
+            self.assertIn("Would write API key env file:", output)
+            self.assertNotIn("--env ANTHROPIC_API_KEY", output)
+            self.assertNotIn("ANTHROPIC_API_KEY=", output)
+            self.assertNotIn("super-secret", output)
+
+    def test_api_key_env_dry_run_does_not_leak_secret_value_docker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            out = io.StringIO()
+
+            with (
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
+                patch.object(
+                    cli.config_agents,
+                    "_agent_host_paths",
+                    return_value=_agent_paths(project / "home"),
+                ),
+                patch.dict(
+                    os.environ, {"ANTHROPIC_API_KEY": "super-secret"}, clear=False
+                ),
+                contextlib.redirect_stdout(out),
+            ):
+                rc = cli.main(
+                    [
+                        "--dry-run",
+                        "--no-build",
+                        "--no-forward-credentials",
+                        "--runtime",
+                        "docker",
+                        "--agent",
+                        "bash",
+                        "--api-key-env",
+                        "ANTHROPIC_API_KEY",
+                        str(project),
+                        "python:3.12-slim",
+                    ]
+                )
+
+            self.assertEqual(rc, 0)
+            output = out.getvalue()
+            # docker/podman look the bare name up from project-sandbox's own
+            # process environment, so the key never needs a staged env file
+            # (see test_api_key_env_uses_bare_name_in_argv_for_container_runtime).
             self.assertIn("--env ANTHROPIC_API_KEY", output)
+            self.assertNotIn("Would write API key env file:", output)
             self.assertNotIn("ANTHROPIC_API_KEY=", output)
             self.assertNotIn("super-secret", output)
 
@@ -3683,22 +4584,41 @@ class ApiKeyInjectionTests(TestCase):
                 return 0
 
             with (
-                patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")),
-                patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
-                patch.object(cli.container_cli, "select_runtime", return_value=cli.container_cli.DOCKER),
-                patch.object(cli.container_cli, "ensure_system_started", return_value=0),
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
+                patch.object(
+                    cli.config_agents, "_agent_host_paths", return_value=paths
+                ),
+                patch.object(
+                    cli.container_cli,
+                    "select_runtime",
+                    return_value=cli.container_cli.DOCKER,
+                ),
+                patch.object(
+                    cli.container_cli, "ensure_system_started", return_value=0
+                ),
                 patch.object(cli.container_cli, "image_exists", return_value=True),
                 patch.object(cli.container_cli, "run", side_effect=fake_run),
-                patch.dict(os.environ, {"ANTHROPIC_API_KEY": "super-secret-value"}, clear=False),
+                patch.dict(
+                    os.environ, {"ANTHROPIC_API_KEY": "super-secret-value"}, clear=False
+                ),
                 contextlib.redirect_stdout(io.StringIO()),
             ):
-                rc = cli.main([
-                    "--no-build",
-                    "--no-forward-credentials",
-                    "--agent", "bash",
-                    "--api-key-env", "ANTHROPIC_API_KEY",
-                    str(project), "python:3.12-slim",
-                ])
+                rc = cli.main(
+                    [
+                        "--no-build",
+                        "--no-forward-credentials",
+                        "--agent",
+                        "bash",
+                        "--api-key-env",
+                        "ANTHROPIC_API_KEY",
+                        str(project),
+                        "python:3.12-slim",
+                    ]
+                )
 
             self.assertEqual(rc, 0)
             self.assertFalse(

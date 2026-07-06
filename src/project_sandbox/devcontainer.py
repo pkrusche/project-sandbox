@@ -47,11 +47,18 @@ def render(
     dc_dir.mkdir(exist_ok=True)
 
     _symlink(dc_dir / "Dockerfile", Path("../.project-sandbox/Dockerfile.devcontainer"))
-    _symlink(dc_dir / "init-firewall.sh", Path("../.project-sandbox/init-firewall-devcontainer.sh"))
+    _symlink(
+        dc_dir / "init-firewall.sh",
+        Path("../.project-sandbox/init-firewall-devcontainer.sh"),
+    )
     _symlink(dc_dir / "claude", Path("../.project-sandbox/claude"))
-    _symlink(dc_dir / "claude-devcontainer", Path("../.project-sandbox/claude-devcontainer"))
+    _symlink(
+        dc_dir / "claude-devcontainer", Path("../.project-sandbox/claude-devcontainer")
+    )
     _symlink(dc_dir / "codex", Path("../.project-sandbox/codex"))
-    _symlink(dc_dir / "codex-devcontainer", Path("../.project-sandbox/codex-devcontainer"))
+    _symlink(
+        dc_dir / "codex-devcontainer", Path("../.project-sandbox/codex-devcontainer")
+    )
 
     out = dc_dir / "devcontainer.json"
     generated_dockerfile = project / ".project-sandbox" / "Dockerfile.devcontainer"
@@ -67,7 +74,9 @@ def render(
         mount_opencode_secrets = host_home.joinpath(".config/opencode").exists()
     claude_devcontainer_credentials_dir = credential_dirs.get(
         "claude-devcontainer",
-        config_agents.credentials_dir(project / ".project-sandbox", "claude-devcontainer"),
+        config_agents.credentials_dir(
+            project / ".project-sandbox", "claude-devcontainer"
+        ),
     )
     # Persist bash and Claude session history across devcontainer rebuilds, the
     # same way the interactive CLI run path does. Create the host files so the
@@ -84,21 +93,19 @@ def render(
     ]
     ensure_workspace_sandbox_mask(project, create=True)
     workspace_mask_root = "${localWorkspaceFolder}/.project-sandbox/workspace-mask"
-    workspace_mask_mount = (
-        f"source={workspace_mask_root},target={WORKSPACE_SANDBOX_TARGET},type=bind,readonly"
-    )
+    workspace_mask_mount = f"source={workspace_mask_root},target={WORKSPACE_SANDBOX_TARGET},type=bind,readonly"
     # Mask .devcontainer the same way so its host-path mounts and config are not
     # visible from inside the running devcontainer.
-    devcontainer_mask_mount = (
-        f"source={workspace_mask_root},target={WORKSPACE_DEVCONTAINER_TARGET},type=bind,readonly"
-    )
+    devcontainer_mask_mount = f"source={workspace_mask_root},target={WORKSPACE_DEVCONTAINER_TARGET},type=bind,readonly"
     # Build the config as a Python dict and emit it with json.dumps so every
     # interpolated value (project name, git identity, mount specs, including the
     # user-supplied --mount values in extra_mounts) is JSON-escaped. Rendering
     # these directly into a template produced no escaping, letting a crafted
     # value close a string and inject arbitrary devcontainer fields.
     claude_config_mount = "${localWorkspaceFolder}/.project-sandbox/claude-devcontainer"
-    claude_credentials_mount = claude_devcontainer_credentials_dir.resolve(strict=False).as_posix()
+    claude_credentials_mount = claude_devcontainer_credentials_dir.resolve(
+        strict=False
+    ).as_posix()
     codex_config_mount = "${localWorkspaceFolder}/.project-sandbox/codex-devcontainer"
     codex_credentials_mount = (
         credential_dirs.get(

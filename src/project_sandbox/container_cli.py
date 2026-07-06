@@ -48,9 +48,9 @@ _RUNTIMES = {
 
 def host_build_identity(runtime: Runtime) -> tuple[int, int] | None:
     """Return the host identity that Docker/Podman images must build for."""
-    if (
-        not sys.platform.startswith("linux")
-        or runtime.name not in (DOCKER.name, PODMAN.name)
+    if not sys.platform.startswith("linux") or runtime.name not in (
+        DOCKER.name,
+        PODMAN.name,
     ):
         return None
     uid, gid = os.getuid(), os.getgid()
@@ -355,7 +355,9 @@ def build_image(
     if not runtime.is_container:
         return 0
     build_context = (build_context or context_dir).resolve(strict=False)
-    dockerfile_path = (dockerfile_path or context_dir / "Dockerfile").resolve(strict=False)
+    dockerfile_path = (dockerfile_path or context_dir / "Dockerfile").resolve(
+        strict=False
+    )
     # Build with the context as "." and run from inside it. apple/container only
     # reliably honors a current-directory context; an absolute context path is
     # not mounted into BuildKit correctly, so COPY resolves against the wrong
@@ -383,9 +385,7 @@ def build_image(
     return _run_quietable(cmd, verbose=verbose, cwd=str(build_context))
 
 
-def image_exists(
-    runtime: Runtime, image_tag: str, *, dry_run: bool = False
-) -> bool:
+def image_exists(runtime: Runtime, image_tag: str, *, dry_run: bool = False) -> bool:
     """Return True when ``image_tag`` already exists for ``runtime``.
 
     Uses ``<binary> image inspect <tag>``, verified to exit 0 for a present
@@ -444,9 +444,7 @@ def run(
         print(shlex.join(argv))
         return 0
     try:
-        return subprocess.run(
-            argv, check=False, env=session.merged_env(env)
-        ).returncode
+        return subprocess.run(argv, check=False, env=session.merged_env(env)).returncode
     except FileNotFoundError:
         print(f"{argv[0]} CLI not found on PATH")
         return 127

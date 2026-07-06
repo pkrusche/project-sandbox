@@ -80,7 +80,10 @@ class DevcontainerTests(TestCase):
                 spec["containerEnv"]["CLAUDE_SECURESTORAGE_CONFIG_DIR"],
                 "/home/agent/.claude",
             )
-            self.assertEqual(spec["build"]["dockerfile"], "../.project-sandbox/Dockerfile.devcontainer")
+            self.assertEqual(
+                spec["build"]["dockerfile"],
+                "../.project-sandbox/Dockerfile.devcontainer",
+            )
             self.assertEqual(spec["build"]["context"], "../.project-sandbox")
             self.assertIn("--cap-add=NET_ADMIN", spec["runArgs"])
             self.assertIn("--cap-add=NET_RAW", spec["runArgs"])
@@ -136,14 +139,20 @@ class DevcontainerTests(TestCase):
             # No staged host tokens are wired...
             self.assertNotIn("/project-sandbox-secrets/", mounts)
             # ...but generated, non-secret config still is.
-            self.assertIn("target=/project-sandbox-config/claude,type=bind,readonly", mounts)
-            self.assertIn("target=/project-sandbox-config/codex,type=bind,readonly", mounts)
+            self.assertIn(
+                "target=/project-sandbox-config/claude,type=bind,readonly", mounts
+            )
+            self.assertIn(
+                "target=/project-sandbox-config/codex,type=bind,readonly", mounts
+            )
 
     def test_workspace_sandbox_mask_overrides_custom_mount(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
             (project / ".project-sandbox").mkdir()
-            custom_mount = "source=/tmp/custom,target=/workspace/.project-sandbox,type=bind"
+            custom_mount = (
+                "source=/tmp/custom,target=/workspace/.project-sandbox,type=bind"
+            )
 
             devcontainer.render(
                 project,
@@ -163,7 +172,9 @@ class DevcontainerTests(TestCase):
             )
             self.assertIn(custom_mount, spec["mounts"])
             self.assertIn(mask_mount, spec["mounts"])
-            self.assertLess(spec["mounts"].index(custom_mount), spec["mounts"].index(mask_mount))
+            self.assertLess(
+                spec["mounts"].index(custom_mount), spec["mounts"].index(mask_mount)
+            )
             self.assertIn(
                 "${localWorkspaceFolder}/.project-sandbox/workspace-mask",
                 spec["initializeCommand"],
@@ -222,8 +233,7 @@ class DevcontainerTests(TestCase):
             # Run the host command exactly as a devcontainer host would, with the
             # ${localWorkspaceFolder} variable resolved to the project root.
             resolved = [
-                arg.replace("${localWorkspaceFolder}", str(project))
-                for arg in command
+                arg.replace("${localWorkspaceFolder}", str(project)) for arg in command
             ]
             subprocess.run(resolved, check=True)
 
@@ -265,8 +275,7 @@ class DevcontainerTests(TestCase):
             # the correct directories must be created.
             shutil.rmtree(project / ".project-sandbox" / "history")
             resolved = [
-                arg.replace("${localWorkspaceFolder}", str(project))
-                for arg in command
+                arg.replace("${localWorkspaceFolder}", str(project)) for arg in command
             ]
             subprocess.run(resolved, check=True)
 
@@ -298,7 +307,14 @@ class DevcontainerTests(TestCase):
             _render(project)
             dc_dir = project / ".devcontainer"
 
-            for name in ("Dockerfile", "init-firewall.sh", "claude", "claude-devcontainer", "codex", "codex-devcontainer"):
+            for name in (
+                "Dockerfile",
+                "init-firewall.sh",
+                "claude",
+                "claude-devcontainer",
+                "codex",
+                "codex-devcontainer",
+            ):
                 link = dc_dir / name
                 self.assertTrue(link.is_symlink(), f"{name} is not a symlink")
                 target = link.readlink()
@@ -466,7 +482,9 @@ class DevcontainerTests(TestCase):
             command = spec["initializeCommand"]
             self.assertIsInstance(command, list)
 
-            resolved_claude = credentials["claude-devcontainer"].resolve(strict=False).as_posix()
+            resolved_claude = (
+                credentials["claude-devcontainer"].resolve(strict=False).as_posix()
+            )
             resolved_codex = credentials["codex"].resolve(strict=False).as_posix()
             resolved_opencode = credentials["opencode"].resolve(strict=False).as_posix()
             self.assertIn(resolved_claude, command)
@@ -600,5 +618,8 @@ class DevcontainerTests(TestCase):
                 (project / ".devcontainer" / "devcontainer.json").read_text()
             )
 
-            self.assertEqual(spec["build"]["dockerfile"], "../.project-sandbox/Dockerfile.devcontainer")
+            self.assertEqual(
+                spec["build"]["dockerfile"],
+                "../.project-sandbox/Dockerfile.devcontainer",
+            )
             self.assertEqual(spec["build"]["context"], "..")

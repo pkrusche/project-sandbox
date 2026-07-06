@@ -65,7 +65,9 @@ def request_json(url: str) -> object:
         return json.loads(response.read().decode("utf-8"))
 
 
-def request_bytes(url: str, headers: dict[str, str] | None = None) -> tuple[bytes, dict[str, str]]:
+def request_bytes(
+    url: str, headers: dict[str, str] | None = None
+) -> tuple[bytes, dict[str, str]]:
     request_headers = {"User-Agent": USER_AGENT}
     if headers:
         request_headers.update(headers)
@@ -86,7 +88,9 @@ def prompt(update: Update, *, assume_yes: bool) -> bool:
     if assume_yes:
         print(f"Applying {update.label}: {update.current} -> {update.latest}")
         return True
-    answer = input(f"Update {update.label}: {update.current} -> {update.latest}? [y/N] ")
+    answer = input(
+        f"Update {update.label}: {update.current} -> {update.latest}? [y/N] "
+    )
     return answer.strip().lower() in {"y", "yes"}
 
 
@@ -109,12 +113,16 @@ def latest_pypi_version(name: str) -> str:
 
 
 def latest_npm_version(package: str) -> str:
-    data = request_json(f"https://registry.npmjs.org/{urllib.parse.quote(package, safe='@/')}")
+    data = request_json(
+        f"https://registry.npmjs.org/{urllib.parse.quote(package, safe='@/')}"
+    )
     if not isinstance(data, dict) or not isinstance(data.get("dist-tags"), dict):
         raise RuntimeError(f"Unexpected npm response for {package}")
     version = data["dist-tags"].get("latest")
     if not isinstance(version, str):
-        raise RuntimeError(f"npm response for {package} did not include dist-tags.latest")
+        raise RuntimeError(
+            f"npm response for {package} did not include dist-tags.latest"
+        )
     return version
 
 
@@ -141,7 +149,9 @@ def node_sha256s(version: str) -> dict[str, str]:
                 result[arch] = digest
     missing = {"x64", "arm64"} - set(result)
     if missing:
-        raise RuntimeError(f"Missing Node.js checksums for {version}: {', '.join(sorted(missing))}")
+        raise RuntimeError(
+            f"Missing Node.js checksums for {version}: {', '.join(sorted(missing))}"
+        )
     return result
 
 
@@ -151,7 +161,9 @@ def latest_github_release(owner: str, repo: str) -> str:
         raise RuntimeError(f"Unexpected GitHub release response for {owner}/{repo}")
     tag = data.get("tag_name")
     if not isinstance(tag, str):
-        raise RuntimeError(f"GitHub release response for {owner}/{repo} did not include tag_name")
+        raise RuntimeError(
+            f"GitHub release response for {owner}/{repo} did not include tag_name"
+        )
     return tag
 
 
@@ -167,8 +179,12 @@ def download_sha256(url: str) -> str:
 def jj_sha256s(version: str) -> dict[str, str]:
     base = f"https://github.com/jj-vcs/jj/releases/download/{version}"
     return {
-        "aarch64": download_sha256(f"{base}/jj-{version}-aarch64-unknown-linux-musl.tar.gz"),
-        "x86_64": download_sha256(f"{base}/jj-{version}-x86_64-unknown-linux-musl.tar.gz"),
+        "aarch64": download_sha256(
+            f"{base}/jj-{version}-aarch64-unknown-linux-musl.tar.gz"
+        ),
+        "x86_64": download_sha256(
+            f"{base}/jj-{version}-x86_64-unknown-linux-musl.tar.gz"
+        ),
     }
 
 
@@ -207,9 +223,18 @@ def ghcr_manifest_digest(repository: str, tag: str) -> str:
         token = docker_bearer_token(exc.headers["WWW-Authenticate"])
         headers["Authorization"] = f"Bearer {token}"
         _, response_headers = request_bytes(url, headers=headers)
-    digest = next((v for k, v in response_headers.items() if k.lower() == "docker-content-digest"), None)
+    digest = next(
+        (
+            v
+            for k, v in response_headers.items()
+            if k.lower() == "docker-content-digest"
+        ),
+        None,
+    )
     if not digest:
-        raise RuntimeError(f"Registry response for ghcr.io/{repository}:{tag} did not include a digest")
+        raise RuntimeError(
+            f"Registry response for ghcr.io/{repository}:{tag} did not include a digest"
+        )
     return digest.removeprefix("sha256:")
 
 
@@ -220,7 +245,9 @@ def replace_exact(path: Path, old: str, new: str) -> None:
     write(path, text.replace(old, new))
 
 
-def replace_regex(path: Path, pattern: re.Pattern[str], repl: str, *, count: int = 0) -> None:
+def replace_regex(
+    path: Path, pattern: re.Pattern[str], repl: str, *, count: int = 0
+) -> None:
     text = read(path)
     new_text, changed = pattern.subn(repl, text, count=count)
     if changed == 0:
@@ -244,11 +271,18 @@ def collect_pypi_updates() -> list[Update]:
             print(f"Current PyPI pin: {requirement_name}=={current}")
             continue
 
-        def apply(package: str = package, requirement_name: str = requirement_name, current: str = current, latest: str = latest) -> None:
+        def apply(
+            package: str = package,
+            requirement_name: str = requirement_name,
+            current: str = current,
+            latest: str = latest,
+        ) -> None:
             pattern = re.compile(
                 rf'(?P<quote>["\']){re.escape(requirement_name)}=={re.escape(current)}(?P=quote)'
             )
-            replace_regex(PYPROJECT, pattern, rf'\g<quote>{requirement_name}=={latest}\g<quote>')
+            replace_regex(
+                PYPROJECT, pattern, rf"\g<quote>{requirement_name}=={latest}\g<quote>"
+            )
 
         updates.append(Update(f"PyPI {requirement_name}", current, latest, apply))
     return updates
@@ -265,7 +299,10 @@ def collect_uv_lock_updates() -> list[Update]:
     if not UV_LOCK.is_file():
         return []
     if shutil.which("uv") is None:
-        print("uv not found on PATH; uv.lock-only package pins cannot be updated.", file=sys.stderr)
+        print(
+            "uv not found on PATH; uv.lock-only package pins cannot be updated.",
+            file=sys.stderr,
+        )
         return []
 
     data = tomllib.loads(read(UV_LOCK))
@@ -300,7 +337,9 @@ def collect_uv_lock_updates() -> list[Update]:
             continue
 
         def apply(name: str = name) -> None:
-            subprocess.run(["uv", "lock", "--upgrade-package", name], cwd=ROOT, check=True)
+            subprocess.run(
+                ["uv", "lock", "--upgrade-package", name], cwd=ROOT, check=True
+            )
 
         updates.append(Update(f"uv.lock PyPI {name}", current, latest, apply))
     return updates
@@ -321,8 +360,12 @@ def collect_npm_updates() -> list[Update]:
             print(f"Current npm pin: {package}@{current}")
             continue
 
-        def apply(package: str = package, current: str = current, latest: str = latest) -> None:
-            replace_exact(DOCKERFILE_TEMPLATE, f"{package}@{current}", f"{package}@{latest}")
+        def apply(
+            package: str = package, current: str = current, latest: str = latest
+        ) -> None:
+            replace_exact(
+                DOCKERFILE_TEMPLATE, f"{package}@{current}", f"{package}@{latest}"
+            )
 
         updates.append(Update(f"npm {package}", current, latest, apply))
     return updates
@@ -331,13 +374,17 @@ def collect_npm_updates() -> list[Update]:
 def collect_node_update() -> list[Update]:
     text = read(DOCKERFILE_TEMPLATE)
     version_match = re.search(r'NODE_VERSION="(?P<version>v[0-9][^"]+)"', text)
-    x64_match = re.search(r'x86_64\) NODE_ARCH="x64"; \\\n\s+NODE_SHA256="(?P<sha>[a-f0-9]{64})"', text)
+    x64_match = re.search(
+        r'x86_64\) NODE_ARCH="x64"; \\\n\s+NODE_SHA256="(?P<sha>[a-f0-9]{64})"', text
+    )
     arm64_match = re.search(
         r'aarch64\|arm64\) NODE_ARCH="arm64"; \\\n\s+NODE_SHA256="(?P<sha>[a-f0-9]{64})"',
         text,
     )
     if not version_match or not x64_match or not arm64_match:
-        raise RuntimeError("Could not find Node.js version and checksums in Dockerfile template")
+        raise RuntimeError(
+            "Could not find Node.js version and checksums in Dockerfile template"
+        )
     current = version_match.group("version")
     latest = latest_node_version()
     if current == latest:
@@ -347,7 +394,9 @@ def collect_node_update() -> list[Update]:
     def apply() -> None:
         checksums = node_sha256s(latest)
         updated = read(DOCKERFILE_TEMPLATE)
-        updated = updated.replace(f'NODE_VERSION="{current}"', f'NODE_VERSION="{latest}"')
+        updated = updated.replace(
+            f'NODE_VERSION="{current}"', f'NODE_VERSION="{latest}"'
+        )
         updated = updated.replace(x64_match.group("sha"), checksums["x64"])
         updated = updated.replace(arm64_match.group("sha"), checksums["arm64"])
         write(DOCKERFILE_TEMPLATE, updated)
@@ -358,10 +407,17 @@ def collect_node_update() -> list[Update]:
 def collect_jj_update() -> list[Update]:
     text = read(DOCKERFILE_TEMPLATE)
     version_match = re.search(r'JJ_VERSION="(?P<version>v[0-9][^"]+)"', text)
-    arm64_match = re.search(r'arm64\|aarch64\) JJ_ARCH="aarch64"; \\\n\s+JJ_SHA256="(?P<sha>[a-f0-9]{64})"', text)
-    x64_match = re.search(r'x86_64\) JJ_ARCH="x86_64"; \\\n\s+JJ_SHA256="(?P<sha>[a-f0-9]{64})"', text)
+    arm64_match = re.search(
+        r'arm64\|aarch64\) JJ_ARCH="aarch64"; \\\n\s+JJ_SHA256="(?P<sha>[a-f0-9]{64})"',
+        text,
+    )
+    x64_match = re.search(
+        r'x86_64\) JJ_ARCH="x86_64"; \\\n\s+JJ_SHA256="(?P<sha>[a-f0-9]{64})"', text
+    )
     if not version_match or not arm64_match or not x64_match:
-        raise RuntimeError("Could not find jj version and checksums in Dockerfile template")
+        raise RuntimeError(
+            "Could not find jj version and checksums in Dockerfile template"
+        )
     current = version_match.group("version")
     latest = latest_github_release("jj-vcs", "jj")
     if current == latest:
@@ -389,10 +445,14 @@ def collect_uv_image_update() -> list[Update]:
         raise RuntimeError("Could not find ghcr.io/astral-sh/uv image pins")
     current_versions = {version for _, version, _ in matches}
     if len(current_versions) != 1:
-        raise RuntimeError(f"Found multiple uv image versions: {', '.join(sorted(current_versions))}")
+        raise RuntimeError(
+            f"Found multiple uv image versions: {', '.join(sorted(current_versions))}"
+        )
     current_digests = {digest for _, _, digest in matches}
     if len(current_digests) != 1:
-        raise RuntimeError("Found multiple uv image digests; update them manually first")
+        raise RuntimeError(
+            "Found multiple uv image digests; update them manually first"
+        )
 
     current = next(iter(current_versions))
     current_digest = next(iter(current_digests))
@@ -419,7 +479,10 @@ def collect_uv_image_update() -> list[Update]:
 
 def run_uv_lock() -> None:
     if shutil.which("uv") is None:
-        print("uv not found on PATH; pyproject.toml changed, but uv.lock was not regenerated.", file=sys.stderr)
+        print(
+            "uv not found on PATH; pyproject.toml changed, but uv.lock was not regenerated.",
+            file=sys.stderr,
+        )
         return
     subprocess.run(["uv", "lock"], cwd=ROOT, check=True)
 

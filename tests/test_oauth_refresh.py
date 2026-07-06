@@ -42,7 +42,9 @@ class OAuthRefreshTests(TestCase):
         # claude CLI present but the host has no ~/.claude — nothing to refresh.
         with tempfile.TemporaryDirectory() as tmp:
             with (
-                patch.object(oauth_refresh.shutil, "which", return_value="/usr/bin/claude"),
+                patch.object(
+                    oauth_refresh.shutil, "which", return_value="/usr/bin/claude"
+                ),
                 patch.object(oauth_refresh.subprocess, "run") as run,
             ):
                 oauth_refresh.refresh_host_token("claude", home=Path(tmp))
@@ -51,7 +53,9 @@ class OAuthRefreshTests(TestCase):
     def test_claude_delegates_to_claude_auth_status(self) -> None:
         with _home_with(".claude") as tmp:
             with (
-                patch.object(oauth_refresh.shutil, "which", return_value="/usr/bin/claude"),
+                patch.object(
+                    oauth_refresh.shutil, "which", return_value="/usr/bin/claude"
+                ),
                 patch.object(oauth_refresh.subprocess, "run") as run,
             ):
                 oauth_refresh.refresh_host_token("claude", home=Path(tmp))
@@ -61,7 +65,9 @@ class OAuthRefreshTests(TestCase):
     def test_codex_delegates_to_codex_login_status(self) -> None:
         with _home_with(".codex") as tmp:
             with (
-                patch.object(oauth_refresh.shutil, "which", return_value="/usr/bin/codex"),
+                patch.object(
+                    oauth_refresh.shutil, "which", return_value="/usr/bin/codex"
+                ),
                 patch.object(oauth_refresh.subprocess, "run") as run,
             ):
                 oauth_refresh.refresh_host_token("codex", home=Path(tmp))
@@ -71,7 +77,9 @@ class OAuthRefreshTests(TestCase):
     def test_subprocess_failure_is_swallowed(self) -> None:
         with _home_with(".claude") as tmp:
             with (
-                patch.object(oauth_refresh.shutil, "which", return_value="/usr/bin/claude"),
+                patch.object(
+                    oauth_refresh.shutil, "which", return_value="/usr/bin/claude"
+                ),
                 patch.object(
                     oauth_refresh.subprocess,
                     "run",
@@ -95,8 +103,12 @@ class OAuthRefreshTests(TestCase):
         )
         with _home_with(".claude") as tmp:
             with (
-                patch.object(oauth_refresh.shutil, "which", return_value="/usr/bin/claude"),
-                patch.object(oauth_refresh.subprocess, "run", return_value=not_logged_in),
+                patch.object(
+                    oauth_refresh.shutil, "which", return_value="/usr/bin/claude"
+                ),
+                patch.object(
+                    oauth_refresh.subprocess, "run", return_value=not_logged_in
+                ),
                 contextlib.redirect_stdout(io.StringIO()) as out,
             ):
                 oauth_refresh.refresh_host_token("claude", home=Path(tmp), verbose=True)
@@ -111,11 +123,17 @@ class OAuthRefreshTests(TestCase):
         )
         with _home_with(".claude") as tmp:
             with (
-                patch.object(oauth_refresh.shutil, "which", return_value="/usr/bin/claude"),
-                patch.object(oauth_refresh.subprocess, "run", return_value=unknown_command),
+                patch.object(
+                    oauth_refresh.shutil, "which", return_value="/usr/bin/claude"
+                ),
+                patch.object(
+                    oauth_refresh.subprocess, "run", return_value=unknown_command
+                ),
                 contextlib.redirect_stdout(io.StringIO()) as out,
             ):
-                oauth_refresh.refresh_host_token("claude", home=Path(tmp), verbose=False)
+                oauth_refresh.refresh_host_token(
+                    "claude", home=Path(tmp), verbose=False
+                )
         self.assertEqual(out.getvalue(), "")
 
     def test_unrecognized_subcommand_surfaces_diagnostic_when_verbose(self) -> None:
@@ -131,8 +149,12 @@ class OAuthRefreshTests(TestCase):
         )
         with _home_with(".claude") as tmp:
             with (
-                patch.object(oauth_refresh.shutil, "which", return_value="/usr/bin/claude"),
-                patch.object(oauth_refresh.subprocess, "run", return_value=unknown_command),
+                patch.object(
+                    oauth_refresh.shutil, "which", return_value="/usr/bin/claude"
+                ),
+                patch.object(
+                    oauth_refresh.subprocess, "run", return_value=unknown_command
+                ),
                 contextlib.redirect_stdout(io.StringIO()) as out,
             ):
                 oauth_refresh.refresh_host_token("claude", home=Path(tmp), verbose=True)
@@ -140,18 +162,24 @@ class OAuthRefreshTests(TestCase):
         self.assertIn("claude auth status", output)
         self.assertIn("not recognized", output)
 
-    def test_missing_binary_after_which_check_surfaces_diagnostic_when_verbose(self) -> None:
+    def test_missing_binary_after_which_check_surfaces_diagnostic_when_verbose(
+        self,
+    ) -> None:
         # shutil.which() reported the binary present, but the exec itself failed
         # (e.g. a broken symlink or a race with uninstallation) -- this is a
         # broken-delegate signal distinct from the generic swallowed-exception
         # path, so it should be surfaced under --verbose too.
         with _home_with(".claude") as tmp:
             with (
-                patch.object(oauth_refresh.shutil, "which", return_value="/usr/bin/claude"),
+                patch.object(
+                    oauth_refresh.shutil, "which", return_value="/usr/bin/claude"
+                ),
                 patch.object(
                     oauth_refresh.subprocess,
                     "run",
-                    side_effect=FileNotFoundError("[Errno 2] No such file or directory: 'claude'"),
+                    side_effect=FileNotFoundError(
+                        "[Errno 2] No such file or directory: 'claude'"
+                    ),
                 ),
                 contextlib.redirect_stdout(io.StringIO()) as out,
             ):
@@ -161,13 +189,19 @@ class OAuthRefreshTests(TestCase):
     def test_missing_binary_after_which_check_is_silent_without_verbose(self) -> None:
         with _home_with(".claude") as tmp:
             with (
-                patch.object(oauth_refresh.shutil, "which", return_value="/usr/bin/claude"),
+                patch.object(
+                    oauth_refresh.shutil, "which", return_value="/usr/bin/claude"
+                ),
                 patch.object(
                     oauth_refresh.subprocess,
                     "run",
-                    side_effect=FileNotFoundError("[Errno 2] No such file or directory: 'claude'"),
+                    side_effect=FileNotFoundError(
+                        "[Errno 2] No such file or directory: 'claude'"
+                    ),
                 ),
                 contextlib.redirect_stdout(io.StringIO()) as out,
             ):
-                oauth_refresh.refresh_host_token("claude", home=Path(tmp), verbose=False)
+                oauth_refresh.refresh_host_token(
+                    "claude", home=Path(tmp), verbose=False
+                )
         self.assertEqual(out.getvalue(), "")

@@ -21,7 +21,9 @@ def merged_env(env: dict[str, str] | None) -> dict[str, str] | None:
     return {**os.environ, **env}
 
 
-def default_log_path(project: Path, branch: str | None, agent: str, *, create: bool = True) -> Path:
+def default_log_path(
+    project: Path, branch: str | None, agent: str, *, create: bool = True
+) -> Path:
     now = dt.datetime.now()
     # Include microseconds so two same-agent sessions started within the same
     # second do not resolve to the same log file (which run() opens with "w").
@@ -129,7 +131,9 @@ def _terminate_process_group(
     proc.wait()
 
 
-def _signal_group_or_child(proc: "subprocess.Popen", pgid: int | None, sig: int) -> None:
+def _signal_group_or_child(
+    proc: "subprocess.Popen", pgid: int | None, sig: int
+) -> None:
     if pgid is not None:
         try:
             os.killpg(pgid, sig)

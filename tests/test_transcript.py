@@ -200,8 +200,7 @@ class TranscriptLogToMarkdownTests(TestCase):
             log_path.write_text(
                 "Firewall initialized.\n"
                 "  IPv4 allowlist: 66 entries\n"
-                "not json { broken\n"
-                + _log_lines(*SAMPLE_EVENTS),
+                "not json { broken\n" + _log_lines(*SAMPLE_EVENTS),
                 encoding="utf-8",
             )
 
@@ -223,9 +222,7 @@ class TranscriptLogToMarkdownTests(TestCase):
             self.assertFalse(log_path.with_suffix(".md").exists())
 
     def test_string_content_assistant_message(self) -> None:
-        events = [
-            {"type": "assistant", "message": {"content": "plain string answer"}}
-        ]
+        events = [{"type": "assistant", "message": {"content": "plain string answer"}}]
         md = transcript.render_markdown(events)
         self.assertIn("plain string answer", md)
 
@@ -248,8 +245,7 @@ class TranscriptLogToMarkdownTests(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             log_path = Path(tmp) / "codex-main.log"
             log_path.write_text(
-                "Reading additional input from stdin...\n"
-                + _log_lines(*CODEX_EVENTS),
+                "Reading additional input from stdin...\n" + _log_lines(*CODEX_EVENTS),
                 encoding="utf-8",
             )
 

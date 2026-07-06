@@ -21,7 +21,12 @@ def _find_docker() -> str | None:
         if path is None:
             continue
         try:
-            if subprocess.run([path, "info"], capture_output=True, timeout=5).returncode == 0:
+            if (
+                subprocess.run(
+                    [path, "info"], capture_output=True, timeout=5
+                ).returncode
+                == 0
+            ):
                 return path
         except (subprocess.TimeoutExpired, OSError):
             continue
@@ -37,16 +42,19 @@ def _make_jj_repo(path: Path) -> None:
     subprocess.run(["jj", "git", "init", str(path)], check=True, capture_output=True)
     subprocess.run(
         ["jj", "-R", str(path), "config", "set", "--repo", "user.name", "Test"],
-        check=True, capture_output=True,
+        check=True,
+        capture_output=True,
     )
     subprocess.run(
         ["jj", "-R", str(path), "config", "set", "--repo", "user.email", "t@test.com"],
-        check=True, capture_output=True,
+        check=True,
+        capture_output=True,
     )
     (path / "a.txt").write_text("init\n", encoding="utf-8")
     subprocess.run(
         ["jj", "-R", str(path), "describe", "-m", "init"],
-        check=True, capture_output=True,
+        check=True,
+        capture_output=True,
     )
     subprocess.run(["jj", "-R", str(path), "new"], check=True, capture_output=True)
 
@@ -71,7 +79,6 @@ class PathForCollisionTests(unittest.TestCase):
         self.assertEqual(p.name, "my-feature")
 
     def test_slash_bookmark_ends_with_six_char_hex_suffix(self) -> None:
-        import re
         p = jj_workspace_mod.path_for(self._fake_repo(), "feat/x")
         self.assertRegex(p.name, r"^feat-x-[0-9a-f]{6}$")
 
@@ -90,7 +97,9 @@ class PathForCollisionTests(unittest.TestCase):
         p = jj_workspace_mod.path_for(self._fake_repo(), "main", workspace_dir=custom)
         self.assertEqual(p.parent, custom)
 
-    def test_repo_store_mount_resolves_relative_workspace_pointer_in_container(self) -> None:
+    def test_repo_store_mount_resolves_relative_workspace_pointer_in_container(
+        self,
+    ) -> None:
         repo = Path("/tmp/root/repo")
         ws = Path("/tmp/root/repo-workspaces/feat")
 
@@ -133,7 +142,7 @@ class ListWorkspacesTests(unittest.TestCase):
     def test_falls_back_to_human_format_only_when_template_call_fails(self) -> None:
         repo = Path("/tmp/fake/repo")
         human_out = (
-            'default: nmptpmps 11fc3403 (empty) (no description set)\n'
+            "default: nmptpmps 11fc3403 (empty) (no description set)\n"
             '"other:place": zupokots 1b71df22 (empty) (no description set)\n'
         )
 
@@ -192,6 +201,7 @@ class JjWorkspaceSetupTests(unittest.TestCase):
 
         expected_root = self.repo.resolve().parent / f"{self.repo.name}-workspaces"
         import hashlib
+
         suffix = hashlib.sha256(b"feat/hello").hexdigest()[:6]
         self.assertEqual(ws.path.resolve(), expected_root / f"feat-hello-{suffix}")
 
@@ -213,7 +223,9 @@ class JjWorkspaceSetupTests(unittest.TestCase):
 
         log_out = subprocess.run(
             ["jj", "-R", str(ws.path), "log", "--no-pager"],
-            capture_output=True, text=True, check=True,
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout
         self.assertIn("my-feature", log_out)
 
@@ -247,16 +259,28 @@ class JjWorkspaceSetupTests(unittest.TestCase):
         (ws.path / "reuse.txt").write_text("reuse\n", encoding="utf-8")
         subprocess.run(
             ["jj", "-R", str(ws.path), "describe", "-m", "reuse work"],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
         subprocess.run(
-            ["jj", "-R", str(ws.path), "bookmark", "set", "--allow-backwards",
-             "feat/reuse", "-r", "@"],
-            check=True, capture_output=True,
+            [
+                "jj",
+                "-R",
+                str(ws.path),
+                "bookmark",
+                "set",
+                "--allow-backwards",
+                "feat/reuse",
+                "-r",
+                "@",
+            ],
+            check=True,
+            capture_output=True,
         )
         subprocess.run(
             ["jj", "-R", str(self.repo), "workspace", "forget", ws_name],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
         shutil.rmtree(ws.path)
 
@@ -271,9 +295,16 @@ class JjWorkspaceSetupTests(unittest.TestCase):
     def test_setup_start_at_on_existing_bookmark_raises(self) -> None:
         jj_workspace_mod.setup(self.repo, "feat/exists")
         subprocess.run(
-            ["jj", "-R", str(self.repo), "workspace", "forget",
-             jj_workspace_mod.path_for(self.repo, "feat/exists").name],
-            check=True, capture_output=True,
+            [
+                "jj",
+                "-R",
+                str(self.repo),
+                "workspace",
+                "forget",
+                jj_workspace_mod.path_for(self.repo, "feat/exists").name,
+            ],
+            check=True,
+            capture_output=True,
         )
         shutil.rmtree(jj_workspace_mod.path_for(self.repo, "feat/exists"))
 
@@ -294,7 +325,9 @@ class JjWorkspaceSetupTests(unittest.TestCase):
         self.assertFalse(any(ws.path.name in e for e in existing))
         bookmark_out = subprocess.run(
             ["jj", "-R", str(self.repo), "bookmark", "list"],
-            capture_output=True, text=True, check=True,
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout
         self.assertNotIn("feat/cleanup", bookmark_out)
 
@@ -313,16 +346,28 @@ class JjWorkspaceSetupTests(unittest.TestCase):
         (ws1.path / "work.txt").write_text("work\n", encoding="utf-8")
         subprocess.run(
             ["jj", "-R", str(ws1.path), "describe", "-m", "real work"],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
         subprocess.run(
-            ["jj", "-R", str(ws1.path), "bookmark", "set", "--allow-backwards",
-             "feat/reuse-fail", "-r", "@"],
-            check=True, capture_output=True,
+            [
+                "jj",
+                "-R",
+                str(ws1.path),
+                "bookmark",
+                "set",
+                "--allow-backwards",
+                "feat/reuse-fail",
+                "-r",
+                "@",
+            ],
+            check=True,
+            capture_output=True,
         )
         subprocess.run(
             ["jj", "-R", str(self.repo), "workspace", "forget", ws1.path.name],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
         shutil.rmtree(ws1.path)
 
@@ -338,12 +383,12 @@ class JjWorkspaceSetupTests(unittest.TestCase):
         self.assertFalse(ws2.path.exists())
         bookmark_out = subprocess.run(
             ["jj", "-R", str(self.repo), "bookmark", "list"],
-            capture_output=True, text=True, check=True,
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout
         self.assertIn("feat/reuse-fail", bookmark_out)
-        self.assertTrue(
-            jj_workspace_mod._bookmark_exists(self.repo, "feat/reuse-fail")
-        )
+        self.assertTrue(jj_workspace_mod._bookmark_exists(self.repo, "feat/reuse-fail"))
 
 
 @unittest.skipUnless(JJ, "jj not installed")
@@ -359,13 +404,16 @@ class JjWorkspaceTeardownTests(unittest.TestCase):
         (self.ws.path / "work.txt").write_text("work\n", encoding="utf-8")
         subprocess.run(
             ["jj", "-R", str(self.ws.path), "describe", "-m", "agent work"],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
 
     def tearDown(self) -> None:
         self._td.cleanup()
 
-    def _finalize(self, ws=None, *, keep_workspace=False, session_failed=False, message="msg"):
+    def _finalize(
+        self, ws=None, *, keep_workspace=False, session_failed=False, message="msg"
+    ):
         jj_workspace_mod.finalize(
             self.repo,
             ws or self.ws,
@@ -377,7 +425,9 @@ class JjWorkspaceTeardownTests(unittest.TestCase):
     def _bookmark_file(self, bookmark: str, path: str) -> str:
         return subprocess.run(
             ["jj", "-R", str(self.repo), "file", "show", "-r", bookmark, path],
-            capture_output=True, text=True, check=True,
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout
 
     def test_finalize_removes_workspace_and_advances_bookmark(self) -> None:
@@ -400,9 +450,20 @@ class JjWorkspaceTeardownTests(unittest.TestCase):
         (ws.path / "silent.txt").write_text("unsnapshotted work\n", encoding="utf-8")
         # Sanity check: from outside, @ is still empty (jj snapshots lazily).
         empty_before = subprocess.run(
-            ["jj", "-R", str(self.repo), "log", "-r", "feat/no-jj", "--no-graph",
-             "--template", "empty"],
-            capture_output=True, text=True, check=True,
+            [
+                "jj",
+                "-R",
+                str(self.repo),
+                "log",
+                "-r",
+                "feat/no-jj",
+                "--no-graph",
+                "--template",
+                "empty",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout.strip()
         self.assertEqual(empty_before, "true")
 
@@ -415,11 +476,25 @@ class JjWorkspaceTeardownTests(unittest.TestCase):
         )
 
     def _bookmark_is_empty(self, bookmark: str) -> bool:
-        return subprocess.run(
-            ["jj", "-R", str(self.repo), "log", "-r", bookmark, "--no-graph",
-             "--template", "empty"],
-            capture_output=True, text=True, check=True,
-        ).stdout.strip() == "true"
+        return (
+            subprocess.run(
+                [
+                    "jj",
+                    "-R",
+                    str(self.repo),
+                    "log",
+                    "-r",
+                    bookmark,
+                    "--no-graph",
+                    "--template",
+                    "empty",
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+            == "true"
+        )
 
     def test_finalize_empty_session_does_not_leave_empty_bookmark_tip(self) -> None:
         """An empty session (agent changed nothing) must not advance the bookmark
@@ -436,9 +511,20 @@ class JjWorkspaceTeardownTests(unittest.TestCase):
         # The base commit it lands on must not be relabelled with the session
         # message (we never describe when @ is empty).
         desc = subprocess.run(
-            ["jj", "-R", str(self.repo), "log", "-r", "feat/nothing", "--no-graph",
-             "--template", "description"],
-            capture_output=True, text=True, check=True,
+            [
+                "jj",
+                "-R",
+                str(self.repo),
+                "log",
+                "-r",
+                "feat/nothing",
+                "--no-graph",
+                "--template",
+                "description",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout.strip()
         self.assertNotIn("feat/nothing — 2026-07-01T10:00", desc)
 
@@ -449,7 +535,8 @@ class JjWorkspaceTeardownTests(unittest.TestCase):
         (ws.path / "committed.txt").write_text("committed\n", encoding="utf-8")
         subprocess.run(
             ["jj", "-R", str(ws.path), "commit", "-m", "agent commit"],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
         # @ is now a fresh empty commit on top of the agent's committed work.
         self.assertTrue(jj_workspace_mod._is_empty(ws.path, "@"))
@@ -520,7 +607,9 @@ class JjWorkspaceTeardownTests(unittest.TestCase):
 
         log_out = subprocess.run(
             ["jj", "-R", str(self.repo), "log", "--no-pager", "-r", "feat/undescribed"],
-            capture_output=True, text=True, check=True,
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout
         self.assertIn("feat/undescribed — 2026-07-01T09:10", log_out)
 
@@ -543,12 +632,19 @@ class JjWorkspaceDockerEndToEndTests(unittest.TestCase):
         jj_dir = str((self.repo / ".jj").resolve())
         subprocess.run(
             [
-                DOCKER, "run", "--rm",
-                "--mount", f"type=bind,source={ws_path},target=/workspace",
-                "--mount", f"type=bind,source={jj_dir},target={jj_dir}",
-                "--workdir", "/workspace",
+                DOCKER,
+                "run",
+                "--rm",
+                "--mount",
+                f"type=bind,source={ws_path},target=/workspace",
+                "--mount",
+                f"type=bind,source={jj_dir},target={jj_dir}",
+                "--workdir",
+                "/workspace",
                 DOCKER_IMAGE,
-                "bash", "-c", bash_cmd,
+                "bash",
+                "-c",
+                bash_cmd,
             ],
             check=True,
         )
@@ -563,21 +659,26 @@ class JjWorkspaceDockerEndToEndTests(unittest.TestCase):
         # 3. Host labels the auto-tracked change
         subprocess.run(
             ["jj", "-R", str(ws.path), "describe", "-m", "agent: add agent_output"],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
 
         # 4. Show tree — file present on host
         self.assertTrue((ws.path / "agent_output.txt").exists())
         tree_out = subprocess.run(
             ["find", str(ws.path), "-not", "-path", f"{ws.path}/.jj*", "-type", "f"],
-            capture_output=True, text=True, check=True,
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout
         self.assertIn("agent_output.txt", tree_out)
 
         # 5. Show revision — bookmark and message appear in jj log
         log_out = subprocess.run(
             ["jj", "-R", str(ws.path), "log", "--no-pager"],
-            capture_output=True, text=True, check=True,
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout
         self.assertIn("agent: add agent_output", log_out)
         self.assertIn("feat/e2e", log_out)
@@ -587,7 +688,8 @@ class JjWorkspaceDockerEndToEndTests(unittest.TestCase):
         self._docker(ws.path, "echo 'hello from container' > agent_output.txt")
         subprocess.run(
             ["jj", "-R", str(ws.path), "describe", "-m", "agent: add file"],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
 
         jj_workspace_mod.finalize(
@@ -597,8 +699,18 @@ class JjWorkspaceDockerEndToEndTests(unittest.TestCase):
         self.assertFalse(ws.path.exists())  # workspace removed
         # The change is captured on the bookmark.
         file_out = subprocess.run(
-            ["jj", "-R", str(self.repo), "file", "show", "-r", "feat/e2e-finalize",
-             "root:agent_output.txt"],
-            capture_output=True, text=True, check=True,
+            [
+                "jj",
+                "-R",
+                str(self.repo),
+                "file",
+                "show",
+                "-r",
+                "feat/e2e-finalize",
+                "root:agent_output.txt",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout
         self.assertEqual(file_out, "hello from container\n")
