@@ -108,37 +108,24 @@ fi
 # ── step 3: version bump ──────────────────────────────────────────────────────
 
 if ! step_done "03-version"; then
-    CURRENT_VERSION=$(python3 - <<'EOF'
-import tomllib, pathlib
-p = pathlib.Path("pyproject.toml")
-print(tomllib.loads(p.read_text())["project"]["version"])
-EOF
-    )
+    CURRENT_VERSION=$(uv version --short)
     echo "==> [3/4] Version bump"
     echo "    Current version: $CURRENT_VERSION"
-    read -r -p "    New version (leave blank to keep $CURRENT_VERSION): " NEW_VERSION
-    NEW_VERSION="${NEW_VERSION:-$CURRENT_VERSION}"
+    read -r -p "    Bump (major/minor/patch/alpha/beta/rc/post/dev; blank to keep): " VERSION_BUMP
 
-    if [[ "$NEW_VERSION" != "$CURRENT_VERSION" ]]; then
-        # Validate semver-ish format.
-        if ! [[ "$NEW_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.a-zA-Z0-9-]*)$ ]]; then
-            die "Version '$NEW_VERSION' does not look like a valid version (expected X.Y.Z)."
-        fi
-        # Update pyproject.toml in-place.
-        python3 - "$NEW_VERSION" <<'EOF'
-import sys, re, pathlib
-new = sys.argv[1]
-p = pathlib.Path("pyproject.toml")
-text = p.read_text()
-text = re.sub(r'^(version\s*=\s*")[^"]+(")', rf'\g<1>{new}\g<2>', text, count=1, flags=re.MULTILINE)
-p.write_text(text)
-print(f"    Updated pyproject.toml to version {new}")
-EOF
-        check_clean  # after editing pyproject.toml the copy is dirty again
-        echo "    pyproject.toml updated — please commit the version bump now."
+    if [[ -n "$VERSION_BUMP" ]]; then
+        case "$VERSION_BUMP" in
+            major|minor|patch|stable|alpha|beta|rc|post|dev) ;;
+            *) die "Unknown version bump '$VERSION_BUMP'." ;;
+        esac
+        uv version --bump "$VERSION_BUMP"
+        NEW_VERSION=$(uv version --short)
+        echo "    Updated project version to $NEW_VERSION — please commit the version bump now."
         echo "    Re-run this script once the version bump is committed."
         exit 0
     fi
+
+    NEW_VERSION="$CURRENT_VERSION"
 
     # Record the resolved version for later steps.
     echo "$NEW_VERSION" > "$STATUS_DIR/version"
