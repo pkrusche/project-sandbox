@@ -1,19 +1,5 @@
 # TODO - outstanding items
 
-## Release script
-
-Create a scripts/make-release.sh script with the following functionaliity:
-
-* run checks (ruff, pytest)
-* bump version (confirm version with user / keep version)
-* Create a GH release and tag using the gh cli
-* Push to test.pypi.org
-* Push to pypi.org
-
-Each of these steps should gate the next, keep a local folder (not versioned / gitignored) with the release status, check before each step that the working copy is clean / has no changes (note when we use jj we should use a temporary revision for that).
-
-The final pushes to testpypi / pypi need to be confirmed by the user.
-
 ## Firewall: verify multi-resolver rules on a real iptables host
 
 Code is complete and the render path is covered by
