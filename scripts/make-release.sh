@@ -90,7 +90,7 @@ echo "    OK"
 
 # extract commit ID from git or jj - depending on whether we have a .jj directory
 if command -v jj &>/dev/null && jj root &>/dev/null 2>&1; then
-    COMMIT_ID=$(jj log -r @ -n 1 --template '{node}')
+    COMMIT_ID=$(jj log -r @ -n 1 --no-graph --template 'commit_id')
 else
     COMMIT_ID=$(git rev-parse HEAD)
 fi
