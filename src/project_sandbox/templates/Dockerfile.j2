@@ -51,13 +51,13 @@ RUN install -d /project-sandbox-config/claude /project-sandbox-config/codex \
 # and replace both per-architecture checksums with the values published in
 # https://nodejs.org/dist/${NODE_VERSION}/SHASUMS256.txt.
 RUN set -euxo pipefail; \
-    NODE_VERSION="v26.4.0"; \
+    NODE_VERSION="v26.5.0"; \
     NODE_ARCH="$(uname -m)"; \
     case "$NODE_ARCH" in \
         x86_64) NODE_ARCH="x64"; \
-            NODE_SHA256="5c4286dcd5bbd5acb1ccc7eb0e088bd5eb1e3affad671ee9364004f8f6a4a431" ;; \
+            NODE_SHA256="9f619528f1db5ddc41dccf54211066fb42228d69a156733c69cb9d6cc92e358c" ;; \
         aarch64|arm64) NODE_ARCH="arm64"; \
-            NODE_SHA256="f6d8eedc52170667d45730ac2f413c4aa1e7cd2165c9cac5746ef3cb0f4ec45a" ;; \
+            NODE_SHA256="036df0b49662ebb350eb56f1cac603699b1e9ed1e2603ee129fefda473479030" ;; \
         *) echo "Unsupported architecture for Node.js: $NODE_ARCH" >&2; exit 1 ;; \
     esac; \
     node_tmp="$(mktemp -d)"; \
@@ -76,13 +76,13 @@ RUN set -euxo pipefail; \
 # bump JJ_VERSION and replace both per-architecture checksums with the values
 # from the matching release on https://github.com/jj-vcs/jj/releases.
 RUN set -euxo pipefail; \
-    JJ_VERSION="v0.42.0"; \
+    JJ_VERSION="v0.43.0"; \
     JJ_ARCH="$(uname -m)"; \
     case "$JJ_ARCH" in \
         arm64|aarch64) JJ_ARCH="aarch64"; \
-            JJ_SHA256="bc962ac57ec264541a62ed8492f080898380a277222b115e1ed96163196e6fc8" ;; \
+            JJ_SHA256="289197b6bec60b4e57d47260624b617716f737eb02cdfd9155791b2576aa5862" ;; \
         x86_64) JJ_ARCH="x86_64"; \
-            JJ_SHA256="2d91e81d649e617a81608e7401ad1106029c15ece01ac928c4a351abef42be6a" ;; \
+            JJ_SHA256="59e5588583ac82b623239929368c65b90735931c0f26b5a16c1f04d5bb97643d" ;; \
         *) echo "Unsupported architecture for jj: $JJ_ARCH" >&2; exit 1 ;; \
     esac; \
     jj_tmp="$(mktemp -d)"; \
@@ -97,16 +97,16 @@ RUN set -euxo pipefail; \
 # Global npm tooling is pinned to exact versions (never a floating tag) so a
 # compromised or broken upstream release cannot silently land in an image that
 # later receives workspace and agent credentials. Bump these deliberately.
-RUN npm install -g @fission-ai/openspec@1.5.0
+RUN npm install -g @fission-ai/openspec@1.6.0
 
 {% if install_claude %}
-RUN npm install -g @anthropic-ai/claude-code@2.1.197
+RUN npm install -g @anthropic-ai/claude-code@2.1.207
 {% endif %}
 {% if install_codex %}
-RUN npm install -g @openai/codex@0.142.5
+RUN npm install -g @openai/codex@0.144.1
 {% endif %}
 {% if install_opencode %}
-RUN npm install -g opencode-ai@1.17.13
+RUN npm install -g opencode-ai@1.17.18
 {% endif %}
 
 COPY {{ sandbox_copy_prefix }}{{ firewall_src_filename }} /usr/local/bin/project-sandbox-init-firewall

@@ -7,7 +7,7 @@ ARG AGENT_GID=1000
 # "latest" image into a layer that later handles workspace/agent credentials.
 # To upgrade, bump the tag and replace the digest with the one printed by
 # `docker buildx imagetools inspect ghcr.io/astral-sh/uv:<tag>`.
-COPY --from=ghcr.io/astral-sh/uv:0.11.26@sha256:3d868e555f8f1dbc324afa005066cd11e1053fc4743b9808ca8025283e65efa5 /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.11.28@sha256:0f36cb9361a3346885ca3677e3767016687b5a170c1a6b88465ec14aefec90aa /uv /usr/local/bin/uv
 
 # Pre-populate the uv package cache so the agent can run `uv sync` / `uv run`
 # inside the sandbox without reaching PyPI (blocked by the firewall at runtime).
