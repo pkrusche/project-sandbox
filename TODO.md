@@ -44,3 +44,58 @@ Interim mitigation already in place: a host-side exclusive lock serializes
 `jj_workspace.finalize()` (`_teardown_lock`), so concurrent teardowns can't
 interleave their store mutations. It does not address concurrent in-container
 writes; this item supersedes it.
+
+## Add pi.dev ("pi") coding agent support
+
+Add a fourth supported agent: Pi, from pi.dev (`earendil-works/pi`, npm
+package `@earendil-works/pi-coding-agent`, binary `pi`, current published
+version `0.80.6`). There is no shared agent registry in this codebase —
+"codex" and "opencode" are hardcoded by name across `cli.py`,
+`container_cli.py`, `config_agents.py`, `dockerfile.py`/`Dockerfile.j2`,
+`devcontainer.py`, `entrypoint.sh.j2`/`_provision.sh.j2`, `oauth_refresh.py`,
+`token_expiry.py`, tests, and docs — adding Pi means touching each the same
+way.
+
+Pi's shape: config/session dir is `~/.pi/agent/` (`PI_CODING_AGENT_DIR`
+override); credentials are a single `~/.pi/agent/auth.json` file, mode 0600
+(API key string or OAuth token object), no macOS Keychain — closer to Codex's
+`auth.json` than Claude's Keychain dance. Auth via env var, OAuth `/login`,
+or 20+ BYOK providers. Crucially, **Pi has no built-in permission/confirmation
+system** ("run in a container, or build your own confirmation flow with
+extensions"), so unlike Claude/Codex there's no bypass-permissions config to
+bake into a file — telemetry/update-check suppression is via env vars
+(`PI_SKIP_VERSION_CHECK=1`; confirm `PI_TELEMETRY`'s disable value before
+relying on it) instead. `--approve`/`-a` trusts project-local `.pi/` config
+for one run and should always be passed (headless can't answer an interactive
+trust prompt). Headless invocation is `pi -p "prompt" --approve`, emitting
+plain text (fits `session.py`'s existing log-teeing, no JSON transcript
+format needed). Model/effort is a single combined flag:
+`--model sonnet:high`, not two separate flags.
+
+Overall pattern: follow **OpenCode** for "no baked config file to
+render/mount, BYOK ⇒ warn instead of hardcoding a firewall domain, no VS Code
+extension"; follow **Codex** for "credentials are one flat file" (reuse
+`_sync_generic_credentials(..., include_files=("auth.json",))`). Concretely:
+`/project-sandbox-secrets/pi` mount but no `/project-sandbox-config/pi`; new
+`pi`/`pi-headless` case arms in `entrypoint.sh.j2`; new npm-install block in
+`Dockerfile.j2` behind an `install_pi` flag; `"pi"` added to
+`SUPPORTED_AGENTS`, `_CONFIGURED_AGENTS`, `_agent_host_paths`,
+`credential_dirs` comprehensions, and `build_mount_specs`/`build_run_argv`
+call sites; generalize `_warn_opencode_provider_allowlist` to cover both
+OpenCode and Pi; extend `devcontainer.py`'s credentials-only mount pattern
+(mirroring OpenCode) and `_credential_dirs()`; no transcript.py renderer for
+now (Pi's headless output isn't structured JSON yet — matches the OpenCode
+precedent of no markdown transcript); mirror codex/opencode test coverage in
+`test_cli.py`, `test_container_cli.py`, `test_renderers.py`,
+`test_devcontainer.py`; update `README.md`, `docs/usage.md`,
+`docs/runtime.md`, `docs/security.md`.
+
+Before wiring `oauth_refresh.py` (does Pi have a CLI subcommand like `codex
+login status` to delegate a refresh to?) and `token_expiry.py` (exact JSON
+shape of an OAuth entry in `auth.json` — flat like Codex's or a
+provider-keyed map like OpenCode's, given Pi is also multi-provider?),
+confirm against Pi's actual source. Both modules are defensive by
+construction (unknown agent ⇒ silent no-op / `None`, never raises), so it's
+always safe to under-wire these rather than guess wrong field names — can
+ship without them and fill in once confirmed, same as OpenCode currently has
+no delegated refresh.
