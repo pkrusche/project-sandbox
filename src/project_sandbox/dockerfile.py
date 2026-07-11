@@ -372,6 +372,10 @@ def render_python_uv_dockerfile(
     if has_pyproject and has_uvlock:
         lines += [
             "",
+            "# uv requires the Git executable to resolve git+https dependencies",
+            "RUN apt-get update && apt-get install -y --no-install-recommends git && \\",
+            "    rm -rf /var/lib/apt/lists/*",
+            "",
             "# layer 1: install deps only (rebuilds only when pyproject.toml/uv.lock change)",
             "COPY pyproject.toml uv.lock ./",
             "RUN uv sync --frozen --no-install-project",

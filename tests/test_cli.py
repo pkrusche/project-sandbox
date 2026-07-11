@@ -3197,6 +3197,12 @@ class PythonUvFlagTests(TestCase):
 
         self.assertIn("COPY pyproject.toml uv.lock", content)
         self.assertIn("uv sync --frozen", content)
+        # uv resolves git+https dependencies during both sync layers, before
+        # the outer sandbox Dockerfile installs its general-purpose tools.
+        git_install = "apt-get install -y --no-install-recommends git"
+        self.assertIn(git_install, content)
+        self.assertLess(content.index(git_install), content.index("uv sync --frozen"))
+        self.assertIn("rm -rf /var/lib/apt/lists/*", content)
         # The cache must be baked into an image layer and owned by the agent;
         # a BuildKit cache mount would be ephemeral.
         self.assertNotIn("--mount=type=cache", content)
