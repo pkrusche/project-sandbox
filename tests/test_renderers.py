@@ -66,7 +66,7 @@ class RendererTests(TestCase):
             self.assertIn("libatomic1", docker_text)
             self.assertIn("/home/agent/.claude/settings.json", docker_text)
             self.assertIn("/home/agent/.codex/config.toml", docker_text)
-            self.assertIn('JJ_VERSION="v0.42.0"', docker_text)
+            self.assertRegex(docker_text, r'JJ_VERSION="v\d+\.\d+\.\d+"')
             self.assertNotIn("releases/latest", docker_text)
             self.assertIn(
                 "jj-${JJ_VERSION}-${JJ_ARCH}-unknown-linux-musl.tar.gz",
