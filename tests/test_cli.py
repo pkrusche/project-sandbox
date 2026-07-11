@@ -48,6 +48,17 @@ def _make_git_repo(path: Path) -> None:
 
 
 class CliTests(TestCase):
+    def test_version_prints_package_version_without_project(self) -> None:
+        with (
+            patch.object(cli, "__version__", "1.2.3"),
+            self.assertRaises(SystemExit) as raised,
+            contextlib.redirect_stdout(io.StringIO()) as stdout,
+        ):
+            cli.build_parser().parse_args(["--version"])
+
+        self.assertEqual(raised.exception.code, 0)
+        self.assertEqual(stdout.getvalue(), "project-sandbox 1.2.3\n")
+
     def test_help_includes_core_options(self) -> None:
         parser = cli.build_parser()
         # Render at a wide width so argparse does not wrap example invocations
@@ -65,6 +76,7 @@ class CliTests(TestCase):
         # Normalize whitespace to handle argparse line-wrapping in assertions.
         flat_help = " ".join(help_text.split())
         self.assertIn("--dry-run", help_text)
+        self.assertIn("--version", help_text)
         self.assertIn("--branch", help_text)
         self.assertIn("--dockerfile", help_text)
         self.assertIn("--runtime", help_text)

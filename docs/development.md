@@ -72,8 +72,9 @@ smoke, env-injection, git, and jj suites together with the same defaults.
 
 1. Verifies the working copy is clean (jj-aware).
 2. Runs Ruff and pytest checks.
-3. Prompts to confirm or bump the version in `pyproject.toml`.  If you change the
-   version the script exits so you can commit the bump, then re-run.
+3. Prompts to confirm or bump the version in `pyproject.toml`. If changed, the
+   script describes the jj change and opens a new empty change, or creates a Git
+   commit, then exits so you can push the bump and re-run.
 4. Creates a GitHub release and tag via the `gh` CLI (`gh` must be installed and
    authenticated).
 

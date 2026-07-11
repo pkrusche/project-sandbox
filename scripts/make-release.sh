@@ -4,7 +4,7 @@
 # Steps:
 #   1. Verify the working copy is clean.
 #   2. Run Ruff and pytest checks.
-#   3. Confirm / bump the version in pyproject.toml.
+#   3. Confirm / bump the version and record the bump in version control.
 #   4. Create a GitHub release and tag via the gh CLI.
 #
 # Progress is tracked in .release-status/ (git-ignored) so that you can
@@ -28,7 +28,7 @@ while [[ $# -gt 0 ]]; do
             echo "Steps:"
             echo "  1. Verify the working copy is clean."
             echo "  2. Run Ruff and pytest checks."
-            echo "  3. Confirm / bump the version in pyproject.toml."
+            echo "  3. Confirm / bump the version and record the bump in version control."
             echo "  4. Create a GitHub release and tag via the gh CLI."
             exit 0
             ;;
@@ -45,11 +45,30 @@ mark_done() { touch "$STATUS_DIR/$1"; }
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
+is_jj_repo() {
+    command -v jj &>/dev/null && jj root &>/dev/null 2>&1
+}
+
+record_version_bump() {
+    local version="$1"
+    local message="Bump version to $version"
+
+    if is_jj_repo; then
+        jj describe -m "$message"
+        jj new
+        echo "    Described jj change: $message"
+    else
+        git add -- pyproject.toml uv.lock
+        git commit -m "$message"
+        echo "    Created Git commit: $message"
+    fi
+}
+
 # ── working-copy cleanliness check ───────────────────────────────────────────
 
 check_clean() {
     # Prefer jj when the repo is managed by Jujutsu.
-    if command -v jj &>/dev/null && jj root &>/dev/null 2>&1; then
+    if is_jj_repo; then
         # in jj we check that the current revision is empty and the parent revision
         # is immutable and bookmarked as main
         if [[ -z "$(jj log -r '@ & empty()' --no-graph --template 'commit_id')" ]]; then
@@ -89,7 +108,7 @@ mark_done "01-clean"
 echo "    OK"
 
 # extract commit ID from git or jj - depending on whether we have a .jj directory
-if command -v jj &>/dev/null && jj root &>/dev/null 2>&1; then
+if is_jj_repo; then
     COMMIT_ID=$(jj log -r @ -n 1 --no-graph --template 'commit_id')
 else
     COMMIT_ID=$(git rev-parse HEAD)
@@ -120,8 +139,9 @@ if ! step_done "03-version"; then
         esac
         uv version --bump "$VERSION_BUMP"
         NEW_VERSION=$(uv version --short)
-        echo "    Updated project version to $NEW_VERSION — please commit the version bump now."
-        echo "    Re-run this script once the version bump is committed."
+        record_version_bump "$NEW_VERSION"
+        echo "    Updated project version to $NEW_VERSION."
+        echo "    Push the version bump, then re-run this script."
         exit 0
     fi
 

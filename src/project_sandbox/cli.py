@@ -10,6 +10,7 @@ from argparse import ArgumentParser
 from datetime import datetime
 from pathlib import Path
 
+from . import __version__
 from . import (
     build_cache,
     chroot,
@@ -58,6 +59,7 @@ def _default_image_tag(project: Path) -> str:
 
 def build_parser() -> ArgumentParser:
     p = ArgumentParser(prog="project-sandbox")
+    p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     p.add_argument("project")
     p.add_argument("base_image", nargs="?")
     p.add_argument(
