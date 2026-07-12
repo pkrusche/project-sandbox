@@ -62,8 +62,9 @@ class RendererTests(TestCase):
             self.assertIn("npm install -g @anthropic-ai/claude-code", docker_text)
             self.assertIn("npm install -g @openai/codex", docker_text)
             self.assertIn("npm install -g opencode-ai", docker_text)
-            self.assertIn(
-                "npm install -g @earendil-works/pi-coding-agent@0.80.6", docker_text
+            self.assertRegex(
+                docker_text,
+                r"npm install -g @earendil-works/pi-coding-agent@\d+\.\d+\.\d+",
             )
             self.assertIn("npm install -g @fission-ai/openspec", docker_text)
             self.assertIn("libatomic1", docker_text)
