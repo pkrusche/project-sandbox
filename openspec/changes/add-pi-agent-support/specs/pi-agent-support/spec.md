@@ -16,7 +16,7 @@ The system SHALL sync and mount Pi's credential file (`~/.pi/agent/auth.json`, m
 
 #### Scenario: Credentials present on host
 - **WHEN** `~/.pi/agent/auth.json` exists on the host and Pi is the selected agent
-- **THEN** the file is synced via the generic single-file credential sync path and bind-mounted read-write at `/project-sandbox-secrets/pi` inside the container
+- **THEN** the file is synced via the generic single-file credential sync path and bind-mounted read-only at `/project-sandbox-secrets/pi` (then copied to `$HOME/.pi/agent/auth.json`) inside the container
 
 #### Scenario: Credentials absent on host
 - **WHEN** `~/.pi/agent/auth.json` does not exist on the host
