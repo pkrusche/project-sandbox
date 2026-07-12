@@ -45,7 +45,7 @@ from .paths import (
     resolve_strict,
 )
 
-SUPPORTED_AGENTS = ("claude", "codex", "opencode", "bash")
+SUPPORTED_AGENTS = ("claude", "codex", "opencode", "pi", "bash")
 PROMPT_MOUNT_TARGET = "/project-sandbox-prompt"
 
 
@@ -181,7 +181,8 @@ def build_parser() -> ArgumentParser:
             "Example for Codex: --agent codex --model gpt-5.4-mini "
             "--prompt-text '...'. "
             "Example for OpenCode: --agent opencode --model openai/gpt-5.4-mini "
-            "--prompt-text '...'."
+            "--prompt-text '...'. "
+            "Example for Pi: --agent pi --model sonnet --prompt-text '...'."
         ),
     )
     p.add_argument(
@@ -190,7 +191,7 @@ def build_parser() -> ArgumentParser:
         default=None,
         metavar="LEVEL",
         help=(
-            "Reasoning effort level for Claude, Codex, and OpenCode, in both "
+            "Reasoning effort level for Claude, Codex, OpenCode, and Pi, in both "
             "interactive and unsupervised (batch) runs. "
             "One of: low, medium, high, xhigh, max. project-sandbox does not "
             "force a default; when omitted, the underlying agent CLI's own "
@@ -201,7 +202,10 @@ def build_parser() -> ArgumentParser:
             "or --agent codex --model gpt-5.4-mini --effort high. "
             "Examples for OpenCode: --agent opencode --model openai/gpt-5.4-mini "
             "--effort low or --agent opencode --model openai/gpt-5.4-mini "
-            "--effort high."
+            "--effort high. "
+            "Examples for Pi: --agent pi --model sonnet --effort low or "
+            "--agent pi --model sonnet --effort high (Pi combines these into a "
+            "single --model sonnet:high-shaped flag)."
         ),
     )
     p.add_argument(
@@ -332,7 +336,7 @@ def main(argv: list[str] | None = None) -> int:
     # single snapshot instead of re-reading the files.
     api_key_values = _api_key_env_values(args)
     allow_github = _allow_github(args, run_agent)
-    _warn_opencode_provider_allowlist(args, run_agent)
+    _warn_byok_provider_allowlist(args, run_agent)
 
     wt, workspace = _setup_worktree(args, project) if run_agent else (None, project)
 
@@ -376,7 +380,7 @@ def main(argv: list[str] | None = None) -> int:
         forward_credentials = not args.no_forward_credentials
         # Before staging, ask the agent's own CLI to refresh its host token so the
         # container starts with a near-full window. bash may run claude, so it
-        # refreshes the claude token; opencode has no delegated refresh (no-op).
+        # refreshes the claude token; opencode/pi have no delegated refresh (no-op).
         if run_agent is not None and forward_credentials and not args.no_token_refresh:
             oauth_refresh.refresh_host_token(
                 "claude" if run_agent == "bash" else run_agent,
@@ -623,18 +627,18 @@ def _dry_run(
     claude_cfg = context_dir / "claude" / "settings.json"
     codex_cfg = context_dir / "codex" / "config.toml"
     # Only the keys _build_session_command consumes ("claude", and optionally
-    # "codex"/"opencode" when available); the devcontainer-specific dirs are not
-    # used on the CLI run path.
+    # "codex"/"opencode"/"pi" when available); the devcontainer-specific dirs
+    # are not used on the CLI run path.
     credential_dirs = {
         "claude": config_agents.credentials_dir(context_dir, "claude"),
         **{
             agent: config_agents.credentials_dir(context_dir, agent)
-            for agent in ("codex", "opencode")
+            for agent in ("codex", "opencode", "pi")
             if agent in available_agents
         },
     }
     run_agent = _requested_agent(args)
-    _warn_opencode_provider_allowlist(args, run_agent)
+    _warn_byok_provider_allowlist(args, run_agent)
     if args.runtime == container_cli.CHROOT.name:
         _validate_chroot_session(run_agent)
 
@@ -1065,11 +1069,12 @@ def _uses_github_copilot_cli(args, run_agent: str | None) -> bool:
     return bool(words and words[0] == "copilot")
 
 
-def _warn_opencode_provider_allowlist(args, run_agent: str | None) -> None:
-    if run_agent != "opencode" or args.no_firewall:
+def _warn_byok_provider_allowlist(args, run_agent: str | None) -> None:
+    if run_agent not in ("opencode", "pi") or args.no_firewall:
         return
+    agent_label = "OpenCode" if run_agent == "opencode" else "Pi"
     print(
-        "[W] OpenCode provider network access depends on the selected provider. "
+        f"[W] {agent_label} provider network access depends on the selected provider. "
         "OpenAI and Anthropic endpoints are allowed by default; use --allow-github "
         "for GitHub Copilot or --extra-domain DOMAIN for another provider."
     )
@@ -1448,6 +1453,7 @@ def _build_session_command(
             codex_cfg=codex_cfg,
             codex_credentials_dir=credential_dirs.get("codex"),
             opencode_credentials_dir=credential_dirs.get("opencode"),
+            pi_credentials_dir=credential_dirs.get("pi"),
             identity=identity,
             memory=args.memory,
             cpus=args.cpus,
@@ -1468,6 +1474,7 @@ def _build_session_command(
             codex_cfg=codex_cfg,
             codex_credentials_dir=credential_dirs.get("codex"),
             opencode_credentials_dir=credential_dirs.get("opencode"),
+            pi_credentials_dir=credential_dirs.get("pi"),
             extra_mounts=extra_mounts,
             forward_credentials=forward_credentials,
         )

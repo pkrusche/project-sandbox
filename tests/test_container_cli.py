@@ -219,6 +219,7 @@ class ContainerCliTests(TestCase):
             root = Path(tmp)
             codex_secrets = root / "secrets" / "codex"
             opencode_secrets = root / "secrets" / "opencode"
+            pi_secrets = root / "secrets" / "pi"
 
             cmd = build_run_argv(
                 image="project-sandbox:test",
@@ -228,6 +229,7 @@ class ContainerCliTests(TestCase):
                 codex_cfg=root / "codex/config.toml",
                 codex_credentials_dir=codex_secrets,
                 opencode_credentials_dir=opencode_secrets,
+                pi_credentials_dir=pi_secrets,
                 identity=GitIdentity("Ada Lovelace", "ada@example.com"),
                 memory="8g",
                 cpus=4,
@@ -245,6 +247,12 @@ class ContainerCliTests(TestCase):
             f"type=bind,source={opencode_secrets.resolve(strict=False)},target=/project-sandbox-secrets/opencode,readonly",
             cmd,
         )
+        self.assertIn(
+            f"type=bind,source={pi_secrets.resolve(strict=False)},target=/project-sandbox-secrets/pi,readonly",
+            cmd,
+        )
+        # Pi has no baked config file, so no /project-sandbox-config/pi mount.
+        self.assertNotIn("/project-sandbox-config/pi", "".join(cmd))
 
     def test_no_forward_credentials_omits_secrets_but_keeps_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -257,6 +265,7 @@ class ContainerCliTests(TestCase):
                 codex_cfg=root / "codex/config.toml",
                 codex_credentials_dir=root / "codex-secrets",
                 opencode_credentials_dir=root / "opencode-secrets",
+                pi_credentials_dir=root / "pi-secrets",
                 identity=GitIdentity("Ada Lovelace", "ada@example.com"),
                 memory="8g",
                 cpus=4,
@@ -271,6 +280,7 @@ class ContainerCliTests(TestCase):
         self.assertNotIn("/project-sandbox-secrets/claude,readonly", "".join(cmd))
         self.assertNotIn("/project-sandbox-secrets/codex,readonly", "".join(cmd))
         self.assertNotIn("/project-sandbox-secrets/opencode,readonly", "".join(cmd))
+        self.assertNotIn("/project-sandbox-secrets/pi,readonly", "".join(cmd))
         # ...but generated, non-secret config still is.
         self.assertIn(
             f"type=bind,source={(root / 'claude').resolve(strict=False)},target=/project-sandbox-config/claude,readonly",

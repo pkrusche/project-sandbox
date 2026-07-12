@@ -78,6 +78,15 @@ class TokenExpiryTests(TestCase):
                 token_expiry.staged_token_expiry({"opencode": Path(tmp)}, "opencode")
             )
 
+    def test_pi_is_unrecognized_and_returns_none(self) -> None:
+        # Pi has no expiry reader yet (deferred, see design.md); an unrecognized
+        # agent must return None rather than raise.
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(token_expiry.staged_token_expiry({"pi": Path(tmp)}, "pi"))
+            self.assertIsNone(
+                token_expiry.staged_token_expiry({"pi": Path(tmp)}, "pi-headless")
+            )
+
     def test_opencode_reports_soonest_oauth_provider_expiry(self) -> None:
         sooner = dt.datetime(2030, 5, 1, tzinfo=dt.timezone.utc)
         later = dt.datetime(2030, 9, 1, tzinfo=dt.timezone.utc)

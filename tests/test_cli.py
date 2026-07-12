@@ -21,6 +21,7 @@ def _agent_paths(home: Path) -> dict[str, Path]:
         "claude": home / ".claude",
         "codex": home / ".codex",
         "opencode": home / ".config" / "opencode",
+        "pi": home / ".pi" / "agent",
     }
 
 
@@ -1168,6 +1169,45 @@ class CliTests(TestCase):
         output = out.getvalue()
         self.assertIn("opencode-headless", output)
         self.assertIn("OpenCode provider network access depends", output)
+        self.assertIn("--allow-github", output)
+
+    def test_unsupervised_pi_uses_headless_dispatch_when_available(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            host_home = project / "home"
+            paths = _agent_paths(host_home)
+            paths["pi"].mkdir(parents=True)
+            out = io.StringIO()
+
+            with (
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
+                patch.object(
+                    cli.config_agents, "_agent_host_paths", return_value=paths
+                ),
+                contextlib.redirect_stdout(out),
+            ):
+                rc = cli.main(
+                    [
+                        "--dry-run",
+                        "--no-build",
+                        "--agent",
+                        "pi",
+                        "--prompt-text",
+                        "fix this",
+                        str(project),
+                        "python:3.12-slim",
+                    ]
+                )
+
+        self.assertEqual(rc, 0)
+        output = out.getvalue()
+        self.assertIn("pi-headless", output)
+        self.assertIn("Pi provider network access depends", output)
         self.assertIn("--allow-github", output)
 
     def test_unsupervised_bash_uses_headless_dispatch_without_host_config(self) -> None:
@@ -2468,6 +2508,10 @@ class ModelSelectionTests(TestCase):
         output = self._headless_dry_run_with_model("opencode", "openai/gpt-5.4-mini")
         self.assertIn("PROJECT_SANDBOX_MODEL=openai/gpt-5.4-mini", output)
 
+    def test_model_injected_for_pi_headless(self) -> None:
+        output = self._headless_dry_run_with_model("pi", "sonnet")
+        self.assertIn("PROJECT_SANDBOX_MODEL=sonnet", output)
+
     def test_no_model_does_not_inject_env_var(self) -> None:
         output = self._headless_dry_run_with_model("claude", None)
         self.assertNotIn("PROJECT_SANDBOX_MODEL", output)
@@ -2573,6 +2617,14 @@ class EffortSelectionTests(TestCase):
 
     def test_high_effort_injected_for_opencode_headless(self) -> None:
         output = self._headless_dry_run_with_effort("opencode", "high")
+        self.assertIn("PROJECT_SANDBOX_EFFORT=high", output)
+
+    def test_effort_injected_for_pi_headless(self) -> None:
+        output = self._headless_dry_run_with_effort("pi", "low")
+        self.assertIn("PROJECT_SANDBOX_EFFORT=low", output)
+
+    def test_high_effort_injected_for_pi_headless(self) -> None:
+        output = self._headless_dry_run_with_effort("pi", "high")
         self.assertIn("PROJECT_SANDBOX_EFFORT=high", output)
 
     def test_no_effort_does_not_inject_env_var(self) -> None:
@@ -2754,6 +2806,48 @@ class EffortSelectionTests(TestCase):
             self.assertEqual(rc, 0)
             result = out.getvalue()
             self.assertIn("PROJECT_SANDBOX_MODEL=openai/gpt-5.4-mini", result)
+            self.assertIn("PROJECT_SANDBOX_EFFORT=high", result)
+
+    def test_pi_effort_and_model_can_be_combined(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            host_home = project / "home"
+            paths = _agent_paths(host_home)
+            for key in paths:
+                paths[key].mkdir(parents=True, exist_ok=True)
+            out = io.StringIO()
+            with (
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
+                patch.object(
+                    cli.config_agents, "_agent_host_paths", return_value=paths
+                ),
+                contextlib.redirect_stdout(out),
+            ):
+                rc = cli.main(
+                    [
+                        "--dry-run",
+                        "--no-build",
+                        "--no-firewall",
+                        "--agent",
+                        "pi",
+                        "--prompt-text",
+                        "do something",
+                        "--model",
+                        "sonnet",
+                        "--effort",
+                        "high",
+                        str(project),
+                        "python:3.12-slim",
+                    ]
+                )
+            self.assertEqual(rc, 0)
+            result = out.getvalue()
+            self.assertIn("PROJECT_SANDBOX_MODEL=sonnet", result)
             self.assertIn("PROJECT_SANDBOX_EFFORT=high", result)
 
 

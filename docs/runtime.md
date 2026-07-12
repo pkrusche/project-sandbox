@@ -14,8 +14,8 @@ Given `project-sandbox /path/to/repo python:3.12-slim`:
    `.project-sandbox/` so the Dockerfile and firewall script remain a single
    source of truth.
 4. Detect available host agent configs (`~/.claude`, `~/.codex`,
-   `~/.config/opencode`) and install only those agent CLIs into the generated
-   Dockerfile. OpenSpec and Bash are always available.
+   `~/.config/opencode`, `~/.pi/agent`) and install only those agent CLIs into
+   the generated Dockerfile. OpenSpec and Bash are always available.
 5. Append `.project-sandbox/` and `.devcontainer/` to `<project>/.gitignore`
    idempotently.
 

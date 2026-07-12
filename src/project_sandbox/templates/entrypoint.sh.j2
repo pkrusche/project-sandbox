@@ -94,6 +94,19 @@ case "${1:-bash}" in
         log_project_sandbox_agent_command opencode "$@"
         exec opencode "$@"
         ;;
+      pi)
+        shift
+        export PI_SKIP_VERSION_CHECK=1 PI_OFFLINE=1
+        if [ -n "${PROJECT_SANDBOX_MODEL:-}" ]; then
+          if [ -n "${PROJECT_SANDBOX_EFFORT:-}" ]; then
+            set -- --model "${PROJECT_SANDBOX_MODEL}:${PROJECT_SANDBOX_EFFORT}" "$@"
+          else
+            set -- --model "${PROJECT_SANDBOX_MODEL}" "$@"
+          fi
+        fi
+        log_project_sandbox_agent_command pi "$@"
+        exec pi "$@"
+        ;;
       bash) shift; exec bash "$@" ;;
       claude-headless)
         shift
@@ -133,6 +146,21 @@ case "${1:-bash}" in
         fi
         log_project_sandbox_agent_command opencode run "$@"
         exec opencode run "$@"
+        ;;
+      pi-headless)
+        shift
+        export PI_SKIP_VERSION_CHECK=1 PI_OFFLINE=1
+        load_project_sandbox_prompt pi-headless || exit $?
+        set -- -p "$PROMPT" --approve
+        if [ -n "${PROJECT_SANDBOX_MODEL:-}" ]; then
+          if [ -n "${PROJECT_SANDBOX_EFFORT:-}" ]; then
+            set -- --model "${PROJECT_SANDBOX_MODEL}:${PROJECT_SANDBOX_EFFORT}" "$@"
+          else
+            set -- --model "${PROJECT_SANDBOX_MODEL}" "$@"
+          fi
+        fi
+        log_project_sandbox_agent_command pi "$@"
+        exec pi "$@"
         ;;
       bash-headless)
         shift

