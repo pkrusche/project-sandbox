@@ -63,9 +63,8 @@ override); credentials are a single `~/.pi/agent/auth.json` file, mode 0600
 or 20+ BYOK providers. Crucially, **Pi has no built-in permission/confirmation
 system** ("run in a container, or build your own confirmation flow with
 extensions"), so unlike Claude/Codex there's no bypass-permissions config to
-bake into a file — telemetry/update-check suppression is via env vars
-(`PI_SKIP_VERSION_CHECK=1`; confirm `PI_TELEMETRY`'s disable value before
-relying on it) instead. `--approve`/`-a` trusts project-local `.pi/` config
+bake into a file — update-check suppression is via env vars
+(`PI_SKIP_VERSION_CHECK=1`) instead; pi should have no telemetry by default. `--approve`/`-a` trusts project-local `.pi/` config
 for one run and should always be passed (headless can't answer an interactive
 trust prompt). Headless invocation is `pi -p "prompt" --approve`, emitting
 plain text (fits `session.py`'s existing log-teeing, no JSON transcript
