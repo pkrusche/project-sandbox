@@ -97,6 +97,9 @@ case "${1:-bash}" in
       pi)
         shift
         export PI_SKIP_VERSION_CHECK=1 PI_OFFLINE=1
+        if [ -z "${PROJECT_SANDBOX_MODEL:-}" ] && [ -n "${PROJECT_SANDBOX_EFFORT:-}" ]; then
+          echo "[W] Pi effort was set but no model was provided; ignoring PROJECT_SANDBOX_EFFORT." >&2
+        fi
         if [ -n "${PROJECT_SANDBOX_MODEL:-}" ]; then
           if [ -n "${PROJECT_SANDBOX_EFFORT:-}" ]; then
             set -- --model "${PROJECT_SANDBOX_MODEL}:${PROJECT_SANDBOX_EFFORT}" "$@"
