@@ -157,6 +157,7 @@ def build_mount_specs(
     codex_cfg: Path,
     codex_credentials_dir: Path | None,
     opencode_credentials_dir: Path | None,
+    pi_credentials_dir: Path | None = None,
     extra_mounts: Sequence[str] = (),
     forward_credentials: bool = True,
 ) -> list[MountSpec]:
@@ -195,6 +196,14 @@ def build_mount_specs(
                 MountSpec(
                     opencode_credentials_dir.resolve(strict=False),
                     "/project-sandbox-secrets/opencode",
+                    True,
+                )
+            )
+        if pi_credentials_dir is not None:
+            mounts.append(
+                MountSpec(
+                    pi_credentials_dir.resolve(strict=False),
+                    "/project-sandbox-secrets/pi",
                     True,
                 )
             )
@@ -275,6 +284,7 @@ def build_run_argv(
     extra_env: Sequence[str] = (),
     env_file: Path | None = None,
     opencode_credentials_dir: Path | None = None,
+    pi_credentials_dir: Path | None = None,
     container_name: str | None = None,
     forward_credentials: bool = True,
 ) -> list[str]:
@@ -306,6 +316,7 @@ def build_run_argv(
         codex_cfg=codex_cfg,
         codex_credentials_dir=codex_credentials_dir,
         opencode_credentials_dir=opencode_credentials_dir,
+        pi_credentials_dir=pi_credentials_dir,
         extra_mounts=extra_mounts,
         forward_credentials=forward_credentials,
     )

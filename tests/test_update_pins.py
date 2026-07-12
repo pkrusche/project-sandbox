@@ -1,7 +1,9 @@
 import importlib.util
 import sys
+import tempfile
 from pathlib import Path
 from unittest import TestCase
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "update-pins.py"
@@ -86,3 +88,46 @@ class UvImagePinTests(TestCase):
             (dockerfile_match.group("version"), dockerfile_match.group("digest")),
             (helper_match.group("version"), helper_match.group("digest")),
         )
+
+
+class NpmPinUpdateTests(TestCase):
+    def test_collect_npm_updates_can_update_pi_pin(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            template = Path(tmp) / "Dockerfile.j2"
+            template.write_text(
+                update_pins.DOCKERFILE_TEMPLATE.read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            current_versions = {
+                match.group("package"): match.group("version")
+                for match in update_pins.NPM_PIN_RE.finditer(
+                    template.read_text(encoding="utf-8")
+                )
+            }
+            package = "@earendil-works/pi-coding-agent"
+            latest = "999.0.0"
+
+            def fake_latest_npm_version(name: str) -> str:
+                return latest if name == package else current_versions[name]
+
+            with (
+                patch.object(update_pins, "DOCKERFILE_TEMPLATE", template),
+                patch.object(
+                    update_pins,
+                    "latest_npm_version",
+                    side_effect=fake_latest_npm_version,
+                ),
+            ):
+                updates = update_pins.collect_npm_updates()
+
+                self.assertEqual(len(updates), 1)
+                self.assertEqual(updates[0].label, f"npm {package}")
+                self.assertEqual(updates[0].current, current_versions[package])
+                self.assertEqual(updates[0].latest, latest)
+
+                updates[0].apply()
+
+            self.assertIn(
+                f"npm install -g {package}@{latest}",
+                template.read_text(encoding="utf-8"),
+            )

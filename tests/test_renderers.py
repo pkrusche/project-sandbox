@@ -62,6 +62,10 @@ class RendererTests(TestCase):
             self.assertIn("npm install -g @anthropic-ai/claude-code", docker_text)
             self.assertIn("npm install -g @openai/codex", docker_text)
             self.assertIn("npm install -g opencode-ai", docker_text)
+            self.assertRegex(
+                docker_text,
+                r"npm install -g @earendil-works/pi-coding-agent@\d+\.\d+\.\d+",
+            )
             self.assertIn("npm install -g @fission-ai/openspec", docker_text)
             self.assertIn("libatomic1", docker_text)
             self.assertIn("/home/agent/.claude/settings.json", docker_text)
@@ -116,6 +120,7 @@ class RendererTests(TestCase):
                 "@anthropic-ai/claude-code",
                 "@openai/codex",
                 "opencode-ai",
+                "@earendil-works/pi-coding-agent",
             ):
                 self.assertRegex(
                     docker_text,
@@ -267,8 +272,10 @@ class RendererTests(TestCase):
             home = root / "home"
             codex_home = root / "home" / ".codex"
             opencode_home = root / "home" / ".config" / "opencode"
+            pi_home = root / "home" / ".pi" / "agent"
             codex_home.mkdir(parents=True)
             opencode_home.mkdir(parents=True)
+            pi_home.mkdir(parents=True)
             (opencode_home / "node_modules" / ".bin").mkdir(parents=True)
             (opencode_home / "node_modules" / "tool.js").write_text(
                 "tool\n",
@@ -303,11 +310,13 @@ class RendererTests(TestCase):
                 '{"token":"codex"}\n', encoding="utf-8"
             )
             (codex_home / "config.toml").write_text("secret = true\n", encoding="utf-8")
+            (pi_home / "auth.json").write_text('{"token":"pi"}\n', encoding="utf-8")
 
             with _credentials_root(root):
                 result = config_agents.sync_credentials(context, home=home)
                 codex_staged = result["codex"]
                 opencode_staged = result["opencode"]
+                pi_staged = result["pi"]
 
             self.assertFalse((context / "codex" / "auth.json").exists())
             self.assertTrue((context / "codex" / "config.toml").exists())
@@ -317,6 +326,12 @@ class RendererTests(TestCase):
                 '{"token":"codex"}\n',
             )
             self.assertFalse((codex_staged / "config.toml").exists())
+            self.assertEqual(
+                (pi_staged / "auth.json").read_text(encoding="utf-8"),
+                '{"token":"pi"}\n',
+            )
+            self.assertEqual(pi_staged.stat().st_mode & 0o777, 0o700)
+            self.assertEqual((pi_staged / "auth.json").stat().st_mode & 0o777, 0o600)
             self.assertEqual(
                 (opencode_staged / ".config" / "opencode" / "opencode.jsonc").read_text(
                     encoding="utf-8"
@@ -338,7 +353,7 @@ class RendererTests(TestCase):
                 ).read_text(encoding="utf-8"),
                 '{"model":"test"}\n',
             )
-            for staged in (codex_staged, opencode_staged):
+            for staged in (codex_staged, opencode_staged, pi_staged):
                 self.assertEqual(staged.stat().st_mode & 0o777, 0o700)
 
     def test_claude_config_state_is_created_to_accept_bypass_warning(self) -> None:
@@ -600,6 +615,7 @@ class RendererTests(TestCase):
             self.assertNotIn("@anthropic-ai/claude-code", text)
             self.assertIn("@openai/codex", text)
             self.assertNotIn("opencode-ai", text)
+            self.assertNotIn("@earendil-works/pi-coding-agent", text)
             self.assertIn("@fission-ai/openspec", text)
 
     def test_dockerfile_renderer_overwrites_existing_agent_uid_setup(self) -> None:
@@ -861,6 +877,9 @@ class RendererTests(TestCase):
             self.assertIn(
                 "/project-sandbox-secrets/opencode/.local/state/opencode", text
             )
+            self.assertIn("/project-sandbox-secrets/pi/auth.json", text)
+            self.assertIn('"$HOME/.pi/agent/auth.json"', text)
+            self.assertNotIn("/project-sandbox-config/pi", text)
             self.assertNotIn(".codex.host", text)
             self.assertNotIn("opencode.host", text)
             self.assertIn("sudo -n /usr/local/bin/project-sandbox-init-firewall", text)
@@ -880,6 +899,10 @@ class RendererTests(TestCase):
             )
             self.assertIn('exec codex exec "$@"', text)
             self.assertIn("opencode-headless", text)
+            self.assertIn("pi-headless", text)
+            self.assertIn('set -- -p "$PROMPT" --approve', text)
+            self.assertIn('exec pi "$@"', text)
+            self.assertIn("export PI_SKIP_VERSION_CHECK=1 PI_OFFLINE=1", text)
             self.assertIn("bash-headless", text)
             self.assertIn('exec bash -lc "$PROMPT"', text)
             # UV_OFFLINE is set after the firewall block so uv works offline.
@@ -913,6 +936,33 @@ class RendererTests(TestCase):
                 text,
             )
             self.assertIn('exec opencode run "$@"', text)
+            # Pi combines model and effort into a single --model x:y flag rather
+            # than separate --model/--effort flags.
+            self.assertIn(
+                'set -- --model "${PROJECT_SANDBOX_MODEL}:${PROJECT_SANDBOX_EFFORT}" "$@"',
+                text,
+            )
+            self.assertIn(
+                'set -- --model "${PROJECT_SANDBOX_MODEL}" "$@"',
+                text,
+            )
+
+    def test_entrypoint_pi_never_emits_separate_effort_flag(self) -> None:
+        import re
+
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            dockerfile.render_entrypoint(context)
+            text = (context / "entrypoint.sh").read_text(encoding="utf-8")
+            pi_case = re.search(
+                r"\n      pi\)\n(.*?\n        ;;\n)", text, re.DOTALL
+            ).group(1)
+            self.assertNotIn("--effort", pi_case)
+            pi_headless_case = re.search(
+                r"\n      pi-headless\)\n(.*?\n        ;;\n)", text, re.DOTALL
+            ).group(1)
+            self.assertNotIn("--effort", pi_headless_case)
+            self.assertIn("--approve", pi_headless_case)
 
     def test_entrypoint_headless_supports_effort_selection(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -937,6 +987,7 @@ class RendererTests(TestCase):
             self.assertIn('log_project_sandbox_agent_command claude "$@"', text)
             self.assertIn('log_project_sandbox_agent_command codex "$@"', text)
             self.assertIn('log_project_sandbox_agent_command opencode "$@"', text)
+            self.assertIn('log_project_sandbox_agent_command pi "$@"', text)
             self.assertIn('exec codex "$@"', text)
             self.assertIn('exec opencode "$@"', text)
             # The codex interactive branch uses -c for reasoning effort and the
@@ -972,6 +1023,7 @@ class RendererTests(TestCase):
             self.assertIn('log_project_sandbox_agent_command claude "$@"', text)
             self.assertIn('log_project_sandbox_agent_command codex exec "$@"', text)
             self.assertIn('log_project_sandbox_agent_command opencode run "$@"', text)
+            self.assertIn('log_project_sandbox_agent_command pi "$@"', text)
 
     def test_entrypoint_renderer_overwrites_missing_jj_identity_setup(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

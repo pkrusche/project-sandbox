@@ -51,7 +51,7 @@ CLAUDE_CREDENTIAL_STATE_KEYS = frozenset(
 
 CREDENTIALS_ROOT = Path("/tmp")
 
-_CONFIGURED_AGENTS = ("claude", "codex", "opencode")
+_CONFIGURED_AGENTS = ("claude", "codex", "opencode", "pi")
 
 
 def _agent_host_paths(home: Path) -> dict[str, Path]:
@@ -59,6 +59,7 @@ def _agent_host_paths(home: Path) -> dict[str, Path]:
         "claude": home / ".claude",
         "codex": home / ".codex",
         "opencode": home / ".config" / "opencode",
+        "pi": home / ".pi" / "agent",
     }
 
 
@@ -99,7 +100,7 @@ def sync_credentials(
 
     Returns a dict keyed by agent name:
       "claude", "claude-devcontainer" — always present
-      "codex", "opencode"             — present only if the agent is installed
+      "codex", "opencode", "pi"       — present only if the agent is installed
     """
     _home = home or Path.home()
     host_paths = _agent_host_paths(_home)
@@ -122,6 +123,13 @@ def sync_credentials(
         result["opencode"] = _sync_opencode_credentials(
             project_sandbox_dir,
             home=_home,
+        )
+    if host_paths["pi"].exists():
+        result["pi"] = _sync_generic_credentials(
+            project_sandbox_dir,
+            "pi",
+            host_paths["pi"],
+            include_files=("auth.json",),
         )
     return result
 

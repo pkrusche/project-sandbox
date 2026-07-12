@@ -1,6 +1,6 @@
 # project-sandbox
 
-`project-sandbox` runs Claude Code, Codex CLI, OpenCode, or a plain Bash shell
+`project-sandbox` runs Claude Code, Codex CLI, OpenCode, Pi, or a plain Bash shell
 inside per-project Linux containers. On macOS, direct CLI runs default to Apple's
 [`container`](https://github.com/apple/container) runtime, where each container
 runs in its own VM. On Linux, direct CLI runs support Docker or Podman.

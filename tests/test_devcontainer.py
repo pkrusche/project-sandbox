@@ -409,10 +409,12 @@ class DevcontainerTests(TestCase):
             (project / ".project-sandbox").mkdir(parents=True)
             (fake_home / ".codex").mkdir(parents=True)
             (fake_home / ".config" / "opencode").mkdir(parents=True)
+            (fake_home / ".pi" / "agent").mkdir(parents=True)
             credentials = {
                 "claude": Path(tmp) / "secrets" / "claude",
                 "codex": Path(tmp) / "secrets" / "codex",
                 "opencode": Path(tmp) / "secrets" / "opencode",
+                "pi": Path(tmp) / "secrets" / "pi",
             }
 
             with patch.object(devcontainer.Path, "home", return_value=fake_home):
@@ -438,8 +440,13 @@ class DevcontainerTests(TestCase):
                 f"source={credentials['opencode'].resolve(strict=False)},target=/project-sandbox-secrets/opencode,type=bind,readonly",
                 mounts,
             )
+            self.assertIn(
+                f"source={credentials['pi'].resolve(strict=False)},target=/project-sandbox-secrets/pi,type=bind,readonly",
+                mounts,
+            )
             self.assertNotIn("${localEnv:HOME}/.codex", mounts)
             self.assertNotIn("${localEnv:HOME}/.config/opencode", mounts)
+            self.assertNotIn("/project-sandbox-config/pi", mounts)
 
     def test_initialize_command_recreates_missing_credential_dirs(self) -> None:
         # Staged credentials live under a tmp-style directory (see
@@ -455,10 +462,12 @@ class DevcontainerTests(TestCase):
             (project / ".project-sandbox").mkdir(parents=True)
             (fake_home / ".codex").mkdir(parents=True)
             (fake_home / ".config" / "opencode").mkdir(parents=True)
+            (fake_home / ".pi" / "agent").mkdir(parents=True)
             credentials = {
                 "claude-devcontainer": Path(tmp) / "secrets" / "claude-devcontainer",
                 "codex": Path(tmp) / "secrets" / "codex",
                 "opencode": Path(tmp) / "secrets" / "opencode",
+                "pi": Path(tmp) / "secrets" / "pi",
             }
             # Simulate credentials that were staged once but whose /tmp
             # directory has since been reaped/rebooted away.
@@ -487,9 +496,11 @@ class DevcontainerTests(TestCase):
             )
             resolved_codex = credentials["codex"].resolve(strict=False).as_posix()
             resolved_opencode = credentials["opencode"].resolve(strict=False).as_posix()
+            resolved_pi = credentials["pi"].resolve(strict=False).as_posix()
             self.assertIn(resolved_claude, command)
             self.assertIn(resolved_codex, command)
             self.assertIn(resolved_opencode, command)
+            self.assertIn(resolved_pi, command)
 
             # Now actually reap the staged credential directories, as a
             # tmp-cleaner or reboot would, and confirm the host-run

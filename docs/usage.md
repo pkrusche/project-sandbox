@@ -249,16 +249,17 @@ uv run project-sandbox \
 - `--prompt-text "..."` writes the prompt under `.project-sandbox/prompts/`,
   bind-mounts that directory read-only, and reads it from
   `/project-sandbox-prompt/prompt.txt`.
-- `--agent {claude,codex,opencode,bash}` selects which agent to run. If omitted,
-  the CLI only initializes generated config files unless a prompt is supplied.
-  Claude, Codex, and OpenCode require their host config directories; Bash is
-  always available.
+- `--agent {claude,codex,opencode,pi,bash}` selects which agent to run. If
+  omitted, the CLI only initializes generated config files unless a prompt is
+  supplied. Claude, Codex, OpenCode, and Pi require their host config
+  directories; Bash is always available.
 - `--model MODEL_ID` selects the agent model and `--effort {low,medium,high,xhigh,max}`
   selects the reasoning effort. Both apply to interactive and headless runs: the
   CLI forwards them as `PROJECT_SANDBOX_MODEL` / `PROJECT_SANDBOX_EFFORT`, and the
   entrypoint turns them into each agent's own flags — `--model` plus `--effort`
-  for Claude, `--model` plus `-c model_reasoning_effort=...` for Codex, and
-  `--model` plus `--variant` for OpenCode. They are ignored for Bash.
+  for Claude, `--model` plus `-c model_reasoning_effort=...` for Codex, `--model`
+  plus `--variant` for OpenCode, and a single combined `--model <model>:<effort>`
+  for Pi (Pi has no separate effort flag). They are ignored for Bash.
 - `--log FILE` overrides the default log path under
   `.project-sandbox/sessions/<agent>-main-<timestamp>.log`.
 - For headless `claude` runs, a readable markdown transcript is rendered
@@ -285,8 +286,10 @@ uv run project-sandbox \
 Unsupervised sessions skip the interactive `-it` flags and switch dispatch to
 `<agent>-headless` for all supported agents. Claude runs with
 `--dangerously-skip-permissions`, Codex uses `approval_policy = "never"`,
-OpenCode runs via `opencode run`, and Bash runs with `bash -lc`. The container is
-still the sandbox boundary; review the diff before integrating.
+OpenCode runs via `opencode run`, Pi runs with `--approve` (Pi has no
+interactive trust prompt to answer headlessly, so `--approve` is always
+passed), and Bash runs with `bash -lc`. The container is still the sandbox
+boundary; review the diff before integrating.
 
 A maliciously crafted file in the workspace, such as a prompt-injection in a
 README, can still steer an unsupervised agent. Use narrow prompts and inspect the

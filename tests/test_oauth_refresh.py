@@ -29,6 +29,13 @@ class OAuthRefreshTests(TestCase):
             oauth_refresh.refresh_host_token("opencode", home=Path("/nope"))
         run.assert_not_called()
 
+    def test_pi_is_noop(self) -> None:
+        # Pi has no delegated refresh yet (deferred, see design.md); the module
+        # must silently no-op rather than raise.
+        with patch.object(oauth_refresh.subprocess, "run") as run:
+            oauth_refresh.refresh_host_token("pi", home=Path("/nope"))
+        run.assert_not_called()
+
     def test_missing_cli_is_noop(self) -> None:
         with _home_with(".claude") as tmp:
             with (

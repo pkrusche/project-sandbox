@@ -41,7 +41,7 @@ RUN set -eux; \
 
 RUN install -d /project-sandbox-config/claude /project-sandbox-config/codex \
         /project-sandbox-secrets/claude /project-sandbox-secrets/codex \
-        /project-sandbox-secrets/opencode && \
+        /project-sandbox-secrets/opencode /project-sandbox-secrets/pi && \
     install -d -o agent -g "${AGENT_GID}" /home/agent/.claude /home/agent/.codex /home/agent/.config && \
     install -m 0644 -o agent -g "${AGENT_GID}" /dev/null /home/agent/.claude/settings.json && \
     install -m 0644 -o agent -g "${AGENT_GID}" /dev/null /home/agent/.codex/config.toml
@@ -107,6 +107,9 @@ RUN npm install -g @openai/codex@0.144.1
 {% endif %}
 {% if install_opencode %}
 RUN npm install -g opencode-ai@1.17.18
+{% endif %}
+{% if install_pi %}
+RUN npm install -g @earendil-works/pi-coding-agent@0.80.6
 {% endif %}
 
 COPY {{ sandbox_copy_prefix }}{{ firewall_src_filename }} /usr/local/bin/project-sandbox-init-firewall

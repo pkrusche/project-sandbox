@@ -69,9 +69,11 @@ def render(
     if use_provided_credential_dirs:
         mount_codex_secrets = "codex" in credential_dirs
         mount_opencode_secrets = "opencode" in credential_dirs
+        mount_pi_secrets = "pi" in credential_dirs
     else:
         mount_codex_secrets = host_home.joinpath(".codex").exists()
         mount_opencode_secrets = host_home.joinpath(".config/opencode").exists()
+        mount_pi_secrets = host_home.joinpath(".pi/agent").exists()
     claude_devcontainer_credentials_dir = credential_dirs.get(
         "claude-devcontainer",
         config_agents.credentials_dir(
@@ -123,6 +125,14 @@ def render(
         .resolve(strict=False)
         .as_posix()
     )
+    pi_credentials_mount = (
+        credential_dirs.get(
+            "pi",
+            config_agents.credentials_dir(project / ".project-sandbox", "pi"),
+        )
+        .resolve(strict=False)
+        .as_posix()
+    )
 
     run_args: list[str] = []
     if firewall_enabled:
@@ -137,6 +147,8 @@ def render(
         "CLAUDE_SECURESTORAGE_CONFIG_DIR": "/home/agent/.claude",
         "CODEX_HOME": "/home/agent/.codex",
         "NODE_OPTIONS": "--max-old-space-size=4096",
+        "PI_SKIP_VERSION_CHECK": "1",
+        "PI_OFFLINE": "1",
     }
     if firewall_enabled:
         container_env["UV_OFFLINE"] = "1"
@@ -161,6 +173,10 @@ def render(
         if mount_opencode_secrets:
             mounts.append(
                 f"source={opencode_credentials_mount},target=/project-sandbox-secrets/opencode,type=bind,readonly"
+            )
+        if mount_pi_secrets:
+            mounts.append(
+                f"source={pi_credentials_mount},target=/project-sandbox-secrets/pi,type=bind,readonly"
             )
     mounts.extend(history_mounts)
     mounts.extend(extra_mounts)
@@ -193,6 +209,8 @@ def render(
             initialize_command_dirs.append(str(codex_credentials_mount))
         if mount_opencode_secrets:
             initialize_command_dirs.append(str(opencode_credentials_mount))
+        if mount_pi_secrets:
+            initialize_command_dirs.append(str(pi_credentials_mount))
     initialize_command = ["mkdir", "-p", *initialize_command_dirs]
 
     post_start_command = (
@@ -249,7 +267,7 @@ def render(
 def _credential_dirs(context_dir: Path) -> dict[str, Path]:
     return {
         agent: config_agents.credentials_dir(context_dir, agent)
-        for agent in ("claude", "codex", "opencode")
+        for agent in ("claude", "codex", "opencode", "pi")
     }
 
 
