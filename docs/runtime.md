@@ -60,6 +60,8 @@ for this reason (see `.github/workflows/e2e.yml`).
 |   |-- claude-devcontainer/settings.json
 |   |-- codex/config.toml
 |   |-- codex-devcontainer/config.toml
+|   |-- pi/models.json                 # only with --pi-ollama
+|   |-- pi/settings.json               # only with --pi-ollama
 |   |-- .dockerfile-checksums.json     # trusted project Dockerfile hashes
 |   `-- sessions/                      # unsupervised-mode logs
 `-- .devcontainer/

@@ -186,6 +186,28 @@ if [ "$IPV6_FW" = "1" ]; then
 fi
 {% endif %}
 
+{% if pi_ollama %}
+# ============================================================
+# Host gateway (Pi + Ollama)
+# ============================================================
+# Narrower than the host-gateway rule above: only the Ollama port on the
+# gateway IP, not the whole host. This is what lets a direct CLI run (which
+# does not get the all-ports rule above) reach a host-run Ollama server.
+# IPv4-only: every supported runtime's (Apple container/Docker/Podman)
+# default gateway is reachable over IPv4, matching the all-ports rule above
+# whose IPv6 counterpart exists only for the unrelated IDE-forwarding case.
+OLLAMA_HOST_GW4=$(ip -4 route | awk '/default/ {print $3; exit}') || true
+OLLAMA_HOST_IF4=$(ip -4 route | awk '/default/ {print $5; exit}') || true
+if [ -n "$OLLAMA_HOST_GW4" ]; then
+  echo "Allowing host Ollama port (IPv4): $OLLAMA_HOST_GW4:11434"
+  iptables -A OUTPUT -p tcp --dport 11434 -d "$OLLAMA_HOST_GW4" -o "${OLLAMA_HOST_IF4:-eth0}" -j ACCEPT
+  printf '%s\tollama.project-sandbox.internal # project-sandbox-dns-pin\n' "$OLLAMA_HOST_GW4" >> /etc/hosts
+else
+  echo "ERROR: --pi-ollama requires a default IPv4 gateway route, but none was found." >&2
+  exit 1
+fi
+{% endif %}
+
 iptables -P INPUT DROP; iptables -P FORWARD DROP; iptables -P OUTPUT DROP
 if [ "$IPV6_FW" = "1" ]; then
   ip6tables -P INPUT DROP; ip6tables -P FORWARD DROP; ip6tables -P OUTPUT DROP

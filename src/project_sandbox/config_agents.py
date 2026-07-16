@@ -53,6 +53,17 @@ CREDENTIALS_ROOT = Path("/tmp")
 
 _CONFIGURED_AGENTS = ("claude", "codex", "opencode", "pi")
 
+OLLAMA_BASE_URL = "http://ollama.project-sandbox.internal:11434/v1"
+
+DEFAULT_OLLAMA_MODELS: tuple[str, ...] = (
+    "qwen2.5-coder",
+    "llama3.1",
+    "deepseek-coder-v2",
+)
+
+# Keep in sync with the pi-coding-agent npm pin in templates/Dockerfile.j2.
+_PI_NPM_VERSION_PIN = "0.80.6"
+
 
 def _agent_host_paths(home: Path) -> dict[str, Path]:
     return {
@@ -72,7 +83,12 @@ def available_agents(home: Path | None = None) -> tuple[str, ...]:
     return (*present, "bash")
 
 
-def render(context_dir: Path) -> dict[str, Path]:
+def render(
+    context_dir: Path,
+    *,
+    pi_ollama: bool = False,
+    ollama_models: list[str] | None = None,
+) -> dict[str, Path]:
     """Render all agent config files and return a dict of written paths."""
     paths: dict[str, Path] = {}
     for key, permission_mode in CLAUDE_PROFILES.items():
@@ -88,6 +104,14 @@ def render(context_dir: Path) -> dict[str, Path]:
         out = out_dir / "config.toml"
         out.write_text(_codex_config_toml(approval_policy), encoding="utf-8")
         paths[key] = out
+    if pi_ollama:
+        out_dir = _ensure_project_subdir(context_dir, "pi")
+        models = list(ollama_models) if ollama_models else list(DEFAULT_OLLAMA_MODELS)
+        models_out = out_dir / "models.json"
+        models_out.write_text(_pi_ollama_models_json(models), encoding="utf-8")
+        settings_out = out_dir / "settings.json"
+        settings_out.write_text(_pi_ollama_settings_json(models[0]), encoding="utf-8")
+        paths["pi"] = models_out
     return paths
 
 
@@ -185,6 +209,30 @@ def _codex_config_toml(approval_policy: str) -> str:
         "[feedback]\n"
         "enabled = false\n"
     )
+
+
+def _pi_ollama_models_json(models: list[str]) -> str:
+    config = {
+        "providers": {
+            "ollama": {
+                "baseUrl": OLLAMA_BASE_URL,
+                "api": "openai-completions",
+                "apiKey": "ollama",
+                "models": list(models),
+            }
+        }
+    }
+    return json.dumps(config, indent=2) + "\n"
+
+
+def _pi_ollama_settings_json(default_model: str) -> str:
+    settings = {
+        "defaultProvider": "ollama",
+        "defaultModel": default_model,
+        "theme": "auto",
+        "lastChangelogVersion": _PI_NPM_VERSION_PIN,
+    }
+    return json.dumps(settings, indent=2) + "\n"
 
 
 def _sync_claude_credentials(

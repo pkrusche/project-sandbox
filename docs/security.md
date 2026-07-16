@@ -70,6 +70,14 @@ the container and:
 - In the devcontainer firewall variant only, allows the host gateway address so
   port-forwarding and IDE attach work. Direct CLI runs omit this host-network
   allowlist.
+- When `--pi-ollama` is set, both firewall variants additionally allow outbound
+  TCP to the discovered host gateway address restricted to port `11434`
+  (Ollama's default port) — narrower than the devcontainer's all-ports gateway
+  rule above, since this is the first rule reaching the host from a direct CLI
+  run rather than a public internet endpoint. The gateway address is also
+  pinned to `ollama.project-sandbox.internal` in `/etc/hosts`, the same
+  mechanism used for allowlisted domains, so Pi's baked provider config can
+  reference a fixed hostname instead of a runtime-discovered address.
 - Mirrors the IPv4 allowlist into a parallel IPv6 set; falls back to disabling
   IPv6 via `sysctl` when `ip6_tables` is unavailable. The script exits with an
   error if both `ip6tables` and `sysctl` are unavailable.
@@ -88,6 +96,10 @@ Customize:
   GitHub.
 - `--no-firewall` skips the firewall entirely. Use it only for trusted-network
   debugging.
+- `--pi-ollama` (with `--agent pi`) allows the host's Ollama port through the
+  gateway and bakes Pi's provider config to use it; see `docs/usage.md` for
+  the host-side bind-address prerequisite. `--ollama-model` overrides the
+  default model list.
 
 ## Threat Model
 

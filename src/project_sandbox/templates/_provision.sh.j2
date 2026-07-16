@@ -50,3 +50,9 @@ if [ -f "/project-sandbox-secrets/pi/auth.json" ]; then
   cp "/project-sandbox-secrets/pi/auth.json" "$HOME/.pi/agent/auth.json"
   chmod 600 "$HOME/.pi/agent/auth.json"
 fi
+if [ -f "/project-sandbox-config/pi/models.json" ]; then
+  cp "/project-sandbox-config/pi/models.json" "$HOME/.pi/agent/models.json"
+fi
+if [ -f "/project-sandbox-config/pi/settings.json" ]; then
+  cp "/project-sandbox-config/pi/settings.json" "$HOME/.pi/settings.json"
+fi

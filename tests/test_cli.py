@@ -2554,6 +2554,201 @@ class ModelSelectionTests(TestCase):
             self.assertIn("PROJECT_SANDBOX_MODEL=claude-opus-4-5", out.getvalue())
 
 
+class PiOllamaTests(TestCase):
+    """--pi-ollama / --ollama-model parsing, gating, and mount wiring."""
+
+    def test_pi_ollama_and_ollama_model_flags_parse(self) -> None:
+        args = cli.build_parser().parse_args(
+            [
+                "--pi-ollama",
+                "--ollama-model",
+                "llama3.1",
+                "--ollama-model",
+                "qwen2.5-coder",
+                "project",
+            ]
+        )
+        self.assertTrue(args.pi_ollama)
+        self.assertEqual(args.ollama_model, ["llama3.1", "qwen2.5-coder"])
+
+    def test_pi_ollama_and_ollama_model_default_off(self) -> None:
+        args = cli.build_parser().parse_args(["project"])
+        self.assertFalse(args.pi_ollama)
+        self.assertEqual(args.ollama_model, [])
+
+    def test_pi_ollama_enabled_requires_agent_pi(self) -> None:
+        args = cli.build_parser().parse_args(
+            ["--pi-ollama", "--agent", "claude", "project"]
+        )
+        self.assertFalse(cli._pi_ollama_enabled(args, "claude"))
+
+    def test_pi_ollama_enabled_true_with_agent_pi(self) -> None:
+        args = cli.build_parser().parse_args(
+            ["--pi-ollama", "--agent", "pi", "project"]
+        )
+        self.assertTrue(cli._pi_ollama_enabled(args, "pi"))
+
+    def test_pi_ollama_enabled_false_when_flag_absent(self) -> None:
+        args = cli.build_parser().parse_args(["--agent", "pi", "project"])
+        self.assertFalse(cli._pi_ollama_enabled(args, "pi"))
+
+    def test_validate_ollama_models_rejects_empty_string(self) -> None:
+        with self.assertRaises(SystemExit):
+            cli._validate_ollama_models([""])
+
+    def test_validate_ollama_models_rejects_whitespace_only(self) -> None:
+        with self.assertRaises(SystemExit):
+            cli._validate_ollama_models(["   "])
+
+    def test_validate_ollama_models_accepts_real_ids(self) -> None:
+        cli._validate_ollama_models(["llama3.1", "qwen2.5-coder"])  # no raise
+
+    def test_main_rejects_empty_ollama_model_value(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            with self.assertRaises(SystemExit):
+                cli.main(
+                    [
+                        "--dry-run",
+                        "--agent",
+                        "pi",
+                        "--pi-ollama",
+                        "--ollama-model",
+                        "  ",
+                        str(project),
+                        "python:3.12-slim",
+                    ]
+                )
+
+    def _dry_run_pi_ollama(self, extra_args: list[str]) -> str:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            host_home = project / "home"
+            paths = _agent_paths(host_home)
+            for key in paths:
+                paths[key].mkdir(parents=True, exist_ok=True)
+            out = io.StringIO()
+            with (
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
+                patch.object(
+                    cli.config_agents, "_agent_host_paths", return_value=paths
+                ),
+                contextlib.redirect_stdout(out),
+            ):
+                rc = cli.main(
+                    [
+                        "--dry-run",
+                        "--no-build",
+                        "--no-firewall",
+                        "--prompt-text",
+                        "do something",
+                        *extra_args,
+                        str(project),
+                        "python:3.12-slim",
+                    ]
+                )
+            self.assertEqual(rc, 0)
+            return out.getvalue()
+
+    def test_pi_ollama_mount_present_with_agent_pi(self) -> None:
+        output = self._dry_run_pi_ollama(["--agent", "pi", "--pi-ollama"])
+        self.assertIn("/project-sandbox-config/pi", output)
+
+    def test_pi_ollama_mount_absent_without_agent_pi(self) -> None:
+        # Regression: --pi-ollama without --agent pi must be a no-op.
+        output = self._dry_run_pi_ollama(["--agent", "claude", "--pi-ollama"])
+        self.assertNotIn("/project-sandbox-config/pi", output)
+
+    def test_pi_ollama_mount_absent_without_flag(self) -> None:
+        output = self._dry_run_pi_ollama(["--agent", "pi"])
+        self.assertNotIn("/project-sandbox-config/pi", output)
+
+    def test_warn_pi_ollama_no_firewall_prints_when_both_set(self) -> None:
+        args = cli.build_parser().parse_args(
+            ["--pi-ollama", "--no-firewall", "--agent", "pi", "project"]
+        )
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cli._warn_pi_ollama_no_firewall(args, True)
+        self.assertIn("--pi-ollama with --no-firewall", out.getvalue())
+
+    def test_warn_pi_ollama_no_firewall_silent_without_no_firewall(self) -> None:
+        args = cli.build_parser().parse_args(
+            ["--pi-ollama", "--agent", "pi", "project"]
+        )
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cli._warn_pi_ollama_no_firewall(args, True)
+        self.assertEqual(out.getvalue(), "")
+
+    def test_warn_pi_ollama_no_firewall_silent_when_not_enabled(self) -> None:
+        args = cli.build_parser().parse_args(
+            ["--pi-ollama", "--no-firewall", "--agent", "claude", "project"]
+        )
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cli._warn_pi_ollama_no_firewall(args, False)
+        self.assertEqual(out.getvalue(), "")
+
+    def test_pi_ollama_threaded_into_firewall_render(self) -> None:
+        # Regression: dry-run tests above all pass --no-firewall, which never
+        # reaches firewall.render at all — so the one-line
+        # `pi_ollama=pi_ollama_enabled` wiring in cli.main's real (non-dry-run)
+        # call to firewall.render was untested end-to-end. Exercise the real
+        # path (firewall.render itself is not mocked) and inspect the rendered
+        # script it actually wrote.
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            host_home = project / "home"
+            paths = _agent_paths(host_home)
+            for key in paths:
+                paths[key].mkdir(parents=True, exist_ok=True)
+            out = io.StringIO()
+            with (
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
+                patch.object(
+                    cli.config_agents, "_agent_host_paths", return_value=paths
+                ),
+                patch.object(cli.config_agents, "sync_credentials"),
+                patch.object(
+                    cli.container_cli,
+                    "select_runtime",
+                    return_value=cli.container_cli.DOCKER,
+                ),
+                patch.object(
+                    cli.container_cli, "ensure_system_started", return_value=0
+                ),
+                patch.object(cli.container_cli, "build_image", return_value=0),
+                patch.object(cli.container_cli, "run", return_value=0),
+                contextlib.redirect_stdout(out),
+            ):
+                rc = cli.main(
+                    [
+                        "--agent",
+                        "pi",
+                        "--pi-ollama",
+                        str(project),
+                        "python:3.12-slim",
+                    ]
+                )
+            self.assertEqual(rc, 0)
+            rendered = (project / ".project-sandbox" / "init-firewall.sh").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("--dport 11434", rendered)
+            self.assertIn("ollama.project-sandbox.internal", rendered)
+
+
 class EffortSelectionTests(TestCase):
     """--effort passes PROJECT_SANDBOX_EFFORT into unsupervised agent runs."""
 

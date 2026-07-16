@@ -260,6 +260,21 @@ uv run project-sandbox \
   for Claude, `--model` plus `-c model_reasoning_effort=...` for Codex, `--model`
   plus `--variant` for OpenCode, and a single combined `--model <model>:<effort>`
   for Pi (Pi has no separate effort flag). They are ignored for Bash.
+- `--pi-ollama` (only with `--agent pi`) extends the firewall to reach a
+  host-run Ollama server and pre-configures Pi to use it as the default
+  provider. It is a no-op with any other `--agent`. The container runs in its
+  own network namespace, so the Ollama host must bind beyond loopback (e.g.
+  `OLLAMA_HOST=0.0.0.0 ollama serve`) to be reachable via the discovered
+  gateway address, pinned inside the container as
+  `ollama.project-sandbox.internal`. See `docs/security.md` for the firewall
+  scope. Combining `--pi-ollama` with `--no-firewall` prints a warning and
+  leaves Pi unable to reach Ollama: the gateway route and `/etc/hosts` pin are
+  only set up as part of firewall initialization, which `--no-firewall` skips
+  entirely.
+- `--ollama-model MODEL_ID` overrides the built-in default Ollama model list
+  baked into Pi's `models.json`. Repeatable; only meaningful with
+  `--pi-ollama`. The first model (default or first `--ollama-model` given)
+  becomes Pi's default model.
 - `--log FILE` overrides the default log path under
   `.project-sandbox/sessions/<agent>-main-<timestamp>.log`.
 - For headless `claude` runs, a readable markdown transcript is rendered

@@ -879,7 +879,13 @@ class RendererTests(TestCase):
             )
             self.assertIn("/project-sandbox-secrets/pi/auth.json", text)
             self.assertIn('"$HOME/.pi/agent/auth.json"', text)
-            self.assertNotIn("/project-sandbox-config/pi", text)
+            # Pi-Ollama config (models.json/settings.json), copied from a distinct
+            # mount only when --pi-ollama baked it; unconditionally present as a
+            # guarded copy step, matching the pattern for every other agent config.
+            self.assertIn("/project-sandbox-config/pi/models.json", text)
+            self.assertIn('"$HOME/.pi/agent/models.json"', text)
+            self.assertIn("/project-sandbox-config/pi/settings.json", text)
+            self.assertIn('"$HOME/.pi/settings.json"', text)
             self.assertNotIn(".codex.host", text)
             self.assertNotIn("opencode.host", text)
             self.assertIn("sudo -n /usr/local/bin/project-sandbox-init-firewall", text)
@@ -1320,6 +1326,44 @@ class RendererTests(TestCase):
                 self.assertIn('"collector.github.com"', text)
                 self.assertIn('"default.exp-tas.com"', text)
 
+    def test_firewall_pi_ollama_adds_port_scoped_gateway_rule(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            firewall.render(context, extra_domains=[], pi_ollama=True)
+            for name in ("init-firewall.sh", "init-firewall-devcontainer.sh"):
+                text = (context / name).read_text(encoding="utf-8")
+                self.assertIn("--dport 11434", text)
+                self.assertIn(
+                    'iptables -A OUTPUT -p tcp --dport 11434 -d "$OLLAMA_HOST_GW4"',
+                    text,
+                )
+                self.assertIn("ollama.project-sandbox.internal", text)
+                self.assertIn("project-sandbox-dns-pin", text)
+                # Reuses the existing gateway-discovery approach.
+                self.assertIn("ip -4 route", text)
+
+    def test_firewall_pi_ollama_absent_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            firewall.render(context, extra_domains=[])
+            for name in ("init-firewall.sh", "init-firewall-devcontainer.sh"):
+                text = (context / name).read_text(encoding="utf-8")
+                self.assertNotIn("11434", text)
+                self.assertNotIn("ollama.project-sandbox.internal", text)
+
+    def test_firewall_pi_ollama_scoped_to_ollama_port_not_all_ports(self) -> None:
+        # Regression: the CLI (non-devcontainer) firewall variant must not gain
+        # the broader all-ports gateway rule just because --pi-ollama is set —
+        # only the narrow port-scoped rule.
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            firewall.render(context, extra_domains=[], pi_ollama=True)
+            text = (context / "init-firewall.sh").read_text(encoding="utf-8")
+            self.assertNotIn(
+                'iptables -A OUTPUT -d "$HOST_GW4" -o "${HOST_IF4:-eth0}" -j ACCEPT',
+                text,
+            )
+
     def test_render_returns_all_four_config_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             context = Path(tmp)
@@ -1366,6 +1410,53 @@ class RendererTests(TestCase):
             context = Path(tmp)
             out = config_agents.render(context)["codex"]
             self.assertIn('approval_policy = "never"', out.read_text(encoding="utf-8"))
+
+    def test_render_without_pi_ollama_bakes_no_pi_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            cfg = config_agents.render(context)
+            self.assertNotIn("pi", cfg)
+            self.assertFalse((context / "pi").exists())
+
+    def test_render_pi_ollama_bakes_default_models(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            cfg = config_agents.render(context, pi_ollama=True)
+            models_path = cfg["pi"]
+            self.assertEqual(models_path, context / "pi" / "models.json")
+            models = json.loads(models_path.read_text(encoding="utf-8"))
+            provider = models["providers"]["ollama"]
+            self.assertEqual(
+                provider["baseUrl"], "http://ollama.project-sandbox.internal:11434/v1"
+            )
+            self.assertEqual(provider["api"], "openai-completions")
+            self.assertEqual(provider["apiKey"], "ollama")
+            self.assertEqual(
+                provider["models"], list(config_agents.DEFAULT_OLLAMA_MODELS)
+            )
+
+            settings = json.loads(
+                (context / "pi" / "settings.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(settings["defaultProvider"], "ollama")
+            self.assertEqual(
+                settings["defaultModel"], config_agents.DEFAULT_OLLAMA_MODELS[0]
+            )
+
+    def test_render_pi_ollama_honors_custom_model_list(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            cfg = config_agents.render(
+                context, pi_ollama=True, ollama_models=["mistral", "codellama"]
+            )
+            models = json.loads(cfg["pi"].read_text(encoding="utf-8"))
+            self.assertEqual(
+                models["providers"]["ollama"]["models"], ["mistral", "codellama"]
+            )
+            settings = json.loads(
+                (context / "pi" / "settings.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(settings["defaultModel"], "mistral")
 
     def test_dockerfile_source_warns_on_alpine_base(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
