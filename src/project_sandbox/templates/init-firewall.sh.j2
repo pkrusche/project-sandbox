@@ -196,14 +196,21 @@ fi
 # IPv4-only: every supported runtime's (Apple container/Docker/Podman)
 # default gateway is reachable over IPv4, matching the all-ports rule above
 # whose IPv6 counterpart exists only for the unrelated IDE-forwarding case.
-OLLAMA_HOST_GW4=$(ip -4 route | awk '/default/ {print $3; exit}') || true
-OLLAMA_HOST_IF4=$(ip -4 route | awk '/default/ {print $5; exit}') || true
-if [ -n "$OLLAMA_HOST_GW4" ]; then
-  echo "Allowing host Ollama port (IPv4): $OLLAMA_HOST_GW4:11434"
-  iptables -A OUTPUT -p tcp --dport 11434 -d "$OLLAMA_HOST_GW4" -o "${OLLAMA_HOST_IF4:-eth0}" -j ACCEPT
-  printf '%s\tollama.project-sandbox.internal # project-sandbox-dns-pin\n' "$OLLAMA_HOST_GW4" >> /etc/hosts
+OLLAMA_HOST_IP4=$(getent ahostsv4 ollama.project-sandbox.internal | awk 'NR == 1 {print $1}') || true
+OLLAMA_HOST_IF4=$(ip -4 route get "$OLLAMA_HOST_IP4" 2>/dev/null | awk 'NR == 1 {for (i=1; i<=NF; i++) if ($i == "dev") {print $(i+1); exit}}') || true
+if [ -n "$OLLAMA_HOST_IP4" ]; then
+  echo "Allowing host Ollama endpoint (IPv4): $OLLAMA_HOST_IP4:11434"
+  iptables -A OUTPUT -p tcp --dport 11434 -d "$OLLAMA_HOST_IP4" -o "${OLLAMA_HOST_IF4:-eth0}" -j ACCEPT
+  if ! grep -q '^.*[[:space:]]ollama\.project-sandbox\.internal\([[:space:]]\|$\)' /etc/hosts; then
+    printf '%s\tollama.project-sandbox.internal # project-sandbox-dns-pin\n' "$OLLAMA_HOST_IP4" >> /etc/hosts
+  fi
+  if ! curl --fail --silent --show-error --max-time 3 \
+      http://ollama.project-sandbox.internal:11434/api/tags >/dev/null; then
+    echo "ERROR: the selected runtime path cannot reach loopback-bound Ollama on port 11434." >&2
+    exit 1
+  fi
 else
-  echo "ERROR: --pi-ollama requires a default IPv4 gateway route, but none was found." >&2
+  echo "ERROR: --pi-ollama could not resolve its runtime-selected Ollama endpoint." >&2
   exit 1
 fi
 {% endif %}

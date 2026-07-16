@@ -1334,7 +1334,7 @@ class RendererTests(TestCase):
                 text = (context / name).read_text(encoding="utf-8")
                 self.assertIn("--dport 11434", text)
                 self.assertIn(
-                    'iptables -A OUTPUT -p tcp --dport 11434 -d "$OLLAMA_HOST_GW4"',
+                    'iptables -A OUTPUT -p tcp --dport 11434 -d "$OLLAMA_HOST_IP4"',
                     text,
                 )
                 self.assertIn("ollama.project-sandbox.internal", text)

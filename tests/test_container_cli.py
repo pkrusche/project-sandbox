@@ -31,6 +31,29 @@ from project_sandbox.git_identity import GitIdentity
 
 
 class ContainerCliTests(TestCase):
+    def test_build_run_argv_adds_explicit_host_mapping(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cmd = build_run_argv(
+                image="project-sandbox:test",
+                project_abs=root / "workspace",
+                claude_cfg=root / "claude/settings.json",
+                codex_cfg=root / "codex/config.toml",
+                codex_credentials_dir=None,
+                identity=GitIdentity(None, None),
+                memory="8g",
+                cpus=4,
+                extra_mounts=[],
+                agent="pi",
+                firewall_enabled=True,
+                interactive=False,
+                add_hosts=["ollama.project-sandbox.internal:host-gateway"],
+            )
+        index = cmd.index("--add-host")
+        self.assertEqual(
+            cmd[index + 1], "ollama.project-sandbox.internal:host-gateway"
+        )
+
     def test_select_runtime_chroot_is_explicit_linux_only(self) -> None:
         with (
             patch("project_sandbox.container_cli.sys.platform", "linux"),

@@ -2663,9 +2663,11 @@ class PiOllamaTests(TestCase):
         # Regression: --pi-ollama without --agent pi must be a no-op.
         output = self._dry_run_pi_ollama(["--agent", "claude", "--pi-ollama"])
         self.assertNotIn("/project-sandbox-config/pi", output)
+        self.assertNotIn("Ollama forwarding strategy", output)
 
     def test_pi_ollama_mount_absent_without_flag(self) -> None:
         output = self._dry_run_pi_ollama(["--agent", "pi"])
+        self.assertNotIn("Ollama forwarding strategy", output)
         self.assertNotIn("/project-sandbox-config/pi", output)
 
     def test_warn_pi_ollama_no_firewall_prints_when_both_set(self) -> None:
@@ -2730,6 +2732,13 @@ class PiOllamaTests(TestCase):
                 ),
                 patch.object(cli.container_cli, "build_image", return_value=0),
                 patch.object(cli.container_cli, "run", return_value=0),
+                patch.object(
+                    cli.ollama_network,
+                    "prepare",
+                    return_value=cli.ollama_network.ForwardingPlan(
+                        "podman-native-host-alias"
+                    ),
+                ),
                 contextlib.redirect_stdout(out),
             ):
                 rc = cli.main(

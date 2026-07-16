@@ -21,6 +21,7 @@ from . import (
     dockerfile_checksum,
     firewall,
     oauth_refresh,
+    ollama_network,
     session,
     token_expiry,
     transcript,
@@ -368,6 +369,7 @@ def main(argv: list[str] | None = None) -> int:
     # setup/build failure before the agent ran (leave git in place, drop the
     # empty jj workspace).
     agent_ran = False
+    ollama_plan: ollama_network.ForwardingPlan | None = None
     exit_code = 1
     try:
         if not is_chroot:
@@ -550,6 +552,11 @@ def main(argv: list[str] | None = None) -> int:
                 "drop --no-build so the image can be built."
             )
 
+        if pi_ollama_enabled:
+            ollama_plan = ollama_network.prepare(runtime)
+            if args.verbose:
+                print(ollama_network.describe(ollama_plan))
+
         cmd, log_path, unsupervised, container_stop_argv = _build_session_command(
             args,
             project=project,
@@ -565,6 +572,7 @@ def main(argv: list[str] | None = None) -> int:
             runtime=runtime,
             create_prompt_files=True,
             api_key_values=api_key_values,
+            ollama_add_host=ollama_plan.add_host if ollama_plan else None,
         )
 
         if not unsupervised:
@@ -578,6 +586,8 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 print("Starting container…")
 
+        if ollama_plan is not None:
+            ollama_plan.start()
         agent_ran = True
         # Injected API key values are never baked into cmd's argv (see
         # _build_session_command); supply them through the subprocess
@@ -603,6 +613,8 @@ def main(argv: list[str] | None = None) -> int:
 
         return exit_code
     finally:
+        if ollama_plan is not None:
+            ollama_plan.close()
         if wt is not None:
             if agent_ran:
                 _finalize_worktree(args, project=project, wt=wt, exit_code=exit_code)
@@ -734,6 +746,11 @@ def _dry_run(
             dry_run=True,
             verbose=args.verbose,
         )
+    ollama_plan = (
+        ollama_network.prepare(runtime, dry_run=True) if pi_ollama_enabled else None
+    )
+    if ollama_plan is not None:
+        print(f"Would use {ollama_network.describe(ollama_plan)}")
     cmd, log_path, unsupervised, container_stop_argv = _build_session_command(
         args,
         project=project,
@@ -748,6 +765,7 @@ def _dry_run(
         pi_cfg=pi_cfg if pi_ollama_enabled else None,
         runtime=runtime,
         create_prompt_files=False,
+        ollama_add_host=ollama_plan.add_host if ollama_plan else None,
     )
     if unsupervised:
         assert log_path is not None
@@ -1318,6 +1336,7 @@ def _build_session_command(
     runtime: container_cli.Runtime,
     create_prompt_files: bool,
     api_key_values: dict[str, str] | None = None,
+    ollama_add_host: str | None = None,
 ) -> tuple[list[str], Path | None, bool, list[str] | None]:
     # Agent availability is validated up front in main() via _ensure_agent_available.
     extra_mounts = list(args.extra_mounts)
@@ -1524,6 +1543,7 @@ def _build_session_command(
             env_file=staged_api_key_env_file if use_api_key_env_file else None,
             container_name=container_name,
             forward_credentials=forward_credentials,
+            add_hosts=[ollama_add_host] if ollama_add_host else (),
         )
     else:
         mounts = container_cli.build_mount_specs(

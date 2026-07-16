@@ -262,15 +262,26 @@ uv run project-sandbox \
   for Pi (Pi has no separate effort flag). They are ignored for Bash.
 - `--pi-ollama` (only with `--agent pi`) extends the firewall to reach a
   host-run Ollama server and pre-configures Pi to use it as the default
-  provider. It is a no-op with any other `--agent`. The container runs in its
-  own network namespace, so the Ollama host must bind beyond loopback (e.g.
-  `OLLAMA_HOST=0.0.0.0 ollama serve`) to be reachable via the discovered
-  gateway address, pinned inside the container as
-  `ollama.project-sandbox.internal`. See `docs/security.md` for the firewall
-  scope. Combining `--pi-ollama` with `--no-firewall` prints a warning and
-  leaves Pi unable to reach Ollama: the gateway route and `/etc/hosts` pin are
-  only set up as part of firewall initialization, which `--no-firewall` skips
-  entirely.
+  provider while Ollama remains bound to `127.0.0.1:11434`. It is a no-op with
+  any other `--agent`. The runtime adapter uses native host-loopback forwarding
+  for rootless Podman and Docker Desktop, and an exact-bridge `socat` proxy for
+  local Linux Docker/rootful Podman. VM-backed native aliases are accepted only
+  when the container startup probe reaches Ollama. Unsupported modes fail
+  closed; project-sandbox never falls back to `0.0.0.0`.
+
+  Apple `container` requires one-time, user-controlled localhost DNS setup:
+
+  ```bash
+  sudo container system dns create ollama.project-sandbox.internal \
+    --localhost 203.0.113.113
+  ```
+
+  Run that command yourself before `--pi-ollama`. Project-sandbox verifies the
+  mapping but never invokes `sudo` or changes it. Apple documents that localhost
+  DNS changes packet-filter state, may disable Private Relay, and may need
+  re-establishing after a restart. Combining `--pi-ollama` with `--no-firewall`
+  remains unsupported because fixed-hostname setup and the port rule live in
+  firewall initialization.
 - `--ollama-model MODEL_ID` overrides the built-in default Ollama model list
   baked into Pi's `models.json`. Repeatable; only meaningful with
   `--pi-ollama`. The first model (default or first `--ollama-model` given)

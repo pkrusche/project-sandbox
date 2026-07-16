@@ -69,22 +69,22 @@ From the accuracy/correctness review of `main..add-local-ollama-support`:
 ## 10. Runtime networking adapter
 
 - [x] 10.1 Research the supported runtimes and record the strategy matrix: Apple `container` localhost DNS; rootless Podman `pasta`/`host.containers.internal`; exact-bridge `socat` for local Linux Docker/rootful Podman; probe-gated aliases for Docker Desktop and Podman Machine
-- [ ] 10.2 Add a focused adapter that returns the fixed container hostname, verified endpoint, strategy kind, and optional owned-resource handle, or an actionable unsupported-mode error
-- [ ] 10.3 Implement and verify Apple `container` localhost-DNS setup, ownership tracking, privilege/system-effect errors, and cleanup without deleting pre-existing mappings
-- [ ] 10.4 Implement rootless Podman native host mapping and fixed-hostname aliasing without starting a host listener
-- [ ] 10.5 Implement probe-gated native host mappings for Docker Desktop and Podman Machine; fail closed when physical-host loopback cannot be reached
-- [ ] 10.6 Implement local Linux Docker/rootful Podman bridge inspection and validate that the selected address is assigned, private, host-bindable, and never wildcard
-- [ ] 10.7 For the Linux bridge strategy only, require `socat`, start it on the exact bridge address forwarding to `127.0.0.1:11434`, and detect bind/immediate-child failure
-- [ ] 10.8 Pass the adapter-selected endpoint into fixed-hostname setup and the TCP/11434 firewall rule instead of unconditionally assuming the default gateway
-- [ ] 10.9 Integrate owned native-resource cleanup and proxy termination/reaping into normal exit, interruption, and container-start failure paths
-- [ ] 10.10 Ensure dry-run reports the selected/probed strategy without creating DNS mappings, listeners, or other state
+- [x] 10.2 Add a focused adapter that returns the fixed container hostname, verified endpoint, strategy kind, and optional owned-resource handle, or an actionable unsupported-mode error
+- [x] 10.3 Implement Apple `container` localhost-DNS verification; never invoke `sudo` or mutate the mapping, and print the exact user-run setup command plus system-effect guidance when it is missing
+- [x] 10.4 Implement rootless Podman native host mapping and fixed-hostname aliasing without starting a host listener
+- [x] 10.5 Implement probe-gated native host mappings for Docker Desktop and Podman Machine; fail closed when physical-host loopback cannot be reached
+- [x] 10.6 Implement local Linux Docker/rootful Podman bridge inspection and validate that the selected address is assigned, private, host-bindable, and never wildcard
+- [x] 10.7 For the Linux bridge strategy only, require `socat`, start it on the exact bridge address forwarding to `127.0.0.1:11434`, and detect bind/immediate-child failure
+- [x] 10.8 Pass the adapter-selected endpoint into fixed-hostname setup and the TCP/11434 firewall rule instead of unconditionally assuming the default gateway
+- [x] 10.9 Integrate owned native-resource cleanup and proxy termination/reaping into normal exit, interruption, and container-start failure paths
+- [x] 10.10 Ensure dry-run reports the selected/probed strategy without creating DNS mappings, listeners, or other state
 
 ## 11. Adapter documentation and tests
 
-- [ ] 11.1 Replace `OLLAMA_HOST=0.0.0.0` guidance with the runtime matrix, Apple packet-filter/Private Relay effects, conditional `socat` prerequisite, unsupported-mode remediation, and residual private-network exposure
-- [ ] 11.2 Add unit tests for adapter selection, runtime command construction, endpoint validation, probe outcomes, unsupported modes, and dry-run non-mutation
-- [ ] 11.3 Add Apple native-mapping ownership tests and lifecycle tests for normal exit, interruption, and container startup failure
-- [ ] 11.4 Add Linux bridge proxy tests for missing `socat`, unsafe/occupied addresses, immediate proxy exit, cleanup, and the absence of wildcard binds
-- [ ] 11.5 Add regressions proving no forwarding setup occurs when `--pi-ollama` is absent or ineffective for a non-Pi agent
-- [ ] 11.6 Run compileall, the full pytest suite, strict OpenSpec validation, and dry-run previews for every supported runtime strategy
+- [x] 11.1 Replace `OLLAMA_HOST=0.0.0.0` guidance with the runtime matrix, Apple user-run preconfiguration command and packet-filter/Private Relay effects, conditional `socat` prerequisite, unsupported-mode remediation, and residual private-network exposure
+- [x] 11.2 Add unit tests for adapter selection, runtime command construction, endpoint validation, probe outcomes, unsupported modes, and dry-run non-mutation
+- [x] 11.3 Add Apple preconfiguration verification tests proving the CLI never invokes `sudo` or creates/deletes mappings, plus forwarding lifecycle tests for normal exit, interruption, and container startup failure
+- [x] 11.4 Add Linux bridge proxy tests for missing `socat`, unsafe/occupied addresses, immediate proxy exit, cleanup, and the absence of wildcard binds
+- [x] 11.5 Add regressions proving no forwarding setup occurs when `--pi-ollama` is absent or ineffective for a non-Pi agent
+- [x] 11.6 Run compileall, the full pytest suite, strict OpenSpec validation, and dry-run previews for every supported runtime strategy
 - [ ] 11.7 Complete an end-to-end test for each claimed runtime mode with Ollama listening only on `127.0.0.1:11434`; record probe-gated or unsupported modes explicitly

@@ -297,6 +297,7 @@ def build_run_argv(
     pi_cfg: Path | None = None,
     container_name: str | None = None,
     forward_credentials: bool = True,
+    add_hosts: Sequence[str] = (),
 ) -> list[str]:
     argv = [
         runtime.binary,
@@ -315,6 +316,8 @@ def build_run_argv(
         argv.append("-it")
     if firewall_enabled:
         argv += ["--cap-add", "NET_ADMIN", "--cap-add", "NET_RAW"]
+    for mapping in add_hosts:
+        argv += ["--add-host", mapping]
     # Generated, non-secret config (settings.json / config.toml) is always
     # mounted; the staged host tokens under /project-sandbox-secrets are only
     # forwarded when forward_credentials is set. With it off, the container

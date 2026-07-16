@@ -26,6 +26,10 @@ When `--pi-ollama` is set, the system SHALL reach an Ollama server listening on 
 - **WHEN** the selected runtime provides a verified native mapping from the container to host loopback
 - **THEN** the system uses that mapping without starting `socat`
 
+#### Scenario: Apple localhost DNS is not preconfigured
+- **WHEN** Apple `container` is selected and `ollama.project-sandbox.internal` has not been configured with the runtime's localhost DNS facility
+- **THEN** startup fails without invoking `sudo` or changing host networking and prints the exact administrator command the user can run manually
+
 #### Scenario: Local Linux bridge fallback is required
 - **WHEN** the selected runtime uses a local Linux bridge whose host bridge address is bindable and no native loopback mapping is available
 - **THEN** the system starts `socat` on that exact bridge address and forwards to `127.0.0.1:11434`
@@ -35,7 +39,7 @@ When `--pi-ollama` is set, the system SHALL reach an Ollama server listening on 
 - **THEN** startup fails with a clear unsupported-mode error and does not fall back to a wildcard listener
 
 ### Requirement: Ollama forwarding resources have a bounded lifecycle
-The system SHALL establish forwarding before starting the sandbox, track resources it creates, detect setup failure, and remove only its owned forwarding resources when the sandbox exits or container startup fails. When the selected adapter requires `socat`, the system SHALL verify it is available and terminate and reap its managed child process.
+The system SHALL verify forwarding before starting the sandbox, track resources it creates, detect setup failure, and remove only its owned forwarding resources when the sandbox exits or container startup fails. It SHALL NOT create or remove Apple `container` system DNS mappings or invoke `sudo`. When the selected adapter requires `socat`, the system SHALL verify it is available and terminate and reap its managed child process.
 
 #### Scenario: socat is unavailable
 - **WHEN** the selected adapter requires `socat` and it is not installed on the host

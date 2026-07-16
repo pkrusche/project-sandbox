@@ -71,13 +71,18 @@ the container and:
   port-forwarding and IDE attach work. Direct CLI runs omit this host-network
   allowlist.
 - When `--pi-ollama` is set, both firewall variants additionally allow outbound
-  TCP to the discovered host gateway address restricted to port `11434`
+  TCP to the runtime-adapter-selected host endpoint restricted to port `11434`
   (Ollama's default port) — narrower than the devcontainer's all-ports gateway
-  rule above, since this is the first rule reaching the host from a direct CLI
-  run rather than a public internet endpoint. The gateway address is also
-  pinned to `ollama.project-sandbox.internal` in `/etc/hosts`, the same
-  mechanism used for allowlisted domains, so Pi's baked provider config can
-  reference a fixed hostname instead of a runtime-discovered address.
+  rule above. The endpoint is exposed only through the runtime-private native
+  mapping or exact Linux bridge listener, but other peers able to reach that
+  private runtime network remain in the trust boundary. The fixed hostname is
+  pinned where the runtime permits it.
+- Ollama itself stays on host loopback. Local Linux bridge modes conditionally
+  require `socat`, bound to the exact validated bridge address and terminated
+  with the sandbox. Apple `container` instead requires the user to preconfigure
+  localhost DNS; project-sandbox never invokes `sudo`. That Apple facility
+  changes macOS packet-filter state and may disable Private Relay, so its setup
+  remains an explicit administrator decision.
 - Mirrors the IPv4 allowlist into a parallel IPv6 set; falls back to disabling
   IPv6 via `sysctl` when `ip6_tables` is unavailable. The script exits with an
   error if both `ip6tables` and `sysctl` are unavailable.
@@ -97,8 +102,8 @@ Customize:
 - `--no-firewall` skips the firewall entirely. Use it only for trusted-network
   debugging.
 - `--pi-ollama` (with `--agent pi`) allows the host's Ollama port through the
-  gateway and bakes Pi's provider config to use it; see `docs/usage.md` for
-  the host-side bind-address prerequisite. `--ollama-model` overrides the
+  selected runtime-private endpoint and bakes Pi's provider config to use it;
+  see `docs/usage.md` for the runtime matrix and Apple setup. `--ollama-model` overrides the
   default model list.
 
 ## Threat Model
