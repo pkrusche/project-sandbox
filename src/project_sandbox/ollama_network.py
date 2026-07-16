@@ -10,7 +10,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 
-from .container_cli import APPLE_CONTAINER, DOCKER, PODMAN, Runtime
+from .container_cli import APPLE_CONTAINER, CHROOT, DOCKER, PODMAN, Runtime
 
 HOSTNAME = "ollama.project-sandbox.internal"
 PORT = 11434
@@ -63,9 +63,10 @@ class ForwardingPlan:
     def close(self) -> None:
         proc = self.proxy
         self.proxy = None
-        if proc is None or proc.poll() is not None:
+        if proc is None:
             return
-        proc.terminate()
+        if proc.poll() is None:
+            proc.terminate()
         try:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
@@ -82,6 +83,13 @@ class ForwardingPlan:
 
 def prepare(runtime: Runtime, *, dry_run: bool = False) -> ForwardingPlan:
     """Select and validate the safest forwarding strategy for ``runtime``."""
+    if runtime == CHROOT:
+        return ForwardingPlan(
+            "chroot-shared-loopback",
+            endpoint="127.0.0.1",
+            add_host=f"{HOSTNAME}:127.0.0.1",
+        )
+
     if runtime == APPLE_CONTAINER:
         if dry_run:
             return ForwardingPlan("apple-preconfigured-localhost-dns")

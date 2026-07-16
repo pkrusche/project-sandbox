@@ -8,10 +8,21 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from project_sandbox import ollama_network
-from project_sandbox.container_cli import APPLE_CONTAINER, DOCKER, PODMAN
+from project_sandbox.container_cli import APPLE_CONTAINER, CHROOT, DOCKER, PODMAN
 
 
 class OllamaNetworkTests(TestCase):
+    def test_chroot_uses_shared_loopback_without_runtime_inspection(self) -> None:
+        with patch.object(ollama_network, "_runtime_info") as runtime_info:
+            plan = ollama_network.prepare(CHROOT)
+        self.assertEqual(plan.strategy, "chroot-shared-loopback")
+        self.assertEqual(plan.endpoint, "127.0.0.1")
+        self.assertEqual(
+            plan.add_host,
+            "ollama.project-sandbox.internal:127.0.0.1",
+        )
+        runtime_info.assert_not_called()
+
     def test_apple_requires_preconfigured_dns_without_sudo(self) -> None:
         with patch.object(socket, "gethostbyname", side_effect=socket.gaierror):
             with self.assertRaisesRegex(SystemExit, "sudo container system dns create"):
@@ -107,6 +118,19 @@ class OllamaNetworkTests(TestCase):
             )
             with self.assertRaisesRegex(SystemExit, "Address already in use"):
                 plan.start()
+            plan.close()
+        proc.wait.assert_called_once_with(timeout=5)
+        proc.terminate.assert_not_called()
+
+    def test_cleanup_reaps_proxy_that_exited_independently(self) -> None:
+        proc = MagicMock()
+        proc.poll.return_value = 1
+        plan = ollama_network.ForwardingPlan("linux-bridge-socat", proxy=proc)
+
+        plan.close()
+
+        proc.wait.assert_called_once_with(timeout=5)
+        proc.terminate.assert_not_called()
 
     def test_context_cleanup_runs_when_session_raises(self) -> None:
         plan = ollama_network.ForwardingPlan("podman-native-host-alias")
