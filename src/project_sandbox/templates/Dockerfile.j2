@@ -15,8 +15,10 @@ RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
         ca-certificates curl git sudo gnupg jq xz-utils less \
-        iptables ipset iproute2 dnsutils aggregate libatomic1; \
-    rm -rf /var/lib/apt/lists/*
+        iptables ipset iproute2 dnsutils aggregate libatomic1 \
+        fd-find ripgrep; \
+    rm -rf /var/lib/apt/lists/*; \
+    ln -sf "$(command -v fdfind)" /usr/local/bin/fd
 
 RUN set -eux; \
     if id -u agent >/dev/null 2>&1; then \

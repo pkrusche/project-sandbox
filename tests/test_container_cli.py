@@ -50,9 +50,7 @@ class ContainerCliTests(TestCase):
                 add_hosts=["ollama.project-sandbox.internal:host-gateway"],
             )
         index = cmd.index("--add-host")
-        self.assertEqual(
-            cmd[index + 1], "ollama.project-sandbox.internal:host-gateway"
-        )
+        self.assertEqual(cmd[index + 1], "ollama.project-sandbox.internal:host-gateway")
 
     def test_select_runtime_chroot_is_explicit_linux_only(self) -> None:
         with (

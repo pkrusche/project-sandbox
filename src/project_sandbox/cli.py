@@ -670,7 +670,7 @@ def _dry_run(
     context_dir = project / ".project-sandbox"
     claude_cfg = context_dir / "claude" / "settings.json"
     codex_cfg = context_dir / "codex" / "config.toml"
-    pi_cfg = context_dir / "pi" / "models.json"
+    pi_cfg = context_dir / "pi" / "settings.json"
     # Only the keys _build_session_command consumes ("claude", and optionally
     # "codex"/"opencode"/"pi" when available); the devcontainer-specific dirs
     # are not used on the CLI run path.
@@ -762,7 +762,7 @@ def _dry_run(
         claude_cfg=claude_cfg,
         credential_dirs=credential_dirs,
         codex_cfg=codex_cfg,
-        pi_cfg=pi_cfg if pi_ollama_enabled else None,
+        pi_cfg=pi_cfg,
         runtime=runtime,
         create_prompt_files=False,
         ollama_add_host=ollama_plan.add_host if ollama_plan else None,
@@ -1130,7 +1130,11 @@ def _uses_github_copilot_cli(args, run_agent: str | None) -> bool:
 
 
 def _warn_byok_provider_allowlist(args, run_agent: str | None) -> None:
-    if run_agent not in ("opencode", "pi") or args.no_firewall:
+    if (
+        run_agent not in ("opencode", "pi")
+        or args.no_firewall
+        or (run_agent == "pi" and args.pi_ollama)
+    ):
         return
     agent_label = "OpenCode" if run_agent == "opencode" else "Pi"
     print(

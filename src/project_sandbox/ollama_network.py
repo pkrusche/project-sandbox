@@ -15,8 +15,7 @@ from .container_cli import APPLE_CONTAINER, CHROOT, DOCKER, PODMAN, Runtime
 HOSTNAME = "ollama.project-sandbox.internal"
 PORT = 11434
 APPLE_SETUP_COMMAND = (
-    "sudo container system dns create "
-    f"{HOSTNAME} --localhost 203.0.113.113"
+    f"sudo container system dns create {HOSTNAME} --localhost 203.0.113.113"
 )
 
 

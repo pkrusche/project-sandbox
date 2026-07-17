@@ -68,6 +68,9 @@ class RendererTests(TestCase):
             )
             self.assertIn("npm install -g @fission-ai/openspec", docker_text)
             self.assertIn("libatomic1", docker_text)
+            self.assertIn("fd-find", docker_text)
+            self.assertIn("ripgrep", docker_text)
+            self.assertIn("ln -sf \"$(command -v fdfind)\" /usr/local/bin/fd", docker_text)
             self.assertIn("/home/agent/.claude/settings.json", docker_text)
             self.assertIn("/home/agent/.codex/config.toml", docker_text)
             self.assertRegex(docker_text, r'JJ_VERSION="v\d+\.\d+\.\d+"')
@@ -885,7 +888,7 @@ class RendererTests(TestCase):
             self.assertIn("/project-sandbox-config/pi/models.json", text)
             self.assertIn('"$HOME/.pi/agent/models.json"', text)
             self.assertIn("/project-sandbox-config/pi/settings.json", text)
-            self.assertIn('"$HOME/.pi/settings.json"', text)
+            self.assertIn('"$HOME/.pi/agent/settings.json"', text)
             self.assertNotIn(".codex.host", text)
             self.assertNotIn("opencode.host", text)
             self.assertIn("sudo -n /usr/local/bin/project-sandbox-init-firewall", text)
@@ -1411,19 +1414,22 @@ class RendererTests(TestCase):
             out = config_agents.render(context)["codex"]
             self.assertIn('approval_policy = "never"', out.read_text(encoding="utf-8"))
 
-    def test_render_without_pi_ollama_bakes_no_pi_config(self) -> None:
+    def test_render_without_pi_ollama_bakes_trust_only_pi_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             context = Path(tmp)
             cfg = config_agents.render(context)
-            self.assertNotIn("pi", cfg)
-            self.assertFalse((context / "pi").exists())
+            settings_path = cfg["pi"]
+            self.assertEqual(settings_path, context / "pi" / "settings.json")
+            settings = json.loads(settings_path.read_text(encoding="utf-8"))
+            self.assertEqual(settings, {"defaultProjectTrust": "always"})
+            self.assertFalse((context / "pi" / "models.json").exists())
 
     def test_render_pi_ollama_bakes_default_models(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             context = Path(tmp)
             cfg = config_agents.render(context, pi_ollama=True)
-            models_path = cfg["pi"]
-            self.assertEqual(models_path, context / "pi" / "models.json")
+            self.assertEqual(cfg["pi"], context / "pi" / "settings.json")
+            models_path = context / "pi" / "models.json"
             models = json.loads(models_path.read_text(encoding="utf-8"))
             provider = models["providers"]["ollama"]
             self.assertEqual(
@@ -1432,16 +1438,20 @@ class RendererTests(TestCase):
             self.assertEqual(provider["api"], "openai-completions")
             self.assertEqual(provider["apiKey"], "ollama")
             self.assertEqual(
-                provider["models"], list(config_agents.DEFAULT_OLLAMA_MODELS)
+                provider["models"],
+                [{"id": model} for model in config_agents.DEFAULT_OLLAMA_MODELS],
             )
 
-            settings = json.loads(
-                (context / "pi" / "settings.json").read_text(encoding="utf-8")
-            )
+            settings = json.loads(cfg["pi"].read_text(encoding="utf-8"))
+            self.assertEqual(settings["defaultProjectTrust"], "always")
             self.assertEqual(settings["defaultProvider"], "ollama")
             self.assertEqual(
                 settings["defaultModel"], config_agents.DEFAULT_OLLAMA_MODELS[0]
             )
+            # Pi has no literal "auto" theme; it errors ("Theme not found: auto")
+            # and silently falls back to dark. "light/dark" is its documented
+            # syntax for following the terminal background.
+            self.assertEqual(settings["theme"], "light/dark")
 
     def test_render_pi_ollama_honors_custom_model_list(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1449,13 +1459,15 @@ class RendererTests(TestCase):
             cfg = config_agents.render(
                 context, pi_ollama=True, ollama_models=["mistral", "codellama"]
             )
-            models = json.loads(cfg["pi"].read_text(encoding="utf-8"))
+            models = json.loads(
+                (context / "pi" / "models.json").read_text(encoding="utf-8")
+            )
             self.assertEqual(
-                models["providers"]["ollama"]["models"], ["mistral", "codellama"]
+                models["providers"]["ollama"]["models"],
+                [{"id": "mistral"}, {"id": "codellama"}],
             )
-            settings = json.loads(
-                (context / "pi" / "settings.json").read_text(encoding="utf-8")
-            )
+            settings = json.loads(cfg["pi"].read_text(encoding="utf-8"))
+            self.assertEqual(settings["defaultProjectTrust"], "always")
             self.assertEqual(settings["defaultModel"], "mistral")
 
     def test_dockerfile_source_warns_on_alpine_base(self) -> None:

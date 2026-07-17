@@ -2660,15 +2660,19 @@ class PiOllamaTests(TestCase):
         self.assertIn("/project-sandbox-config/pi", output)
 
     def test_pi_ollama_mount_absent_without_agent_pi(self) -> None:
-        # Regression: --pi-ollama without --agent pi must be a no-op.
+        # Regression: --pi-ollama without --agent pi must be a no-op. The base
+        # pi config (trust-only settings.json) is still baked unconditionally,
+        # matching the always-baked claude/codex config dirs.
         output = self._dry_run_pi_ollama(["--agent", "claude", "--pi-ollama"])
-        self.assertNotIn("/project-sandbox-config/pi", output)
         self.assertNotIn("Ollama forwarding strategy", output)
 
-    def test_pi_ollama_mount_absent_without_flag(self) -> None:
+    def test_pi_config_mount_present_without_ollama_flag(self) -> None:
+        # Base pi settings.json (defaultProjectTrust) is baked even when
+        # --pi-ollama is not passed, so the trust prompt is suppressed for
+        # every pi run, not just ollama-backed ones.
         output = self._dry_run_pi_ollama(["--agent", "pi"])
         self.assertNotIn("Ollama forwarding strategy", output)
-        self.assertNotIn("/project-sandbox-config/pi", output)
+        self.assertIn("/project-sandbox-config/pi", output)
 
     def test_warn_pi_ollama_no_firewall_prints_when_both_set(self) -> None:
         args = cli.build_parser().parse_args(
@@ -2695,6 +2699,15 @@ class PiOllamaTests(TestCase):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             cli._warn_pi_ollama_no_firewall(args, False)
+        self.assertEqual(out.getvalue(), "")
+
+    def test_pi_ollama_suppresses_provider_allowlist_warning(self) -> None:
+        args = cli.build_parser().parse_args(
+            ["--pi-ollama", "--agent", "pi", "project"]
+        )
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cli._warn_byok_provider_allowlist(args, "pi")
         self.assertEqual(out.getvalue(), "")
 
     def test_pi_ollama_threaded_into_firewall_render(self) -> None:

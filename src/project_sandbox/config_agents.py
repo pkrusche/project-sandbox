@@ -104,14 +104,16 @@ def render(
         out = out_dir / "config.toml"
         out.write_text(_codex_config_toml(approval_policy), encoding="utf-8")
         paths[key] = out
+    out_dir = _ensure_project_subdir(context_dir, "pi")
+    settings_out = out_dir / "settings.json"
     if pi_ollama:
-        out_dir = _ensure_project_subdir(context_dir, "pi")
         models = list(ollama_models) if ollama_models else list(DEFAULT_OLLAMA_MODELS)
         models_out = out_dir / "models.json"
         models_out.write_text(_pi_ollama_models_json(models), encoding="utf-8")
-        settings_out = out_dir / "settings.json"
         settings_out.write_text(_pi_ollama_settings_json(models[0]), encoding="utf-8")
-        paths["pi"] = models_out
+    else:
+        settings_out.write_text(_pi_settings_json(), encoding="utf-8")
+    paths["pi"] = settings_out
     return paths
 
 
@@ -218,7 +220,7 @@ def _pi_ollama_models_json(models: list[str]) -> str:
                 "baseUrl": OLLAMA_BASE_URL,
                 "api": "openai-completions",
                 "apiKey": "ollama",
-                "models": list(models),
+                "models": [{"id": model} for model in models],
             }
         }
     }
@@ -227,11 +229,21 @@ def _pi_ollama_models_json(models: list[str]) -> str:
 
 def _pi_ollama_settings_json(default_model: str) -> str:
     settings = {
+        # The sandbox workspace is a fresh mount every run, so pi would otherwise
+        # prompt to trust it; "always" bakes that decision in for non-interactive use.
+        "defaultProjectTrust": "always",
         "defaultProvider": "ollama",
         "defaultModel": default_model,
-        "theme": "auto",
+        # Pi has no literal "auto" theme; "light/dark" is its documented syntax
+        # for picking a theme from the terminal background and following changes.
+        "theme": "light/dark",
         "lastChangelogVersion": _PI_NPM_VERSION_PIN,
     }
+    return json.dumps(settings, indent=2) + "\n"
+
+
+def _pi_settings_json() -> str:
+    settings = {"defaultProjectTrust": "always"}
     return json.dumps(settings, indent=2) + "\n"
 
 

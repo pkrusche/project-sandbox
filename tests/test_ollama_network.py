@@ -67,9 +67,7 @@ class OllamaNetworkTests(TestCase):
     def test_linux_bridge_plan_uses_exact_address(self) -> None:
         with (
             patch.object(ollama_network, "_runtime_info", return_value={}),
-            patch.object(
-                ollama_network, "_bridge_gateway", return_value="172.17.0.1"
-            ),
+            patch.object(ollama_network, "_bridge_gateway", return_value="172.17.0.1"),
             patch.object(ollama_network, "_validate_bindable"),
         ):
             plan = ollama_network.prepare(DOCKER)
@@ -90,7 +88,9 @@ class OllamaNetworkTests(TestCase):
         proc.poll.return_value = None
         with (
             patch.object(ollama_network.shutil, "which", return_value="/usr/bin/socat"),
-            patch.object(ollama_network.subprocess, "Popen", return_value=proc) as popen,
+            patch.object(
+                ollama_network.subprocess, "Popen", return_value=proc
+            ) as popen,
             patch.object(ollama_network.time, "sleep"),
         ):
             plan = ollama_network.ForwardingPlan(
