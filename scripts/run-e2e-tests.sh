@@ -6,6 +6,8 @@
 #   2. e2e-env-injection.sh  — bash-agent env/API-key forwarding
 #   3. e2e-git-workflow.sh   — git rebase/merge/nothing workflows
 #   4. e2e-jj-workflow.sh    — jj rebase/merge/nothing workflows (skipped if jj not on PATH)
+#   5. e2e-pi-ollama.sh      — Pi + Ollama networking/config (skipped if Ollama is
+#                              not reachable on 127.0.0.1:11434)
 #
 # Usage:
 #   scripts/run-e2e-tests.sh [--runtime chroot|auto|apple-container|docker|podman]
@@ -76,6 +78,22 @@ if command -v jj >/dev/null 2>&1; then
 else
   echo "========================================"
   echo "Suite: jj-workflow  (SKIPPED — jj not found on PATH)"
+  echo "========================================"
+  echo
+fi
+
+# 5. Pi + Ollama: networking and baked config (only if Ollama is reachable;
+# chroot cannot run --agent pi, so fall back to auto runtime detection)
+if command -v curl >/dev/null 2>&1 && curl -sf --max-time 2 http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
+  PI_OLLAMA_RUNTIME="$RUNTIME"
+  [ "$PI_OLLAMA_RUNTIME" = chroot ] && PI_OLLAMA_RUNTIME=auto
+  PI_OLLAMA_ARGS=(--runtime "$PI_OLLAMA_RUNTIME" --base-image "$BASE_IMAGE")
+  [ "$NO_BUILD" = 1 ] && PI_OLLAMA_ARGS+=(--no-build)
+  [ "$KEEP"     = 1 ] && PI_OLLAMA_ARGS+=(--keep)
+  run_suite "pi-ollama" "$ROOT/scripts/e2e-pi-ollama.sh" "${PI_OLLAMA_ARGS[@]}"
+else
+  echo "========================================"
+  echo "Suite: pi-ollama  (SKIPPED — Ollama not reachable on 127.0.0.1:11434)"
   echo "========================================"
   echo
 fi

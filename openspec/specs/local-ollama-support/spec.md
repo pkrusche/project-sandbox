@@ -11,7 +11,7 @@ The CLI SHALL accept a `--pi-ollama` flag that has no effect unless `--agent pi`
 
 #### Scenario: Flag passed with Pi selected
 - **WHEN** the user runs the CLI with `--agent pi --pi-ollama`
-- **THEN** the CLI enables gateway firewall access to the host's Ollama port and bakes Pi's Ollama provider configuration
+- **THEN** the CLI establishes a verified runtime-specific path to loopback-bound Ollama, enables port-scoped firewall access to that endpoint, and bakes Pi's Ollama provider configuration
 
 #### Scenario: Flag passed without Pi selected
 - **WHEN** the user runs the CLI with `--pi-ollama` but `--agent` is not `pi`
@@ -19,14 +19,56 @@ The CLI SHALL accept a `--pi-ollama` flag that has no effect unless `--agent pi`
 
 #### Scenario: Flag absent
 - **WHEN** the user runs the CLI without `--pi-ollama`
-- **THEN** no gateway allow rule for the Ollama port is added and no Pi Ollama config is baked, regardless of firewall settings otherwise in effect
+- **THEN** no Ollama forwarding resource is created, no endpoint allow rule for the Ollama port is added, and no Pi Ollama config is baked, regardless of firewall settings otherwise in effect
+
+### Requirement: Ollama remains bound to host loopback
+When `--pi-ollama` is set, the system SHALL reach an Ollama server listening on `127.0.0.1:11434` through a verified runtime-specific forwarding path. The system SHALL prefer a runtime-native loopback-forwarding mechanism and SHALL use a managed `socat` bridge proxy only when the selected local Linux bridge runtime lacks a native mechanism. It SHALL NOT bind any listener to `0.0.0.0` or require Ollama to bind beyond loopback.
+
+#### Scenario: Loopback-bound Ollama is reachable
+- **WHEN** Ollama is listening on `127.0.0.1:11434` and the user starts a sandbox with `--agent pi --pi-ollama`
+- **THEN** the sandbox reaches Ollama through the selected forwarding path without changing Ollama's bind address
+
+#### Scenario: Runtime-native forwarding is available
+- **WHEN** the selected runtime provides a verified native mapping from the container to host loopback
+- **THEN** the system uses that mapping without starting `socat`
+
+#### Scenario: Apple localhost DNS is not preconfigured
+- **WHEN** Apple `container` is selected and `ollama.project-sandbox.internal` has not been configured with the runtime's localhost DNS facility
+- **THEN** startup fails without invoking `sudo` or changing host networking and prints the exact administrator command the user can run manually
+
+#### Scenario: Local Linux bridge fallback is required
+- **WHEN** the selected runtime uses a local Linux bridge whose host bridge address is bindable and no native loopback mapping is available
+- **THEN** the system starts `socat` on that exact bridge address and forwards to `127.0.0.1:11434`
+
+#### Scenario: No safe forwarding path
+- **WHEN** the selected runtime mode provides neither verified native forwarding nor a safe, host-bindable bridge address
+- **THEN** startup fails with a clear unsupported-mode error and does not fall back to a wildcard listener
+
+### Requirement: Ollama forwarding resources have a bounded lifecycle
+The system SHALL verify forwarding before starting the sandbox, track resources it creates, detect setup failure, and remove only its owned forwarding resources when the sandbox exits or container startup fails. It SHALL NOT create or remove Apple `container` system DNS mappings or invoke `sudo`. When the selected adapter requires `socat`, the system SHALL verify it is available and terminate and reap its managed child process.
+
+#### Scenario: socat is unavailable
+- **WHEN** the selected adapter requires `socat` and it is not installed on the host
+- **THEN** startup fails before launching the container with an actionable error
+
+#### Scenario: Proxy cannot listen
+- **WHEN** the selected runtime-private address and port cannot be bound
+- **THEN** startup fails before launching the container and reports the proxy failure
+
+#### Scenario: Native forwarding setup fails
+- **WHEN** the selected runtime's native mapping cannot be verified or established
+- **THEN** startup fails before launching the container and reports the runtime-specific remediation
+
+#### Scenario: Sandbox run ends
+- **WHEN** the sandbox container exits normally, is interrupted, or fails to start
+- **THEN** owned native-forwarding resources are removed and any managed proxy process is terminated and reaped
 
 ### Requirement: Firewall reaches the host's Ollama port only
-When `--pi-ollama` is set and the firewall is enabled, the system SHALL discover the container's default-gateway IP and allow outbound TCP traffic to that IP restricted to the Ollama port (11434), without granting access to any other port on the gateway IP.
+When `--pi-ollama` is set and the firewall is enabled, the system SHALL determine the adapter-selected endpoint and allow outbound TCP traffic to that endpoint restricted to port 11434, without granting access to any other port on that endpoint.
 
 #### Scenario: Firewall enabled with Pi-Ollama
 - **WHEN** the container is launched with `--pi-ollama` and the firewall is not disabled
-- **THEN** the rendered firewall script discovers the gateway IP and adds an iptables ACCEPT rule scoped to `tcp --dport 11434` for that IP
+- **THEN** the rendered firewall setup resolves or receives the selected endpoint and adds an iptables ACCEPT rule scoped to `tcp --dport 11434` for that IP
 
 #### Scenario: Firewall disabled
 - **WHEN** the user passes `--no-firewall` alongside `--pi-ollama`
@@ -36,12 +78,12 @@ When `--pi-ollama` is set and the firewall is enabled, the system SHALL discover
 - **WHEN** `--pi-ollama` is set on a direct (non-devcontainer) CLI run
 - **THEN** the gateway-discovery and port-scoped allow rule are applied even though the broader devcontainer-only `allow_host_network` all-ports gateway rule is not active
 
-### Requirement: A fixed hostname resolves to the host gateway inside the container
-The system SHALL pin the hostname `ollama.project-sandbox.internal` to the discovered gateway IP in the container's `/etc/hosts` at startup when `--pi-ollama` is set, using the same pinning mechanism already used for allowlisted domains.
+### Requirement: A fixed hostname resolves to the selected Ollama endpoint
+The system SHALL make `ollama.project-sandbox.internal` resolve to the adapter-selected endpoint inside the container when `--pi-ollama` is set and SHALL pin the verified address for the container lifetime where the runtime permits it.
 
 #### Scenario: Container startup with Pi-Ollama enabled
 - **WHEN** the container starts with `--pi-ollama` set and the firewall enabled
-- **THEN** `/etc/hosts` inside the container contains an entry mapping `ollama.project-sandbox.internal` to the discovered gateway IP
+- **THEN** `ollama.project-sandbox.internal` resolves to the verified runtime-native or bridge-proxy endpoint
 
 #### Scenario: No dynamic address exposed to the agent process
 - **WHEN** the container starts with `--pi-ollama` set

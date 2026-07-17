@@ -70,7 +70,9 @@ class RendererTests(TestCase):
             self.assertIn("libatomic1", docker_text)
             self.assertIn("fd-find", docker_text)
             self.assertIn("ripgrep", docker_text)
-            self.assertIn("ln -sf \"$(command -v fdfind)\" /usr/local/bin/fd", docker_text)
+            self.assertIn(
+                'ln -sf "$(command -v fdfind)" /usr/local/bin/fd', docker_text
+            )
             self.assertIn("/home/agent/.claude/settings.json", docker_text)
             self.assertIn("/home/agent/.codex/config.toml", docker_text)
             self.assertRegex(docker_text, r'JJ_VERSION="v\d+\.\d+\.\d+"')
@@ -1282,6 +1284,45 @@ class RendererTests(TestCase):
                 # Only append real matches (no bare-newline padding that made
                 # NAT4/NAT6 look non-empty and forced a restore on empty input).
                 self.assertIn('[ -n "$match" ] && NAT4+="$match"', text)
+
+    def test_firewall_allowlist_summary_handles_empty_set(self) -> None:
+        # Regression: "grep -c PATTERN || echo 0" double-prints "0\n0" when an
+        # allowlist ipset has zero entries -- grep -c already prints "0" on no
+        # match but exits 1, so the "||" fallback fires too. printf's %d then
+        # rejects "0\n0" ("printf: 0\n0: invalid number") and, under `set -e`,
+        # aborts the firewall script. Reported with Podman, where the IPv6
+        # allowlist ipset exists but is empty.
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            firewall.render(context, extra_domains=[])
+            text = (context / "init-firewall.sh").read_text(encoding="utf-8")
+            marker = 'echo "Firewall initialized."'
+            self.assertIn(marker, text)
+            tail = text[text.index(marker) :]
+
+            with tempfile.TemporaryDirectory() as bindir:
+                ipset_stub = Path(bindir) / "ipset"
+                ipset_stub.write_text(
+                    "#!/bin/sh\n"
+                    'echo "Name: allowed-ipv4"\n'
+                    'echo "Type: hash:net"\n'
+                    'echo "Members:"\n',
+                    encoding="utf-8",
+                )
+                ipset_stub.chmod(0o755)
+
+                proc = subprocess.run(
+                    ["bash", "-c", tail],
+                    env={"PATH": f"{bindir}:/usr/bin:/bin", "IPV6_FW": "1"},
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("IPv4 allowlist: 0 entries", proc.stdout)
+            self.assertIn("IPv6 allowlist: 0 entries", proc.stdout)
+            self.assertNotIn("invalid number", proc.stderr)
 
     def test_firewall_rejects_unsafe_extra_domains(self) -> None:
         # Regression: extra domains are interpolated into a root-run Bash array,

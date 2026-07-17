@@ -249,11 +249,14 @@ if [ "$IPV6_FW" = "1" ]; then
 fi
 
 echo "Firewall initialized."
+# grep -c already prints 0 (and exits non-zero) when nothing matches, so no
+# extra "|| echo 0" fallback is needed -- adding one double-prints "0\n0" for
+# an empty set and breaks the printf %d below.
 printf "  IPv4 allowlist: %d entries\n" \
-  "$(ipset list allowed-ipv4 2>/dev/null | grep -c '^[0-9]' || echo 0)"
+  "$(ipset list allowed-ipv4 2>/dev/null | grep -c '^[0-9]')"
 if [ "$IPV6_FW" = "1" ]; then
   printf "  IPv6 allowlist: %d entries\n" \
-    "$(ipset list allowed-ipv6 2>/dev/null | grep -c '^[0-9a-f]' || echo 0)"
+    "$(ipset list allowed-ipv6 2>/dev/null | grep -c '^[0-9a-f]')"
 else
   echo "  IPv6: disabled via sysctl"
 fi

@@ -52,7 +52,7 @@
 - [x] 8.1 `uv run python -m compileall src tests`
 - [x] 8.2 `uv run pytest -q`
 - [x] 8.3 `uv run project-sandbox --agent pi --pi-ollama --dry-run ...` to confirm rendered firewall script and mounts without starting a container
-- [ ] 8.4 Manual end-to-end check with a real Ollama instance on the host (kept on loopback) across at least one runtime, confirming Pi can list/use Ollama models through the selected adapter
+- [x] 8.4 Manual end-to-end check with a real Ollama instance on the host (kept on loopback) across at least one runtime, confirming Pi can list/use Ollama models through the selected adapter
 
 ## 9. Review follow-ups
 
@@ -87,4 +87,4 @@ From the accuracy/correctness review of `main..add-local-ollama-support`:
 - [x] 11.4 Add Linux bridge proxy tests for missing `socat`, unsafe/occupied addresses, immediate proxy exit, cleanup, and the absence of wildcard binds
 - [x] 11.5 Add regressions proving no forwarding setup occurs when `--pi-ollama` is absent or ineffective for a non-Pi agent
 - [x] 11.6 Run compileall, the full pytest suite, strict OpenSpec validation, and dry-run previews for every supported runtime strategy
-- [ ] 11.7 Complete an end-to-end test for each claimed runtime mode with Ollama listening only on `127.0.0.1:11434`; record probe-gated or unsupported modes explicitly
+- [x] 11.7 Complete an end-to-end test for each claimed runtime mode with Ollama listening only on `127.0.0.1:11434`; record probe-gated or unsupported modes explicitly
