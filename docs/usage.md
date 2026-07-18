@@ -260,6 +260,32 @@ uv run project-sandbox \
   for Claude, `--model` plus `-c model_reasoning_effort=...` for Codex, `--model`
   plus `--variant` for OpenCode, and a single combined `--model <model>:<effort>`
   for Pi (Pi has no separate effort flag). They are ignored for Bash.
+- `--pi-ollama` (only with `--agent pi`) extends the firewall to reach a
+  host-run Ollama server and pre-configures Pi to use it as the default
+  provider while Ollama remains bound to `127.0.0.1:11434`. It is a no-op with
+  any other `--agent`. The runtime adapter uses native host-loopback forwarding
+  for rootless Podman and Docker Desktop, and an exact-bridge `socat` proxy for
+  local Linux Docker/rootful Podman. VM-backed native aliases are accepted only
+  when the container startup probe reaches Ollama. Unsupported modes fail
+  closed; project-sandbox never falls back to `0.0.0.0`.
+
+  Apple `container` requires one-time, user-controlled localhost DNS setup:
+
+  ```bash
+  sudo container system dns create ollama.project-sandbox.internal \
+    --localhost 203.0.113.113
+  ```
+
+  Run that command yourself before `--pi-ollama`. Project-sandbox verifies the
+  mapping but never invokes `sudo` or changes it. Apple documents that localhost
+  DNS changes packet-filter state, may disable Private Relay, and may need
+  re-establishing after a restart. Combining `--pi-ollama` with `--no-firewall`
+  remains unsupported because fixed-hostname setup and the port rule live in
+  firewall initialization.
+- `--ollama-model MODEL_ID` overrides the built-in default Ollama model list
+  baked into Pi's `models.json`. Repeatable; only meaningful with
+  `--pi-ollama`. The first model (default or first `--ollama-model` given)
+  becomes Pi's default model.
 - `--log FILE` overrides the default log path under
   `.project-sandbox/sessions/<agent>-main-<timestamp>.log`.
 - For headless `claude` runs, a readable markdown transcript is rendered

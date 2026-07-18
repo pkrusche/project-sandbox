@@ -8,6 +8,10 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "update-pins.py"
 
+sys.path.insert(0, str(ROOT / "src"))
+
+from project_sandbox import config_agents  # noqa: E402
+
 
 def _load_module():
     spec = importlib.util.spec_from_file_location("update_pins", SCRIPT)
@@ -131,3 +135,18 @@ class NpmPinUpdateTests(TestCase):
                 f"npm install -g {package}@{latest}",
                 template.read_text(encoding="utf-8"),
             )
+
+    def test_config_agents_pi_pin_matches_dockerfile_template(self) -> None:
+        # Regression: config_agents._PI_NPM_VERSION_PIN is a second, manually
+        # maintained copy of the pi-coding-agent npm pin (used to populate
+        # settings.json's lastChangelogVersion). update-pins.py only rewrites
+        # the Dockerfile template, so nothing previously caught the two
+        # drifting apart on the next pin bump.
+        package = "@earendil-works/pi-coding-agent"
+        text = update_pins.DOCKERFILE_TEMPLATE.read_text(encoding="utf-8")
+        match = next(
+            m
+            for m in update_pins.NPM_PIN_RE.finditer(text)
+            if m.group("package") == package
+        )
+        self.assertEqual(match.group("version"), config_agents._PI_NPM_VERSION_PIN)

@@ -31,6 +31,27 @@ from project_sandbox.git_identity import GitIdentity
 
 
 class ContainerCliTests(TestCase):
+    def test_build_run_argv_adds_explicit_host_mapping(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cmd = build_run_argv(
+                image="project-sandbox:test",
+                project_abs=root / "workspace",
+                claude_cfg=root / "claude/settings.json",
+                codex_cfg=root / "codex/config.toml",
+                codex_credentials_dir=None,
+                identity=GitIdentity(None, None),
+                memory="8g",
+                cpus=4,
+                extra_mounts=[],
+                agent="pi",
+                firewall_enabled=True,
+                interactive=False,
+                add_hosts=["ollama.project-sandbox.internal:host-gateway"],
+            )
+        index = cmd.index("--add-host")
+        self.assertEqual(cmd[index + 1], "ollama.project-sandbox.internal:host-gateway")
+
     def test_select_runtime_chroot_is_explicit_linux_only(self) -> None:
         with (
             patch("project_sandbox.container_cli.sys.platform", "linux"),
@@ -253,6 +274,46 @@ class ContainerCliTests(TestCase):
         )
         # Pi has no baked config file, so no /project-sandbox-config/pi mount.
         self.assertNotIn("/project-sandbox-config/pi", "".join(cmd))
+
+    def test_build_run_argv_mounts_pi_config_only_when_pi_cfg_given(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pi_cfg = root / "pi" / "models.json"
+
+            cmd = build_run_argv(
+                image="project-sandbox:test",
+                project_abs=root / "workspace",
+                claude_cfg=root / "claude/settings.json",
+                codex_cfg=root / "codex/config.toml",
+                codex_credentials_dir=None,
+                pi_cfg=pi_cfg,
+                identity=GitIdentity("Ada Lovelace", "ada@example.com"),
+                memory="8g",
+                cpus=4,
+                extra_mounts=[],
+                agent="pi",
+                firewall_enabled=False,
+                interactive=True,
+            )
+
+        self.assertIn(
+            f"type=bind,source={pi_cfg.parent.resolve(strict=False)},"
+            "target=/project-sandbox-config/pi,readonly",
+            cmd,
+        )
+
+    def test_build_mount_specs_omits_pi_config_mount_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            mounts = build_mount_specs(
+                project_abs=root / "workspace",
+                claude_cfg=root / "claude/settings.json",
+                claude_credentials_dir=None,
+                codex_cfg=root / "codex/config.toml",
+                codex_credentials_dir=None,
+                opencode_credentials_dir=None,
+            )
+        self.assertFalse(any(m.target == "/project-sandbox-config/pi" for m in mounts))
 
     def test_no_forward_credentials_omits_secrets_but_keeps_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

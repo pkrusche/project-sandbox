@@ -186,6 +186,35 @@ if [ "$IPV6_FW" = "1" ]; then
 fi
 {% endif %}
 
+{% if pi_ollama %}
+# ============================================================
+# Host gateway (Pi + Ollama)
+# ============================================================
+# Narrower than the host-gateway rule above: only the Ollama port on the
+# gateway IP, not the whole host. This is what lets a direct CLI run (which
+# does not get the all-ports rule above) reach a host-run Ollama server.
+# IPv4-only: every supported runtime's (Apple container/Docker/Podman)
+# default gateway is reachable over IPv4, matching the all-ports rule above
+# whose IPv6 counterpart exists only for the unrelated IDE-forwarding case.
+OLLAMA_HOST_IP4=$(getent ahostsv4 ollama.project-sandbox.internal | awk 'NR == 1 {print $1}') || true
+OLLAMA_HOST_IF4=$(ip -4 route get "$OLLAMA_HOST_IP4" 2>/dev/null | awk 'NR == 1 {for (i=1; i<=NF; i++) if ($i == "dev") {print $(i+1); exit}}') || true
+if [ -n "$OLLAMA_HOST_IP4" ]; then
+  echo "Allowing host Ollama endpoint (IPv4): $OLLAMA_HOST_IP4:11434"
+  iptables -A OUTPUT -p tcp --dport 11434 -d "$OLLAMA_HOST_IP4" -o "${OLLAMA_HOST_IF4:-eth0}" -j ACCEPT
+  if ! grep -q '^.*[[:space:]]ollama\.project-sandbox\.internal\([[:space:]]\|$\)' /etc/hosts; then
+    printf '%s\tollama.project-sandbox.internal # project-sandbox-dns-pin\n' "$OLLAMA_HOST_IP4" >> /etc/hosts
+  fi
+  if ! curl --fail --silent --show-error --max-time 3 \
+      http://ollama.project-sandbox.internal:11434/api/tags >/dev/null; then
+    echo "ERROR: the selected runtime path cannot reach loopback-bound Ollama on port 11434." >&2
+    exit 1
+  fi
+else
+  echo "ERROR: --pi-ollama could not resolve its runtime-selected Ollama endpoint." >&2
+  exit 1
+fi
+{% endif %}
+
 iptables -P INPUT DROP; iptables -P FORWARD DROP; iptables -P OUTPUT DROP
 if [ "$IPV6_FW" = "1" ]; then
   ip6tables -P INPUT DROP; ip6tables -P FORWARD DROP; ip6tables -P OUTPUT DROP
@@ -220,11 +249,14 @@ if [ "$IPV6_FW" = "1" ]; then
 fi
 
 echo "Firewall initialized."
+# grep -c already prints 0 (and exits non-zero) when nothing matches, so no
+# extra "|| echo 0" fallback is needed -- adding one double-prints "0\n0" for
+# an empty set and breaks the printf %d below.
 printf "  IPv4 allowlist: %d entries\n" \
-  "$(ipset list allowed-ipv4 2>/dev/null | grep -c '^[0-9]' || echo 0)"
+  "$(ipset list allowed-ipv4 2>/dev/null | grep -c '^[0-9]')"
 if [ "$IPV6_FW" = "1" ]; then
   printf "  IPv6 allowlist: %d entries\n" \
-    "$(ipset list allowed-ipv6 2>/dev/null | grep -c '^[0-9a-f]' || echo 0)"
+    "$(ipset list allowed-ipv6 2>/dev/null | grep -c '^[0-9a-f]')"
 else
   echo "  IPv6: disabled via sysctl"
 fi

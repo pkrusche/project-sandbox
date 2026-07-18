@@ -68,6 +68,11 @@ class RendererTests(TestCase):
             )
             self.assertIn("npm install -g @fission-ai/openspec", docker_text)
             self.assertIn("libatomic1", docker_text)
+            self.assertIn("fd-find", docker_text)
+            self.assertIn("ripgrep", docker_text)
+            self.assertIn(
+                'ln -sf "$(command -v fdfind)" /usr/local/bin/fd', docker_text
+            )
             self.assertIn("/home/agent/.claude/settings.json", docker_text)
             self.assertIn("/home/agent/.codex/config.toml", docker_text)
             self.assertRegex(docker_text, r'JJ_VERSION="v\d+\.\d+\.\d+"')
@@ -879,7 +884,13 @@ class RendererTests(TestCase):
             )
             self.assertIn("/project-sandbox-secrets/pi/auth.json", text)
             self.assertIn('"$HOME/.pi/agent/auth.json"', text)
-            self.assertNotIn("/project-sandbox-config/pi", text)
+            # Pi-Ollama config (models.json/settings.json), copied from a distinct
+            # mount only when --pi-ollama baked it; unconditionally present as a
+            # guarded copy step, matching the pattern for every other agent config.
+            self.assertIn("/project-sandbox-config/pi/models.json", text)
+            self.assertIn('"$HOME/.pi/agent/models.json"', text)
+            self.assertIn("/project-sandbox-config/pi/settings.json", text)
+            self.assertIn('"$HOME/.pi/agent/settings.json"', text)
             self.assertNotIn(".codex.host", text)
             self.assertNotIn("opencode.host", text)
             self.assertIn("sudo -n /usr/local/bin/project-sandbox-init-firewall", text)
@@ -1274,6 +1285,45 @@ class RendererTests(TestCase):
                 # NAT4/NAT6 look non-empty and forced a restore on empty input).
                 self.assertIn('[ -n "$match" ] && NAT4+="$match"', text)
 
+    def test_firewall_allowlist_summary_handles_empty_set(self) -> None:
+        # Regression: "grep -c PATTERN || echo 0" double-prints "0\n0" when an
+        # allowlist ipset has zero entries -- grep -c already prints "0" on no
+        # match but exits 1, so the "||" fallback fires too. printf's %d then
+        # rejects "0\n0" ("printf: 0\n0: invalid number") and, under `set -e`,
+        # aborts the firewall script. Reported with Podman, where the IPv6
+        # allowlist ipset exists but is empty.
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            firewall.render(context, extra_domains=[])
+            text = (context / "init-firewall.sh").read_text(encoding="utf-8")
+            marker = 'echo "Firewall initialized."'
+            self.assertIn(marker, text)
+            tail = text[text.index(marker) :]
+
+            with tempfile.TemporaryDirectory() as bindir:
+                ipset_stub = Path(bindir) / "ipset"
+                ipset_stub.write_text(
+                    "#!/bin/sh\n"
+                    'echo "Name: allowed-ipv4"\n'
+                    'echo "Type: hash:net"\n'
+                    'echo "Members:"\n',
+                    encoding="utf-8",
+                )
+                ipset_stub.chmod(0o755)
+
+                proc = subprocess.run(
+                    ["bash", "-c", tail],
+                    env={"PATH": f"{bindir}:/usr/bin:/bin", "IPV6_FW": "1"},
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("IPv4 allowlist: 0 entries", proc.stdout)
+            self.assertIn("IPv6 allowlist: 0 entries", proc.stdout)
+            self.assertNotIn("invalid number", proc.stderr)
+
     def test_firewall_rejects_unsafe_extra_domains(self) -> None:
         # Regression: extra domains are interpolated into a root-run Bash array,
         # so command substitutions, backticks, embedded quotes, or newlines must
@@ -1319,6 +1369,44 @@ class RendererTests(TestCase):
                 self.assertIn('"copilot-telemetry.githubusercontent.com"', text)
                 self.assertIn('"collector.github.com"', text)
                 self.assertIn('"default.exp-tas.com"', text)
+
+    def test_firewall_pi_ollama_adds_port_scoped_gateway_rule(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            firewall.render(context, extra_domains=[], pi_ollama=True)
+            for name in ("init-firewall.sh", "init-firewall-devcontainer.sh"):
+                text = (context / name).read_text(encoding="utf-8")
+                self.assertIn("--dport 11434", text)
+                self.assertIn(
+                    'iptables -A OUTPUT -p tcp --dport 11434 -d "$OLLAMA_HOST_IP4"',
+                    text,
+                )
+                self.assertIn("ollama.project-sandbox.internal", text)
+                self.assertIn("project-sandbox-dns-pin", text)
+                # Reuses the existing gateway-discovery approach.
+                self.assertIn("ip -4 route", text)
+
+    def test_firewall_pi_ollama_absent_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            firewall.render(context, extra_domains=[])
+            for name in ("init-firewall.sh", "init-firewall-devcontainer.sh"):
+                text = (context / name).read_text(encoding="utf-8")
+                self.assertNotIn("11434", text)
+                self.assertNotIn("ollama.project-sandbox.internal", text)
+
+    def test_firewall_pi_ollama_scoped_to_ollama_port_not_all_ports(self) -> None:
+        # Regression: the CLI (non-devcontainer) firewall variant must not gain
+        # the broader all-ports gateway rule just because --pi-ollama is set —
+        # only the narrow port-scoped rule.
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            firewall.render(context, extra_domains=[], pi_ollama=True)
+            text = (context / "init-firewall.sh").read_text(encoding="utf-8")
+            self.assertNotIn(
+                'iptables -A OUTPUT -d "$HOST_GW4" -o "${HOST_IF4:-eth0}" -j ACCEPT',
+                text,
+            )
 
     def test_render_returns_all_four_config_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1366,6 +1454,62 @@ class RendererTests(TestCase):
             context = Path(tmp)
             out = config_agents.render(context)["codex"]
             self.assertIn('approval_policy = "never"', out.read_text(encoding="utf-8"))
+
+    def test_render_without_pi_ollama_bakes_trust_only_pi_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            cfg = config_agents.render(context)
+            settings_path = cfg["pi"]
+            self.assertEqual(settings_path, context / "pi" / "settings.json")
+            settings = json.loads(settings_path.read_text(encoding="utf-8"))
+            self.assertEqual(settings, {"defaultProjectTrust": "always"})
+            self.assertFalse((context / "pi" / "models.json").exists())
+
+    def test_render_pi_ollama_bakes_default_models(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            cfg = config_agents.render(context, pi_ollama=True)
+            self.assertEqual(cfg["pi"], context / "pi" / "settings.json")
+            models_path = context / "pi" / "models.json"
+            models = json.loads(models_path.read_text(encoding="utf-8"))
+            provider = models["providers"]["ollama"]
+            self.assertEqual(
+                provider["baseUrl"], "http://ollama.project-sandbox.internal:11434/v1"
+            )
+            self.assertEqual(provider["api"], "openai-completions")
+            self.assertEqual(provider["apiKey"], "ollama")
+            self.assertEqual(
+                provider["models"],
+                [{"id": model} for model in config_agents.DEFAULT_OLLAMA_MODELS],
+            )
+
+            settings = json.loads(cfg["pi"].read_text(encoding="utf-8"))
+            self.assertEqual(settings["defaultProjectTrust"], "always")
+            self.assertEqual(settings["defaultProvider"], "ollama")
+            self.assertEqual(
+                settings["defaultModel"], config_agents.DEFAULT_OLLAMA_MODELS[0]
+            )
+            # Pi has no literal "auto" theme; it errors ("Theme not found: auto")
+            # and silently falls back to dark. "light/dark" is its documented
+            # syntax for following the terminal background.
+            self.assertEqual(settings["theme"], "light/dark")
+
+    def test_render_pi_ollama_honors_custom_model_list(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            cfg = config_agents.render(
+                context, pi_ollama=True, ollama_models=["mistral", "codellama"]
+            )
+            models = json.loads(
+                (context / "pi" / "models.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                models["providers"]["ollama"]["models"],
+                [{"id": "mistral"}, {"id": "codellama"}],
+            )
+            settings = json.loads(cfg["pi"].read_text(encoding="utf-8"))
+            self.assertEqual(settings["defaultProjectTrust"], "always")
+            self.assertEqual(settings["defaultModel"], "mistral")
 
     def test_dockerfile_source_warns_on_alpine_base(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

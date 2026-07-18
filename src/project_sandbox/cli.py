@@ -21,6 +21,7 @@ from . import (
     dockerfile_checksum,
     firewall,
     oauth_refresh,
+    ollama_network,
     session,
     token_expiry,
     transcript,
@@ -136,6 +137,25 @@ def build_parser() -> ArgumentParser:
         ),
     )
     p.add_argument("--no-firewall", action="store_true")
+    p.add_argument(
+        "--pi-ollama",
+        action="store_true",
+        help=(
+            "Extend the firewall to reach a host-run Ollama server and "
+            "pre-configure Pi to use it as the default provider. Only takes "
+            "effect together with --agent pi; a no-op otherwise."
+        ),
+    )
+    p.add_argument(
+        "--ollama-model",
+        action="append",
+        default=[],
+        metavar="MODEL_ID",
+        help=(
+            "Ollama model ID to make available to Pi, overriding the built-in "
+            "default list. Repeatable; only meaningful with --pi-ollama."
+        ),
+    )
     p.add_argument(
         "--branch",
         help=(
@@ -267,7 +287,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.no_build and args.force_build:
         raise SystemExit("--no-build and --force-build are mutually exclusive")
     run_agent = _requested_agent(args)
+    pi_ollama_enabled = _pi_ollama_enabled(args, run_agent)
     _validate_api_key_injection_args(args, run_agent)
+    _validate_ollama_models(args.ollama_model)
     is_chroot = args.runtime == container_cli.CHROOT.name
     if is_chroot:
         _validate_chroot_session(run_agent)
@@ -337,6 +359,7 @@ def main(argv: list[str] | None = None) -> int:
     api_key_values = _api_key_env_values(args)
     allow_github = _allow_github(args, run_agent)
     _warn_byok_provider_allowlist(args, run_agent)
+    _warn_pi_ollama_no_firewall(args, pi_ollama_enabled)
 
     wt, workspace = _setup_worktree(args, project) if run_agent else (None, project)
 
@@ -346,6 +369,7 @@ def main(argv: list[str] | None = None) -> int:
     # setup/build failure before the agent ran (leave git in place, drop the
     # empty jj workspace).
     agent_ran = False
+    ollama_plan: ollama_network.ForwardingPlan | None = None
     exit_code = 1
     try:
         if not is_chroot:
@@ -372,11 +396,16 @@ def main(argv: list[str] | None = None) -> int:
                 context_dir,
                 extra_domains=args.extra_domain,
                 allow_github=allow_github,
+                pi_ollama=pi_ollama_enabled,
             )
         else:
             chroot.render(context_dir)
 
-        cfg = config_agents.render(context_dir)
+        cfg = config_agents.render(
+            context_dir,
+            pi_ollama=pi_ollama_enabled,
+            ollama_models=args.ollama_model,
+        )
         forward_credentials = not args.no_forward_credentials
         # Before staging, ask the agent's own CLI to refresh its host token so the
         # container starts with a near-full window. bash may run claude, so it
@@ -523,6 +552,11 @@ def main(argv: list[str] | None = None) -> int:
                 "drop --no-build so the image can be built."
             )
 
+        if pi_ollama_enabled:
+            ollama_plan = ollama_network.prepare(runtime)
+            if args.verbose:
+                print(ollama_network.describe(ollama_plan))
+
         cmd, log_path, unsupervised, container_stop_argv = _build_session_command(
             args,
             project=project,
@@ -534,9 +568,11 @@ def main(argv: list[str] | None = None) -> int:
             claude_cfg=cfg["claude"],
             credential_dirs=credential_dirs,
             codex_cfg=cfg["codex"],
+            pi_cfg=cfg.get("pi"),
             runtime=runtime,
             create_prompt_files=True,
             api_key_values=api_key_values,
+            ollama_add_host=ollama_plan.add_host if ollama_plan else None,
         )
 
         if not unsupervised:
@@ -550,6 +586,8 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 print("Starting container…")
 
+        if ollama_plan is not None:
+            ollama_plan.start()
         agent_ran = True
         # Injected API key values are never baked into cmd's argv (see
         # _build_session_command); supply them through the subprocess
@@ -575,6 +613,8 @@ def main(argv: list[str] | None = None) -> int:
 
         return exit_code
     finally:
+        if ollama_plan is not None:
+            ollama_plan.close()
         if wt is not None:
             if agent_ran:
                 _finalize_worktree(args, project=project, wt=wt, exit_code=exit_code)
@@ -605,6 +645,10 @@ def _requested_agent(args) -> str | None:
     return None
 
 
+def _pi_ollama_enabled(args, run_agent: str | None) -> bool:
+    return bool(args.pi_ollama and run_agent == "pi")
+
+
 def _ensure_agent_available(run_agent: str, available_agents: tuple[str, ...]) -> None:
     if run_agent in available_agents:
         return
@@ -626,6 +670,7 @@ def _dry_run(
     context_dir = project / ".project-sandbox"
     claude_cfg = context_dir / "claude" / "settings.json"
     codex_cfg = context_dir / "codex" / "config.toml"
+    pi_cfg = context_dir / "pi" / "settings.json"
     # Only the keys _build_session_command consumes ("claude", and optionally
     # "codex"/"opencode"/"pi" when available); the devcontainer-specific dirs
     # are not used on the CLI run path.
@@ -638,7 +683,9 @@ def _dry_run(
         },
     }
     run_agent = _requested_agent(args)
+    pi_ollama_enabled = _pi_ollama_enabled(args, run_agent)
     _warn_byok_provider_allowlist(args, run_agent)
+    _warn_pi_ollama_no_firewall(args, pi_ollama_enabled)
     if args.runtime == container_cli.CHROOT.name:
         _validate_chroot_session(run_agent)
 
@@ -699,6 +746,11 @@ def _dry_run(
             dry_run=True,
             verbose=args.verbose,
         )
+    ollama_plan = (
+        ollama_network.prepare(runtime, dry_run=True) if pi_ollama_enabled else None
+    )
+    if ollama_plan is not None:
+        print(f"Would use {ollama_network.describe(ollama_plan)}")
     cmd, log_path, unsupervised, container_stop_argv = _build_session_command(
         args,
         project=project,
@@ -710,8 +762,10 @@ def _dry_run(
         claude_cfg=claude_cfg,
         credential_dirs=credential_dirs,
         codex_cfg=codex_cfg,
+        pi_cfg=pi_cfg,
         runtime=runtime,
         create_prompt_files=False,
+        ollama_add_host=ollama_plan.add_host if ollama_plan else None,
     )
     if unsupervised:
         assert log_path is not None
@@ -750,6 +804,12 @@ def _validate_api_key_injection_args(args, run_agent: str | None) -> None:
         raise SystemExit(
             "--api-key-env and --api-key-env-file require --agent, --prompt, or --prompt-text"
         )
+
+
+def _validate_ollama_models(ollama_models: list[str]) -> None:
+    for model_id in ollama_models:
+        if not model_id.strip():
+            raise SystemExit("--ollama-model must not be empty or whitespace")
 
 
 def _api_key_env_values(args) -> dict[str, str]:
@@ -1070,13 +1130,32 @@ def _uses_github_copilot_cli(args, run_agent: str | None) -> bool:
 
 
 def _warn_byok_provider_allowlist(args, run_agent: str | None) -> None:
-    if run_agent not in ("opencode", "pi") or args.no_firewall:
+    if (
+        run_agent not in ("opencode", "pi")
+        or args.no_firewall
+        or (run_agent == "pi" and args.pi_ollama)
+    ):
         return
     agent_label = "OpenCode" if run_agent == "opencode" else "Pi"
     print(
         f"[W] {agent_label} provider network access depends on the selected provider. "
         "OpenAI and Anthropic endpoints are allowed by default; use --allow-github "
         "for GitHub Copilot or --extra-domain DOMAIN for another provider."
+    )
+
+
+def _warn_pi_ollama_no_firewall(args, pi_ollama_enabled: bool) -> None:
+    # Both the port-scoped gateway allow rule and the
+    # ollama.project-sandbox.internal /etc/hosts pin live in the firewall
+    # script; with --no-firewall neither runs, so Pi's baked config points at
+    # a hostname nothing inside the container resolves.
+    if not pi_ollama_enabled or not args.no_firewall:
+        return
+    print(
+        "[W] --pi-ollama with --no-firewall: the ollama.project-sandbox.internal "
+        "hostname baked into Pi's config will not resolve, since the /etc/hosts "
+        "pin and gateway route are only set up as part of firewall initialization. "
+        "Drop --no-firewall, or point Pi at Ollama manually."
     )
 
 
@@ -1257,9 +1336,11 @@ def _build_session_command(
     claude_cfg: Path,
     credential_dirs: dict[str, Path],
     codex_cfg: Path,
+    pi_cfg: Path | None = None,
     runtime: container_cli.Runtime,
     create_prompt_files: bool,
     api_key_values: dict[str, str] | None = None,
+    ollama_add_host: str | None = None,
 ) -> tuple[list[str], Path | None, bool, list[str] | None]:
     # Agent availability is validated up front in main() via _ensure_agent_available.
     extra_mounts = list(args.extra_mounts)
@@ -1454,6 +1535,7 @@ def _build_session_command(
             codex_credentials_dir=credential_dirs.get("codex"),
             opencode_credentials_dir=credential_dirs.get("opencode"),
             pi_credentials_dir=credential_dirs.get("pi"),
+            pi_cfg=pi_cfg,
             identity=identity,
             memory=args.memory,
             cpus=args.cpus,
@@ -1465,6 +1547,7 @@ def _build_session_command(
             env_file=staged_api_key_env_file if use_api_key_env_file else None,
             container_name=container_name,
             forward_credentials=forward_credentials,
+            add_hosts=[ollama_add_host] if ollama_add_host else (),
         )
     else:
         mounts = container_cli.build_mount_specs(
@@ -1475,6 +1558,7 @@ def _build_session_command(
             codex_credentials_dir=credential_dirs.get("codex"),
             opencode_credentials_dir=credential_dirs.get("opencode"),
             pi_credentials_dir=credential_dirs.get("pi"),
+            pi_cfg=pi_cfg,
             extra_mounts=extra_mounts,
             forward_credentials=forward_credentials,
         )

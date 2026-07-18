@@ -45,21 +45,6 @@ Interim mitigation already in place: a host-side exclusive lock serializes
 interleave their store mutations. It does not address concurrent in-container
 writes; this item supersedes it.
 
-## Wire oauth_refresh.py / token_expiry.py for Pi
+## Disable telemetry for Openspec
 
-Pi (pi.dev) agent support has shipped (see the `add-pi-agent-support`
-OpenSpec change): image install, credential mounting
-(`/project-sandbox-secrets/pi`, flat `auth.json`), headless/interactive
-dispatch, combined `--model <model>:<effort>` flag, and provider-allowlist
-warning. Deliberately deferred, since both modules are defensive by
-construction (unknown agent ⇒ silent no-op / `None`, never raises) and it's
-safer to under-wire than guess wrong field names:
-
-- `oauth_refresh.py`: does Pi have a CLI subcommand like `codex login status`
-  to delegate a host token refresh to?
-- `token_expiry.py`: what is the JSON shape of an OAuth entry in
-  `~/.pi/agent/auth.json` — flat like Codex's, or a provider-keyed map like
-  OpenCode's, given Pi is also multi-provider?
-
-Confirm both against Pi's actual source, then wire them the same way Codex
-(flat) or OpenCode (provider-keyed) is handled, whichever shape matches.
+The variable to set in the container for this is OPENSPEC_TELEMETRY=0.

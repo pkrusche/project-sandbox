@@ -30,6 +30,12 @@ Given `project-sandbox --agent claude /path/to/repo python:3.12-slim`, it also:
    staged credentials into the container's home, then runs the firewall before
    exec'ing the agent.
 
+With `--agent pi --pi-ollama`, a runtime networking adapter is selected before
+step 4. Native host-loopback forwarding is preferred; local Linux bridge modes
+start a short-lived `socat` proxy on the exact bridge address. Apple `container`
+uses a user-preconfigured localhost DNS mapping and is never modified with
+administrator privileges by project-sandbox.
+
 On Linux, `--runtime chroot` explicitly selects a dummy filesystem-layout
 verification runtime. It uses rootless `unshare --map-root-user --mount`, bind
 mounts host system directories and the normal sandbox mount set into a temporary
@@ -60,6 +66,8 @@ for this reason (see `.github/workflows/e2e.yml`).
 |   |-- claude-devcontainer/settings.json
 |   |-- codex/config.toml
 |   |-- codex-devcontainer/config.toml
+|   |-- pi/models.json                 # only with --pi-ollama
+|   |-- pi/settings.json               # only with --pi-ollama
 |   |-- .dockerfile-checksums.json     # trusted project Dockerfile hashes
 |   `-- sessions/                      # unsupervised-mode logs
 `-- .devcontainer/
