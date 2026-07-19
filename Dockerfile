@@ -22,9 +22,9 @@ RUN UV_CACHE_DIR=/opt/uv-cache uv sync \
 
 # README.md is declared as `readme =` in pyproject.toml, so the build backend
 # needs it present once the project itself is installed below.
-# Match ownership to the agent user created by the sandbox layers that follow.
 COPY README.md /tmp/project-setup/
 COPY src/ /tmp/project-setup/src/
+# Match ownership to the agent user created by the sandbox layers that follow.
 RUN UV_CACHE_DIR=/opt/uv-cache uv sync \
         --frozen \
         --project /tmp/project-setup \

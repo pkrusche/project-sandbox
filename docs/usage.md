@@ -55,6 +55,12 @@ running sandbox downloads without the declared prerequisites. The sandbox
 inserts its dependency stage immediately after `prefix` and carries it along the
 final stage's inheritance path. Other build branches remain unchanged.
 
+Inserting the dependency stage after `prefix` shifts the positional index of
+every stage declared after it, so a numeric `--from=<N>` (or
+`--mount=...,from=<N>`) reference to one of those stages would silently point
+at the wrong stage. Rendering fails with an error instead; use a named stage
+(`AS <name>` / `--from=<name>`) for anything declared after `prefix`.
+
 Postfix source instructions run as root and may assume sandbox-installed tools
 such as `git` and `curl` are available, but they run before the sandbox creates
 the `agent` user, its home directory, or the `/project-sandbox-config` and
@@ -158,9 +164,9 @@ RUN UV_CACHE_DIR=/opt/uv-cache uv sync \
 
 # README.md is declared as `readme =` in pyproject.toml, so the build backend
 # needs it present once the project itself is installed below.
-# Match ownership to the agent user created by the sandbox layers that follow.
 COPY README.md /tmp/project-setup/
 COPY src/ /tmp/project-setup/src/
+# Match ownership to the agent user created by the sandbox layers that follow.
 RUN UV_CACHE_DIR=/opt/uv-cache uv sync \
         --frozen \
         --project /tmp/project-setup \
@@ -175,12 +181,11 @@ Key points:
 - The first layer only copies `pyproject.toml` and `uv.lock`, and installs
   dependencies with `--no-install-project` so it doesn't need the project's
   source at all. It only rebuilds when the manifest/lockfile change.
-- The second layer copies `README.md` and `src/`, then runs `uv sync` again
-  (without `--no-install-project`) to build and install the local project
-  itself. Copy all files referenced by `pyproject.toml` metadata, including
-  `README.md` if declared as `readme =`, so the build backend can validate the
-  project. This layer rebuilds on every source edit, but reuses the dependency
-  cache the first layer already populated.
+- The second layer copies all files referenced by `pyproject.toml` metadata
+  (including `README.md`, since it's declared as `readme =`) plus `src/`, then
+  runs `uv sync` again (without `--no-install-project`) to build and install
+  the local project itself. This layer rebuilds on every source edit, but
+  reuses the dependency cache the first layer already populated.
 - The `chown -R 1000:1000` gives the sandbox's `agent` user, created by the
   layers that follow, full access to the pre-warmed cache.
 - `ENV UV_CACHE_DIR=/opt/uv-cache` persists into the running container so the

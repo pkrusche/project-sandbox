@@ -45,6 +45,10 @@ The system SHALL reject prefix declarations that cannot unambiguously configure 
 - **WHEN** a prefix stage exists but is not an ancestor of the final source stage
 - **THEN** rendering fails with an error explaining that the final stage must inherit from prefix
 
+#### Scenario: Numeric stage reference shifted by prefix insertion
+- **WHEN** a prefix stage is not the final source stage and any instruction references a build stage by numeric index (`--from=<N>` or `--mount=...,from=<N>`) that is greater than prefix's own index
+- **THEN** rendering fails with an error explaining that inserting the dependency stage after prefix would shift that index, and that a named stage reference should be used instead
+
 ### Requirement: Source Dockerfile structure is preserved
 The system SHALL preserve source semantics outside the selected inheritance edge, including parser directives, global arguments, `FROM` options, stage aliases, unrelated stage branches, and cross-stage copy references.
 
@@ -53,7 +57,7 @@ The system SHALL preserve source semantics outside the selected inheritance edge
 - **THEN** its `FROM` instruction and body remain unchanged
 
 #### Scenario: Generated name collision
-- **WHEN** a source stage already uses the preferred internal dependency-stage name
+- **WHEN** a source stage alias, or an unaliased source `FROM` base token, already matches the preferred internal dependency-stage name
 - **THEN** the system selects a deterministic unused suffixed name
 
 #### Scenario: FROM options and global arguments

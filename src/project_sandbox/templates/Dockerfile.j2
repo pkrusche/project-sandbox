@@ -88,6 +88,11 @@ RUN npm install -g @earendil-works/pi-coding-agent@0.80.6
 {% if source_after_dependencies -%}
 {{ source_after_dependencies }}
 {% endif %}
+{% if source_after_dependencies -%}
+ARG AGENT_UID=1000
+ARG AGENT_GID=1000
+
+{% endif %}
 RUN set -eux; \
     if id -u agent >/dev/null 2>&1; then \
         userdel -r agent 2>/dev/null || userdel agent; \
