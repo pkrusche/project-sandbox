@@ -103,6 +103,9 @@ def normalize_package_name(name: str) -> str:
 
 
 def latest_pypi_version(name: str) -> str:
+    # PyPI lookups are synchronous and can take long enough that the script
+    # otherwise appears idle, especially while checking every uv.lock package.
+    print(f"Checking PyPI for {name}...", flush=True)
     data = request_json(f"https://pypi.org/pypi/{urllib.parse.quote(name)}/json")
     if not isinstance(data, dict) or not isinstance(data.get("info"), dict):
         raise RuntimeError(f"Unexpected PyPI response for {name}")

@@ -1,6 +1,8 @@
 import importlib.util
+import io
 import sys
 import tempfile
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import TestCase
 from unittest.mock import patch
@@ -24,6 +26,23 @@ def _load_module():
 
 
 update_pins = _load_module()
+
+
+class PypiProgressTests(TestCase):
+    def test_latest_version_reports_package_before_request(self) -> None:
+        output = io.StringIO()
+
+        def fake_request_json(url: str) -> object:
+            self.assertEqual(output.getvalue(), "Checking PyPI for example-package...\n")
+            return {"info": {"version": "2.0.0"}}
+
+        with (
+            patch.object(update_pins, "request_json", side_effect=fake_request_json),
+            redirect_stdout(output),
+        ):
+            version = update_pins.latest_pypi_version("example-package")
+
+        self.assertEqual(version, "2.0.0")
 
 
 class UvImagePinTests(TestCase):

@@ -73,16 +73,16 @@ RUN set -euxo pipefail; \
 RUN npm install -g @fission-ai/openspec@1.6.0
 
 {% if install_claude %}
-RUN npm install -g @anthropic-ai/claude-code@2.1.207
+RUN npm install -g @anthropic-ai/claude-code@2.1.215
 {% endif %}
 {% if install_codex %}
-RUN npm install -g @openai/codex@0.144.1
+RUN npm install -g @openai/codex@0.144.6
 {% endif %}
 {% if install_opencode %}
-RUN npm install -g opencode-ai@1.17.18
+RUN npm install -g opencode-ai@1.18.3
 {% endif %}
 {% if install_pi %}
-RUN npm install -g @earendil-works/pi-coding-agent@0.80.6
+RUN npm install -g @earendil-works/pi-coding-agent@0.80.10
 {% endif %}
 
 {% if source_after_dependencies -%}
