@@ -33,7 +33,9 @@ class PypiProgressTests(TestCase):
         output = io.StringIO()
 
         def fake_request_json(url: str) -> object:
-            self.assertEqual(output.getvalue(), "Checking PyPI for example-package...\n")
+            self.assertEqual(
+                output.getvalue(), "Checking PyPI for example-package...\n"
+            )
             return {"info": {"version": "2.0.0"}}
 
         with (

@@ -839,6 +839,28 @@ class RendererTests(TestCase):
             self.assertIn("FROM project-sandbox-dependencies AS middle", text)
             self.assertIn("FROM middle AS final", text)
 
+    def test_dockerfile_renderer_preserves_base_image_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            context = project / ".project-sandbox"
+            context.mkdir()
+            source = project / "Dockerfile"
+            source.write_text(
+                "FROM rust:slim\nRUN cargo fetch --locked\n",
+                encoding="utf-8",
+            )
+
+            dockerfile.render(context, base_dockerfile=source, build_context=project)
+
+            text = (context / "Dockerfile").read_text(encoding="utf-8")
+            # A login shell reads /etc/profile, which can replace the Rust
+            # image's PATH and hide /usr/local/cargo/bin after stage splicing.
+            self.assertIn('SHELL ["/bin/bash", "-c"]', text)
+            self.assertNotIn('SHELL ["/bin/bash", "-lc"]', text)
+            self.assertGreater(
+                text.index("RUN cargo fetch --locked"), text.index("SHELL")
+            )
+
     def test_dockerfile_renderer_leaves_unrelated_prefix_branch_unchanged(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
