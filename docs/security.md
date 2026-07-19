@@ -169,6 +169,10 @@ The tool does not protect against:
 
 ## Limitations
 
+- Dockerfiles passed with `--dockerfile` must use the default backslash (`\\`)
+  line-continuation escape. The Dockerfile parser directive ``# escape=` `` is
+  not currently honored, so backtick-continued instructions may produce an
+  invalid generated Dockerfile.
 - Base images, including the final stage of a Dockerfile passed with
   `--dockerfile`, must be Debian or Ubuntu based. The firewall depends on `apt`
   packages including `aggregate`, which Alpine does not ship.

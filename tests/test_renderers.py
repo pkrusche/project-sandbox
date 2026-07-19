@@ -981,17 +981,14 @@ class RendererTests(TestCase):
                     "FROM alpine:3.22 AS unrelated\n"
                     "RUN echo unrelated-marker\n"
                     "FROM prefix AS middle\n"
-                    "FROM middle AS final\n"
+                    "FROM middle AS final\n" + reference,
                     # Numeric reference to stage index 1 ("unrelated"). Inserting
                     # the dependency stage right after prefix (index 0) would
                     # shift "unrelated" to index 2, silently breaking this.
-                    + reference,
                     encoding="utf-8",
                 )
 
-                with self.assertRaisesRegex(
-                    ValueError, r"stage index 1.*--from=1"
-                ):
+                with self.assertRaisesRegex(ValueError, r"stage index 1.*--from=1"):
                     dockerfile.render(
                         context, base_dockerfile=source, build_context=project
                     )
@@ -1103,7 +1100,9 @@ class RendererTests(TestCase):
             self.assertIn("# migrated from=3", text)
             self.assertIn('RUN echo "from=2 backup"', text)
 
-    def test_dockerfile_renderer_checks_prefix_ancestry_before_numeric_refs(self) -> None:
+    def test_dockerfile_renderer_checks_prefix_ancestry_before_numeric_refs(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
             context = project / ".project-sandbox"
@@ -1167,9 +1166,7 @@ class RendererTests(TestCase):
 
                 text = (context / "Dockerfile").read_text(encoding="utf-8")
                 self.assertIn(heredoc.rstrip(), text)
-                self.assertEqual(
-                    text.count("AS project-sandbox-dependencies"), 1
-                )
+                self.assertEqual(text.count("AS project-sandbox-dependencies"), 1)
 
     def test_dockerfile_renderer_resolves_global_arg_stage_reference(self) -> None:
         for reference in ("$BASE", "${BASE}"):
@@ -1193,9 +1190,7 @@ class RendererTests(TestCase):
                 )
 
                 text = (context / "Dockerfile").read_text(encoding="utf-8")
-                self.assertIn(
-                    "FROM project-sandbox-dependencies AS final", text
-                )
+                self.assertIn("FROM project-sandbox-dependencies AS final", text)
 
     def test_dockerfile_renderer_explains_unresolved_arg_stage_reference(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
