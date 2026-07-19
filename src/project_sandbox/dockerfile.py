@@ -1,5 +1,6 @@
 import re
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from . import templating
@@ -36,6 +37,24 @@ _LOCAL_INSTALL_RE = re.compile(
     re.IGNORECASE,
 )
 
+_DEPENDENCY_STAGE_NAME = "project-sandbox-dependencies"
+
+
+@dataclass(frozen=True)
+class _DockerfileStage:
+    from_block_index: int
+    end_block_index: int
+    base: str
+    alias: str | None
+    parent_index: int | None
+
+
+@dataclass(frozen=True)
+class _DockerfileFragments:
+    before_dependencies: str
+    dependency_from: str
+    after_dependencies: str
+
 
 def render(
     context_dir: Path,
@@ -49,9 +68,17 @@ def render(
     if (base_image is None) == (base_dockerfile is None):
         raise ValueError("Provide exactly one of base_image or base_dockerfile")
 
-    source_dockerfile_text = ""
+    source_before_dependencies = ""
+    dependency_from = f"FROM {base_image}" if base_image is not None else ""
+    source_after_dependencies = ""
     if base_dockerfile is not None:
         source_dockerfile_text, warnings = _read_source_dockerfile(base_dockerfile)
+        fragments = _source_dockerfile_fragments(
+            _dockerfile_blocks(source_dockerfile_text)
+        )
+        source_before_dependencies = fragments.before_dependencies
+        dependency_from = fragments.dependency_from
+        source_after_dependencies = fragments.after_dependencies
         if warn is not None:
             for warning in warnings:
                 warn(warning)
@@ -65,8 +92,9 @@ def render(
 
     tmpl = templating.get_template("Dockerfile.j2")
     shared = dict(
-        base_image=base_image,
-        source_dockerfile_text=source_dockerfile_text,
+        source_before_dependencies=source_before_dependencies,
+        dependency_from=dependency_from,
+        source_after_dependencies=source_after_dependencies,
         sandbox_copy_prefix=copy_prefix,
         install_claude="claude" in install_agents,
         install_codex="codex" in install_agents,
@@ -155,21 +183,177 @@ def source_warnings(base_dockerfile: Path) -> tuple[str, ...]:
 
 
 def _extract_last_from(blocks: list[list[str]]) -> str | None:
-    result = None
-    for block in blocks:
-        if block:
-            m = re.match(r"\s*FROM\s+(.*)", block[0], re.IGNORECASE)
-            if m:
-                image = _first_non_option_token(m.group(1))
-                if image is not None:
-                    result = image
+    stages = _dockerfile_stages(blocks)
+    if not stages:
+        return None
+    stage = stages[-1]
+    while stage.parent_index is not None:
+        stage = stages[stage.parent_index]
+    return stage.base
+
+
+def _source_dockerfile_fragments(
+    blocks: list[list[str]],
+) -> _DockerfileFragments:
+    """Insert an inherited dependency stage into sanitized source blocks."""
+    stages = _dockerfile_stages(blocks)
+    if not stages:
+        raise ValueError("Dockerfile must contain at least one FROM instruction")
+
+    internal_name = _unused_dependency_stage_name(stages)
+    prefix_indexes = [
+        index
+        for index, stage in enumerate(stages)
+        if stage.alias is not None and stage.alias.casefold() == "prefix"
+    ]
+    if len(prefix_indexes) > 1:
+        raise ValueError(
+            "Dockerfile declares more than one stage named 'prefix' "
+            "(stage-name matching is case-insensitive)"
+        )
+
+    if not prefix_indexes:
+        final = stages[-1]
+        dependency_block = _rewrite_from_block(
+            blocks[final.from_block_index], alias=internal_name
+        )
+        final_from = _generated_from(internal_name, final.alias)
+        after = [[final_from], *blocks[final.from_block_index + 1 :]]
+        return _DockerfileFragments(
+            before_dependencies=_join_dockerfile_blocks(
+                blocks[: final.from_block_index]
+            ),
+            dependency_from=_join_dockerfile_blocks([dependency_block]).rstrip(),
+            after_dependencies=_join_dockerfile_blocks(after),
+        )
+
+    prefix_index = prefix_indexes[0]
+    prefix = stages[prefix_index]
+    final_index = len(stages) - 1
+    if prefix_index == final_index:
+        return _DockerfileFragments(
+            before_dependencies=_join_dockerfile_blocks(
+                blocks[: prefix.end_block_index]
+            ),
+            dependency_from=_generated_from(prefix.alias or "prefix", internal_name),
+            after_dependencies=_generated_from(internal_name, None) + "\n",
+        )
+
+    path_child = final_index
+    while stages[path_child].parent_index is not None:
+        if stages[path_child].parent_index == prefix_index:
+            break
+        path_child = stages[path_child].parent_index  # type: ignore[assignment]
+    else:
+        raise ValueError(
+            "Dockerfile stage named 'prefix' is not an ancestor of the final stage; "
+            "make the final stage inherit from prefix"
+        )
+
+    child = stages[path_child]
+    after_blocks = [list(block) for block in blocks[prefix.end_block_index :]]
+    child_offset = child.from_block_index - prefix.end_block_index
+    after_blocks[child_offset] = _rewrite_from_block(
+        after_blocks[child_offset], base=internal_name, alias=child.alias
+    )
+    return _DockerfileFragments(
+        before_dependencies=_join_dockerfile_blocks(blocks[: prefix.end_block_index]),
+        dependency_from=_generated_from(prefix.alias or "prefix", internal_name),
+        after_dependencies=_join_dockerfile_blocks(after_blocks),
+    )
+
+
+def _dockerfile_stages(blocks: list[list[str]]) -> list[_DockerfileStage]:
+    parsed: list[tuple[int, str, str | None]] = []
+    for block_index, block in enumerate(blocks):
+        parsed_from = _parse_from_block(block)
+        if parsed_from is not None:
+            base, alias = parsed_from
+            parsed.append((block_index, base, alias))
+
+    stages: list[_DockerfileStage] = []
+    prior_aliases: dict[str, int] = {}
+    for index, (block_index, base, alias) in enumerate(parsed):
+        end = parsed[index + 1][0] if index + 1 < len(parsed) else len(blocks)
+        stages.append(
+            _DockerfileStage(
+                from_block_index=block_index,
+                end_block_index=end,
+                base=base,
+                alias=alias,
+                parent_index=prior_aliases.get(base.casefold()),
+            )
+        )
+        if alias is not None:
+            prior_aliases[alias.casefold()] = index
+    return stages
+
+
+def _parse_from_block(block: list[str]) -> tuple[str, str | None] | None:
+    if not block:
+        return None
+    match = re.match(r"\s*FROM\s+(.*)", " ".join(block), re.IGNORECASE)
+    if match is None:
+        return None
+    tokens = match.group(1).split()
+    base_index = _first_non_option_token_index(tokens)
+    if base_index is None:
+        return None
+    alias = None
+    if len(tokens) >= base_index + 3 and tokens[base_index + 1].lower() == "as":
+        alias = tokens[base_index + 2]
+    return tokens[base_index], alias
+
+
+def _rewrite_from_block(
+    block: list[str], *, base: str | None = None, alias: str | None = None
+) -> list[str]:
+    match = re.match(r"(\s*FROM\s+)(.*)", " ".join(block), re.IGNORECASE)
+    if match is None:
+        raise ValueError("Expected a FROM instruction")
+    tokens = match.group(2).split()
+    base_index = _first_non_option_token_index(tokens)
+    if base_index is None:
+        raise ValueError("FROM instruction is missing a base image")
+    if base is not None:
+        tokens[base_index] = base
+    tokens = tokens[: base_index + 1]
+    if alias is not None:
+        tokens.extend(("AS", alias))
+    return [match.group(1) + " ".join(tokens)]
+
+
+def _generated_from(base: str, alias: str | None) -> str:
+    result = f"FROM {base}"
+    if alias is not None:
+        result += f" AS {alias}"
     return result
+
+
+def _unused_dependency_stage_name(stages: list[_DockerfileStage]) -> str:
+    used = {stage.alias.casefold() for stage in stages if stage.alias is not None}
+    candidate = _DEPENDENCY_STAGE_NAME
+    suffix = 2
+    while candidate.casefold() in used:
+        candidate = f"{_DEPENDENCY_STAGE_NAME}-{suffix}"
+        suffix += 1
+    return candidate
+
+
+def _join_dockerfile_blocks(blocks: list[list[str]]) -> str:
+    lines = [line for block in blocks for line in block]
+    return "\n".join(lines).rstrip() + ("\n" if lines else "")
 
 
 def _first_non_option_token(rest: str) -> str | None:
     """Return the image token from a FROM line, skipping options like
     ``--platform=...`` (or ``--flag value``) that may precede the image."""
     tokens = rest.split()
+    index = _first_non_option_token_index(tokens)
+    return tokens[index] if index is not None else None
+
+
+def _first_non_option_token_index(tokens: list[str]) -> int | None:
     i = 0
     while i < len(tokens):
         token = tokens[i]
@@ -180,7 +364,7 @@ def _first_non_option_token(rest: str) -> str | None:
                 i += 1
             i += 1
             continue
-        return token
+        return i
     return None
 
 

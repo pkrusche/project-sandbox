@@ -1,45 +1,72 @@
 ## ADDED Requirements
 
-### Requirement: Template-owned installs precede user Dockerfile content
-When rendering a Dockerfile from a user-supplied `--dockerfile`, the system SHALL place its own base-image-only instructions — the `apt-get` toolchain install, Node.js install, jj install, and per-agent `npm install -g` calls — immediately after the effective `FROM`/`ARG`/`USER root` block and before any instruction from the user's Dockerfile that follows its own final-stage `FROM`.
+### Requirement: Custom Dockerfiles use an inherited dependency stage
+When rendering a user-supplied `--dockerfile`, the system SHALL place sandbox-owned apt, Node.js, jj, and npm installs in a generated stage and SHALL make the final source stage inherit those installed dependencies.
 
-#### Scenario: Source edit does not invalidate template installs
-- **WHEN** a user rebuilds a `--dockerfile` image after editing only source files referenced by a `COPY`/`RUN` step in their own Dockerfile
-- **THEN** the rendered Dockerfile's apt-get, Node.js, jj, and npm agent-install layers appear before that user step, so Docker's build cache reuses those layers unchanged
+#### Scenario: Single-stage Dockerfile
+- **WHEN** the source has one unnamed stage and no `prefix` stage
+- **THEN** the generated dependency stage uses the source `FROM` base and options, and an inherited final stage contains the source stage body
 
-#### Scenario: No user Dockerfile content precedes template installs
-- **WHEN** a Dockerfile is rendered from any `--dockerfile` input
-- **THEN** no `COPY`, `RUN`, or other instruction copied from the user's sanitized source text appears earlier in the output than the template's apt-get/Node.js/jj/npm-install blocks
+#### Scenario: Multi-stage Dockerfile without prefix
+- **WHEN** the source has multiple stages and none is named `prefix`
+- **THEN** all stages before the final stage remain intact, while the final stage is split into the dependency stage and an inherited postfix stage preserving its optional alias
 
-### Requirement: Multi-stage user Dockerfiles keep named stages together with the final FROM
-The system SHALL split the sanitized source Dockerfile text at the final stage's `FROM` instruction, placing that `FROM` and any earlier named build stages in the emitted "from part," and placing every instruction that follows the final `FROM` in the emitted "rest part."
+#### Scenario: Source edits retain dependency cache
+- **WHEN** only files used by final-stage source `COPY` or `RUN` instructions change
+- **THEN** sandbox dependency instructions precede those instructions in an ancestor stage and remain cacheable
 
-#### Scenario: Multi-stage source Dockerfile
-- **WHEN** the user's `--dockerfile` declares one or more earlier named stages (e.g., `FROM golang:1.22 AS builder`) followed by a final stage's `FROM`
-- **THEN** the rendered Dockerfile keeps all named stages and the final stage's `FROM` together, ahead of the template's dependency installs, and any `COPY --from=<stage>` reference in the user's final-stage instructions continues to resolve correctly
+### Requirement: Prefix stage configures sandbox network installs
+The system SHALL recognize a source stage named `prefix` case-insensitively and SHALL run the generated dependency stage from the completed prefix stage.
 
-#### Scenario: Single-stage source Dockerfile
-- **WHEN** the user's `--dockerfile` has exactly one `FROM`
-- **THEN** the "from part" is that single `FROM` (plus any preceding comments/ARGs in the same leading block) and the "rest part" is everything after it
+#### Scenario: Certificate and proxy prefix
+- **WHEN** a prefix stage copies a corporate CA, updates certificate trust, or sets proxy/mirror configuration
+- **THEN** those instructions execute before sandbox-owned apt, curl, and npm network operations and their resulting state is inherited
 
-### Requirement: User Dockerfile content still runs as root before the agent user exists
-The system SHALL continue to run the spliced user Dockerfile content (the "rest part") as `root`, after the template's dependency installs and before the `agent` user, config-directory, and firewall/entrypoint setup.
+#### Scenario: Mixed-case prefix name
+- **WHEN** the source declares `AS PREFIX` or another casing of `prefix`
+- **THEN** the analyzer recognizes it while preserving the actual stage spelling in generated references
 
-#### Scenario: User content can install packages
-- **WHEN** the user's Dockerfile's rest-part contains `RUN apt-get install` or similar privileged steps
-- **THEN** those steps execute successfully because `USER root` is still in effect and the base apt tooling installed by the template is already present
+#### Scenario: Transitive final-stage inheritance
+- **WHEN** the final source stage descends from prefix through one or more named stages
+- **THEN** only the first inheritance edge on that final-stage path is rewritten to inherit the dependency stage, and the remaining chain carries the dependencies to the final image
 
-#### Scenario: User content cannot assume the agent user exists
-- **WHEN** the user's Dockerfile's rest-part references the `agent` user, its home directory, or `/project-sandbox-config`/`/project-sandbox-secrets` paths
-- **THEN** those references are not yet valid at that point in the build, since `agent`-user creation and config-directory setup happen only after the rest-part splice
+#### Scenario: Prefix is the final source stage
+- **WHEN** the prefix stage is also the last source stage
+- **THEN** the system emits a generated final stage inheriting the dependency stage before appending agent and firewall setup
 
-### Requirement: Sanitization and warning behavior is unchanged by the reorder
-The system SHALL apply the same restricted-user-setup sanitization (`_remove_restricted_user_setup`), base-image compatibility warning, and `WORKDIR`-mismatch warning to the source Dockerfile regardless of the new from-part/rest-part split.
+### Requirement: Invalid prefix graphs fail clearly
+The system SHALL reject prefix declarations that cannot unambiguously configure the final image.
 
-#### Scenario: Restricted user setup still stripped
-- **WHEN** the user's Dockerfile contains `USER`, `useradd`, `groupadd`, or equivalent instructions targeting a non-root user
-- **THEN** those instructions are still removed from the rendered output and a warning is still emitted, exactly as before the reorder
+#### Scenario: Duplicate prefix declarations
+- **WHEN** more than one stage is named `prefix` under case-insensitive comparison
+- **THEN** rendering fails with an actionable duplicate-prefix error
 
-#### Scenario: Base image and WORKDIR warnings still fire
-- **WHEN** the user's Dockerfile's final stage uses a non-apt base image, or sets a `WORKDIR` other than `/workspace` alongside local install commands
-- **THEN** the corresponding warning is still emitted, using the same final-stage `FROM`/`WORKDIR` detection as before
+#### Scenario: Disconnected prefix
+- **WHEN** a prefix stage exists but is not an ancestor of the final source stage
+- **THEN** rendering fails with an error explaining that the final stage must inherit from prefix
+
+### Requirement: Source Dockerfile structure is preserved
+The system SHALL preserve source semantics outside the selected inheritance edge, including parser directives, global arguments, `FROM` options, stage aliases, unrelated stage branches, and cross-stage copy references.
+
+#### Scenario: Unrelated build branch
+- **WHEN** a source contains a stage that is not on the final stage's prefix inheritance path
+- **THEN** its `FROM` instruction and body remain unchanged
+
+#### Scenario: Generated name collision
+- **WHEN** a source stage already uses the preferred internal dependency-stage name
+- **THEN** the system selects a deterministic unused suffixed name
+
+#### Scenario: FROM options and global arguments
+- **WHEN** a selected source `FROM` uses options or a base expanded from a global `ARG`
+- **THEN** those declarations and options remain effective in the generated dependency stage
+
+### Requirement: Sanitization, warnings, and final setup remain effective
+The system SHALL retain restricted-user sanitization and source warnings, resolve base compatibility through stage inheritance, and append agent/config/firewall setup only to the inherited final stage.
+
+#### Scenario: Alias-based apt warning
+- **WHEN** the selected stage ultimately inherits an external non-Debian image through one or more aliases
+- **THEN** the existing apt-compatibility warning identifies that external image
+
+#### Scenario: Final sandbox setup
+- **WHEN** rendering succeeds
+- **THEN** source postfix instructions run as root before agent creation, and generated firewall copies, `USER agent`, `/workspace`, entrypoint, and command remain in the final image

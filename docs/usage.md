@@ -27,11 +27,43 @@ To build on top of a repo's existing Dockerfile instead of a base image tag:
 uv run project-sandbox /absolute/path/to/repo --dockerfile /absolute/path/to/repo/Dockerfile
 ```
 
-In this mode, `.project-sandbox/Dockerfile` starts with the existing Dockerfile
-contents and appends the sandbox runtime, firewall, OpenSpec, and installed
-coding agents. The build context defaults to the project root so existing `COPY`
-instructions keep working; use `--docker-context` if that Dockerfile expects a
-different context. If the source Dockerfile defines its own non-root user or
+In this mode, `.project-sandbox/Dockerfile` creates a dependency stage for the
+sandbox's apt tooling, Node.js, jj, OpenSpec, and coding agents. The source
+Dockerfile's final stage inherits that dependency stage before its original
+instructions are appended. This keeps the expensive, source-independent layers
+cacheable when project files change and preserves earlier build stages and
+`COPY --from` references.
+
+If certificates, proxies, or package mirrors must be configured before those
+sandbox-owned network installs, put that setup in a stage named `prefix` and
+make the final stage inherit from it (directly or through other named stages):
+
+```dockerfile
+FROM python:3.12-slim AS prefix
+COPY corporate-ca.crt /usr/local/share/ca-certificates/
+RUN update-ca-certificates
+ENV HTTPS_PROXY=http://proxy.example
+
+FROM prefix AS final
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen
+```
+
+The name `prefix` is recognized case-insensitively. It must be unique and an
+ancestor of the final stage; otherwise rendering fails rather than silently
+running sandbox downloads without the declared prerequisites. The sandbox
+inserts its dependency stage immediately after `prefix` and carries it along the
+final stage's inheritance path. Other build branches remain unchanged.
+
+Postfix source instructions run as root and may assume sandbox-installed tools
+such as `git` and `curl` are available, but they run before the sandbox creates
+the `agent` user, its home directory, or the `/project-sandbox-config` and
+`/project-sandbox-secrets` paths. The sandbox adds that user/config setup and its
+firewall and entrypoint after the source content.
+
+The build context defaults to the project root so existing `COPY` instructions
+keep working; use `--docker-context` if that Dockerfile expects a different
+context. If the source Dockerfile defines its own non-root user or
 standalone UID/GID setup, project-sandbox removes those instructions and prints a
 warning. It creates its own `agent` user, matching the host UID/GID for direct
 Docker/Podman runs on Linux and defaulting to UID/GID 1000 elsewhere. If a

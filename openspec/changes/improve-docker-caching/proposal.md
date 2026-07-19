@@ -1,26 +1,27 @@
 ## Why
 
-When `--dockerfile` is used, `dockerfile.render()` splices the user's entire sanitized source Dockerfile in as a prefix, and only *after* it appends the template's own base-image-only dependency installs (`apt-get`, Node.js, jj, per-agent `npm install -g`) plus the `agent` user/firewall setup. Docker's build cache invalidates every layer after the first one that changed, so any source-dependent step in the user's Dockerfile (typically a `COPY src/` for cache-warming a language toolchain) sits *before* those expensive installs — an ordinary source edit forces Node.js/jj/all agent CLIs to reinstall on every rebuild even though none of them depend on user source at all. This was found while making this repo's own root `Dockerfile` cache-friendly: splitting its `uv sync` step into a deps-only layer and a project-install layer only bounds the small `uv sync` cost — it does nothing for the much larger reinstall cost imposed by the template's own splice order.
+The cache-first `--dockerfile` splice order puts sandbox-owned `apt-get`, `curl`, and `npm` network operations before source Dockerfile instructions that may configure corporate certificates, proxies, or package mirrors. We need an explicit prerequisite stage while retaining cache-stable sandbox dependency layers.
 
 ## What Changes
 
-- Reorder the merged Dockerfile emitted for `--dockerfile` builds so cache-stable, base-image-only installs (`apt-get`, Node.js, jj, per-agent npm installs) run immediately after `FROM`/`ARG`/`USER root`, *before* any user-supplied, source-dependent content.
-- Split `dockerfile.render()`'s handling of the sanitized source Dockerfile text into a "from part" (up through the final stage's `FROM`, preserving any earlier named multi-stage build stages) and a "rest part" (everything after), spliced at two different points in the template.
-- Move the `agent` user/firewall/config-directory setup that today is interleaved with the dependency installs into its own trailing block, after the "rest part" splice point, so its position relative to user content is unchanged while its position relative to the dependency installs moves.
-- Update `docs/usage.md`'s description of the `--dockerfile` flow to document the new splice order and what a custom Dockerfile can and cannot assume is present at each point (gains apt-get-installed tools like `git`/`curl` for free; still cannot assume the `agent` user exists yet).
+- Render custom Dockerfiles through generated multi-stage inheritance instead of copying all stages through the final `FROM` ahead of sandbox installs.
+- Split a Dockerfile without a reserved prefix at its final stage: sandbox dependencies use that stage's original base, and the original final-stage body becomes a postfix stage inheriting the dependencies.
+- Recognize a user stage named `prefix`, case-insensitively, as network/build prerequisite setup. Insert the sandbox dependency stage after it and carry those dependencies along the final stage's inheritance path.
+- Preserve unrelated build stages, stage names, `FROM` options, parser directives, global arguments, and `COPY --from` references.
+- Reject ambiguous or disconnected prefix declarations with actionable errors.
+- Document the prefix migration needed by custom Dockerfiles whose setup must precede sandbox-owned network installs.
 
 ## Capabilities
 
 ### New Capabilities
-- `dockerfile-splicing`: Governs how a user-supplied `--dockerfile` is merged with project-sandbox's own template content (dependency installs, agent user/firewall setup) into the final rendered Dockerfile, including instruction ordering and multi-stage handling.
+- `dockerfile-splicing`: Governs dependency-stage insertion, prefix-stage inheritance, final-stage reconstruction, and custom Dockerfile compatibility.
 
 ### Modified Capabilities
-(none — no existing spec currently documents `--dockerfile` splicing behavior)
+(none — no main spec currently documents `--dockerfile` splicing behavior)
 
 ## Impact
 
-- `src/project_sandbox/dockerfile.py`: `render()` and `_read_source_dockerfile()`/`_extract_last_from()`-adjacent helpers need to produce a "from part" and "rest part" split of the sanitized source text instead of a single blob.
-- `src/project_sandbox/templates/Dockerfile.j2`: reordered so dependency-install `RUN` blocks come right after `FROM`/`ARG`/`USER root`, followed by a new splice point for the rest of the user's Dockerfile, followed by the `agent` user/firewall/`WORKDIR`/`ENTRYPOINT` block.
-- `docs/usage.md`: `--dockerfile` section needs updated ordering guidance.
-- `tests/test_renderers.py`: existing `--dockerfile` splicing tests (`test_dockerfile_renderer_extends_source_dockerfile`, `_overwrites_existing_agent_uid_setup`, `_overwrites_existing_jj_install`, `_overwrites_missing_config_mount_targets`, `_removes_source_user_id_setup`) assert content via `assertIn`/`assertNotIn` rather than relative order, so should keep passing but must be re-run to confirm.
-- No change needed to `render_python_uv_dockerfile`/`render_rust_cargo_dockerfile` — those generate standalone Dockerfiles and never go through `Dockerfile.j2` splicing.
+- `src/project_sandbox/dockerfile.py` and `templates/Dockerfile.j2`: stage analysis and inheritance-based rendering replace the current two-fragment splice.
+- `tests/test_renderers.py`: regression coverage expands to single-stage, multi-stage, prefix, graph, collision, and syntax-preservation cases.
+- `docs/usage.md`: documents the reserved `prefix` authoring contract and migration pattern.
+- No CLI flags or public Python APIs change.
