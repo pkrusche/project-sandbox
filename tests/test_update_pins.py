@@ -1,6 +1,8 @@
 import importlib.util
+import io
 import sys
 import tempfile
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import TestCase
 from unittest.mock import patch
@@ -24,6 +26,25 @@ def _load_module():
 
 
 update_pins = _load_module()
+
+
+class PypiProgressTests(TestCase):
+    def test_latest_version_reports_package_before_request(self) -> None:
+        output = io.StringIO()
+
+        def fake_request_json(url: str) -> object:
+            self.assertEqual(
+                output.getvalue(), "Checking PyPI for example-package...\n"
+            )
+            return {"info": {"version": "2.0.0"}}
+
+        with (
+            patch.object(update_pins, "request_json", side_effect=fake_request_json),
+            redirect_stdout(output),
+        ):
+            version = update_pins.latest_pypi_version("example-package")
+
+        self.assertEqual(version, "2.0.0")
 
 
 class UvImagePinTests(TestCase):
@@ -98,8 +119,13 @@ class NpmPinUpdateTests(TestCase):
     def test_collect_npm_updates_can_update_pi_pin(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             template = Path(tmp) / "Dockerfile.j2"
+            config_agents_path = Path(tmp) / "config_agents.py"
             template.write_text(
                 update_pins.DOCKERFILE_TEMPLATE.read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            config_agents_path.write_text(
+                update_pins.CONFIG_AGENTS.read_text(encoding="utf-8"),
                 encoding="utf-8",
             )
             current_versions = {
@@ -116,6 +142,7 @@ class NpmPinUpdateTests(TestCase):
 
             with (
                 patch.object(update_pins, "DOCKERFILE_TEMPLATE", template),
+                patch.object(update_pins, "CONFIG_AGENTS", config_agents_path),
                 patch.object(
                     update_pins,
                     "latest_npm_version",
@@ -135,14 +162,17 @@ class NpmPinUpdateTests(TestCase):
                 f"npm install -g {package}@{latest}",
                 template.read_text(encoding="utf-8"),
             )
+            self.assertIn(
+                f'_PI_NPM_VERSION_PIN = "{latest}"',
+                config_agents_path.read_text(encoding="utf-8"),
+            )
 
     def test_config_agents_pi_pin_matches_dockerfile_template(self) -> None:
         # Regression: config_agents._PI_NPM_VERSION_PIN is a second, manually
         # maintained copy of the pi-coding-agent npm pin (used to populate
-        # settings.json's lastChangelogVersion). update-pins.py only rewrites
-        # the Dockerfile template, so nothing previously caught the two
-        # drifting apart on the next pin bump.
-        package = "@earendil-works/pi-coding-agent"
+        # settings.json's lastChangelogVersion). Keep this assertion as a
+        # repository-level guard in addition to testing the updater callback.
+        package = update_pins.PI_NPM_PACKAGE
         text = update_pins.DOCKERFILE_TEMPLATE.read_text(encoding="utf-8")
         match = next(
             m

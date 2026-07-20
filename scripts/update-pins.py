@@ -29,6 +29,9 @@ UV_LOCK = ROOT / "uv.lock"
 DOCKERFILE = ROOT / "Dockerfile"
 DOCKERFILE_TEMPLATE = ROOT / "src/project_sandbox/templates/Dockerfile.j2"
 DOCKERFILE_HELPER = ROOT / "src/project_sandbox/dockerfile.py"
+CONFIG_AGENTS = ROOT / "src/project_sandbox/config_agents.py"
+
+PI_NPM_PACKAGE = "@earendil-works/pi-coding-agent"
 
 USER_AGENT = "project-sandbox-update-pins"
 
@@ -103,6 +106,9 @@ def normalize_package_name(name: str) -> str:
 
 
 def latest_pypi_version(name: str) -> str:
+    # PyPI lookups are synchronous and can take long enough that the script
+    # otherwise appears idle, especially while checking every uv.lock package.
+    print(f"Checking PyPI for {name}...", flush=True)
     data = request_json(f"https://pypi.org/pypi/{urllib.parse.quote(name)}/json")
     if not isinstance(data, dict) or not isinstance(data.get("info"), dict):
         raise RuntimeError(f"Unexpected PyPI response for {name}")
@@ -366,6 +372,12 @@ def collect_npm_updates() -> list[Update]:
             replace_exact(
                 DOCKERFILE_TEMPLATE, f"{package}@{current}", f"{package}@{latest}"
             )
+            if package == PI_NPM_PACKAGE:
+                replace_exact(
+                    CONFIG_AGENTS,
+                    f'_PI_NPM_VERSION_PIN = "{current}"',
+                    f'_PI_NPM_VERSION_PIN = "{latest}"',
+                )
 
         updates.append(Update(f"npm {package}", current, latest, apply))
     return updates

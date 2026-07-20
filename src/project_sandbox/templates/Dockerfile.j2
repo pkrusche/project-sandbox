@@ -1,13 +1,12 @@
-{% if source_dockerfile_text -%}
-{{ source_dockerfile_text }}
-{% else %}
-FROM {{ base_image }}
+{% if source_before_dependencies -%}
+{{ source_before_dependencies }}
 {% endif %}
-SHELL ["/bin/bash", "-lc"]
+{{ dependency_from }}
+SHELL ["/bin/bash", "-c"]
 ARG AGENT_UID=1000
 ARG AGENT_GID=1000
 
-{% if source_dockerfile_text -%}
+{% if source_before_dependencies or source_after_dependencies -%}
 USER root
 {% endif %}
 RUN set -eux; \
@@ -19,34 +18,6 @@ RUN set -eux; \
         fd-find ripgrep; \
     rm -rf /var/lib/apt/lists/*; \
     ln -sf "$(command -v fdfind)" /usr/local/bin/fd
-
-RUN set -eux; \
-    if id -u agent >/dev/null 2>&1; then \
-        userdel -r agent 2>/dev/null || userdel agent; \
-    fi; \
-    existing_uid_user="$(getent passwd "${AGENT_UID}" | cut -d: -f1 || true)"; \
-    if [ -n "$existing_uid_user" ]; then \
-        echo "WARNING: Removing existing UID ${AGENT_UID} user '$existing_uid_user'; project-sandbox uses that UID for agent."; \
-        userdel -r "$existing_uid_user" 2>/dev/null || userdel "$existing_uid_user"; \
-    fi; \
-    existing_gid_group="$(getent group "${AGENT_GID}" | cut -d: -f1 || true)"; \
-    agent_group_gid="$(getent group agent | cut -d: -f3 || true)"; \
-    if [ -n "$agent_group_gid" ] && [ "$agent_group_gid" != "${AGENT_GID}" ]; then \
-        groupdel agent; \
-    fi; \
-    if [ -z "$existing_gid_group" ]; then \
-        groupadd -g "${AGENT_GID}" agent; \
-    else \
-        echo "WARNING: Reusing existing GID ${AGENT_GID} group '$existing_gid_group' for agent."; \
-    fi; \
-    useradd -m -u "${AGENT_UID}" -g "${AGENT_GID}" -s /bin/bash agent
-
-RUN install -d /project-sandbox-config/claude /project-sandbox-config/codex \
-        /project-sandbox-secrets/claude /project-sandbox-secrets/codex \
-        /project-sandbox-secrets/opencode /project-sandbox-secrets/pi && \
-    install -d -o agent -g "${AGENT_GID}" /home/agent/.claude /home/agent/.codex /home/agent/.config && \
-    install -m 0644 -o agent -g "${AGENT_GID}" /dev/null /home/agent/.claude/settings.json && \
-    install -m 0644 -o agent -g "${AGENT_GID}" /dev/null /home/agent/.codex/config.toml
 
 # Node.js is pinned to an exact release and verified by SHA256 rather than
 # piping the NodeSource installer through bash. To upgrade, bump NODE_VERSION
@@ -102,17 +73,53 @@ RUN set -euxo pipefail; \
 RUN npm install -g @fission-ai/openspec@1.6.0
 
 {% if install_claude %}
-RUN npm install -g @anthropic-ai/claude-code@2.1.207
+RUN npm install -g @anthropic-ai/claude-code@2.1.215
 {% endif %}
 {% if install_codex %}
-RUN npm install -g @openai/codex@0.144.1
+RUN npm install -g @openai/codex@0.144.6
 {% endif %}
 {% if install_opencode %}
-RUN npm install -g opencode-ai@1.17.18
+RUN npm install -g opencode-ai@1.18.3
 {% endif %}
 {% if install_pi %}
-RUN npm install -g @earendil-works/pi-coding-agent@0.80.6
+RUN npm install -g @earendil-works/pi-coding-agent@0.80.10
 {% endif %}
+
+{% if source_after_dependencies -%}
+{{ source_after_dependencies }}
+{% endif %}
+{% if source_after_dependencies -%}
+ARG AGENT_UID=1000
+ARG AGENT_GID=1000
+
+{% endif %}
+RUN set -eux; \
+    if id -u agent >/dev/null 2>&1; then \
+        userdel -r agent 2>/dev/null || userdel agent; \
+    fi; \
+    existing_uid_user="$(getent passwd "${AGENT_UID}" | cut -d: -f1 || true)"; \
+    if [ -n "$existing_uid_user" ]; then \
+        echo "WARNING: Removing existing UID ${AGENT_UID} user '$existing_uid_user'; project-sandbox uses that UID for agent."; \
+        userdel -r "$existing_uid_user" 2>/dev/null || userdel "$existing_uid_user"; \
+    fi; \
+    existing_gid_group="$(getent group "${AGENT_GID}" | cut -d: -f1 || true)"; \
+    agent_group_gid="$(getent group agent | cut -d: -f3 || true)"; \
+    if [ -n "$agent_group_gid" ] && [ "$agent_group_gid" != "${AGENT_GID}" ]; then \
+        groupdel agent; \
+    fi; \
+    if [ -z "$existing_gid_group" ]; then \
+        groupadd -g "${AGENT_GID}" agent; \
+    else \
+        echo "WARNING: Reusing existing GID ${AGENT_GID} group '$existing_gid_group' for agent."; \
+    fi; \
+    useradd -m -u "${AGENT_UID}" -g "${AGENT_GID}" -s /bin/bash agent
+
+RUN install -d /project-sandbox-config/claude /project-sandbox-config/codex \
+        /project-sandbox-secrets/claude /project-sandbox-secrets/codex \
+        /project-sandbox-secrets/opencode /project-sandbox-secrets/pi && \
+    install -d -o agent -g "${AGENT_GID}" /home/agent/.claude /home/agent/.codex /home/agent/.config && \
+    install -m 0644 -o agent -g "${AGENT_GID}" /dev/null /home/agent/.claude/settings.json && \
+    install -m 0644 -o agent -g "${AGENT_GID}" /dev/null /home/agent/.codex/config.toml
 
 COPY {{ sandbox_copy_prefix }}{{ firewall_src_filename }} /usr/local/bin/project-sandbox-init-firewall
 COPY {{ sandbox_copy_prefix }}entrypoint.sh /usr/local/bin/project-sandbox-entrypoint

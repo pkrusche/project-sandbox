@@ -735,6 +735,506 @@ class RendererTests(TestCase):
             self.assertEqual(len(warnings), 1)
             self.assertIn("Removed 1 restricted user setup instruction", warnings[0])
 
+    def test_dockerfile_renderer_installs_tools_before_source_content(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            context = project / ".project-sandbox"
+            context.mkdir()
+            source = project / "Dockerfile"
+            source.write_text(
+                "FROM python:3.12-slim\n"
+                "COPY pyproject.toml uv.lock ./\n"
+                "RUN uv sync --frozen\n",
+                encoding="utf-8",
+            )
+
+            dockerfile.render(context, base_dockerfile=source, build_context=project)
+
+            text = (context / "Dockerfile").read_text(encoding="utf-8")
+            self.assertIn("FROM python:3.12-slim AS project-sandbox-dependencies", text)
+            self.assertIn("FROM project-sandbox-dependencies\n", text)
+            self.assertLess(text.index('NODE_VERSION="'), text.index("COPY pyproject"))
+
+    def test_dockerfile_renderer_preserves_final_from_options_and_alias(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            context = project / ".project-sandbox"
+            context.mkdir()
+            source = project / "Dockerfile"
+            source.write_text(
+                "# syntax=docker/dockerfile:1\n"
+                "ARG PYTHON_VERSION=3.12\n"
+                "FROM --platform=$TARGETPLATFORM "
+                "python:${PYTHON_VERSION}-slim AS runtime\n"
+                "RUN echo app\n",
+                encoding="utf-8",
+            )
+
+            dockerfile.render(context, base_dockerfile=source, build_context=project)
+
+            text = (context / "Dockerfile").read_text(encoding="utf-8")
+            self.assertTrue(text.startswith("# syntax=docker/dockerfile:1\n"))
+            self.assertIn("ARG PYTHON_VERSION=3.12\n", text)
+            self.assertIn(
+                "FROM --platform=$TARGETPLATFORM python:${PYTHON_VERSION}-slim "
+                "AS project-sandbox-dependencies",
+                text,
+            )
+            self.assertIn("FROM project-sandbox-dependencies AS runtime", text)
+
+    def test_dockerfile_renderer_keeps_multistage_from_part_together(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            context = project / ".project-sandbox"
+            context.mkdir()
+            source = project / "Dockerfile"
+            source.write_text(
+                "FROM golang:1.22 AS builder\n"
+                "RUN go build -o /out/app ./cmd/app\n"
+                "FROM debian:bookworm-slim\n"
+                "COPY --from=builder /out/app /usr/local/bin/app\n",
+                encoding="utf-8",
+            )
+
+            dockerfile.render(context, base_dockerfile=source, build_context=project)
+
+            text = (context / "Dockerfile").read_text(encoding="utf-8")
+            installs = text.index('NODE_VERSION="')
+            self.assertLess(text.index("FROM golang:1.22 AS builder"), installs)
+            self.assertLess(text.index("FROM debian:bookworm-slim"), installs)
+            self.assertGreater(
+                text.index("COPY --from=builder /out/app /usr/local/bin/app"), installs
+            )
+            self.assertIn(
+                "FROM debian:bookworm-slim AS project-sandbox-dependencies", text
+            )
+
+    def test_dockerfile_renderer_inserts_dependencies_after_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            context = project / ".project-sandbox"
+            context.mkdir()
+            source = project / "Dockerfile"
+            source.write_text(
+                "FROM debian:bookworm AS PREFIX\n"
+                "COPY corporate-ca.crt /usr/local/share/ca-certificates/\n"
+                "RUN update-ca-certificates\n"
+                "ENV HTTPS_PROXY=http://proxy.example\n"
+                "FROM PREFIX AS middle\n"
+                "RUN echo middle\n"
+                "FROM middle AS final\n"
+                "RUN echo source-content\n",
+                encoding="utf-8",
+            )
+
+            dockerfile.render(context, base_dockerfile=source, build_context=project)
+
+            text = (context / "Dockerfile").read_text(encoding="utf-8")
+            ca_index = text.index("RUN update-ca-certificates")
+            installs_index = text.index('NODE_VERSION="')
+            source_index = text.index("RUN echo source-content")
+            self.assertLess(ca_index, installs_index)
+            self.assertLess(installs_index, source_index)
+            self.assertIn("FROM PREFIX AS project-sandbox-dependencies", text)
+            self.assertIn("FROM project-sandbox-dependencies AS middle", text)
+            self.assertIn("FROM middle AS final", text)
+
+    def test_dockerfile_renderer_preserves_base_image_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            context = project / ".project-sandbox"
+            context.mkdir()
+            source = project / "Dockerfile"
+            source.write_text(
+                "FROM rust:slim\nRUN cargo fetch --locked\n",
+                encoding="utf-8",
+            )
+
+            dockerfile.render(context, base_dockerfile=source, build_context=project)
+
+            text = (context / "Dockerfile").read_text(encoding="utf-8")
+            # A login shell reads /etc/profile, which can replace the Rust
+            # image's PATH and hide /usr/local/cargo/bin after stage splicing.
+            self.assertIn('SHELL ["/bin/bash", "-c"]', text)
+            self.assertNotIn('SHELL ["/bin/bash", "-lc"]', text)
+            self.assertGreater(
+                text.index("RUN cargo fetch --locked"), text.index("SHELL")
+            )
+
+    def test_dockerfile_renderer_leaves_unrelated_prefix_branch_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            context = project / ".project-sandbox"
+            context.mkdir()
+            source = project / "Dockerfile"
+            source.write_text(
+                "FROM debian:bookworm AS prefix\n"
+                "RUN echo prerequisites\n"
+                "FROM alpine:3.22 AS unrelated\n"
+                "RUN echo unrelated\n"
+                "FROM prefix AS middle\n"
+                "FROM middle AS final\n"
+                "RUN echo final\n",
+                encoding="utf-8",
+            )
+
+            dockerfile.render(context, base_dockerfile=source, build_context=project)
+
+            text = (context / "Dockerfile").read_text(encoding="utf-8")
+            self.assertIn("FROM alpine:3.22 AS unrelated", text)
+            self.assertIn("FROM project-sandbox-dependencies AS middle", text)
+            self.assertIn("FROM middle AS final", text)
+
+    def test_dockerfile_renderer_handles_final_prefix_stage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            context = project / ".project-sandbox"
+            context.mkdir()
+            source = project / "Dockerfile"
+            source.write_text(
+                "FROM debian:bookworm AS prefix\nRUN echo prerequisites\n",
+                encoding="utf-8",
+            )
+
+            dockerfile.render(context, base_dockerfile=source, build_context=project)
+
+            text = (context / "Dockerfile").read_text(encoding="utf-8")
+            self.assertIn("FROM prefix AS project-sandbox-dependencies", text)
+            self.assertIn("FROM project-sandbox-dependencies\n", text)
+            self.assertLess(
+                text.index('NODE_VERSION="'),
+                text.index('useradd -m -u "${AGENT_UID}"'),
+            )
+
+    def test_dockerfile_renderer_uses_unused_dependency_stage_name(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            context = project / ".project-sandbox"
+            context.mkdir()
+            source = project / "Dockerfile"
+            source.write_text(
+                "FROM debian:bookworm AS project-sandbox-dependencies\n"
+                "RUN echo builder\n"
+                "FROM debian:bookworm AS final\n"
+                "RUN echo final\n",
+                encoding="utf-8",
+            )
+
+            dockerfile.render(context, base_dockerfile=source, build_context=project)
+
+            text = (context / "Dockerfile").read_text(encoding="utf-8")
+            self.assertIn(
+                "FROM debian:bookworm AS project-sandbox-dependencies-2", text
+            )
+            self.assertIn("FROM project-sandbox-dependencies-2 AS final", text)
+
+    def test_dockerfile_renderer_avoids_unaliased_base_name_collision(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            context = project / ".project-sandbox"
+            context.mkdir()
+            source = project / "Dockerfile"
+            source.write_text(
+                "FROM python:3.12-slim\n"
+                "RUN echo hi\n"
+                # Unaliased FROM whose base literally matches the default
+                # internal dependency-stage name; aliasing our generated
+                # stage with that same name would make Docker resolve this
+                # FROM as inheriting our stage instead of pulling an image.
+                "FROM project-sandbox-dependencies\n"
+                "RUN echo uses-collision-name-as-external-image\n",
+                encoding="utf-8",
+            )
+
+            dockerfile.render(context, base_dockerfile=source, build_context=project)
+
+            text = (context / "Dockerfile").read_text(encoding="utf-8")
+            self.assertNotIn(
+                "FROM project-sandbox-dependencies AS project-sandbox-dependencies\n",
+                text,
+            )
+            self.assertIn(
+                "FROM project-sandbox-dependencies AS project-sandbox-dependencies-2\n",
+                text,
+            )
+            self.assertIn("FROM project-sandbox-dependencies-2\n", text)
+
+    def test_dockerfile_renderer_rejects_invalid_prefix_graphs(self) -> None:
+        cases = (
+            (
+                "FROM debian AS prefix\nFROM debian AS PREFIX\n",
+                "more than one stage named 'prefix'",
+            ),
+            (
+                "FROM debian AS prefix\nRUN echo prerequisites\nFROM debian AS final\n",
+                "not an ancestor of the final stage",
+            ),
+        )
+        for source_text, message in cases:
+            with self.subTest(message=message), tempfile.TemporaryDirectory() as tmp:
+                project = Path(tmp)
+                context = project / ".project-sandbox"
+                context.mkdir()
+                source = project / "Dockerfile"
+                source.write_text(source_text, encoding="utf-8")
+
+                with self.assertRaisesRegex(ValueError, message):
+                    dockerfile.render(
+                        context, base_dockerfile=source, build_context=project
+                    )
+
+    def test_dockerfile_renderer_rejects_numeric_from_shifted_by_prefix(self) -> None:
+        references = (
+            "COPY --from=1 /etc/os-release /tmp/from-unrelated\n",
+            "RUN --mount=type=bind,from=1,target=/mnt echo mounted\n",
+        )
+        for reference in references:
+            with (
+                self.subTest(reference=reference),
+                tempfile.TemporaryDirectory() as tmp,
+            ):
+                project = Path(tmp)
+                context = project / ".project-sandbox"
+                context.mkdir()
+                source = project / "Dockerfile"
+                source.write_text(
+                    "FROM debian:bookworm AS prefix\n"
+                    "RUN echo prereqs\n"
+                    "FROM alpine:3.22 AS unrelated\n"
+                    "RUN echo unrelated-marker\n"
+                    "FROM prefix AS middle\n"
+                    "FROM middle AS final\n" + reference,
+                    # Numeric reference to stage index 1 ("unrelated"). Inserting
+                    # the dependency stage right after prefix (index 0) would
+                    # shift "unrelated" to index 2, silently breaking this.
+                    encoding="utf-8",
+                )
+
+                with self.assertRaisesRegex(ValueError, r"stage index 1.*--from=1"):
+                    dockerfile.render(
+                        context, base_dockerfile=source, build_context=project
+                    )
+
+    def test_dockerfile_renderer_allows_numeric_from_at_or_before_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            context = project / ".project-sandbox"
+            context.mkdir()
+            source = project / "Dockerfile"
+            source.write_text(
+                "FROM debian:bookworm AS prefix\n"
+                "RUN echo prereqs\n"
+                "FROM prefix AS final\n"
+                # References prefix itself (index 0), which keeps its index
+                # since the dependency stage is inserted after it.
+                "COPY --from=0 /etc/os-release /tmp/from-prefix\n",
+                encoding="utf-8",
+            )
+
+            dockerfile.render(context, base_dockerfile=source, build_context=project)
+
+            text = (context / "Dockerfile").read_text(encoding="utf-8")
+            self.assertIn("COPY --from=0 /etc/os-release /tmp/from-prefix", text)
+
+    def test_dockerfile_renderer_warns_for_aliased_non_apt_base(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            context = project / ".project-sandbox"
+            context.mkdir()
+            source = project / "Dockerfile"
+            source.write_text(
+                "FROM alpine:3.22 AS base\nFROM base AS final\n",
+                encoding="utf-8",
+            )
+            warnings: list[str] = []
+
+            dockerfile.render(
+                context,
+                base_dockerfile=source,
+                build_context=project,
+                warn=warnings.append,
+            )
+
+            self.assertTrue(any("alpine:3.22" in warning for warning in warnings))
+
+    def test_dockerfile_renderer_adds_agent_setup_after_source_content(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            context = project / ".project-sandbox"
+            context.mkdir()
+            source = project / "Dockerfile"
+            source.write_text(
+                "FROM python:3.12-slim\nRUN echo source-content\n",
+                encoding="utf-8",
+            )
+
+            dockerfile.render(context, base_dockerfile=source, build_context=project)
+
+            text = (context / "Dockerfile").read_text(encoding="utf-8")
+            source_index = text.index("RUN echo source-content")
+            agent_index = text.index('useradd -m -u "${AGENT_UID}"')
+            firewall_index = text.index("COPY .project-sandbox/init-firewall.sh")
+            user_index = text.index("USER agent")
+            self.assertLess(source_index, agent_index)
+            self.assertLess(agent_index, firewall_index)
+            self.assertLess(agent_index, user_index)
+
+    def test_dockerfile_renderer_redeclares_agent_args_in_final_stage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            context = project / ".project-sandbox"
+            context.mkdir()
+            source = project / "Dockerfile"
+            source.write_text(
+                "FROM python:3.12-slim AS runtime\nRUN echo source-content\n",
+                encoding="utf-8",
+            )
+
+            dockerfile.render(context, base_dockerfile=source, build_context=project)
+
+            text = (context / "Dockerfile").read_text(encoding="utf-8")
+            final_from = text.index("FROM project-sandbox-dependencies AS runtime")
+            final_uid_arg = text.index("ARG AGENT_UID=1000", final_from)
+            final_gid_arg = text.index("ARG AGENT_GID=1000", final_from)
+            agent_setup = text.index('useradd -m -u "${AGENT_UID}"')
+            self.assertLess(final_from, final_uid_arg)
+            self.assertLess(final_uid_arg, agent_setup)
+            self.assertLess(final_gid_arg, agent_setup)
+
+    def test_dockerfile_renderer_ignores_non_option_numeric_from_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            context = project / ".project-sandbox"
+            context.mkdir()
+            source = project / "Dockerfile"
+            source.write_text(
+                "FROM debian:bookworm AS prefix\n"
+                "# migrated from=3\n"
+                "FROM alpine:3.22 AS unrelated\n"
+                "FROM prefix AS final\n"
+                'RUN echo "from=2 backup"\n',
+                encoding="utf-8",
+            )
+
+            dockerfile.render(context, base_dockerfile=source, build_context=project)
+
+            text = (context / "Dockerfile").read_text(encoding="utf-8")
+            self.assertIn("# migrated from=3", text)
+            self.assertIn('RUN echo "from=2 backup"', text)
+
+    def test_dockerfile_renderer_checks_prefix_ancestry_before_numeric_refs(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            context = project / ".project-sandbox"
+            context.mkdir()
+            source = project / "Dockerfile"
+            source.write_text(
+                "FROM debian:bookworm AS prefix\n"
+                "FROM alpine:3.22 AS unrelated\n"
+                "FROM unrelated AS final\n"
+                "COPY --from=1 /etc/os-release /tmp/os-release\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "not an ancestor"):
+                dockerfile.render(
+                    context, base_dockerfile=source, build_context=project
+                )
+
+    def test_dockerfile_renderer_preserves_multiline_from_alias(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            context = project / ".project-sandbox"
+            context.mkdir()
+            source = project / "Dockerfile"
+            source.write_text(
+                "FROM --platform=$TARGETPLATFORM python:3.12-slim \\\n"
+                "    AS runtime\n"
+                "RUN echo source-content\n",
+                encoding="utf-8",
+            )
+
+            dockerfile.render(context, base_dockerfile=source, build_context=project)
+
+            text = (context / "Dockerfile").read_text(encoding="utf-8")
+            self.assertIn(
+                "FROM --platform=$TARGETPLATFORM python:3.12-slim "
+                "AS project-sandbox-dependencies",
+                text,
+            )
+            self.assertIn("FROM project-sandbox-dependencies AS runtime", text)
+
+    def test_dockerfile_renderer_treats_heredoc_body_as_opaque(self) -> None:
+        cases = (
+            "COPY <<EOF /tmp/example\nFROM scratch\nEOF\n",
+            "RUN <<EOF\necho benign\nEOF\n",
+        )
+        for heredoc in cases:
+            with self.subTest(heredoc=heredoc), tempfile.TemporaryDirectory() as tmp:
+                project = Path(tmp)
+                context = project / ".project-sandbox"
+                context.mkdir()
+                source = project / "Dockerfile"
+                source.write_text(
+                    "FROM debian:bookworm\n" + heredoc + "RUN echo final\n",
+                    encoding="utf-8",
+                )
+
+                dockerfile.render(
+                    context, base_dockerfile=source, build_context=project
+                )
+
+                text = (context / "Dockerfile").read_text(encoding="utf-8")
+                self.assertIn(heredoc.rstrip(), text)
+                self.assertEqual(text.count("AS project-sandbox-dependencies"), 1)
+
+    def test_dockerfile_renderer_resolves_global_arg_stage_reference(self) -> None:
+        for reference in ("$BASE", "${BASE}"):
+            with (
+                self.subTest(reference=reference),
+                tempfile.TemporaryDirectory() as tmp,
+            ):
+                project = Path(tmp)
+                context = project / ".project-sandbox"
+                context.mkdir()
+                source = project / "Dockerfile"
+                source.write_text(
+                    "ARG BASE=prefix\n"
+                    "FROM debian:bookworm AS prefix\n"
+                    f"FROM {reference} AS final\n",
+                    encoding="utf-8",
+                )
+
+                dockerfile.render(
+                    context, base_dockerfile=source, build_context=project
+                )
+
+                text = (context / "Dockerfile").read_text(encoding="utf-8")
+                self.assertIn("FROM project-sandbox-dependencies AS final", text)
+
+    def test_dockerfile_renderer_explains_unresolved_arg_stage_reference(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            context = project / ".project-sandbox"
+            context.mkdir()
+            source = project / "Dockerfile"
+            source.write_text(
+                "ARG BASE=prefix\n"
+                "ARG BASE=other\n"
+                "FROM debian:bookworm AS prefix\n"
+                "FROM $BASE AS final\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(
+                ValueError, r"variable-expanded FROM reference.*\$BASE"
+            ):
+                dockerfile.render(
+                    context, base_dockerfile=source, build_context=project
+                )
+
     def test_render_dockerignore_writes_scoped_files_for_project_context(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)

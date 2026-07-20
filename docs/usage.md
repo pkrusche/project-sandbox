@@ -27,11 +27,49 @@ To build on top of a repo's existing Dockerfile instead of a base image tag:
 uv run project-sandbox /absolute/path/to/repo --dockerfile /absolute/path/to/repo/Dockerfile
 ```
 
-In this mode, `.project-sandbox/Dockerfile` starts with the existing Dockerfile
-contents and appends the sandbox runtime, firewall, OpenSpec, and installed
-coding agents. The build context defaults to the project root so existing `COPY`
-instructions keep working; use `--docker-context` if that Dockerfile expects a
-different context. If the source Dockerfile defines its own non-root user or
+In this mode, `.project-sandbox/Dockerfile` creates a dependency stage for the
+sandbox's apt tooling, Node.js, jj, OpenSpec, and coding agents. The source
+Dockerfile's final stage inherits that dependency stage before its original
+instructions are appended. This keeps the expensive, source-independent layers
+cacheable when project files change and preserves earlier build stages and
+`COPY --from` references.
+
+If certificates, proxies, or package mirrors must be configured before those
+sandbox-owned network installs, put that setup in a stage named `prefix` and
+make the final stage inherit from it (directly or through other named stages):
+
+```dockerfile
+FROM python:3.12-slim AS prefix
+COPY corporate-ca.crt /usr/local/share/ca-certificates/
+RUN update-ca-certificates
+ENV HTTPS_PROXY=http://proxy.example
+
+FROM prefix AS final
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen
+```
+
+The name `prefix` is recognized case-insensitively. It must be unique and an
+ancestor of the final stage; otherwise rendering fails rather than silently
+running sandbox downloads without the declared prerequisites. The sandbox
+inserts its dependency stage immediately after `prefix` and carries it along the
+final stage's inheritance path. Other build branches remain unchanged.
+
+Inserting the dependency stage after `prefix` shifts the positional index of
+every stage declared after it, so a numeric `--from=<N>` (or
+`--mount=...,from=<N>`) reference to one of those stages would silently point
+at the wrong stage. Rendering fails with an error instead; use a named stage
+(`AS <name>` / `--from=<name>`) for anything declared after `prefix`.
+
+Postfix source instructions run as root and may assume sandbox-installed tools
+such as `git` and `curl` are available, but they run before the sandbox creates
+the `agent` user, its home directory, or the `/project-sandbox-config` and
+`/project-sandbox-secrets` paths. The sandbox adds that user/config setup and its
+firewall and entrypoint after the source content.
+
+The build context defaults to the project root so existing `COPY` instructions
+keep working; use `--docker-context` if that Dockerfile expects a different
+context. If the source Dockerfile defines its own non-root user or
 standalone UID/GID setup, project-sandbox removes those instructions and prints a
 warning. It creates its own `agent` user, matching the host UID/GID for direct
 Docker/Podman runs on Linux and defaulting to UID/GID 1000 elsewhere. If a
@@ -108,15 +146,27 @@ blocks at runtime:
 ```dockerfile
 FROM python:3.11-slim
 
+ARG AGENT_UID=1000
+ARG AGENT_GID=1000
+
 COPY --from=ghcr.io/astral-sh/uv:0.11.23@sha256:d0a0a753ab981624b49c97abc98821c1c09f4ca69d1ef5cee69c501be3d88479 /uv /usr/local/bin/uv
 
 # Pre-populate the uv package cache with all project dependencies so the agent
 # can run `uv sync` / `uv run` inside the sandbox without reaching PyPI.
-ARG AGENT_UID=1000
-ARG AGENT_GID=1000
-# Match ownership to the agent user created by the sandbox layers that follow.
-COPY pyproject.toml uv.lock README.md /tmp/project-setup/
+# Two layers: the deps-only layer only rebuilds when pyproject.toml/uv.lock
+# change, while the slower project-install layer rebuilds on every source edit
+# but reuses the dependency cache already populated above.
+COPY pyproject.toml uv.lock /tmp/project-setup/
+RUN UV_CACHE_DIR=/opt/uv-cache uv sync \
+        --frozen \
+        --no-install-project \
+        --project /tmp/project-setup
+
+# README.md is declared as `readme =` in pyproject.toml, so the build backend
+# needs it present once the project itself is installed below.
+COPY README.md /tmp/project-setup/
 COPY src/ /tmp/project-setup/src/
+# Match ownership to the agent user created by the sandbox layers that follow.
 RUN UV_CACHE_DIR=/opt/uv-cache uv sync \
         --frozen \
         --project /tmp/project-setup \
@@ -128,9 +178,14 @@ ENV UV_CACHE_DIR=/opt/uv-cache
 
 Key points:
 
-- Copy all files referenced by `pyproject.toml` metadata, including `README.md`
-  if declared as `readme =`, so the build backend can validate the project
-  during the cache-warming step.
+- The first layer only copies `pyproject.toml` and `uv.lock`, and installs
+  dependencies with `--no-install-project` so it doesn't need the project's
+  source at all. It only rebuilds when the manifest/lockfile change.
+- The second layer copies all files referenced by `pyproject.toml` metadata
+  (including `README.md`, since it's declared as `readme =`) plus `src/`, then
+  runs `uv sync` again (without `--no-install-project`) to build and install
+  the local project itself. This layer rebuilds on every source edit, but
+  reuses the dependency cache the first layer already populated.
 - The `chown -R 1000:1000` gives the sandbox's `agent` user, created by the
   layers that follow, full access to the pre-warmed cache.
 - `ENV UV_CACHE_DIR=/opt/uv-cache` persists into the running container so the
