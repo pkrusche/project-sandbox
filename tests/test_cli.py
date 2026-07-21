@@ -1803,11 +1803,17 @@ class CliTests(TestCase):
     ) -> None:
         import argparse
 
-        with tempfile.TemporaryDirectory() as tmp:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            tempfile.TemporaryDirectory() as staged_root,
+        ):
             project = Path(tmp)
             context_dir = project / ".project-sandbox"
+            # Staged credentials must never live beneath .project-sandbox (the
+            # image build context and workspace-mask target), so this fixture
+            # mirrors real staging under an unrelated host tmp directory.
             credential_dirs = {
-                agent: context_dir / "staged" / agent
+                agent: Path(staged_root) / agent
                 for agent in ("claude", "codex", "opencode", "pi")
             }
             common_args = {

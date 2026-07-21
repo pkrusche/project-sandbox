@@ -16,12 +16,12 @@
 - [x] 3.2 Add equivalent headless-mode coverage confirming base-agent credential selection
 - [x] 3.3 Add container mount-builder tests proving over-broad credential inputs are filtered for named agents and retained for bash
 - [x] 3.4 Add chroot command/mount tests confirming its supported bash mode retains all detected credentials and `--no-forward-credentials` retains none
-- [x] 3.5 Update devcontainer tests to retain and explicitly assert all detected credential mounts
+- [x] 3.5 Confirm devcontainer tests retain and explicitly assert all detected credential mounts (pre-existing coverage; no devcontainer test changes were needed)
 
 ## 4. Alternate Reachability Boundaries
 
-- [x] 4.1 Add regression tests confirming synchronized credentials live only beneath the private staging root and legacy credential files are absent from generated agent config directories
-- [x] 4.2 Verify workspace `.project-sandbox` and `.devcontainer` masks remain ordered after custom mounts and expose only the empty read-only mask
+- [x] 4.1 Confirm regression tests cover synchronized credentials living only beneath the private staging root and legacy credential files being absent from generated agent config directories (pre-existing coverage in `tests/test_renderers.py`)
+- [x] 4.2 Verify workspace `.project-sandbox` and `.devcontainer` masks remain ordered after custom mounts and expose only the empty read-only mask (pre-existing coverage in `tests/test_cli.py`)
 - [x] 4.3 Add renderer/build assertions that staged credential paths and credential files are never copied into image layers or generated configuration mounts
 - [x] 4.4 Confirm provisioning creates credential files only for secret mounts authorized by the effective execution mode
 

@@ -361,6 +361,47 @@ class RendererTests(TestCase):
             for staged in (codex_staged, opencode_staged, pi_staged):
                 self.assertEqual(staged.stat().st_mode & 0o777, 0o700)
 
+    def test_staged_credentials_never_reach_rendered_dockerfile_or_image_context(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            context = root / ".project-sandbox"
+            home = root / "home"
+            context.mkdir()
+            claude_home = home / ".claude"
+            codex_home = home / ".codex"
+            claude_home.mkdir(parents=True)
+            codex_home.mkdir(parents=True)
+            (claude_home / ".credentials.json").write_text(
+                '{"token":"claude-secret-token"}\n', encoding="utf-8"
+            )
+            (codex_home / "auth.json").write_text(
+                '{"token":"codex-secret-token"}\n', encoding="utf-8"
+            )
+
+            with _credentials_root(root):
+                staged = config_agents.sync_credentials(context, home=home)
+
+            dockerfile.render(context, base_image="python:3.12-slim")
+            docker_text = (context / "Dockerfile").read_text(encoding="utf-8")
+
+            # The image build context is `context` (.project-sandbox); staged
+            # credentials must never live inside it, or a broad COPY could
+            # sweep them into a layer.
+            for staged_dir in staged.values():
+                self.assertFalse(staged_dir.is_relative_to(context))
+
+            copy_lines = [
+                line for line in docker_text.splitlines() if line.startswith("COPY")
+            ]
+            for line in copy_lines:
+                self.assertNotIn("secret", line.lower())
+                for staged_dir in staged.values():
+                    self.assertNotIn(str(staged_dir), line)
+            self.assertNotIn("claude-secret-token", docker_text)
+            self.assertNotIn("codex-secret-token", docker_text)
+
     def test_claude_config_state_is_created_to_accept_bypass_warning(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

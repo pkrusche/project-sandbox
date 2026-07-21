@@ -114,6 +114,48 @@ class ContainerCliTests(TestCase):
             ["--", "bash-headless", "PROJECT_SANDBOX_PROMPT_FILE=/prompt"],
         )
 
+    def test_chroot_bash_retains_all_credentials_and_purges_when_disabled(
+        self,
+    ) -> None:
+        root = Path("/tmp/layout")
+        common = {
+            "project_abs": root / "workspace",
+            "claude_cfg": root / "config/claude/settings.json",
+            "codex_cfg": root / "config/codex/config.toml",
+            "claude_credentials_dir": root / "secrets/claude",
+            "codex_credentials_dir": root / "secrets/codex",
+            "opencode_credentials_dir": root / "secrets/opencode",
+            "pi_credentials_dir": root / "secrets/pi",
+        }
+
+        for mode in ("bash", "bash-headless"):
+            with self.subTest(mode=mode):
+                mounts = build_mount_specs(**common, agent=mode)
+                argv = build_chroot_argv(
+                    script=root / "run",
+                    jail_root=root / "root",
+                    mounts=mounts,
+                    agent=mode,
+                )
+                for agent in ("claude", "codex", "opencode", "pi"):
+                    self.assertIn(f"/project-sandbox-secrets/{agent}", argv)
+                    self.assertIn(
+                        str((root / "secrets" / agent).resolve(strict=False)), argv
+                    )
+
+                purged_mounts = build_mount_specs(
+                    **common, agent=mode, forward_credentials=False
+                )
+                purged_argv = build_chroot_argv(
+                    script=root / "run",
+                    jail_root=root / "root",
+                    mounts=purged_mounts,
+                    agent=mode,
+                )
+                self.assertFalse(
+                    any("/project-sandbox-secrets/" in item for item in purged_argv)
+                )
+
     def test_chroot_argv_rejects_target_outside_jail(self) -> None:
         with self.assertRaisesRegex(ValueError, "absolute jail path"):
             build_chroot_argv(
