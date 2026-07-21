@@ -1514,6 +1514,9 @@ def _build_session_command(
         )
 
     forward_credentials = not getattr(args, "no_forward_credentials", False)
+    runtime_credential_dirs = config_agents.filter_credential_dirs(
+        credential_dirs, run_mode_agent
+    )
     _warn_forwarded_credential_lifetime(
         run_mode_agent=run_mode_agent,
         credential_dirs=credential_dirs,
@@ -1530,11 +1533,11 @@ def _build_session_command(
             image=args.image_tag,
             project_abs=workspace,
             claude_cfg=claude_cfg,
-            claude_credentials_dir=credential_dirs.get("claude"),
+            claude_credentials_dir=runtime_credential_dirs.get("claude"),
             codex_cfg=codex_cfg,
-            codex_credentials_dir=credential_dirs.get("codex"),
-            opencode_credentials_dir=credential_dirs.get("opencode"),
-            pi_credentials_dir=credential_dirs.get("pi"),
+            codex_credentials_dir=runtime_credential_dirs.get("codex"),
+            opencode_credentials_dir=runtime_credential_dirs.get("opencode"),
+            pi_credentials_dir=runtime_credential_dirs.get("pi"),
             pi_cfg=pi_cfg,
             identity=identity,
             memory=args.memory,
@@ -1553,14 +1556,15 @@ def _build_session_command(
         mounts = container_cli.build_mount_specs(
             project_abs=workspace,
             claude_cfg=claude_cfg,
-            claude_credentials_dir=credential_dirs.get("claude"),
+            claude_credentials_dir=runtime_credential_dirs.get("claude"),
             codex_cfg=codex_cfg,
-            codex_credentials_dir=credential_dirs.get("codex"),
-            opencode_credentials_dir=credential_dirs.get("opencode"),
-            pi_credentials_dir=credential_dirs.get("pi"),
+            codex_credentials_dir=runtime_credential_dirs.get("codex"),
+            opencode_credentials_dir=runtime_credential_dirs.get("opencode"),
+            pi_credentials_dir=runtime_credential_dirs.get("pi"),
             pi_cfg=pi_cfg,
             extra_mounts=extra_mounts,
             forward_credentials=forward_credentials,
+            agent=run_mode_agent,
         )
         try:
             command = container_cli.build_chroot_argv(

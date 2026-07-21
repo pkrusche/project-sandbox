@@ -52,6 +52,29 @@ CLAUDE_CREDENTIAL_STATE_KEYS = frozenset(
 CREDENTIALS_ROOT = Path("/tmp")
 
 _CONFIGURED_AGENTS = ("claude", "codex", "opencode", "pi")
+SUPPORTED_CREDENTIAL_AGENTS = frozenset(_CONFIGURED_AGENTS)
+
+
+def allowed_credential_agents(runtime_agent: str) -> frozenset[str]:
+    """Return credential families authorized for an effective runtime mode.
+
+    Unknown modes fail closed so adding a new dispatch mode cannot silently
+    expose every staged credential.
+    """
+    base_agent = runtime_agent.removesuffix("-headless")
+    if base_agent == "bash":
+        return SUPPORTED_CREDENTIAL_AGENTS
+    if base_agent in SUPPORTED_CREDENTIAL_AGENTS:
+        return frozenset((base_agent,))
+    return frozenset()
+
+
+def filter_credential_dirs(
+    credential_dirs: dict[str, Path], runtime_agent: str
+) -> dict[str, Path]:
+    """Filter staged credential paths for a direct execution mode."""
+    allowed = allowed_credential_agents(runtime_agent)
+    return {name: path for name, path in credential_dirs.items() if name in allowed}
 
 OLLAMA_BASE_URL = "http://ollama.project-sandbox.internal:11434/v1"
 

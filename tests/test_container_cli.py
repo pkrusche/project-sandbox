@@ -236,7 +236,7 @@ class ContainerCliTests(TestCase):
             cmd[-3:], ["project-sandbox:test", "project-sandbox-run", "claude-headless"]
         )
 
-    def test_build_run_argv_mounts_staged_agent_credentials_when_present(self) -> None:
+    def test_build_run_argv_mounts_only_selected_agent_credentials(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             codex_secrets = root / "secrets" / "codex"
@@ -262,19 +262,48 @@ class ContainerCliTests(TestCase):
             )
 
         self.assertIn(
-            f"type=bind,source={codex_secrets.resolve(strict=False)},target=/project-sandbox-secrets/codex,readonly",
-            cmd,
-        )
-        self.assertIn(
             f"type=bind,source={opencode_secrets.resolve(strict=False)},target=/project-sandbox-secrets/opencode,readonly",
             cmd,
         )
-        self.assertIn(
-            f"type=bind,source={pi_secrets.resolve(strict=False)},target=/project-sandbox-secrets/pi,readonly",
-            cmd,
-        )
+        secret_mounts = [item for item in cmd if "/project-sandbox-secrets/" in item]
+        self.assertEqual(len(secret_mounts), 1)
         # Pi has no baked config file, so no /project-sandbox-config/pi mount.
         self.assertNotIn("/project-sandbox-config/pi", "".join(cmd))
+
+    def test_mount_builder_filters_overbroad_credentials_by_runtime_agent(self) -> None:
+        root = Path("/tmp/layout")
+        common = {
+            "project_abs": root / "workspace",
+            "claude_cfg": root / "config/claude/settings.json",
+            "codex_cfg": root / "config/codex/config.toml",
+            "claude_credentials_dir": root / "secrets/claude",
+            "codex_credentials_dir": root / "secrets/codex",
+            "opencode_credentials_dir": root / "secrets/opencode",
+            "pi_credentials_dir": root / "secrets/pi",
+        }
+        for agent in ("claude", "codex", "opencode", "pi"):
+            for mode in (agent, f"{agent}-headless"):
+                with self.subTest(mode=mode):
+                    mounts = build_mount_specs(**common, agent=mode)
+                    secret_targets = {
+                        mount.target
+                        for mount in mounts
+                        if mount.target.startswith("/project-sandbox-secrets/")
+                    }
+                    self.assertEqual(secret_targets, {f"/project-sandbox-secrets/{agent}"})
+
+        for mode in ("bash", "bash-headless"):
+            with self.subTest(mode=mode):
+                mounts = build_mount_specs(**common, agent=mode)
+                secret_targets = {
+                    mount.target
+                    for mount in mounts
+                    if mount.target.startswith("/project-sandbox-secrets/")
+                }
+                self.assertEqual(
+                    secret_targets,
+                    {f"/project-sandbox-secrets/{name}" for name in ("claude", "codex", "opencode", "pi")},
+                )
 
     def test_build_run_argv_mounts_pi_config_only_when_pi_cfg_given(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
