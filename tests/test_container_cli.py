@@ -339,7 +339,9 @@ class ContainerCliTests(TestCase):
                         for mount in mounts
                         if mount.target.startswith("/project-sandbox-secrets/")
                     }
-                    self.assertEqual(secret_targets, {f"/project-sandbox-secrets/{agent}"})
+                    self.assertEqual(
+                        secret_targets, {f"/project-sandbox-secrets/{agent}"}
+                    )
 
         for mode in ("bash", "bash-headless"):
             with self.subTest(mode=mode):
@@ -351,7 +353,10 @@ class ContainerCliTests(TestCase):
                 }
                 self.assertEqual(
                     secret_targets,
-                    {f"/project-sandbox-secrets/{name}" for name in ("claude", "codex", "opencode", "pi")},
+                    {
+                        f"/project-sandbox-secrets/{name}"
+                        for name in ("claude", "codex", "opencode", "pi")
+                    },
                 )
 
     def test_build_run_argv_mounts_pi_config_only_when_pi_cfg_given(self) -> None:

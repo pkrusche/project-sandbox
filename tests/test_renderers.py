@@ -532,6 +532,63 @@ class RendererTests(TestCase):
                 ],
             )
 
+    def test_claude_keychain_lookup_falls_back_when_account_label_differs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            keychain_payload = '{"claudeAiOauth":{"accessToken":"access"}}\n'
+
+            with (
+                patch("project_sandbox.config_agents.sys.platform", "darwin"),
+                patch(
+                    "project_sandbox.config_agents.shutil.which",
+                    return_value="/usr/bin/security",
+                ),
+                patch(
+                    "project_sandbox.config_agents._keychain_account",
+                    return_value="host-user",
+                ),
+                patch(
+                    "project_sandbox.config_agents._keychain_service_names",
+                    return_value=("Claude Code-credentials",),
+                ),
+                patch("project_sandbox.config_agents.subprocess.run") as run,
+            ):
+                run.side_effect = (
+                    subprocess.CompletedProcess(args=[], returncode=44, stdout=""),
+                    subprocess.CompletedProcess(
+                        args=[], returncode=0, stdout=keychain_payload
+                    ),
+                )
+
+                staged = config_agents._stage_macos_keychain_credentials(out_dir)
+
+            self.assertTrue(staged)
+            self.assertEqual(
+                (out_dir / ".credentials.json").read_text(encoding="utf-8"),
+                keychain_payload,
+            )
+            self.assertEqual(
+                [call.args[0] for call in run.call_args_list],
+                [
+                    [
+                        "security",
+                        "find-generic-password",
+                        "-a",
+                        "host-user",
+                        "-w",
+                        "-s",
+                        "Claude Code-credentials",
+                    ],
+                    [
+                        "security",
+                        "find-generic-password",
+                        "-w",
+                        "-s",
+                        "Claude Code-credentials",
+                    ],
+                ],
+            )
+
     def test_credentials_dir_rejects_invalid_agent_name(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(ValueError) as raised:
