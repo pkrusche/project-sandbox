@@ -215,6 +215,7 @@ class ContainerCliTests(TestCase):
         self.assertIn("PROJECT_SANDBOX_QUIET=1", cmd)
         self.assertNotIn("CLAUDE_CONFIG_DIR=/home/agent/.claude", cmd)
         self.assertIn("CLAUDE_SECURESTORAGE_CONFIG_DIR=/home/agent/.claude", cmd)
+        self.assertIn("OPENSPEC_TELEMETRY=0", cmd)
         self.assertIn(
             f"type=bind,source={(root / 'claude').resolve(strict=False)},target=/project-sandbox-config/claude,readonly",
             cmd,

@@ -343,6 +343,8 @@ def build_run_argv(
         "CLAUDE_SECURESTORAGE_CONFIG_DIR=/home/agent/.claude",
         "--env",
         "CODEX_HOME=/home/agent/.codex",
+        "--env",
+        "OPENSPEC_TELEMETRY=0",
     ]
     if not firewall_enabled:
         argv += ["--env", "PROJECT_SANDBOX_NO_FIREWALL=1"]

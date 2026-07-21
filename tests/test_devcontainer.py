@@ -80,6 +80,7 @@ class DevcontainerTests(TestCase):
                 spec["containerEnv"]["CLAUDE_SECURESTORAGE_CONFIG_DIR"],
                 "/home/agent/.claude",
             )
+            self.assertEqual(spec["containerEnv"]["OPENSPEC_TELEMETRY"], "0")
             self.assertEqual(
                 spec["build"]["dockerfile"],
                 "../.project-sandbox/Dockerfile.devcontainer",

@@ -149,6 +149,7 @@ def render(
         "NODE_OPTIONS": "--max-old-space-size=4096",
         "PI_SKIP_VERSION_CHECK": "1",
         "PI_OFFLINE": "1",
+        "OPENSPEC_TELEMETRY": "0",
     }
     if firewall_enabled:
         container_env["UV_OFFLINE"] = "1"

@@ -44,7 +44,3 @@ Interim mitigation already in place: a host-side exclusive lock serializes
 `jj_workspace.finalize()` (`_teardown_lock`), so concurrent teardowns can't
 interleave their store mutations. It does not address concurrent in-container
 writes; this item supersedes it.
-
-## Disable telemetry for Openspec
-
-The variable to set in the container for this is OPENSPEC_TELEMETRY=0.
