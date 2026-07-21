@@ -1,9 +1,10 @@
+import contextlib
+import inspect
+import io
 import sys
 import tempfile
 from pathlib import Path
 from unittest import TestCase
-import contextlib
-import io
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -31,6 +32,10 @@ from project_sandbox.git_identity import GitIdentity
 
 
 class ContainerCliTests(TestCase):
+    def test_mount_builder_requires_explicit_agent_policy(self) -> None:
+        parameter = inspect.signature(build_mount_specs).parameters["agent"]
+        self.assertIs(parameter.default, inspect.Parameter.empty)
+
     def test_build_run_argv_adds_explicit_host_mapping(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -87,6 +92,7 @@ class ContainerCliTests(TestCase):
             codex_cfg=root / "config/codex/config.toml",
             codex_credentials_dir=root / "secrets/codex",
             opencode_credentials_dir=None,
+            agent="bash-headless",
             extra_mounts=[
                 "type=bind,source=/tmp/prompt,target=/project-sandbox-prompt,readonly"
             ],
@@ -125,6 +131,7 @@ class ContainerCliTests(TestCase):
                 codex_cfg=Path("/tmp/codex/config.toml"),
                 codex_credentials_dir=None,
                 opencode_credentials_dir=None,
+                agent="bash",
                 extra_mounts=["type=bind,source=/tmp/source,target=relative"],
             )
 
@@ -342,6 +349,7 @@ class ContainerCliTests(TestCase):
                 codex_cfg=root / "codex/config.toml",
                 codex_credentials_dir=None,
                 opencode_credentials_dir=None,
+                agent="pi",
             )
         self.assertFalse(any(m.target == "/project-sandbox-config/pi" for m in mounts))
 

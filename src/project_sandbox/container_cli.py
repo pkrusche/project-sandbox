@@ -161,7 +161,7 @@ def build_mount_specs(
     pi_cfg: Path | None = None,
     extra_mounts: Sequence[str] = (),
     forward_credentials: bool = True,
-    agent: str = "bash",
+    agent: str,
 ) -> list[MountSpec]:
     mounts = [
         MountSpec(project_abs.resolve(strict=False), "/workspace"),
