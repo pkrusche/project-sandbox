@@ -1798,6 +1798,73 @@ class CliTests(TestCase):
             )
             self.assertNotIn("PROJECT_SANDBOX_PROMPT=echo ok", cmd)
 
+    def test_named_sessions_mount_only_their_own_credentials_in_all_modes(
+        self,
+    ) -> None:
+        import argparse
+
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            tempfile.TemporaryDirectory() as staged_root,
+        ):
+            project = Path(tmp)
+            context_dir = project / ".project-sandbox"
+            # Staged credentials must never live beneath .project-sandbox (the
+            # image build context and workspace-mask target), so this fixture
+            # mirrors real staging under an unrelated host tmp directory.
+            credential_dirs = {
+                agent: Path(staged_root) / agent
+                for agent in ("claude", "codex", "opencode", "pi")
+            }
+            common_args = {
+                "branch": None,
+                "cpus": 4,
+                "extra_mounts": [],
+                "image_tag": "project-sandbox:test",
+                "log": None,
+                "memory": "8g",
+                "no_firewall": True,
+                "no_forward_credentials": False,
+                "prompt": None,
+                "verbose": False,
+            }
+
+            for agent in credential_dirs:
+                for headless in (False, True):
+                    mode = f"{agent}-headless" if headless else agent
+                    with self.subTest(mode=mode):
+                        args = argparse.Namespace(
+                            **common_args,
+                            prompt_text="do work" if headless else None,
+                        )
+                        cmd, _, unsupervised, _ = cli._build_session_command(
+                            args,
+                            project=project,
+                            context_dir=context_dir,
+                            workspace=project,
+                            worktree=None,
+                            identity=GitIdentity(None, None),
+                            run_agent=agent,
+                            claude_cfg=context_dir / "claude" / "settings.json",
+                            credential_dirs=credential_dirs,
+                            codex_cfg=context_dir / "codex" / "config.toml",
+                            pi_cfg=context_dir / "pi" / "settings.json",
+                            runtime=cli.container_cli.DOCKER,
+                            create_prompt_files=False,
+                        )
+
+                        secret_mounts = {
+                            item.split("target=", 1)[1].split(",", 1)[0]
+                            for item in cmd
+                            if "/project-sandbox-secrets/" in item
+                        }
+                        self.assertEqual(
+                            secret_mounts,
+                            {f"/project-sandbox-secrets/{agent}"},
+                        )
+                        self.assertEqual(unsupervised, headless)
+                        self.assertEqual(cmd[-1], mode)
+
     def test_prompt_file_mounts_staged_copy_not_source_parent(self) -> None:
         import argparse
 

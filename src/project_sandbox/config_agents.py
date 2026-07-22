@@ -52,6 +52,30 @@ CLAUDE_CREDENTIAL_STATE_KEYS = frozenset(
 CREDENTIALS_ROOT = Path("/tmp")
 
 _CONFIGURED_AGENTS = ("claude", "codex", "opencode", "pi")
+SUPPORTED_CREDENTIAL_AGENTS = frozenset(_CONFIGURED_AGENTS)
+
+
+def allowed_credential_agents(runtime_agent: str) -> frozenset[str]:
+    """Return credential families authorized for an effective runtime mode.
+
+    Unknown modes fail closed so adding a new dispatch mode cannot silently
+    expose every staged credential.
+    """
+    base_agent = runtime_agent.removesuffix("-headless")
+    if base_agent == "bash":
+        return SUPPORTED_CREDENTIAL_AGENTS
+    if base_agent in SUPPORTED_CREDENTIAL_AGENTS:
+        return frozenset((base_agent,))
+    return frozenset()
+
+
+def filter_credential_dirs(
+    credential_dirs: dict[str, Path], runtime_agent: str
+) -> dict[str, Path]:
+    """Filter staged credential paths for a direct execution mode."""
+    allowed = allowed_credential_agents(runtime_agent)
+    return {name: path for name, path in credential_dirs.items() if name in allowed}
+
 
 OLLAMA_BASE_URL = "http://ollama.project-sandbox.internal:11434/v1"
 
@@ -478,30 +502,38 @@ def _stage_macos_keychain_credentials(out_dir: Path) -> bool:
     if sys.platform != "darwin" or shutil.which("security") is None:
         return False
     for service in _keychain_service_names():
-        try:
-            result = subprocess.run(
-                [
-                    "security",
-                    "find-generic-password",
-                    "-a",
-                    _keychain_account(),
-                    "-w",
-                    "-s",
-                    service,
-                ],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=2,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            continue
-        if result.returncode != 0:
-            continue
-        if not _is_claude_oauth_credentials(result.stdout):
-            continue
-        _write_secure_text(out_dir / ".credentials.json", result.stdout)
-        return True
+        commands = (
+            [
+                "security",
+                "find-generic-password",
+                "-a",
+                _keychain_account(),
+                "-w",
+                "-s",
+                service,
+            ],
+            # Claude has used different account labels for the same service.
+            # Let Keychain select the item when the host username does not
+            # match, instead of treating an authenticated host as logged out.
+            ["security", "find-generic-password", "-w", "-s", service],
+        )
+        for command in commands:
+            try:
+                result = subprocess.run(
+                    command,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+            if result.returncode != 0:
+                continue
+            if not _is_claude_oauth_credentials(result.stdout):
+                continue
+            _write_secure_text(out_dir / ".credentials.json", result.stdout)
+            return True
     return False
 
 

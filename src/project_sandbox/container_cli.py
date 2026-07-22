@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import session
+from . import config_agents, session
 from .git_identity import GitIdentity
 
 RUNTIME_CHOICES = ("auto", "apple-container", "docker", "podman", "chroot")
@@ -161,6 +161,7 @@ def build_mount_specs(
     pi_cfg: Path | None = None,
     extra_mounts: Sequence[str] = (),
     forward_credentials: bool = True,
+    agent: str,
 ) -> list[MountSpec]:
     mounts = [
         MountSpec(project_abs.resolve(strict=False), "/workspace"),
@@ -183,8 +184,9 @@ def build_mount_specs(
                 True,
             )
         )
+    allowed_credentials = config_agents.allowed_credential_agents(agent)
     if forward_credentials:
-        if claude_credentials_dir is not None:
+        if "claude" in allowed_credentials and claude_credentials_dir is not None:
             mounts.append(
                 MountSpec(
                     claude_credentials_dir.resolve(strict=False),
@@ -192,7 +194,7 @@ def build_mount_specs(
                     True,
                 )
             )
-        if codex_credentials_dir is not None:
+        if "codex" in allowed_credentials and codex_credentials_dir is not None:
             mounts.append(
                 MountSpec(
                     codex_credentials_dir.resolve(strict=False),
@@ -200,7 +202,7 @@ def build_mount_specs(
                     True,
                 )
             )
-        if opencode_credentials_dir is not None:
+        if "opencode" in allowed_credentials and opencode_credentials_dir is not None:
             mounts.append(
                 MountSpec(
                     opencode_credentials_dir.resolve(strict=False),
@@ -208,7 +210,7 @@ def build_mount_specs(
                     True,
                 )
             )
-        if pi_credentials_dir is not None:
+        if "pi" in allowed_credentials and pi_credentials_dir is not None:
             mounts.append(
                 MountSpec(
                     pi_credentials_dir.resolve(strict=False),
@@ -333,6 +335,7 @@ def build_run_argv(
         pi_cfg=pi_cfg,
         extra_mounts=extra_mounts,
         forward_credentials=forward_credentials,
+        agent=agent,
     )
     for mount in mounts:
         argv += ["--mount", _mount_arg(mount)]

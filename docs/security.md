@@ -1,5 +1,27 @@
 # Security Model
 
+## Credential Isolation
+
+Direct named-agent runs forward only the selected agent's staged credentials:
+Claude receives Claude credentials, Codex receives Codex credentials, OpenCode
+receives OpenCode credentials, and Pi receives Pi credentials. The same rule
+applies to headless modes. Provisioning is presence-driven, so credential files
+are created in the container home only when the corresponding read-only secret
+mount was authorized and supplied.
+
+`--agent bash` is intentionally a multi-agent environment: every detected
+supported agent credential is mounted and can be read by any process in that
+session. Generated devcontainers are also intentionally multi-agent and receive
+all detected forwarded credentials. Use `--no-forward-credentials` when a bash
+session or devcontainer should start unauthenticated.
+
+The private `/tmp/project-sandbox-<uid>/...` staging tree is host-side storage,
+not a mount exposed as a whole. Individual authorized credential directories are
+mounted at `/project-sandbox-secrets/<agent>`; credentials are never placed in
+the generated configuration directories or image build context. Explicit
+`--mount` values are user-authorized exposure and can still reveal any host path
+the user chooses, including a credential-bearing path.
+
 ## OAuth Token Lifetime
 
 Agent OAuth access tokens are short-lived and the refresh tokens that renew them

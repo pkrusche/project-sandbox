@@ -1,9 +1,10 @@
+import contextlib
+import inspect
+import io
 import sys
 import tempfile
 from pathlib import Path
 from unittest import TestCase
-import contextlib
-import io
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -31,6 +32,10 @@ from project_sandbox.git_identity import GitIdentity
 
 
 class ContainerCliTests(TestCase):
+    def test_mount_builder_requires_explicit_agent_policy(self) -> None:
+        parameter = inspect.signature(build_mount_specs).parameters["agent"]
+        self.assertIs(parameter.default, inspect.Parameter.empty)
+
     def test_build_run_argv_adds_explicit_host_mapping(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -87,6 +92,7 @@ class ContainerCliTests(TestCase):
             codex_cfg=root / "config/codex/config.toml",
             codex_credentials_dir=root / "secrets/codex",
             opencode_credentials_dir=None,
+            agent="bash-headless",
             extra_mounts=[
                 "type=bind,source=/tmp/prompt,target=/project-sandbox-prompt,readonly"
             ],
@@ -108,6 +114,48 @@ class ContainerCliTests(TestCase):
             ["--", "bash-headless", "PROJECT_SANDBOX_PROMPT_FILE=/prompt"],
         )
 
+    def test_chroot_bash_retains_all_credentials_and_purges_when_disabled(
+        self,
+    ) -> None:
+        root = Path("/tmp/layout")
+        common = {
+            "project_abs": root / "workspace",
+            "claude_cfg": root / "config/claude/settings.json",
+            "codex_cfg": root / "config/codex/config.toml",
+            "claude_credentials_dir": root / "secrets/claude",
+            "codex_credentials_dir": root / "secrets/codex",
+            "opencode_credentials_dir": root / "secrets/opencode",
+            "pi_credentials_dir": root / "secrets/pi",
+        }
+
+        for mode in ("bash", "bash-headless"):
+            with self.subTest(mode=mode):
+                mounts = build_mount_specs(**common, agent=mode)
+                argv = build_chroot_argv(
+                    script=root / "run",
+                    jail_root=root / "root",
+                    mounts=mounts,
+                    agent=mode,
+                )
+                for agent in ("claude", "codex", "opencode", "pi"):
+                    self.assertIn(f"/project-sandbox-secrets/{agent}", argv)
+                    self.assertIn(
+                        str((root / "secrets" / agent).resolve(strict=False)), argv
+                    )
+
+                purged_mounts = build_mount_specs(
+                    **common, agent=mode, forward_credentials=False
+                )
+                purged_argv = build_chroot_argv(
+                    script=root / "run",
+                    jail_root=root / "root",
+                    mounts=purged_mounts,
+                    agent=mode,
+                )
+                self.assertFalse(
+                    any("/project-sandbox-secrets/" in item for item in purged_argv)
+                )
+
     def test_chroot_argv_rejects_target_outside_jail(self) -> None:
         with self.assertRaisesRegex(ValueError, "absolute jail path"):
             build_chroot_argv(
@@ -125,6 +173,7 @@ class ContainerCliTests(TestCase):
                 codex_cfg=Path("/tmp/codex/config.toml"),
                 codex_credentials_dir=None,
                 opencode_credentials_dir=None,
+                agent="bash",
                 extra_mounts=["type=bind,source=/tmp/source,target=relative"],
             )
 
@@ -236,7 +285,7 @@ class ContainerCliTests(TestCase):
             cmd[-3:], ["project-sandbox:test", "project-sandbox-run", "claude-headless"]
         )
 
-    def test_build_run_argv_mounts_staged_agent_credentials_when_present(self) -> None:
+    def test_build_run_argv_mounts_only_selected_agent_credentials(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             codex_secrets = root / "secrets" / "codex"
@@ -262,19 +311,53 @@ class ContainerCliTests(TestCase):
             )
 
         self.assertIn(
-            f"type=bind,source={codex_secrets.resolve(strict=False)},target=/project-sandbox-secrets/codex,readonly",
-            cmd,
-        )
-        self.assertIn(
             f"type=bind,source={opencode_secrets.resolve(strict=False)},target=/project-sandbox-secrets/opencode,readonly",
             cmd,
         )
-        self.assertIn(
-            f"type=bind,source={pi_secrets.resolve(strict=False)},target=/project-sandbox-secrets/pi,readonly",
-            cmd,
-        )
+        secret_mounts = [item for item in cmd if "/project-sandbox-secrets/" in item]
+        self.assertEqual(len(secret_mounts), 1)
         # Pi has no baked config file, so no /project-sandbox-config/pi mount.
         self.assertNotIn("/project-sandbox-config/pi", "".join(cmd))
+
+    def test_mount_builder_filters_overbroad_credentials_by_runtime_agent(self) -> None:
+        root = Path("/tmp/layout")
+        common = {
+            "project_abs": root / "workspace",
+            "claude_cfg": root / "config/claude/settings.json",
+            "codex_cfg": root / "config/codex/config.toml",
+            "claude_credentials_dir": root / "secrets/claude",
+            "codex_credentials_dir": root / "secrets/codex",
+            "opencode_credentials_dir": root / "secrets/opencode",
+            "pi_credentials_dir": root / "secrets/pi",
+        }
+        for agent in ("claude", "codex", "opencode", "pi"):
+            for mode in (agent, f"{agent}-headless"):
+                with self.subTest(mode=mode):
+                    mounts = build_mount_specs(**common, agent=mode)
+                    secret_targets = {
+                        mount.target
+                        for mount in mounts
+                        if mount.target.startswith("/project-sandbox-secrets/")
+                    }
+                    self.assertEqual(
+                        secret_targets, {f"/project-sandbox-secrets/{agent}"}
+                    )
+
+        for mode in ("bash", "bash-headless"):
+            with self.subTest(mode=mode):
+                mounts = build_mount_specs(**common, agent=mode)
+                secret_targets = {
+                    mount.target
+                    for mount in mounts
+                    if mount.target.startswith("/project-sandbox-secrets/")
+                }
+                self.assertEqual(
+                    secret_targets,
+                    {
+                        f"/project-sandbox-secrets/{name}"
+                        for name in ("claude", "codex", "opencode", "pi")
+                    },
+                )
 
     def test_build_run_argv_mounts_pi_config_only_when_pi_cfg_given(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -313,6 +396,7 @@ class ContainerCliTests(TestCase):
                 codex_cfg=root / "codex/config.toml",
                 codex_credentials_dir=None,
                 opencode_credentials_dir=None,
+                agent="pi",
             )
         self.assertFalse(any(m.target == "/project-sandbox-config/pi" for m in mounts))
 
