@@ -23,7 +23,7 @@ def _find_docker() -> str | None:
         try:
             if (
                 subprocess.run(
-                    [path, "info"], capture_output=True, timeout=5
+                    [path, "info"], capture_output=True, timeout=5, check=False
                 ).returncode
                 == 0
             ):

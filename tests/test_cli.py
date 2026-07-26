@@ -1,14 +1,13 @@
 import contextlib
 import io
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import TestCase
 from unittest.mock import patch
-
-import subprocess
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -112,12 +111,12 @@ class CliTests(TestCase):
         parser = cli.build_parser()
 
         for flag in ("--rebuild", "--refresh-config"):
-            with self.subTest(flag=flag):
-                with (
-                    self.assertRaises(SystemExit),
-                    contextlib.redirect_stderr(io.StringIO()),
-                ):
-                    parser.parse_args([flag, "/tmp/project", "python:3.12-slim"])
+            with (
+                self.subTest(flag=flag),
+                self.assertRaises(SystemExit),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                parser.parse_args([flag, "/tmp/project", "python:3.12-slim"])
 
     def test_dry_run_does_not_write_project_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -193,11 +192,15 @@ class CliTests(TestCase):
             project = Path(tmp)
             (project / "README.md").write_text("# demo\n", encoding="utf-8")
             common = ["--dry-run", "--runtime", "chroot"]
-            with patch.object(
-                cli.config_agents, "available_agents", return_value=("bash", "claude")
+            with (
+                patch.object(
+                    cli.config_agents,
+                    "available_agents",
+                    return_value=("bash", "claude"),
+                ),
+                self.assertRaisesRegex(SystemExit, "requires --agent bash"),
             ):
-                with self.assertRaisesRegex(SystemExit, "requires --agent bash"):
-                    cli.main([*common, "--agent", "claude", str(project)])
+                cli.main([*common, "--agent", "claude", str(project)])
 
     @unittest.skipUnless(
         sys.platform.startswith("linux"), "chroot runtime is Linux-only"
@@ -798,18 +801,18 @@ class CliTests(TestCase):
                     "_agent_host_paths",
                     return_value=_agent_paths(project / "home"),
                 ),
+                self.assertRaises(SystemExit) as raised,
             ):
-                with self.assertRaises(SystemExit) as raised:
-                    cli.main(
-                        [
-                            "--agent",
-                            "claude",
-                            "--branch",
-                            "feat/x",
-                            str(project),
-                            "python:3.12-slim",
-                        ]
-                    )
+                cli.main(
+                    [
+                        "--agent",
+                        "claude",
+                        "--branch",
+                        "feat/x",
+                        str(project),
+                        "python:3.12-slim",
+                    ]
+                )
         self.assertIn(".git is a file or missing", str(raised.exception))
 
     def test_branch_dry_run_argv_includes_git_metadata_mount(self) -> None:
@@ -1030,16 +1033,16 @@ class CliTests(TestCase):
                     "_agent_host_paths",
                     return_value=_agent_paths(project / "home"),
                 ),
+                self.assertRaises(SystemExit) as raised,
             ):
-                with self.assertRaises(SystemExit) as raised:
-                    cli.main(
-                        [
-                            "--branch",
-                            "feat/x",
-                            str(project),
-                            "python:3.12-slim",
-                        ]
-                    )
+                cli.main(
+                    [
+                        "--branch",
+                        "feat/x",
+                        str(project),
+                        "python:3.12-slim",
+                    ]
+                )
 
         self.assertIn("--branch requires", str(raised.exception))
 
@@ -2008,7 +2011,7 @@ class CliTests(TestCase):
                 verbose=False,
             )
 
-            cmd, log_path, unsupervised, _stop_argv = cli._build_session_command(
+            cmd, _log_path, unsupervised, _stop_argv = cli._build_session_command(
                 args,
                 project=project,
                 context_dir=context_dir,
@@ -2055,18 +2058,18 @@ class CliTests(TestCase):
                 patch.object(
                     cli.config_agents, "_agent_host_paths", return_value=paths
                 ),
+                self.assertRaises(SystemExit) as raised,
             ):
-                with self.assertRaises(SystemExit) as raised:
-                    cli.main(
-                        [
-                            "--dry-run",
-                            "--no-build",
-                            "--agent",
-                            "opencode",
-                            str(project),
-                            "python:3.12-slim",
-                        ]
-                    )
+                cli.main(
+                    [
+                        "--dry-run",
+                        "--no-build",
+                        "--agent",
+                        "opencode",
+                        str(project),
+                        "python:3.12-slim",
+                    ]
+                )
 
         self.assertIn("unavailable", str(raised.exception).lower())
         self.assertIn("claude", str(raised.exception).lower())
@@ -2333,20 +2336,20 @@ class CliTests(TestCase):
                 patch.object(
                     cli.config_agents, "_agent_host_paths", return_value=paths
                 ),
+                self.assertRaises(SystemExit) as raised,
             ):
-                with self.assertRaises(SystemExit) as raised:
-                    cli.main(
-                        [
-                            "--dry-run",
-                            "--no-build",
-                            "--agent",
-                            "claude",
-                            "--prompt",
-                            str(project / "no-such-prompt.txt"),
-                            str(project),
-                            "python:3.12-slim",
-                        ]
-                    )
+                cli.main(
+                    [
+                        "--dry-run",
+                        "--no-build",
+                        "--agent",
+                        "claude",
+                        "--prompt",
+                        str(project / "no-such-prompt.txt"),
+                        str(project),
+                        "python:3.12-slim",
+                    ]
+                )
 
         self.assertNotIsInstance(raised.exception, FileNotFoundError)
         self.assertIn("--prompt file does not exist", str(raised.exception))
@@ -2368,23 +2371,23 @@ class CliTests(TestCase):
                 patch.object(
                     cli.config_agents, "_agent_host_paths", return_value=paths
                 ),
+                self.assertRaises(SystemExit) as raised,
             ):
-                with self.assertRaises(SystemExit) as raised:
-                    cli.main(
-                        [
-                            "--dry-run",
-                            "--no-build",
-                            "--no-forward-credentials",
-                            "--agent",
-                            "bash",
-                            "--prompt-text",
-                            "echo ok",
-                            "--api-key-env-file",
-                            str(project / "missing.env"),
-                            str(project),
-                            "python:3.12-slim",
-                        ]
-                    )
+                cli.main(
+                    [
+                        "--dry-run",
+                        "--no-build",
+                        "--no-forward-credentials",
+                        "--agent",
+                        "bash",
+                        "--prompt-text",
+                        "echo ok",
+                        "--api-key-env-file",
+                        str(project / "missing.env"),
+                        str(project),
+                        "python:3.12-slim",
+                    ]
+                )
 
         self.assertNotIsInstance(raised.exception, FileNotFoundError)
         self.assertIn("--api-key-env-file does not exist", str(raised.exception))
@@ -2394,18 +2397,22 @@ class CliTests(TestCase):
             project = Path(tmp)
             (project / "README.md").write_text("# demo\n", encoding="utf-8")
 
-            with patch.object(
-                cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")
+            with (
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
+                self.assertRaises(SystemExit) as raised,
             ):
-                with self.assertRaises(SystemExit) as raised:
-                    cli.main(
-                        [
-                            "--dry-run",
-                            "--dockerfile",
-                            str(project / "no-such-Dockerfile"),
-                            str(project),
-                        ]
-                    )
+                cli.main(
+                    [
+                        "--dry-run",
+                        "--dockerfile",
+                        str(project / "no-such-Dockerfile"),
+                        str(project),
+                    ]
+                )
 
         self.assertNotIsInstance(raised.exception, FileNotFoundError)
         self.assertIn("--dockerfile does not exist", str(raised.exception))
@@ -2417,20 +2424,24 @@ class CliTests(TestCase):
             dockerfile = project / "Dockerfile"
             dockerfile.write_text("FROM debian:bookworm\n", encoding="utf-8")
 
-            with patch.object(
-                cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")
+            with (
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
+                self.assertRaises(SystemExit) as raised,
             ):
-                with self.assertRaises(SystemExit) as raised:
-                    cli.main(
-                        [
-                            "--dry-run",
-                            "--dockerfile",
-                            str(dockerfile),
-                            "--docker-context",
-                            str(project / "no-such-context"),
-                            str(project),
-                        ]
-                    )
+                cli.main(
+                    [
+                        "--dry-run",
+                        "--dockerfile",
+                        str(dockerfile),
+                        "--docker-context",
+                        str(project / "no-such-context"),
+                        str(project),
+                    ]
+                )
 
         self.assertNotIsInstance(raised.exception, FileNotFoundError)
         self.assertIn("--docker-context does not exist", str(raised.exception))
@@ -3395,7 +3406,7 @@ class BuildCacheReuseTests(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             project = self._make_project(tmp)
             self._run(project, image_exists=False)  # seed state
-            rc, out, build_image = self._run(
+            rc, _out, build_image = self._run(
                 project, image_exists=True, extra_args=["--force-build"]
             )
             self.assertEqual(rc, 0)
@@ -3405,7 +3416,7 @@ class BuildCacheReuseTests(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             project = self._make_project(tmp)
             self._run(project, image_exists=False)  # seed state
-            rc, out, build_image = self._run(project, image_exists=False)
+            rc, _out, build_image = self._run(project, image_exists=False)
             self.assertEqual(rc, 0)
             build_image.assert_called_once()
 
@@ -3418,7 +3429,7 @@ class BuildCacheReuseTests(TestCase):
             state.write_text(
                 '{"image_tag": "x", "fingerprint": "stale"}\n', encoding="utf-8"
             )
-            rc, out, build_image = self._run(project, image_exists=True)
+            rc, _out, build_image = self._run(project, image_exists=True)
             self.assertEqual(rc, 0)
             build_image.assert_called_once()
 
@@ -3455,7 +3466,7 @@ class BuildCacheReuseTests(TestCase):
             self._run(
                 project, image_exists=False, extra_args=["--python-uv"], base_image=None
             )
-            rc, out, build_image = self._run(
+            rc, _out, build_image = self._run(
                 project, image_exists=True, extra_args=["--python-uv"], base_image=None
             )
             self.assertEqual(rc, 0)
@@ -3729,19 +3740,19 @@ class PythonUvFlagTests(TestCase):
                     "select_runtime",
                     return_value=cli.container_cli.DOCKER,
                 ),
+                self.assertRaises(SystemExit) as raised,
             ):
-                with self.assertRaises(SystemExit) as raised:
-                    cli.main(
-                        [
-                            "--agent",
-                            "claude",
-                            "--branch",
-                            "feat/x",
-                            "--python-uv",
-                            str(project),
-                            "python:3.12-slim",
-                        ]
-                    )
+                cli.main(
+                    [
+                        "--agent",
+                        "claude",
+                        "--branch",
+                        "feat/x",
+                        "--python-uv",
+                        str(project),
+                        "python:3.12-slim",
+                    ]
+                )
 
             setup_wt.assert_not_called()
             self.assertIn("mutually exclusive", str(raised.exception))
@@ -3764,20 +3775,20 @@ class PythonUvFlagTests(TestCase):
                     "select_runtime",
                     return_value=cli.container_cli.DOCKER,
                 ),
+                self.assertRaises((SystemExit, FileNotFoundError)),
             ):
-                with self.assertRaises((SystemExit, FileNotFoundError)):
-                    cli.main(
-                        [
-                            "--agent",
-                            "claude",
-                            "--branch",
-                            "feat/x",
-                            "--prompt",
-                            str(project / "missing-prompt.md"),
-                            str(project),
-                            "python:3.12-slim",
-                        ]
-                    )
+                cli.main(
+                    [
+                        "--agent",
+                        "claude",
+                        "--branch",
+                        "feat/x",
+                        "--prompt",
+                        str(project / "missing-prompt.md"),
+                        str(project),
+                        "python:3.12-slim",
+                    ]
+                )
 
             setup_wt.assert_not_called()
 
@@ -4251,7 +4262,7 @@ class RustCargoFlagTests(TestCase):
                 (crates / name / "Cargo.toml").write_text(
                     f'[package]\nname = "{name}"\nversion = "0.1.0"\n', encoding="utf-8"
                 )
-            is_ws, members, root_is_pkg = cli._detect_cargo_workspace(project)
+            is_ws, members, _root_is_pkg = cli._detect_cargo_workspace(project)
 
         self.assertTrue(is_ws)
         self.assertEqual(members, ["crates/keep"])
@@ -4359,19 +4370,19 @@ class RustCargoFlagTests(TestCase):
                     "select_runtime",
                     return_value=cli.container_cli.DOCKER,
                 ),
+                self.assertRaises(SystemExit) as raised,
             ):
-                with self.assertRaises(SystemExit) as raised:
-                    cli.main(
-                        [
-                            "--agent",
-                            "claude",
-                            "--branch",
-                            "feat/x",
-                            "--rust-cargo",
-                            str(project),
-                            "rust:slim",
-                        ]
-                    )
+                cli.main(
+                    [
+                        "--agent",
+                        "claude",
+                        "--branch",
+                        "feat/x",
+                        "--rust-cargo",
+                        str(project),
+                        "rust:slim",
+                    ]
+                )
 
             setup_wt.assert_not_called()
             self.assertIn("mutually exclusive", str(raised.exception))
@@ -4706,14 +4717,7 @@ class ApiKeyInjectionTests(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             env_file = Path(tmp) / ".env"
             env_file.write_text(
-                "\n".join(
-                    [
-                        "# API keys",
-                        "ANTHROPIC_API_KEY=sk-ant # local key",
-                        "export AWS_ACCESS_KEY_ID='AKIA test'",
-                        'AWS_SECRET_ACCESS_KEY="quoted secret"',
-                    ]
-                )
+                "# API keys\nANTHROPIC_API_KEY=sk-ant # local key\nexport AWS_ACCESS_KEY_ID='AKIA test'\nAWS_SECRET_ACCESS_KEY=\"quoted secret\""
                 + "\n",
                 encoding="utf-8",
             )

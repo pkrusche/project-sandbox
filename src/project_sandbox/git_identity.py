@@ -1,5 +1,5 @@
-from dataclasses import dataclass
 import subprocess
+from dataclasses import dataclass
 
 
 @dataclass(slots=True)

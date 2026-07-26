@@ -30,7 +30,7 @@ def _jwt(exp: int) -> str:
 
 class TokenExpiryTests(TestCase):
     def test_claude_expiry_parsed_from_credentials(self) -> None:
-        when = dt.datetime(2030, 1, 1, tzinfo=dt.timezone.utc)
+        when = dt.datetime(2030, 1, 1, tzinfo=dt.UTC)
         with tempfile.TemporaryDirectory() as tmp:
             claude_dir = Path(tmp) / "claude"
             _write(
@@ -41,7 +41,7 @@ class TokenExpiryTests(TestCase):
         self.assertEqual(expiry, when)
 
     def test_headless_agent_name_is_stripped(self) -> None:
-        when = dt.datetime(2030, 6, 1, tzinfo=dt.timezone.utc)
+        when = dt.datetime(2030, 6, 1, tzinfo=dt.UTC)
         with tempfile.TemporaryDirectory() as tmp:
             claude_dir = Path(tmp) / "claude"
             _write(
@@ -54,15 +54,15 @@ class TokenExpiryTests(TestCase):
         self.assertEqual(expiry, when)
 
     def test_codex_expiry_decoded_from_jwt(self) -> None:
-        exp = int(dt.datetime(2031, 2, 3, tzinfo=dt.timezone.utc).timestamp())
+        exp = int(dt.datetime(2031, 2, 3, tzinfo=dt.UTC).timestamp())
         with tempfile.TemporaryDirectory() as tmp:
             codex_dir = Path(tmp) / "codex"
             _write(codex_dir / "auth.json", {"tokens": {"access_token": _jwt(exp)}})
             expiry = token_expiry.staged_token_expiry({"codex": codex_dir}, "codex")
-        self.assertEqual(expiry, dt.datetime.fromtimestamp(exp, tz=dt.timezone.utc))
+        self.assertEqual(expiry, dt.datetime.fromtimestamp(exp, tz=dt.UTC))
 
     def test_bash_falls_back_to_claude_token(self) -> None:
-        when = dt.datetime(2030, 3, 3, tzinfo=dt.timezone.utc)
+        when = dt.datetime(2030, 3, 3, tzinfo=dt.UTC)
         with tempfile.TemporaryDirectory() as tmp:
             claude_dir = Path(tmp) / "claude"
             _write(
@@ -88,8 +88,8 @@ class TokenExpiryTests(TestCase):
             )
 
     def test_opencode_reports_soonest_oauth_provider_expiry(self) -> None:
-        sooner = dt.datetime(2030, 5, 1, tzinfo=dt.timezone.utc)
-        later = dt.datetime(2030, 9, 1, tzinfo=dt.timezone.utc)
+        sooner = dt.datetime(2030, 5, 1, tzinfo=dt.UTC)
+        later = dt.datetime(2030, 9, 1, tzinfo=dt.UTC)
         with tempfile.TemporaryDirectory() as tmp:
             cred_dir = Path(tmp) / "opencode"
             auth = cred_dir / ".local" / "share" / "opencode" / "auth.json"

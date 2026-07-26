@@ -9,6 +9,7 @@ import socket
 import subprocess
 import time
 from dataclasses import dataclass
+from typing import Self
 
 from .container_cli import APPLE_CONTAINER, CHROOT, DOCKER, PODMAN, Runtime
 
@@ -72,7 +73,7 @@ class ForwardingPlan:
             proc.kill()
             proc.wait()
 
-    def __enter__(self) -> ForwardingPlan:
+    def __enter__(self) -> Self:
         self.start()
         return self
 

@@ -13,12 +13,12 @@ from unittest.mock import patch
 from project_sandbox.container_cli import (
     CHROOT,
     DOCKER,
-    MountSpec,
     PODMAN,
+    MountSpec,
     _mount_arg,
     _run_quietable,
-    build_image,
     build_chroot_argv,
+    build_image,
     build_mount_specs,
     build_run_argv,
     build_stop_argv,
@@ -79,9 +79,9 @@ class ContainerCliTests(TestCase):
                     "/usr/bin/unshare" if binary == "unshare" else None
                 ),
             ),
+            self.assertRaisesRegex(SystemExit, "No supported container runtime"),
         ):
-            with self.assertRaisesRegex(SystemExit, "No supported container runtime"):
-                select_runtime("auto")
+            select_runtime("auto")
 
     def test_chroot_argv_consumes_shared_mount_specs(self) -> None:
         root = Path("/tmp/layout")

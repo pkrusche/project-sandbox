@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from project_sandbox import cli
 
-_EXPIRY = dt.datetime(2030, 1, 1, tzinfo=dt.timezone.utc)
+_EXPIRY = dt.datetime(2030, 1, 1, tzinfo=dt.UTC)
 
 
 def _warn(*, forward=True, expiry=_EXPIRY, remaining=3600, run_mode_agent="claude"):

@@ -10,8 +10,8 @@ from argparse import ArgumentParser
 from datetime import datetime
 from pathlib import Path
 
-from . import __version__
 from . import (
+    __version__,
     build_cache,
     chroot,
     config_agents,
@@ -1037,7 +1037,7 @@ def _detect_cargo_workspace(project: Path) -> tuple[bool, list[str], bool]:
 
     try:
         data = tomllib.loads((project / "Cargo.toml").read_text(encoding="utf-8"))
-    except Exception:
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError):
         return False, [], False
 
     workspace = data.get("workspace")
@@ -1247,7 +1247,7 @@ def _is_git_worktree(wt) -> bool:
 
 
 def _session_commit_message(name: str) -> str:
-    return f"{name} — {datetime.now():%Y-%m-%dT%H:%M}"
+    return f"{name} — {datetime.now().astimezone():%Y-%m-%dT%H:%M}"
 
 
 def _format_duration(seconds: float) -> str:

@@ -89,7 +89,7 @@ def render(
     dependency_from = f"FROM {base_image}" if base_image is not None else ""
     source_after_dependencies = ""
     if base_dockerfile is not None:
-        source_dockerfile_text, warnings, blocks, stages = _read_source_dockerfile(
+        _source_dockerfile_text, warnings, blocks, stages = _read_source_dockerfile(
             base_dockerfile
         )
         fragments = _source_dockerfile_fragments(blocks, stages)
@@ -108,16 +108,16 @@ def render(
         )
 
     tmpl = templating.get_template("Dockerfile.j2")
-    shared = dict(
-        source_before_dependencies=source_before_dependencies,
-        dependency_from=dependency_from,
-        source_after_dependencies=source_after_dependencies,
-        sandbox_copy_prefix=copy_prefix,
-        install_claude="claude" in install_agents,
-        install_codex="codex" in install_agents,
-        install_opencode="opencode" in install_agents,
-        install_pi="pi" in install_agents,
-    )
+    shared = {
+        "source_before_dependencies": source_before_dependencies,
+        "dependency_from": dependency_from,
+        "source_after_dependencies": source_after_dependencies,
+        "sandbox_copy_prefix": copy_prefix,
+        "install_claude": "claude" in install_agents,
+        "install_codex": "codex" in install_agents,
+        "install_opencode": "opencode" in install_agents,
+        "install_pi": "pi" in install_agents,
+    }
     container = _write_dockerfile(
         tmpl,
         context_dir / "Dockerfile",
@@ -662,9 +662,11 @@ def render_python_uv_dockerfile(
         # Pin uv to an exact tag and digest instead of the mutable ":latest"
         # tag. Bump deliberately and refresh the digest via
         # `docker buildx imagetools inspect ghcr.io/astral-sh/uv:<tag>`.
-        "FROM ghcr.io/astral-sh/uv:0.11.29"
-        "@sha256:eb2843a1e56fd9e30c7276ce1a52cba86e64c7b385f5e3279a0e08e02dd058fc"
-        " AS uv-bin",
+        (
+            "FROM ghcr.io/astral-sh/uv:0.11.32"
+            "@sha256:df4cae8f3a96d175e2e5f992e597550000edbe78fdc2594d5cd8de1a217f504c"
+            " AS uv-bin"
+        ),
         f"FROM python:{python_version}-slim",
         "",
         "ARG AGENT_UID=1000",
@@ -739,18 +741,20 @@ def render_rust_cargo_dockerfile(
         "ARG AGENT_UID=1000",
         "ARG AGENT_GID=1000",
         "",
-        "RUN apt-get update && apt-get install -y --no-install-recommends \\\n"
-        "    build-essential cmake \\\n"
-        "    pkg-config \\\n"
-        "    libssl-dev \\\n"
-        "    libudev-dev libasound2-dev \\\n"
-        "    libx11-dev libxcb1-dev libxrandr-dev libxi-dev libxcursor-dev \\\n"
-        "    libwayland-dev \\\n"
-        "    libdbus-1-dev \\\n"
-        "    libpq-dev libsqlite3-dev \\\n"
-        "    libclang-dev \\\n"
-        "    libfontconfig1-dev libfreetype6-dev \\\n"
-        "    && rm -rf /var/lib/apt/lists/*",
+        (
+            "RUN apt-get update && apt-get install -y --no-install-recommends \\\n"
+            "    build-essential cmake \\\n"
+            "    pkg-config \\\n"
+            "    libssl-dev \\\n"
+            "    libudev-dev libasound2-dev \\\n"
+            "    libx11-dev libxcb1-dev libxrandr-dev libxi-dev libxcursor-dev \\\n"
+            "    libwayland-dev \\\n"
+            "    libdbus-1-dev \\\n"
+            "    libpq-dev libsqlite3-dev \\\n"
+            "    libclang-dev \\\n"
+            "    libfontconfig1-dev libfreetype6-dev \\\n"
+            "    && rm -rf /var/lib/apt/lists/*"
+        ),
         "",
         "ENV CARGO_HOME=/opt/cargo-cache",
         "ENV CARGO_TARGET_DIR=/opt/cargo-target",
@@ -796,8 +800,10 @@ def render_rust_cargo_dockerfile(
             "# the image build — 'cargo fetch' above already made deps available offline.",
             "COPY . .",
             "RUN cargo build || true",
-            "RUN mkdir -p /opt/cargo-cache /opt/cargo-target"
-            ' && chown -R "${AGENT_UID}:${AGENT_GID}" /opt/cargo-cache /opt/cargo-target',
+            (
+                "RUN mkdir -p /opt/cargo-cache /opt/cargo-target"
+                ' && chown -R "${AGENT_UID}:${AGENT_GID}" /opt/cargo-cache /opt/cargo-target'
+            ),
         ]
     out = context_dir / "Dockerfile.rust-cargo"
     out.write_text("\n".join(lines) + "\n", encoding="utf-8")

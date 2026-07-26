@@ -1912,6 +1912,7 @@ class RendererTests(TestCase):
                 proc = subprocess.run(
                     ["bash", "-c", tail],
                     env={"PATH": f"{bindir}:/usr/bin:/bin", "IPV6_FW": "1"},
+                    check=False,
                     capture_output=True,
                     text=True,
                     timeout=5,
