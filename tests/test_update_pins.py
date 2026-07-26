@@ -12,7 +12,7 @@ SCRIPT = ROOT / "scripts" / "update-pins.py"
 
 sys.path.insert(0, str(ROOT / "src"))
 
-from project_sandbox import config_agents  # noqa: E402
+from project_sandbox import config_agents
 
 
 def _load_module():

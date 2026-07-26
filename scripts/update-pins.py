@@ -18,10 +18,9 @@ import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
-
 
 ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT = ROOT / "pyproject.toml"
@@ -212,13 +211,11 @@ def docker_bearer_token(www_authenticate: str) -> str:
 def ghcr_manifest_digest(repository: str, tag: str) -> str:
     url = f"https://ghcr.io/v2/{repository}/manifests/{tag}"
     headers = {
-        "Accept": ", ".join(
-            [
-                "application/vnd.oci.image.index.v1+json",
-                "application/vnd.docker.distribution.manifest.list.v2+json",
-                "application/vnd.oci.image.manifest.v1+json",
-                "application/vnd.docker.distribution.manifest.v2+json",
-            ]
+        "Accept": (
+            "application/vnd.oci.image.index.v1+json, "
+            "application/vnd.docker.distribution.manifest.list.v2+json, "
+            "application/vnd.oci.image.manifest.v1+json, "
+            "application/vnd.docker.distribution.manifest.v2+json"
         )
     }
     try:

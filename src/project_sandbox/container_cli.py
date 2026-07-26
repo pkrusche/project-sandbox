@@ -251,10 +251,11 @@ def build_chroot_argv(
     script: Path,
     jail_root: Path,
     mounts: Sequence[MountSpec],
-    identity: GitIdentity = GitIdentity(None, None),
+    identity: GitIdentity | None = None,
     agent: str = "bash",
     extra_env: Sequence[str] = (),
 ) -> list[str]:
+    identity = identity or GitIdentity(None, None)
     argv = [
         CHROOT.binary,
         "--map-root-user",

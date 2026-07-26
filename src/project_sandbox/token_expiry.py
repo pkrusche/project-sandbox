@@ -53,7 +53,7 @@ def staged_token_expiry(
 
 
 def remaining(expiry: dt.datetime, now: dt.datetime | None = None) -> dt.timedelta:
-    now = now or dt.datetime.now(tz=dt.timezone.utc)
+    now = now or dt.datetime.now(tz=dt.UTC)
     return expiry - now
 
 
@@ -130,7 +130,7 @@ def _jwt_exp(token: str) -> float | None:
 def _to_datetime(epoch_seconds: float) -> dt.datetime | None:
     # A garbage expiry (absurd or out-of-range value) must not crash the launch.
     try:
-        return dt.datetime.fromtimestamp(epoch_seconds, tz=dt.timezone.utc)
+        return dt.datetime.fromtimestamp(epoch_seconds, tz=dt.UTC)
     except (OverflowError, OSError, ValueError):
         return None
 

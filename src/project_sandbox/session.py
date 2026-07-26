@@ -2,9 +2,9 @@ import datetime as dt
 import os
 import shlex
 import signal
-from pathlib import Path
 import subprocess
 import threading
+from pathlib import Path
 
 
 def merged_env(env: dict[str, str] | None) -> dict[str, str] | None:
@@ -24,7 +24,7 @@ def merged_env(env: dict[str, str] | None) -> dict[str, str] | None:
 def default_log_path(
     project: Path, branch: str | None, agent: str, *, create: bool = True
 ) -> Path:
-    now = dt.datetime.now()
+    now = dt.datetime.now().astimezone()
     # Include microseconds so two same-agent sessions started within the same
     # second do not resolve to the same log file (which run() opens with "w").
     ts = now.strftime("%Y%m%d-%H%M%S-%f")
@@ -113,7 +113,7 @@ def _terminate_process_group(
                 check=False,
                 capture_output=True,
             )
-        except Exception:  # noqa: BLE001 — best-effort; fall through to signal path
+        except Exception:  # noqa: BLE001, S110 — best-effort; use signal fallback
             pass
 
     try:
