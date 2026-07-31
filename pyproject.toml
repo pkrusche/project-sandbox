@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "project-sandbox"
-version = "0.1.1"
+version = "0.1.2"
 description = "Sandbox coding agents inside isolated container runtimes."
 readme = "README.md"
 license = { text = "MIT" }
