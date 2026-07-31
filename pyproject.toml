@@ -16,7 +16,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest==9.1.1",
-    "ruff==0.16.0",
+    "ruff==0.16.1",
 ]
 
 [project.scripts]
@@ -24,6 +24,14 @@ project-sandbox = "project_sandbox.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/project_sandbox"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src/project_sandbox",
+    "/LICENSE",
+    "/README.md",
+    "/pyproject.toml",
+]
 
 [tool.uv]
 cache-dir = ".uv_cache"
