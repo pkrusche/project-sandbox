@@ -755,6 +755,7 @@ def render_rust_cargo_dockerfile(
             "    libfontconfig1-dev libfreetype6-dev \\\n"
             "    && rm -rf /var/lib/apt/lists/*"
         ),
+        "RUN rustup component add clippy rustfmt",
         "",
         "ENV CARGO_HOME=/opt/cargo-cache",
         "ENV CARGO_TARGET_DIR=/opt/cargo-target",
