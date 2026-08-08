@@ -756,6 +756,15 @@ def render_rust_cargo_dockerfile(
             "    && rm -rf /var/lib/apt/lists/*"
         ),
         "RUN rustup component add clippy rustfmt",
+        # Codex runs commands through a login shell. Debian's /etc/profile can
+        # replace the PATH inherited from the official Rust image, hiding the
+        # rustup proxies in /usr/local/cargo/bin. Restore the toolchain paths
+        # after /etc/profile has set its default PATH.
+        (
+            "RUN printf '%s\\n' "
+            "'export PATH=\"/usr/local/cargo/bin:/usr/local/rustup/bin:$PATH\"' "
+            "> /etc/profile.d/rust-toolchain.sh"
+        ),
         "",
         "ENV CARGO_HOME=/opt/cargo-cache",
         "ENV CARGO_TARGET_DIR=/opt/cargo-target",
