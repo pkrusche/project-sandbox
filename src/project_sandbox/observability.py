@@ -159,6 +159,40 @@ def is_rate_limited_failure(exit_code: int, log_path: Path | None) -> bool:
     return log_is_rate_limited(log_path)
 
 
+def pi_json_run_failed(log_path: Path | None) -> bool:
+    """Detect a headless Pi run that failed but still exited 0.
+
+    `pi --mode json` skips the exit-code mapping that `pi -p` performs in text
+    mode, so a provider outage, an aborted turn, or an exhausted rate-limit
+    retry ends the process with status 0. Mirror Pi's own text-mode rule and
+    let the last assistant message decide: a turn that only failed before a
+    successful auto-retry still counts as a success.
+    """
+    if log_path is None:
+        return False
+    stop_reason: object = None
+    try:
+        with open(log_path, encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                line = line.strip()
+                # Cheap prefilter: the serialized event always carries its own
+                # type, so a line without it cannot be the record we need.
+                if not line.startswith("{") or '"message_end"' not in line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(event, dict) or event.get("type") != "message_end":
+                    continue
+                message = event.get("message")
+                if isinstance(message, dict) and message.get("role") == "assistant":
+                    stop_reason = message.get("stopReason")
+    except OSError:
+        return False
+    return stop_reason in ("error", "aborted")
+
+
 def log_is_rate_limited(path: Path) -> bool:
     """Recognize common provider/agent representations of HTTP 429 failures.
 

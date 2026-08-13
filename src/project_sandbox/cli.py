@@ -48,6 +48,9 @@ from .paths import (
 )
 
 SUPPORTED_AGENTS = ("claude", "codex", "opencode", "pi", "bash")
+# Agents whose headless output is newline-delimited JSON, and so can be
+# translated to markdown live and rendered into a transcript afterwards.
+JSON_STREAM_AGENTS = ("claude", "codex", "pi", "opencode")
 PROMPT_MOUNT_TARGET = "/project-sandbox-prompt"
 
 
@@ -668,13 +671,22 @@ def main(argv: list[str] | None = None) -> int:
                 timeout=args.timeout,
                 container_stop_argv=container_stop_argv,
                 verbose=args.verbose,
-                markdown_agent=run_agent if run_agent != "bash" else None,
+                markdown_agent=run_agent if run_agent in JSON_STREAM_AGENTS else None,
                 env=api_key_values or None,
             )
             if not args.verbose:
                 print(f"Wrote {session.count_lines(log_path)} lines to {log_path}")
-            if run_agent in ("claude", "codex", "pi", "opencode"):
+            if run_agent in JSON_STREAM_AGENTS:
                 _write_transcript_markdown(log_path)
+            if (
+                run_agent == "pi"
+                and exit_code == 0
+                and observability.pi_json_run_failed(log_path)
+            ):
+                # `pi --mode json` exits 0 even when the turn ended in an error,
+                # so an orchestrator would read a failed run as a clean one.
+                exit_code = 1
+                print("[W] Pi ended with a failed turn; reporting exit 1")
         else:
             exit_code = container_cli.run(cmd, env=api_key_values or None)
 

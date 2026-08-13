@@ -428,16 +428,20 @@ uv run project-sandbox \
   also prints the resolved coding-agent config (agent, model, effort) before
   launch. The entrypoint echoes those values and the exact agent argv from
   inside the container; a blank model/effort means the env var did not arrive.
-- The agent's exit code is propagated, so CI pipelines can detect failures.
+- The agent's exit code is propagated, so CI pipelines can detect failures. Pi's
+  JSON output mode always exits 0, so a headless Pi run whose last assistant
+  message ended in `error`/`aborted` is reported as exit `1` (or `75` when the
+  log identifies a rate limit); an errored turn that a later auto-retry
+  recovered from stays a success.
 
 Unsupervised sessions skip the interactive `-it` flags and switch dispatch to
 `<agent>-headless` for all supported agents. Claude runs with
 `--dangerously-skip-permissions`, Codex uses `approval_policy = "never"`,
 OpenCode runs via `opencode run --format json`, Pi runs with
-`--mode json --approve` (Pi has no
-interactive trust prompt to answer headlessly, so `--approve` is always
-passed), and Bash runs with `bash -lc`. The container is still the sandbox
-boundary; review the diff before integrating.
+`-p --mode json --approve` (Pi has no interactive trust prompt to answer
+headlessly, so `--approve` is always passed), and Bash runs with `bash -lc`.
+The container is still the sandbox boundary; review the diff before
+integrating.
 
 A maliciously crafted file in the workspace, such as a prompt-injection in a
 README, can still steer an unsupervised agent. Use narrow prompts and inspect the

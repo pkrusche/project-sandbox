@@ -343,14 +343,51 @@ class TranscriptLogToMarkdownTests(TestCase):
         self.assertIn("- **Status:** error", md)
         self.assertIn("provider failed", md)
 
+    def test_pi_failed_turn_reports_error_next_to_partial_text(self) -> None:
+        # A turn that errored can still carry text; the transcript has to show
+        # why the run failed, since Pi's JSON mode exits 0 either way.
+        events = [
+            {
+                "type": "message_end",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "partial answer"}],
+                    "stopReason": "error",
+                    "errorMessage": "Connection error.",
+                },
+            }
+        ]
+
+        md = transcript.render_pi_markdown(events)
+
+        self.assertIn("partial answer", md)
+        self.assertIn("- **Status:** error", md)
+        self.assertIn("Connection error.", md)
+
+    def test_live_markdown_renders_pi_tool_calls(self) -> None:
+        live = transcript.LiveMarkdown("pi")
+        self.assertIn("Session", live.feed(json.dumps(PI_EVENTS[0]) + "\n"))
+        self.assertEqual(live.feed(json.dumps(PI_EVENTS[1]) + "\n"), "")
+        rendered = live.feed(json.dumps(PI_EVENTS[2]) + "\n")
+        self.assertIn("### 🔧 read", rendered)
+        self.assertIn("README.md", rendered)
+        self.assertIn("Pi finished.", live.feed(json.dumps(PI_EVENTS[-1]) + "\n"))
+
     def test_error_only_opencode_log_still_writes_transcript(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             log_path = Path(tmp) / "opencode-main.log"
             log_path.write_text(
+                # Shape taken from a real `opencode run --format json` failure:
+                # the human-readable text sits under error.data.message.
                 _log_lines(
                     {
                         "type": "error",
-                        "error": {"name": "ProviderError", "message": "unavailable"},
+                        "timestamp": 1786656530813,
+                        "sessionID": "ses_002f8dfccffe",
+                        "error": {
+                            "name": "UnknownError",
+                            "data": {"message": "unavailable", "ref": "err_e3dfd14e"},
+                        },
                     }
                 ),
                 encoding="utf-8",

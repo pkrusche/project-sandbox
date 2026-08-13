@@ -33,15 +33,26 @@ The system SHALL sync and mount Pi's credential file (`~/.pi/agent/auth.json`, m
 - **THEN** no `/project-sandbox-config/pi` mount or rendered config file is created, matching Pi having no host-renderable configuration
 
 ### Requirement: Pi headless dispatch always passes --approve
-The entrypoint SHALL dispatch headless Pi runs via `pi -p "<prompt>" --approve`, and SHALL always include `--approve` since Pi has no interactive trust prompt available in headless mode.
+The entrypoint SHALL dispatch headless Pi runs via `pi -p --mode json "<prompt>" --approve`, and SHALL always include `--approve` since Pi has no interactive trust prompt available in headless mode. `--mode json` selects the JSON event stream that the live markdown translation and the transcript sidecar are rendered from; `-p` keeps the run non-interactive regardless of output mode.
 
 #### Scenario: Headless run
 - **WHEN** the container is launched in unsupervised/headless mode with Pi selected
-- **THEN** the entrypoint's `pi-headless` case arm executes `pi -p "$PROMPT" --approve` (plus any injected model/effort flags)
+- **THEN** the entrypoint's `pi-headless` case arm executes `pi -p --mode json "$PROMPT" --approve` (plus any injected model/effort flags)
 
 #### Scenario: Interactive run
 - **WHEN** the container is launched in interactive mode with Pi selected
 - **THEN** the entrypoint's `pi` case arm executes `exec pi` without forcing `--approve`
+
+### Requirement: Failed headless Pi runs exit nonzero
+Pi's JSON output mode exits 0 even when the run ended in an error, unlike its text mode. The system SHALL reclassify such a run as a failure by inspecting the session log, so callers and CI keep seeing a nonzero exit code for a failed agent run.
+
+#### Scenario: Last turn ended in an error
+- **WHEN** a headless Pi run exits 0 and the last assistant `message_end` event in its log carries `stopReason` `error` or `aborted`
+- **THEN** the CLI reports exit code 1 (or exit 75 when the log's tail also identifies the failure as a rate limit)
+
+#### Scenario: Error recovered by an auto-retry
+- **WHEN** a headless Pi run recorded an errored turn but its last assistant message ended normally
+- **THEN** the run keeps its successful exit code
 
 ### Requirement: Pi model and effort use a single combined flag
 When a model and/or effort level is injected for a headless Pi run, the CLI SHALL emit them as one combined flag (`--model <model>:<effort>`), not as two separate `--model`/`--effort` flags.

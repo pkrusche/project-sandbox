@@ -1509,7 +1509,7 @@ class RendererTests(TestCase):
             self.assertIn('exec codex exec "$@"', text)
             self.assertIn("opencode-headless", text)
             self.assertIn("pi-headless", text)
-            self.assertIn('set -- --mode json "$PROMPT" --approve', text)
+            self.assertIn('set -- -p --mode json "$PROMPT" --approve', text)
             self.assertIn('exec pi "$@"', text)
             self.assertIn("export PI_SKIP_VERSION_CHECK=1 PI_OFFLINE=1", text)
             self.assertIn("bash-headless", text)

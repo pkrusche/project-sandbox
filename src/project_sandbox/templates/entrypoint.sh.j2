@@ -154,7 +154,9 @@ case "${1:-bash}" in
         shift
         export PI_SKIP_VERSION_CHECK=1 PI_OFFLINE=1
         load_project_sandbox_prompt pi-headless || exit $?
-        set -- --mode json "$PROMPT" --approve
+        # -p keeps the run non-interactive explicitly; --mode json only selects
+        # the output format, and pi documents --print as the headless switch.
+        set -- -p --mode json "$PROMPT" --approve
         if [ -z "${PROJECT_SANDBOX_MODEL:-}" ] && [ -n "${PROJECT_SANDBOX_EFFORT:-}" ]; then
           echo "[W] Pi effort was set but no model was provided; ignoring PROJECT_SANDBOX_EFFORT." >&2
         fi

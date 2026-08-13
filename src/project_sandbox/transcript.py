@@ -68,8 +68,7 @@ def _has_codex_events(events: list[dict]) -> bool:
 
 def _has_pi_events(events: list[dict]) -> bool:
     return any(
-        e.get("type")
-        in ("session", "agent_start", "message_end", "extension_error")
+        e.get("type") in ("session", "agent_start", "turn_start", "message_end")
         for e in events
     )
 
@@ -199,13 +198,20 @@ def _render_pi_event(event: dict) -> list[str]:
         message = event.get("message")
         if not isinstance(message, dict) or message.get("role") != "assistant":
             return []
+        out: list[str] = []
         text = _message_text(message.get("content"))
         if text:
-            return ["## Assistant", "", text, ""]
+            out.extend(["## Assistant", "", text, ""])
+        # A failed turn can still carry partial text, so the error is reported
+        # alongside it rather than only when the message came back empty.
+        stop_reason = message.get("stopReason")
         error = message.get("errorMessage")
-        if isinstance(error, str) and error.strip():
-            return _render_error(error)
-        return []
+        has_error_text = isinstance(error, str) and error.strip()
+        if stop_reason in ("error", "aborted") or has_error_text:
+            out.extend(
+                _render_error(error if has_error_text else f"Request {stop_reason}")
+            )
+        return out
     if etype == "tool_execution_start":
         name = str(event.get("toolName") or "tool")
         rendered = json.dumps(
@@ -217,8 +223,6 @@ def _render_pi_event(event: dict) -> list[str]:
         label = "error" if event.get("isError") else "result"
         result = _tool_result_text(event.get("result"))
         return [f"### ↳ {name} {label}", "", *_code_block(_truncate(result)), ""]
-    if etype == "extension_error":
-        return _render_error(event.get("error") or event.get("message"))
     return []
 
 

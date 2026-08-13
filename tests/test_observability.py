@@ -106,6 +106,69 @@ class ObservabilityTests(TestCase):
             log.write_text(f"{filler}\nrate_limit_error\n")
             self.assertTrue(observability.is_rate_limited_failure(1, log))
 
+    def test_pi_json_run_failure_is_detected_despite_exit_zero(self) -> None:
+        # `pi --mode json` returns 0 even when the last turn ended in an error,
+        # so the log is the only signal that the run actually failed.
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "session.log"
+            log.write_text(
+                "starting container\n"
+                + json.dumps({"type": "session", "id": "pi-1", "cwd": "/workspace"})
+                + "\n"
+                + json.dumps(
+                    {
+                        "type": "message_end",
+                        "message": {
+                            "role": "assistant",
+                            "content": [],
+                            "stopReason": "error",
+                            "errorMessage": "Connection error.",
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            self.assertTrue(observability.pi_json_run_failed(log))
+
+    def test_pi_failure_before_a_successful_retry_is_not_a_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "session.log"
+            log.write_text(
+                json.dumps(
+                    {
+                        "type": "message_end",
+                        "message": {"role": "assistant", "stopReason": "error"},
+                    }
+                )
+                + "\n"
+                + json.dumps({"type": "auto_retry_start", "attempt": 1})
+                + "\n"
+                + json.dumps(
+                    {
+                        "type": "message_end",
+                        "message": {
+                            "role": "assistant",
+                            "content": [{"type": "text", "text": "done"}],
+                            "stopReason": "stop",
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            self.assertFalse(observability.pi_json_run_failed(log))
+
+    def test_pi_failure_detection_ignores_other_logs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "session.log"
+            log.write_text("plain agent output\nnot json\n", encoding="utf-8")
+
+            self.assertFalse(observability.pi_json_run_failed(log))
+        self.assertFalse(observability.pi_json_run_failed(None))
+
     def test_interrupted_session_is_not_left_running(self) -> None:
         with (
             tempfile.TemporaryDirectory() as tmp,

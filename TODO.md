@@ -8,7 +8,7 @@
 - [ ] Verify `--model` / `--effort` map onto pi's `--model` / `--thinking`, including
       whether `provider/id[:thinking]` strings survive intact.
 - [ ] Pass through a pi tool allowlist (`--tools read,grep,find,ls`).
-- [ ] Surface pi's `--mode json` event stream as the structured session output
+- [x] Surface pi's `--mode json` event stream as the structured session output
 - [ ] Support injecting a custom pi provider config (baseUrl + scoped token) for the
       agentgateway sidecar path, so no real provider key enters the agent VM.
 - [ ] based on the ollama functionality, add support for arbitrary local agent gateway
