@@ -2,7 +2,8 @@
 
 Headless claude runs emit newline-delimited JSON (one event per line) via
 `claude -p --output-format stream-json --verbose`; headless Codex runs emit
-newline-delimited JSON via `codex exec --json`. The session log also holds
+newline-delimited JSON via `codex exec --json`; headless Pi runs emit
+newline-delimited JSON via `pi --mode json`. The session log also holds
 plain-text preamble from the container entrypoint and firewall, so the parser
 tolerates and skips any line that is not a JSON object.
 """
