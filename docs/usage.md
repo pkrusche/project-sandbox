@@ -361,7 +361,8 @@ uv run project-sandbox \
   for Claude, `--model` plus `-c model_reasoning_effort=...` for Codex, `--model`
   plus `--variant` for OpenCode, and `--model` plus `--thinking` for Pi. Pi model
   values are never rewritten, so `provider/id[:thinking]` forms remain intact.
-  They are ignored for Bash.
+  Pi supports `low`, `medium`, `high`, and `xhigh` through this option (not
+  `max`). They are ignored for Bash.
 - `--pi-tools TOOLS` sets Pi's comma-separated tool allowlist. It defaults to
   the read-only `read,grep,find,ls` set. Pi headless sessions also explicitly
   approve project-local resources and write Pi's JSON event stream to the

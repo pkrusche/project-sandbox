@@ -313,6 +313,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.build_only and args.no_build:
         raise SystemExit("--build-only and --no-build are mutually exclusive")
     run_agent = _requested_agent(args)
+    if run_agent == "pi" and args.effort == "max":
+        raise SystemExit(
+            "Pi does not support --effort max; use low, medium, high, or xhigh"
+        )
     pi_ollama_enabled = _pi_ollama_enabled(args, run_agent)
     _validate_api_key_injection_args(args, run_agent)
     _validate_ollama_models(args.ollama_model)

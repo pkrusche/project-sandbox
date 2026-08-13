@@ -2987,6 +2987,21 @@ class EffortSelectionTests(TestCase):
         output = self._headless_dry_run_with_effort("pi", "high")
         self.assertIn("PROJECT_SANDBOX_EFFORT=high", output)
 
+    def test_pi_rejects_unsupported_max_effort_before_startup(self) -> None:
+        with self.assertRaisesRegex(
+            SystemExit, "Pi does not support --effort max"
+        ):
+            cli.main(
+                [
+                    "--agent",
+                    "pi",
+                    "--effort",
+                    "max",
+                    "/tmp/project",
+                    "python:3.12-slim",
+                ]
+            )
+
     def test_no_effort_does_not_inject_env_var(self) -> None:
         output = self._headless_dry_run_with_effort("claude", None)
         self.assertNotIn("PROJECT_SANDBOX_EFFORT", output)
