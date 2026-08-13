@@ -1,92 +1,103 @@
 ## Why
 
-Every current way to get a coding agent's LLM credentials into a `project-sandbox`
-VM — forwarded OAuth credentials, staged API keys via `--api-key-env` /
-`--api-key-env-file` — places a live, usable credential inside the agent's
-filesystem or environment for the life of the session. A compromised or
-over-permissioned agent process (malicious npm postinstall hook, prompt
-injection, `/proc/self/environ` read) can exfiltrate it. `agentgateway`, an
-Apache-2.0 AI-native proxy, can hold the real provider credential outside the
-agent VM and hand the agent only a per-session sentinel token that is worthless
-off the sandbox network — closing this gap without changing how the agents are
-invoked.
+Every current way to get a coding agent's LLM credentials into a
+`project-sandbox` VM — forwarded OAuth credentials, staged API keys via
+`--api-key-env` / `--api-key-env-file` — places a live, usable credential
+inside the agent's filesystem or environment for the life of the session. A
+compromised or over-permissioned agent process (malicious npm postinstall
+hook, prompt injection, `/proc/self/environ` read) can exfiltrate it.
+
+A local AI proxy such as `agentgateway` (Apache-2.0) can hold the real
+provider credential on the host and expose an authenticated-upstream endpoint
+the agent talks to instead. Rather than orchestrating such a proxy as a
+managed sidecar (a second VM, per-project networks, health-gated lifecycles,
+secrets partitioning), this change takes the simple path: the user configures
+and starts the proxy locally themselves, following our documentation, and
+`project-sandbox` provides CLI switches that point the built-in agents at it.
+The agent VM then holds only a non-secret sentinel token that is worthless
+off the host.
+
+Scope is deliberately limited to the two agents whose provider configuration
+is fully host-renderable as a custom-provider block: **pi** and **OpenCode**.
+Claude Code and Codex CLI are not routed through the proxy and keep the
+existing pass-through credential mechanism unchanged.
 
 ## What Changes
 
-- Add an opt-in `--gateway[=auto|on|off]` flag that launches `agentgateway`
-  (`ghcr.io/agentgateway/agentgateway`, pinned by digest) as a second Apple
-  `container` VM on a per-project network, and points the agent VM's LLM
-  traffic at it instead of the real provider.
-- **BREAKING (additive, opt-in only):** `--gateway on` forces
-  `--no-forward-credentials` and is non-overridable — passing both is not an
-  error, but no credential is ever staged or mounted while the gateway is
-  active. A preflight assertion fails the run if a known credential path would
-  land in the agent home while `--gateway on` is set.
-- Add a new jinja2 template (`agentgateway-config.yaml.j2`) that renders a
-  validated agentgateway routing config (`binds → listeners → routes →
-  backends: ai`) with one route per enabled provider, referencing secrets only
-  as `$ENV_VAR` — never inlined.
-- Partition a single host `secrets.env` (0600) into gateway-only secrets
-  (mounted read-only into the gateway VM's env, never the agent VM) versus
-  agent-visible config (base URLs, sentinel tokens).
-- Extend `firewall.py` / `init-firewall.sh.j2` so that when the gateway is
-  active the agent VM's egress allowlist collapses to a single destination
-  (`GATEWAY_IP:<port>`, default DROP otherwise); the gateway VM keeps the
-  existing curated provider-domain allowlist.
-- Wire per-agent base-URL configuration for Claude Code
-  (`ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` sentinel), Codex CLI
-  (custom `model_providers` entry in generated `config.toml`), and OpenCode
-  (custom provider `baseURL`). GitHub Copilot CLI is explicitly unsupported
-  for GitHub-hosted models (upstream limitation, tracked as a warning) and
-  only reachable in BYOK mode.
-- Orchestrate the sidecar's lifecycle in `container_cli.py`: per-project
-  network create, gateway VM start, IP discovery via `container inspect`,
-  a health-check gate before the agent VM starts, and teardown of both the
-  gateway container and the network on exit. Hard-fail with a clear message
-  on macOS < 26 (Apple `container` cannot do inter-container networking
-  there).
+- Add `docs/agent-proxy.md` documenting how to install, configure, and start
+  a local agent proxy (with a worked `agentgateway` example: loopback-bound
+  listener, per-provider routes, credentials referenced from the proxy's own
+  environment — never from the sandbox).
+- Add an opt-in `--agent-proxy URL` flag that accepts a loopback proxy URL
+  and is valid only with `--agent pi` or `--agent opencode`; any other agent
+  selection rejects the flag with an error naming the supported agents.
+- Add a repeatable `--agent-proxy-model ID` flag naming the model(s) the
+  proxy exposes; these are baked into the generated provider configuration
+  (first one is the default model where the agent needs one).
+- **Credential exclusion:** `--agent-proxy` forces
+  `--no-forward-credentials` behavior — no host agent credential is staged,
+  mounted, or forwarded — and rejects `--api-key-env` /
+  `--api-key-env-file` as conflicting. The agent receives only a sentinel
+  API-key value.
+- Bake proxy provider configuration per agent:
+  - **pi**: generated `models.json` custom provider (proxy base URL,
+    configured models, sentinel `apiKey`) plus `settings.json`
+    `defaultProvider`/`defaultModel`, mirroring the existing `--pi-ollama`
+    config shape.
+  - **OpenCode**: generated `opencode.json` custom provider with a `baseURL`
+    pointing at the proxy, the configured models, and a sentinel key.
+- Reach the loopback-bound proxy from the agent VM by reusing the
+  runtime-specific loopback-forwarding mechanism built for
+  `local-ollama-support` (`ollama_network.py`'s strategy selection),
+  generalized to the proxy's port, with a preflight TCP reachability check
+  that fails the run before any container starts.
+- Extend `firewall.py` / `init-firewall.sh.j2` with a port-scoped allow rule
+  for the forwarded proxy endpoint (same pattern as the existing
+  `--pi-ollama` rule); the rest of the firewall behavior is unchanged.
+- `--dry-run --agent-proxy ...` prints the baked provider configuration and
+  planned commands without writing files, starting containers, or requiring
+  the proxy to be running.
 
-**Deferred to follow-on changes (not built here):** macOS Keychain-backed
-secrets assembly (`--gateway-keychain`), the Docker/Podman peer-container
-path, devcontainer sidecar support (the repo's devcontainer generator does
-not currently emit `docker-compose.yml` at all — adding a compose-based
-multi-service devcontainer is its own scoped change), and publishing the
-admin UI / Prometheus metrics port. These are listed in `design.md` for
-context but have no requirements or tasks in this change.
+**Explicitly not built (simplified away from the earlier sidecar design):**
+proxy process orchestration (start/stop/health-gated lifecycle), per-project
+container networks, gateway config generation and validation, host secrets
+partitioning (`secrets.env`), egress collapse to a single destination, the
+macOS-26 inter-container-networking gate, and Claude Code / Codex / Copilot
+routing. Claude Code and Codex keep pass-through credentials; the proxy is
+the user's process, managed by the user.
 
 ## Capabilities
 
 ### New Capabilities
-- `agentgateway-sidecar`: opt-in LLM credential-isolating proxy sidecar for
-  Apple `container` sessions — CLI surface, config generation, secrets
-  partitioning, sidecar lifecycle/orchestration, firewall collapse, and
-  per-agent base-URL wiring for Claude Code, Codex CLI, and OpenCode.
+- `agent-proxy-support`: opt-in routing of pi and OpenCode LLM traffic
+  through a user-managed local proxy — CLI surface (`--agent-proxy`,
+  `--agent-proxy-model`), credential exclusion, loopback reachability and
+  firewall scoping, baked per-agent provider configuration, and local-proxy
+  setup documentation.
 
 ### Modified Capabilities
-- (none — no existing spec's requirements change; `local-ollama-support`,
-  `pi-agent-support`, and `dockerfile-splicing` are unaffected because the
-  gateway is a distinct opt-in path that only interacts with credential
-  forwarding, which is CLI behavior, not a documented spec requirement of
-  those capabilities)
+- (none — `local-ollama-support`, `pi-agent-support`, and
+  `dockerfile-splicing` requirements are untouched; the forwarding mechanism
+  reuse is shared implementation, not a spec-level change to
+  `local-ollama-support`)
 
 ## Impact
 
-- **Code:** new `src/project_sandbox/agentgateway.py` (config rendering,
-  secrets partitioning) and `src/project_sandbox/gateway_network.py`
-  (Apple `container` network/lifecycle orchestration, mirroring
-  `ollama_network.py`'s structure); changes to `cli.py` (new flags, wiring),
-  `container_cli.py` (gateway-specific argv builders), `firewall.py` /
-  `init-firewall.sh.j2` (single-destination collapse), `config_agents.py`
-  (Codex/OpenCode provider config baking), new template
-  `templates/agentgateway-config.yaml.j2`.
-- **Dependencies:** none new at the Python level (jinja2 already required);
-  pulls a new container image (`ghcr.io/agentgateway/agentgateway`) at
-  runtime, pinned by digest.
-- **Docs:** new `docs/gateway.md`; `docs/security.md` gets a section
-  describing the credential-isolation invariant this feature provides.
-- **Security-impacting:** yes — this is the mechanism `docs/security.md`
-  will document for the strongest available credential-isolation posture;
-  firewall and secrets-handling changes are security-sensitive per
-  `AGENTS.md`.
-- **Platform constraint:** requires macOS 26 for the Apple `container`
-  runtime; unsupported on macOS 15 and on the `chroot` runtime.
+- **Code:** changes to `cli.py` (new flags, validation, credential
+  exclusion), `config_agents.py` (pi/OpenCode proxy provider baking),
+  `firewall.py` / `init-firewall.sh.j2` (proxy endpoint allow rule), and a
+  generalization of `ollama_network.py`'s forwarding-strategy selection to a
+  configurable port (shared helper or parametrized module). No new runtime
+  processes and no container images pulled by `project-sandbox`.
+- **Dependencies:** none. The proxy binary/image is installed and run by the
+  user, outside `project-sandbox`.
+- **Docs:** new `docs/agent-proxy.md` (setup + usage); `docs/security.md`
+  gains a section on the credential-isolation posture this enables and its
+  boundaries (loopback exposure, user-managed trust in the proxy).
+- **Security-impacting:** yes — firewall changes and the credential-exclusion
+  invariant are security-sensitive per `AGENTS.md`; the docs must state
+  plainly that `project-sandbox` does not verify the proxy's own
+  configuration or credential handling.
+- **Platform constraint:** none beyond `local-ollama-support`'s existing
+  reachability matrix — every runtime with a verified loopback-forwarding
+  strategy works; no macOS-26 requirement.
