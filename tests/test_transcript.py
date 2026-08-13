@@ -97,6 +97,53 @@ CODEX_EVENTS = [
     },
 ]
 
+PI_EVENTS = [
+    {"type": "session", "id": "pi-123", "cwd": "/workspace"},
+    {"type": "agent_start"},
+    {
+        "type": "tool_execution_start",
+        "toolCallId": "call-1",
+        "toolName": "read",
+        "args": {"path": "README.md"},
+    },
+    {
+        "type": "tool_execution_end",
+        "toolCallId": "call-1",
+        "toolName": "read",
+        "result": "# Demo",
+        "isError": False,
+    },
+    {
+        "type": "message_end",
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "Pi finished."}],
+        },
+    },
+]
+
+OPENCODE_EVENTS = [
+    {"type": "step_start", "sessionID": "oc-123", "part": {"type": "step-start"}},
+    {
+        "type": "tool_use",
+        "sessionID": "oc-123",
+        "part": {
+            "type": "tool",
+            "tool": "bash",
+            "state": {
+                "status": "completed",
+                "input": {"command": "pwd"},
+                "output": "/workspace",
+            },
+        },
+    },
+    {
+        "type": "text",
+        "sessionID": "oc-123",
+        "part": {"type": "text", "text": "OpenCode finished."},
+    },
+]
+
 
 class TranscriptRenderTests(TestCase):
     def test_render_includes_header_text_tool_and_result(self) -> None:
@@ -256,3 +303,23 @@ class TranscriptLogToMarkdownTests(TestCase):
             self.assertIn("# Codex session transcript", text)
             self.assertIn("Done.", text)
             self.assertNotIn("Reading additional input", text)
+
+    def test_renders_pi_and_opencode_events(self) -> None:
+        pi = transcript.render_pi_markdown(PI_EVENTS)
+        self.assertIn("# Pi session transcript", pi)
+        self.assertIn("### 🔧 read", pi)
+        self.assertIn("Pi finished.", pi)
+
+        opencode = transcript.render_opencode_markdown(OPENCODE_EVENTS)
+        self.assertIn("# OpenCode session transcript", opencode)
+        self.assertIn("### 🔧 bash", opencode)
+        self.assertIn("OpenCode finished.", opencode)
+
+    def test_live_markdown_translates_json_but_preserves_plain_text(self) -> None:
+        live = transcript.LiveMarkdown("opencode")
+        rendered = live.feed(json.dumps(OPENCODE_EVENTS[-1]) + "\n")
+        self.assertIn("## Assistant", rendered)
+        self.assertIn("OpenCode finished.", rendered)
+        self.assertNotIn('"type": "text"', rendered)
+        self.assertEqual(live.feed("container warning\n"), "container warning\n")
+        self.assertEqual(live.feed("container warning\n", preserve_plain=False), "")

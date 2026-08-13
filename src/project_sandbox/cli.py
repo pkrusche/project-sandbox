@@ -668,11 +668,12 @@ def main(argv: list[str] | None = None) -> int:
                 timeout=args.timeout,
                 container_stop_argv=container_stop_argv,
                 verbose=args.verbose,
+                markdown_agent=run_agent if run_agent != "bash" else None,
                 env=api_key_values or None,
             )
             if not args.verbose:
                 print(f"Wrote {session.count_lines(log_path)} lines to {log_path}")
-            if run_agent in ("claude", "codex"):
+            if run_agent in ("claude", "codex", "pi", "opencode"):
                 _write_transcript_markdown(log_path)
         else:
             exit_code = container_cli.run(cmd, env=api_key_values or None)

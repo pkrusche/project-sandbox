@@ -22,7 +22,7 @@ this should rather be formatted as Markdown s.t. a user can follow along more ea
 The JSON session logs will be retained anyway, but we do want a live Markdown translation
 for the JSON records.
 
- - [ ] Implement live Markdown for Claude
- - [ ] Implement live Markdown for Codex
- - [ ] Implement live Markdown for pi
- - [ ] Implement live Markdown for Opencode
+ - [x] Implement live Markdown for Claude
+ - [x] Implement live Markdown for Codex
+ - [x] Implement live Markdown for pi
+ - [x] Implement live Markdown for Opencode

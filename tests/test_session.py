@@ -1,5 +1,6 @@
 import contextlib
 import io
+import json
 import shlex
 import signal
 import subprocess
@@ -87,6 +88,29 @@ class SessionTests(TestCase):
                 )
 
             self.assertIn("streamed line", out.getvalue())
+
+    def test_markdown_agent_streams_readable_output_and_keeps_raw_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "session.log"
+            event = json.dumps(
+                {
+                    "type": "item.completed",
+                    "item": {"type": "agent_message", "text": "Done."},
+                }
+            )
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = session.run(
+                    [sys.executable, "-c", f"print({event!r})"],
+                    log_path=log_path,
+                    markdown_agent="codex",
+                )
+
+            self.assertEqual(rc, 0)
+            self.assertIn("## Assistant", out.getvalue())
+            self.assertIn("Done.", out.getvalue())
+            self.assertNotIn('"item.completed"', out.getvalue())
+            self.assertIn('"item.completed"', log_path.read_text(encoding="utf-8"))
 
     def test_run_closes_child_stdin(self) -> None:
         proc = Mock()

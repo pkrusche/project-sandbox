@@ -6,6 +6,8 @@ import subprocess
 import threading
 from pathlib import Path
 
+from project_sandbox import transcript
+
 
 def merged_env(env: dict[str, str] | None) -> dict[str, str] | None:
     """Return a subprocess env with ``env`` layered on top of the current
@@ -43,6 +45,7 @@ def run(
     container_stop_argv: list[str] | None = None,
     dry_run: bool = False,
     verbose: bool = False,
+    markdown_agent: str | None = None,
     env: dict[str, str] | None = None,
 ) -> int:
     if dry_run:
@@ -70,7 +73,9 @@ def run(
         )
         assert proc.stdout is not None
         output_thread = threading.Thread(
-            target=_tee_output, args=(proc.stdout, handle, verbose), daemon=True
+            target=_tee_output,
+            args=(proc.stdout, handle, verbose, markdown_agent),
+            daemon=True,
         )
         output_thread.start()
         try:
@@ -146,12 +151,19 @@ def _signal_group_or_child(
         pass
 
 
-def _tee_output(stream, handle, verbose: bool = True) -> None:
+def _tee_output(
+    stream, handle, verbose: bool = True, markdown_agent: str | None = None
+) -> None:
+    formatter = transcript.LiveMarkdown(markdown_agent) if markdown_agent else None
     for line in stream:
-        if verbose:
-            print(line, end="")
         handle.write(line)
         handle.flush()
+        if formatter is not None:
+            rendered = formatter.feed(line, preserve_plain=verbose)
+            if rendered:
+                print(rendered, end="", flush=True)
+        elif verbose:
+            print(line, end="", flush=True)
 
 
 def count_lines(path: Path) -> int:

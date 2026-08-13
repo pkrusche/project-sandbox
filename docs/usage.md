@@ -406,9 +406,11 @@ uv run project-sandbox \
   place, and a later run for the same branch/bookmark reuses it. Rather than
   recomputing the name, read the exact absolute path from `workspace_path` in
   the JSON summary.
-- For headless `claude` runs, a readable markdown transcript is rendered
-  automatically beside the log by parsing the stream-json events. This is
-  best-effort: a parse failure prints a warning but never fails the run.
+- Headless Claude, Codex, Pi, and OpenCode runs retain their raw JSON event log,
+  translate completed messages and tool activity to Markdown on the terminal as
+  the session runs, and render the same readable transcript beside the log.
+  Transcript generation is best-effort: a parse failure prints a warning but
+  never fails the run.
 - `--runtime {auto,apple-container,docker,podman}` selects the direct-run
   backend. `auto` prefers Apple `container` on macOS and Docker then Podman on
   Linux.
@@ -421,16 +423,18 @@ uv run project-sandbox \
   `Starting container...` before handing off to the agent/shell, and headless
   runs print the log path up front and a `Wrote N lines to ...` summary at the
   end. With `--verbose`, the build output streams, the firewall banner shows, and
-  headless output is teed live to the terminal as well as the log. It also prints
-  the resolved coding-agent config (agent, model, effort) before launch, and the
-  entrypoint echoes the same values plus the exact agent argv from inside the
-  container — a blank model/effort there means the env var did not arrive.
+  additional raw non-agent output is teed live to the terminal as well as the
+  log. Live agent progress is shown as Markdown in either mode. Verbose mode
+  also prints the resolved coding-agent config (agent, model, effort) before
+  launch. The entrypoint echoes those values and the exact agent argv from
+  inside the container; a blank model/effort means the env var did not arrive.
 - The agent's exit code is propagated, so CI pipelines can detect failures.
 
 Unsupervised sessions skip the interactive `-it` flags and switch dispatch to
 `<agent>-headless` for all supported agents. Claude runs with
 `--dangerously-skip-permissions`, Codex uses `approval_policy = "never"`,
-OpenCode runs via `opencode run`, Pi runs with `--approve` (Pi has no
+OpenCode runs via `opencode run --format json`, Pi runs with
+`--mode json --approve` (Pi has no
 interactive trust prompt to answer headlessly, so `--approve` is always
 passed), and Bash runs with `bash -lc`. The container is still the sandbox
 boundary; review the diff before integrating.
