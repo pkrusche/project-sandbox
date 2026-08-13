@@ -21,8 +21,8 @@ from . import (
     dockerfile_checksum,
     firewall,
     oauth_refresh,
-    ollama_network,
     observability,
+    ollama_network,
     session,
     token_expiry,
     transcript,
@@ -405,6 +405,10 @@ def main(argv: list[str] | None = None) -> int:
     session_id = ""
     container_name: str | None = None
     session_started_at: datetime | None = None
+    # Doubles as the "record still open" marker: cleared once the session's
+    # outcome has been written, so the finally block can close out a record left
+    # behind by an interrupt or an exception.
+    record_path: Path | None = None
     try:
         if not is_chroot:
             dockerfile.render(
@@ -675,12 +679,22 @@ def main(argv: list[str] | None = None) -> int:
         rate_limited = observability.is_rate_limited_failure(exit_code, log_path)
         if rate_limited:
             exit_code = observability.RATE_LIMIT_EXIT_CODE
-            print("[W] Agent rate limited (HTTP 429); returning temporary-failure exit 75")
+            print(
+                "[W] Agent rate limited (HTTP 429); returning temporary-failure exit 75"
+            )
         observability.finish_record(
             record_path, exit_code=exit_code, rate_limited=rate_limited
         )
+        record_path = None
         return exit_code
     finally:
+        # An interrupted or crashed run never reaches finish_record above; close
+        # the record here so it doesn't stay "running" forever (orphan detection
+        # would otherwise rest on a PID that the OS is free to reuse).
+        if record_path is not None:
+            observability.finish_record(
+                record_path, exit_code=exit_code, status="interrupted"
+            )
         if ollama_plan is not None:
             ollama_plan.close()
         if wt is not None:
@@ -704,6 +718,42 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _write_json_summary(
+    destination: str,
+    *,
+    session_id: str,
+    container_name: str | None,
+    workspace: Path,
+    agent: str,
+    worktree,
+    project: Path,
+    exit_code: int,
+    started_at: datetime | None,
+    ended_at: datetime,
+) -> None:
+    """Best-effort: report the finished session as one JSON object.
+
+    Runs from ``main()``'s ``finally`` block, so — like the markdown transcript
+    — every failure is reported and swallowed: raising here would replace the
+    session's own exit code with a traceback after the agent has already run.
+    """
+    try:
+        _write_json_summary_unguarded(
+            destination,
+            session_id=session_id,
+            container_name=container_name,
+            workspace=workspace,
+            agent=agent,
+            worktree=worktree,
+            project=project,
+            exit_code=exit_code,
+            started_at=started_at,
+            ended_at=ended_at,
+        )
+    except Exception as exc:  # noqa: BLE001 - best-effort sidecar, never fatal
+        print(f"[W] Could not write JSON session summary: {exc}")
+
+
+def _write_json_summary_unguarded(
     destination: str,
     *,
     session_id: str,
@@ -1227,6 +1277,17 @@ def _validate_session_inputs(args) -> None:
         log_parent = Path(args.log).expanduser().resolve().parent
         if not log_parent.is_dir():
             raise SystemExit(f"--log parent directory does not exist: {log_parent}")
+    # The summary is written from main()'s finally block, where a failure can
+    # only be warned about — so reject an unusable destination while the run can
+    # still be aborted cleanly.
+    if getattr(args, "json_summary", None) and args.json_summary != "-":
+        summary_path = Path(args.json_summary).expanduser().resolve()
+        if summary_path.is_dir():
+            raise SystemExit(f"--json-summary must not be a directory: {summary_path}")
+        if not summary_path.parent.is_dir() and summary_path.parent.exists():
+            raise SystemExit(
+                f"--json-summary parent is not a directory: {summary_path.parent}"
+            )
 
 
 def _allow_github(args, run_agent: str | None) -> bool:

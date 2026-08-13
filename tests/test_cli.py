@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import TestCase
 from unittest.mock import patch
 
@@ -3346,11 +3347,48 @@ class JsonSessionSummaryTests(TestCase):
             self.assertEqual(payload["bookmark"], "automation/run")
             self.assertEqual(payload["jj_change_id"], "zvlyw3m0")
 
+    def test_write_failure_warns_instead_of_raising(self) -> None:
+        """The summary is written from main()'s finally block: an IO failure
+        there must not replace the session's exit code with a traceback."""
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            # Parent exists as a *file*, so mkdir()/write_text() both fail.
+            blocker = project / "blocker"
+            blocker.write_text("", encoding="utf-8")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                cli._write_json_summary(
+                    str(blocker / "summary.json"),
+                    session_id="session",
+                    container_name=None,
+                    workspace=project,
+                    agent="codex",
+                    worktree=None,
+                    project=project,
+                    exit_code=0,
+                    started_at=None,
+                    ended_at=cli.datetime.now().astimezone(),
+                )
+
+            self.assertIn("Could not write JSON session summary", out.getvalue())
+
+    def test_unusable_destination_is_rejected_before_the_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args = SimpleNamespace(prompt=None, log=None, json_summary=tmp)
+            with self.assertRaisesRegex(SystemExit, "must not be a directory"):
+                cli._validate_session_inputs(args)
+
+    def test_stdout_destination_passes_validation(self) -> None:
+        cli._validate_session_inputs(
+            SimpleNamespace(prompt=None, log=None, json_summary="-")
+        )
+
 
 class SessionsListCommandTests(TestCase):
     def test_lists_recorded_sessions_as_json(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp, patch.dict(
-            os.environ, {"XDG_STATE_HOME": tmp}
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.dict(os.environ, {"XDG_STATE_HOME": tmp}),
         ):
             path = cli.observability.start_record(
                 session_id="s1",

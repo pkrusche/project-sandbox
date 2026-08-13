@@ -216,10 +216,14 @@ from it. Session records survive CLI restarts in
 uv run project-sandbox sessions list --json
 ```
 
-Records whose CLI process disappeared without completing are reported as
-`orphaned`; `container_name` can be matched against the selected runtime's
-container listing. Completed HTTP 429 failures are marked `rate_limited` and
-return exit code 75 (`EX_TEMPFAIL`), while timeouts continue to return 124.
+A record's `status` is `running`, `completed`, `rate_limited`, `interrupted`
+(the CLI was interrupted or failed on its way out), or `orphaned` (still marked
+running, but its CLI process is gone). `container_name` can be matched against
+the selected runtime's container listing. Sessions that end on an HTTP 429 are
+marked `rate_limited` and return exit code 75 (`EX_TEMPFAIL`), while timeouts
+continue to return 124. Only the end of the session log is classified, so a
+transient 429 the agent retried through does not mark an unrelated later failure
+as rate limited.
 
 Warm the image cache without starting an agent or container with:
 
@@ -390,6 +394,9 @@ uv run project-sandbox \
   object contains `session_id`, `container_name`, `workspace_path`, `agent`,
   `bookmark`, `jj_change_id`, `exit_code`, `started_at`, and `ended_at`.
   `jj_change_id` is null for git repositories and runs without `--branch`.
+  Writing the summary is best-effort: an IO failure prints a warning and leaves
+  the session's own exit code intact, so an unusable `PATH` is rejected up front
+  instead.
 - `--branch NAME` uses a predictable sibling directory by default:
   `<repo>-worktrees/<name>` for git and `<repo>-workspaces/<name>` for jj
   (slashes are made filesystem-safe). `--keep-workspace` leaves that registered

@@ -18,8 +18,9 @@ class ObservabilityTests(TestCase):
         )
 
     def test_records_complete_session_as_json(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp, patch.dict(
-            os.environ, {"XDG_STATE_HOME": tmp}
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.dict(os.environ, {"XDG_STATE_HOME": tmp}),
         ):
             path = observability.start_record(
                 session_id="session-1",
@@ -41,8 +42,9 @@ class ObservabilityTests(TestCase):
         self.assertEqual(records[0]["container_name"], "project-sandbox-session-1")
 
     def test_dead_running_record_is_listed_as_orphaned(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp, patch.dict(
-            os.environ, {"XDG_STATE_HOME": tmp}
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.dict(os.environ, {"XDG_STATE_HOME": tmp}),
         ):
             path = observability.start_record(
                 session_id="lost",
@@ -85,3 +87,47 @@ class ObservabilityTests(TestCase):
 
     def test_failure_without_log_is_not_rate_limited(self) -> None:
         self.assertFalse(observability.is_rate_limited_failure(1, None))
+
+    def test_recovered_early_429_does_not_reclassify_a_later_failure(self) -> None:
+        # Only the end of the log decides: a 429 the agent retried through and
+        # recovered from must not turn an unrelated failure into exit 75, which
+        # tells an orchestrator to retry without counting the attempt.
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "session.log"
+            filler = "x" * (observability._RATE_LIMIT_TAIL_BYTES + 1024)
+            log.write_text(f"HTTP 429 Too Many Requests; retrying\n{filler}\nfailed\n")
+            self.assertFalse(observability.log_is_rate_limited(log))
+            self.assertFalse(observability.is_rate_limited_failure(1, log))
+
+    def test_terminal_429_in_a_long_log_is_still_detected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "session.log"
+            filler = "x" * (observability._RATE_LIMIT_TAIL_BYTES + 1024)
+            log.write_text(f"{filler}\nrate_limit_error\n")
+            self.assertTrue(observability.is_rate_limited_failure(1, log))
+
+    def test_interrupted_session_is_not_left_running(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.dict(os.environ, {"XDG_STATE_HOME": tmp}),
+        ):
+            path = observability.start_record(
+                session_id="ctrl-c",
+                container="project-sandbox-ctrl-c",
+                project=Path("/project"),
+                workspace=Path("/workspace"),
+                agent="claude",
+                runtime="docker",
+            )
+            observability.finish_record(path, exit_code=1, status="interrupted")
+            record = observability.list_records()[0]
+
+        self.assertEqual(record["status"], "interrupted")
+        self.assertIsNotNone(record["ended_at"])
+
+    def test_relative_state_home_is_ignored(self) -> None:
+        # An invalid XDG_STATE_HOME must not scatter records into the CWD.
+        with patch.dict(os.environ, {"XDG_STATE_HOME": "relative/state"}):
+            self.assertTrue(observability.state_dir().is_absolute())
+        with patch.dict(os.environ, {"XDG_STATE_HOME": ""}):
+            self.assertTrue(observability.state_dir().is_absolute())
