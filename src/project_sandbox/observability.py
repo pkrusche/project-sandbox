@@ -46,7 +46,15 @@ def start_record(
     workspace: Path,
     agent: str,
     runtime: str,
-) -> Path:
+) -> Path | None:
+    """Open a session record, or return ``None`` if it cannot be written.
+
+    Recording is observability, not part of running the agent: an unwritable
+    state directory (read-only or unset ``HOME``, a full disk) must degrade to
+    "no record for this session" rather than abort a run whose image is already
+    built. Every other entry point in this module is best-effort for the same
+    reason.
+    """
     record = {
         "session_id": session_id,
         "container_name": container,
@@ -61,13 +69,19 @@ def start_record(
         "exit_code": None,
         "rate_limited": False,
     }
-    path = state_dir() / f"{session_id}.json"
-    _write(path, record)
+    try:
+        # state_dir() itself can fail: Path.home() raises when HOME is unset and
+        # the user has no passwd entry.
+        path = state_dir() / f"{session_id}.json"
+        _write(path, record)
+    except (OSError, RuntimeError) as exc:
+        print(f"[W] Could not record session {session_id}: {exc}")
+        return None
     return path
 
 
 def finish_record(
-    path: Path,
+    path: Path | None,
     *,
     exit_code: int,
     rate_limited: bool = False,
@@ -80,6 +94,8 @@ def finish_record(
     records as ``running`` would make orphan detection depend on PID liveness
     alone, which a reused PID can defeat indefinitely.
     """
+    if path is None:
+        return
     try:
         record = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -90,12 +106,18 @@ def finish_record(
         exit_code=exit_code,
         rate_limited=rate_limited,
     )
-    _write(path, record)
+    try:
+        _write(path, record)
+    except OSError as exc:
+        print(f"[W] Could not update session record {path}: {exc}")
 
 
 def list_records() -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
-    directory = state_dir()
+    try:
+        directory = state_dir()
+    except RuntimeError:  # no resolvable home; nothing was ever recorded
+        return records
     if not directory.exists():
         return records
     for path in sorted(directory.glob("*.json")):

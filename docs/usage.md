@@ -398,10 +398,14 @@ uv run project-sandbox \
   the session's own exit code intact, so an unusable `PATH` is rejected up front
   instead.
 - `--branch NAME` uses a predictable sibling directory by default:
-  `<repo>-worktrees/<name>` for git and `<repo>-workspaces/<name>` for jj
-  (slashes are made filesystem-safe). `--keep-workspace` leaves that registered
-  directory in place, and a later run for the same branch/bookmark reuses it.
-  The exact absolute path is reported as `workspace_path` in the JSON summary.
+  `<repo>-worktrees/<name>` for git and `<repo>-workspaces/<name>` for jj. A
+  name containing `/` has its slashes replaced with `-` and gains a short
+  disambiguating suffix, so `feat/x` becomes `feat-x-<6 hex chars>` (the first
+  six hex digits of `sha256("feat/x")`) and cannot collide with a literal
+  `feat-x` branch. `--keep-workspace` leaves that registered directory in
+  place, and a later run for the same branch/bookmark reuses it. Rather than
+  recomputing the name, read the exact absolute path from `workspace_path` in
+  the JSON summary.
 - For headless `claude` runs, a readable markdown transcript is rendered
   automatically beside the log by parsing the stream-json events. This is
   best-effort: a parse failure prints a warning but never fails the run.
