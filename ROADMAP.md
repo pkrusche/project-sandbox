@@ -52,7 +52,7 @@ entirely and keeps each agent's blast radius isolated.
 Note the git-worktree (`--branch` non-jj) path — which shares `.git` the same way —
 should use the same approach.
 
-Interim mitigation already in place: a host-side exclusive lock serializes
-`jj_workspace.finalize()` (`_teardown_lock`), so concurrent teardowns can't
-interleave their store mutations. It does not address concurrent in-container
-writes; this item supersedes it.
+Interim mitigation already in place: one host-side exclusive lock
+(`_workspace_lock`) serializes workspace setup, finalization, and build-failure
+cleanup, so those shared-store mutations cannot interleave. It does not address
+concurrent in-container writes; this item supersedes it.

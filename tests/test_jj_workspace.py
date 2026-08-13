@@ -141,12 +141,46 @@ class SetupLockTests(unittest.TestCase):
             return expected
 
         with (
-            patch.object(jj_workspace_mod, "_setup_lock", side_effect=fake_lock),
+            patch.object(jj_workspace_mod, "_workspace_lock", side_effect=fake_lock),
             patch.object(jj_workspace_mod, "_setup_locked", side_effect=fake_setup),
         ):
             actual = jj_workspace_mod.setup(repo, "feature")
 
         self.assertIs(actual, expected)
+        self.assertFalse(lock_active)
+
+    def test_remove_holds_same_repository_lock_as_setup(self) -> None:
+        repo = Path("/tmp/fake/repo")
+        ws = jj_workspace_mod.JjWorkspace(
+            Path("/tmp/fake/workspace"),
+            "feature",
+            created_bookmark=True,
+            created_workspace=True,
+        )
+        lock_active = False
+
+        @contextlib.contextmanager
+        def fake_lock(locked_repo):
+            nonlocal lock_active
+            self.assertEqual(locked_repo, repo)
+            lock_active = True
+            try:
+                yield
+            finally:
+                lock_active = False
+
+        def fake_jj(*_args, **_kwargs):
+            self.assertTrue(lock_active)
+            return ""
+
+        with (
+            patch.object(jj_workspace_mod, "_workspace_lock", side_effect=fake_lock),
+            patch.object(jj_workspace_mod, "_jj", side_effect=fake_jj),
+            patch.object(jj_workspace_mod.shutil, "rmtree") as rmtree,
+        ):
+            jj_workspace_mod.remove(repo, ws)
+
+        rmtree.assert_called_once_with(ws.path, ignore_errors=True)
         self.assertFalse(lock_active)
 
 
