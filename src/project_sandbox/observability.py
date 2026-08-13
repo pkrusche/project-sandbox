@@ -3,20 +3,20 @@
 import json
 import os
 import tempfile
-from datetime import datetime, timezone
+import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-
 RATE_LIMIT_EXIT_CODE = 75  # EX_TEMPFAIL: callers should retry after a backoff.
 TIMEOUT_EXIT_CODE = 124  # Matches session.run()'s timeout exit code.
+# How much of the end of a session log is searched for rate-limit markers.
+_RATE_LIMIT_TAIL_BYTES = 32_768
 
 
 def new_session_id() -> str:
     """Return a sortable session id without exposing project or branch names."""
-    import uuid
-
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
     return f"{stamp}-{uuid.uuid4().hex[:12]}"
 
 
@@ -26,7 +26,15 @@ def container_name(session_id: str) -> str:
 
 
 def state_dir() -> Path:
-    base = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
+    # Per the XDG base directory spec, a relative (or empty) XDG_STATE_HOME is
+    # invalid and must be ignored — honouring it would scatter session records
+    # into whatever directory the CLI happened to be started from.
+    configured = os.environ.get("XDG_STATE_HOME", "")
+    base = (
+        Path(configured)
+        if configured.startswith("/")
+        else Path.home() / ".local" / "state"
+    )
     return base / "project-sandbox" / "sessions"
 
 
@@ -58,13 +66,26 @@ def start_record(
     return path
 
 
-def finish_record(path: Path, *, exit_code: int, rate_limited: bool = False) -> None:
+def finish_record(
+    path: Path,
+    *,
+    exit_code: int,
+    rate_limited: bool = False,
+    status: str | None = None,
+) -> None:
+    """Close out a record. ``status`` overrides the exit-code-derived default.
+
+    Callers pass an explicit status for sessions that never reached their
+    normal end (an interrupt, or an exception on the way out): leaving those
+    records as ``running`` would make orphan detection depend on PID liveness
+    alone, which a reused PID can defeat indefinitely.
+    """
     try:
         record = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return
     record.update(
-        status="rate_limited" if rate_limited else "completed",
+        status=status or ("rate_limited" if rate_limited else "completed"),
         ended_at=_now(),
         exit_code=exit_code,
         rate_limited=rate_limited,
@@ -117,15 +138,25 @@ def is_rate_limited_failure(exit_code: int, log_path: Path | None) -> bool:
 
 
 def log_is_rate_limited(path: Path) -> bool:
-    """Recognize common provider/agent representations of HTTP 429 failures."""
+    """Recognize common provider/agent representations of HTTP 429 failures.
+
+    Only the tail of the log is inspected. Agents retry through transient 429s,
+    so a marker from the middle of a long run says nothing about why the
+    session ended — and reporting exit 75 for a run that actually failed on,
+    say, a test error tells an orchestrator to retry it without counting the
+    attempt.
+    """
     try:
-        text = path.read_text(encoding="utf-8", errors="replace").lower()
+        with open(path, "rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            handle.seek(max(0, handle.tell() - _RATE_LIMIT_TAIL_BYTES))
+            text = handle.read().decode("utf-8", errors="replace").lower()
     except OSError:
         return False
     markers = (
         "status code: 429",
-        "status_code\":429",
-        "status\":429",
+        'status_code":429',
+        'status":429',
         "http 429",
         "too many requests",
         "rate_limit_error",
@@ -147,7 +178,7 @@ def _pid_exists(value: object) -> bool:
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _write(path: Path, value: dict[str, Any]) -> None:
