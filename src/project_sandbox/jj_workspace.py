@@ -35,7 +35,7 @@ def setup(
     # `jj workspace add` mutates shared repository state and concurrent calls
     # can corrupt the invoking working copy (jj#9314). Keep all observations
     # used to decide how to add the workspace under the same repository lock.
-    with _setup_lock(repo):
+    with _workspace_lock(repo):
         return _setup_locked(repo, bookmark, start_at, workspace_dir)
 
 
@@ -96,10 +96,16 @@ def _setup_locked(
 
 
 @contextmanager
-def _setup_lock(repo: Path) -> Iterator[None]:
-    """Serialize jj workspace creation for all processes using ``repo``."""
+def _workspace_lock(repo: Path) -> Iterator[None]:
+    """Serialize all host-side workspace mutations for one jj repository.
+
+    Creation, finalization, and build-failure cleanup all update the shared jj
+    store.  They must use the same lock: separate setup/teardown locks still
+    permit ``workspace add`` to race with bookmark deletion or
+    ``workspace forget``.
+    """
     key = hashlib.sha256(str(repo.resolve()).encode()).hexdigest()[:16]
-    lock_path = Path(tempfile.gettempdir()) / f"project-sandbox-jj-setup-{key}.lock"
+    lock_path = Path(tempfile.gettempdir()) / f"project-sandbox-jj-workspace-{key}.lock"
     with open(lock_path, "w") as handle:
         fcntl.flock(handle, fcntl.LOCK_EX)
         try:
@@ -202,27 +208,6 @@ def git_backend_mount(repo: Path, ws_path: Path) -> tuple[Path, str] | None:
     return source, target
 
 
-@contextmanager
-def _teardown_lock(repo: Path) -> Iterator[None]:
-    """Serialize teardown across concurrent host project-sandbox processes.
-
-    Several agents can share one repo's store through separate workspaces, and
-    each agent's host-side teardown mutates that shared store — moving bookmarks
-    and rebasing onto the default workspace's ``@``. An exclusive file lock keyed
-    by the repo path keeps those teardowns from interleaving. (Concurrent writes
-    from *inside* the containers are a separate, still-open problem — see the
-    clone-per-subagent item in TODO.md.)
-    """
-    key = hashlib.sha256(str(repo.resolve()).encode()).hexdigest()[:16]
-    lock_path = Path(tempfile.gettempdir()) / f"project-sandbox-jj-teardown-{key}.lock"
-    with open(lock_path, "w") as handle:
-        fcntl.flock(handle, fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(handle, fcntl.LOCK_UN)
-
-
 def finalize(
     repo: Path,
     ws: JjWorkspace,
@@ -249,7 +234,7 @@ def finalize(
     reported rather than propagated (which would mask the session's exit code):
     the workspace is left in place so no work is lost.
     """
-    with _teardown_lock(repo):
+    with _workspace_lock(repo):
         ws_name = ws.path.name
 
         try:
@@ -295,17 +280,18 @@ def remove(repo: Path, ws: JjWorkspace) -> None:
     a kept, reused workspace is left in place so a prior session's work is never
     destroyed by a failed build — matching how a git branch/worktree survives.
     """
-    if ws.created_bookmark:
-        try:
-            _jj(repo, ["bookmark", "delete", ws.bookmark])
-        except subprocess.CalledProcessError:
-            pass
-    if ws.created_workspace:
-        try:
-            _jj(repo, ["workspace", "forget", ws.path.name])
-        except subprocess.CalledProcessError:
-            pass
-        shutil.rmtree(ws.path, ignore_errors=True)
+    with _workspace_lock(repo):
+        if ws.created_bookmark:
+            try:
+                _jj(repo, ["bookmark", "delete", ws.bookmark])
+            except subprocess.CalledProcessError:
+                pass
+        if ws.created_workspace:
+            try:
+                _jj(repo, ["workspace", "forget", ws.path.name])
+            except subprocess.CalledProcessError:
+                pass
+            shutil.rmtree(ws.path, ignore_errors=True)
 
 
 def _bookmark_exists(repo: Path, bookmark: str) -> bool:
