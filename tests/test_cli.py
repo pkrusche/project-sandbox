@@ -1,5 +1,6 @@
 import contextlib
 import io
+import json
 import os
 import subprocess
 import sys
@@ -3269,6 +3270,82 @@ class FinalizeWorktreeTests(TestCase):
             self.assertIn("feat/x", finalize.call_args.kwargs["message"])
 
 
+class JsonSessionSummaryTests(TestCase):
+    def test_writes_compact_file_summary_for_git_worktree(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project = root / "project"
+            workspace = root / "project-worktrees" / "feat"
+            project.mkdir()
+            workspace.mkdir(parents=True)
+            destination = root / "reports" / "summary.json"
+            wt = cli.worktree_mod.Worktree(path=workspace, branch="feat")
+            started = cli.datetime.fromisoformat("2026-08-13T10:00:00+00:00")
+            ended = cli.datetime.fromisoformat("2026-08-13T10:01:00+00:00")
+
+            cli._write_json_summary(
+                str(destination),
+                session_id="abcdef0123456789",
+                container_name="project-sandbox-abcdef012345",
+                workspace=workspace,
+                agent="codex",
+                worktree=wt,
+                project=project,
+                exit_code=7,
+                started_at=started,
+                ended_at=ended,
+            )
+
+            raw = destination.read_text(encoding="utf-8")
+            self.assertEqual(raw.count("\n"), 1)
+            self.assertEqual(
+                json.loads(raw),
+                {
+                    "agent": "codex",
+                    "bookmark": "feat",
+                    "container_name": "project-sandbox-abcdef012345",
+                    "ended_at": "2026-08-13T10:01:00+00:00",
+                    "exit_code": 7,
+                    "jj_change_id": None,
+                    "session_id": "abcdef0123456789",
+                    "started_at": "2026-08-13T10:00:00+00:00",
+                    "workspace_path": str(workspace.resolve()),
+                },
+            )
+
+    def test_stdout_summary_includes_jj_change_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "project"
+            workspace = Path(tmp) / "workspace"
+            project.mkdir()
+            workspace.mkdir()
+            ws = cli.jj_workspace_mod.JjWorkspace(
+                path=workspace, bookmark="automation/run"
+            )
+            out = io.StringIO()
+            with (
+                patch.object(
+                    cli.jj_workspace_mod, "change_id", return_value="zvlyw3m0"
+                ),
+                contextlib.redirect_stdout(out),
+            ):
+                cli._write_json_summary(
+                    "-",
+                    session_id="session",
+                    container_name=None,
+                    workspace=workspace,
+                    agent="bash",
+                    worktree=ws,
+                    project=project,
+                    exit_code=0,
+                    started_at=cli.datetime.now().astimezone(),
+                    ended_at=cli.datetime.now().astimezone(),
+                )
+
+            payload = json.loads(out.getvalue())
+            self.assertEqual(payload["bookmark"], "automation/run")
+            self.assertEqual(payload["jj_change_id"], "zvlyw3m0")
+
 class DefaultImageTagTests(TestCase):
     def test_differs_per_project(self) -> None:
         with (
@@ -3392,6 +3469,38 @@ class BuildCacheReuseTests(TestCase):
             self.assertTrue(
                 (project / ".project-sandbox" / ".build-state.json").exists()
             )
+
+    def test_build_and_state_write_are_inside_cache_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self._make_project(tmp)
+            lock_active = False
+
+            @contextlib.contextmanager
+            def fake_lock(_context_dir):
+                nonlocal lock_active
+                lock_active = True
+                try:
+                    yield
+                finally:
+                    lock_active = False
+
+            original_write_state = cli.build_cache.write_state
+
+            def checked_write_state(*args, **kwargs):
+                self.assertTrue(lock_active)
+                return original_write_state(*args, **kwargs)
+
+            with (
+                patch.object(cli.build_cache, "build_lock", side_effect=fake_lock),
+                patch.object(
+                    cli.build_cache, "write_state", side_effect=checked_write_state
+                ),
+            ):
+                rc, _out, build_image = self._run(project, image_exists=False)
+
+            self.assertEqual(rc, 0)
+            build_image.assert_called_once()
+            self.assertFalse(lock_active)
 
     def test_second_run_reuses_cached_image(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

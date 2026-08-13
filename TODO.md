@@ -2,19 +2,19 @@
 
 ## Machine-readable outputs from session runs
 
-- [ ] Emit a machine-readable session summary (single JSON line on stdout, or
+- [x] Emit a machine-readable session summary (single JSON line on stdout, or
       `--json-summary <path>`): session id, container name, workspace path, agent,
       resulting bookmark + jj change_id, exit code, start/end time.
-- [ ] Add a "reuse existing workspace" functionality with a documented, predictable workspace
-      path derived from the branch name — so automated callers passing `--keep-workspace` 
+- [x] Add a "reuse existing workspace" functionality with a documented, predictable workspace
+      path derived from the branch name — so automated callers passing `--keep-workspace`
       know where to look. Also, workspace path should be in the session summary output.
 
 ## Concurrent --branch runs
 
-- [ ] Document (and enforce) a concurrency contract for parallel `--branch` runs:
-      serialize `jj workspace add` internally (jj#9314 can corrupt the caller) with a 
+- [x] Document (and enforce) a concurrency contract for parallel `--branch` runs:
+      serialize `jj workspace add` internally (jj#9314 can corrupt the caller) with a
       filesystem based lock.
-- [ ] Guard the `.build-state.json` image fingerprint cache against duplicate
+- [x] Guard the `.build-state.json` image fingerprint cache against duplicate
       concurrent first-builds.
 
 ## pi agent support improvements
@@ -33,13 +33,13 @@
 
 ## Observability & Containers
 
-- [ ] Distinguish rate-limit (429) exits from generic agent failure, alongside the
+- [x] Distinguish rate-limit (429) exits from generic agent failure, alongside the
       existing timeout → 124. Rate limits want longer backoff and no retry-count
       increment.
-- [ ] Add `project-sandbox sessions list --json` (or equivalent) so a restarting
+- [x] Add `project-sandbox sessions list --json` (or equivalent) so a restarting
       orchestrator can detect orphaned/still-running sessions instead of scanning
       `.project-sandbox/sessions/` and guessing.
-- [ ] Make the container name deterministic and reported, so orphan detection can
+- [x] Make the container name deterministic and reported, so orphan detection can
       match against `container ls --format json`.
-- [ ] Add a build-only / warm-up invocation that builds the image without starting an
+- [x] Add a build-only / warm-up invocation that builds the image without starting an
       agent, so an orchestrator can pre-build once before launching N parallel jobs.

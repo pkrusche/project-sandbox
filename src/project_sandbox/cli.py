@@ -1,11 +1,11 @@
 import hashlib
+import json
 import os
 import re
 import shlex
 import shutil
 import sys
 import time
-import uuid
 from argparse import ArgumentParser
 from datetime import datetime
 from pathlib import Path
@@ -22,6 +22,7 @@ from . import (
     firewall,
     oauth_refresh,
     ollama_network,
+    observability,
     session,
     token_expiry,
     transcript,
@@ -113,6 +114,11 @@ def build_parser() -> ArgumentParser:
         help="Container runtime for direct CLI runs (default: auto).",
     )
     p.add_argument("--no-build", action="store_true")
+    p.add_argument(
+        "--build-only",
+        action="store_true",
+        help="Build/warm the sandbox image and exit without starting an agent.",
+    )
     p.add_argument("--force-build", action="store_true")
     p.add_argument(
         "--no-verify-dockerfile",
@@ -189,6 +195,14 @@ def build_parser() -> ArgumentParser:
         help="Agent to run. When omitted, project-sandbox only initializes generated config files.",
     )
     p.add_argument("--log")
+    p.add_argument(
+        "--json-summary",
+        metavar="PATH",
+        help=(
+            "Write a one-line JSON session summary to PATH after the agent exits; "
+            "use '-' for stdout."
+        ),
+    )
     p.add_argument("--timeout", type=int)
     p.add_argument(
         "--model",
@@ -273,7 +287,14 @@ def build_parser() -> ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    if raw_argv[:2] == ["sessions", "list"]:
+        extra = raw_argv[2:]
+        if any(item != "--json" for item in extra):
+            raise SystemExit("usage: project-sandbox sessions list [--json]")
+        observability.print_sessions(as_json="--json" in extra)
+        return 0
+    args = build_parser().parse_args(raw_argv)
 
     # Expand a leading "~" once, up front, so every later use of args.log (both
     # validation and session-command construction) agrees on the same absolute
@@ -286,6 +307,8 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("Use only one of --prompt or --prompt-text")
     if args.no_build and args.force_build:
         raise SystemExit("--no-build and --force-build are mutually exclusive")
+    if args.build_only and args.no_build:
+        raise SystemExit("--build-only and --no-build are mutually exclusive")
     run_agent = _requested_agent(args)
     pi_ollama_enabled = _pi_ollama_enabled(args, run_agent)
     _validate_api_key_injection_args(args, run_agent)
@@ -299,6 +322,14 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--branch-start-at requires --branch")
     if args.keep_workspace and not args.branch:
         raise SystemExit("--keep-workspace requires --branch")
+    if args.build_only and args.branch:
+        raise SystemExit("--build-only cannot be combined with --branch")
+    if args.build_only and (args.prompt or args.prompt_text):
+        raise SystemExit("--build-only cannot be combined with a prompt")
+    if args.build_only and args.agent:
+        raise SystemExit("--build-only cannot be combined with --agent")
+    if args.json_summary and run_agent is None:
+        raise SystemExit("--json-summary requires --agent, --prompt, or --prompt-text")
 
     project = _resolve_required_path(args.project, what="project path")
     if args.image_tag is None:
@@ -323,7 +354,7 @@ def main(argv: list[str] | None = None) -> int:
         _ensure_agent_available(run_agent, available_agents)
     runtime = (
         container_cli.select_runtime(args.runtime)
-        if run_agent is not None and not args.dry_run
+        if (run_agent is not None or args.build_only) and not args.dry_run
         else None
     )
 
@@ -371,6 +402,9 @@ def main(argv: list[str] | None = None) -> int:
     agent_ran = False
     ollama_plan: ollama_network.ForwardingPlan | None = None
     exit_code = 1
+    session_id = ""
+    container_name: str | None = None
+    session_started_at: datetime | None = None
     try:
         if not is_chroot:
             dockerfile.render(
@@ -443,7 +477,7 @@ def main(argv: list[str] | None = None) -> int:
                 build_context=build_context,
             )
 
-        if run_agent is None:
+        if run_agent is None and not args.build_only:
             _print_next_steps(
                 context_dir=context_dir,
                 project=project,
@@ -491,57 +525,61 @@ def main(argv: list[str] | None = None) -> int:
             # --dockerfile) keep building and rely on the runtime's layer
             # cache + the generated .dockerignore instead of fingerprinting an
             # arbitrary source tree.
-            host_identity = container_cli.host_build_identity(runtime)
-            fingerprint = build_cache.compute_fingerprint(
-                context_dir,
-                extra={
-                    "image_tag": args.image_tag,
-                    "base_image": base_image or "",
-                    "host_identity": (
-                        "default"
-                        if host_identity is None
-                        else f"{host_identity[0]}:{host_identity[1]}"
-                    ),
-                },
-            )
-            context_is_sandbox = build_context.resolve(
-                strict=False
-            ) == context_dir.resolve(strict=False)
-            cache_hit = (
-                not args.force_build
-                and context_is_sandbox
-                and build_cache.is_cache_valid(
+            # Hold the lock across the cache check and build. A concurrent first
+            # caller waits, then observes the state and image written by the
+            # winner instead of starting an identical build.
+            with build_cache.build_lock(context_dir):
+                host_identity = container_cli.host_build_identity(runtime)
+                fingerprint = build_cache.compute_fingerprint(
                     context_dir,
-                    image_tag=args.image_tag,
-                    fingerprint=fingerprint,
+                    extra={
+                        "image_tag": args.image_tag,
+                        "base_image": base_image or "",
+                        "host_identity": (
+                            "default"
+                            if host_identity is None
+                            else f"{host_identity[0]}:{host_identity[1]}"
+                        ),
+                    },
                 )
-                and container_cli.image_exists(runtime, args.image_tag)
-            )
-            if cache_hit:
-                print("Reusing cached image (inputs unchanged)")
-            else:
-                if not args.verbose:
-                    print("Building container image…")
-                start = time.monotonic()
-                rc = container_cli.build_image(
-                    runtime=runtime,
-                    context_dir=context_dir,
-                    image_tag=args.image_tag,
-                    build_context=build_context,
-                    dockerfile_path=context_dir / "Dockerfile",
-                    verbose=args.verbose,
+                context_is_sandbox = build_context.resolve(
+                    strict=False
+                ) == context_dir.resolve(strict=False)
+                cache_hit = (
+                    not args.force_build
+                    and context_is_sandbox
+                    and build_cache.is_cache_valid(
+                        context_dir,
+                        image_tag=args.image_tag,
+                        fingerprint=fingerprint,
+                    )
+                    and container_cli.image_exists(runtime, args.image_tag)
                 )
-                if rc != 0:
-                    return rc
-                build_cache.write_state(
-                    context_dir,
-                    image_tag=args.image_tag,
-                    fingerprint=fingerprint,
-                )
-                # Record the trusted baseline after a real build into the masked
-                # .project-sandbox dir the sandbox cannot reach.
-                dockerfile_checksum.record(context_dir, tracked_dockerfiles)
-                print(f"Built image in {time.monotonic() - start:.1f}s")
+                if cache_hit:
+                    print("Reusing cached image (inputs unchanged)")
+                else:
+                    if not args.verbose:
+                        print("Building container image…")
+                    start = time.monotonic()
+                    rc = container_cli.build_image(
+                        runtime=runtime,
+                        context_dir=context_dir,
+                        image_tag=args.image_tag,
+                        build_context=build_context,
+                        dockerfile_path=context_dir / "Dockerfile",
+                        verbose=args.verbose,
+                    )
+                    if rc != 0:
+                        return rc
+                    build_cache.write_state(
+                        context_dir,
+                        image_tag=args.image_tag,
+                        fingerprint=fingerprint,
+                    )
+                    # Record the trusted baseline after a real build into the masked
+                    # .project-sandbox dir the sandbox cannot reach.
+                    dockerfile_checksum.record(context_dir, tracked_dockerfiles)
+                    print(f"Built image in {time.monotonic() - start:.1f}s")
         elif runtime.is_container and not container_cli.image_exists(
             runtime, args.image_tag
         ):
@@ -552,11 +590,21 @@ def main(argv: list[str] | None = None) -> int:
                 "drop --no-build so the image can be built."
             )
 
+        if args.build_only:
+            print(f"Image ready: {args.image_tag}")
+            return 0
+
         if pi_ollama_enabled:
             ollama_plan = ollama_network.prepare(runtime)
             if args.verbose:
                 print(ollama_network.describe(ollama_plan))
 
+        session_id = observability.new_session_id()
+        session_container_name = (
+            observability.container_name(session_id) if runtime.is_container else None
+        )
+        args.session_id = session_id
+        args.container_name = session_container_name
         cmd, log_path, unsupervised, container_stop_argv = _build_session_command(
             args,
             project=project,
@@ -573,6 +621,20 @@ def main(argv: list[str] | None = None) -> int:
             create_prompt_files=True,
             api_key_values=api_key_values,
             ollama_add_host=ollama_plan.add_host if ollama_plan else None,
+            session_id=session_id,
+        )
+        container_name = session_container_name
+
+        print(f"Session: {session_id}")
+        if session_container_name:
+            print(f"Container: {session_container_name}")
+        record_path = observability.start_record(
+            session_id=session_id,
+            container=session_container_name,
+            project=project,
+            workspace=workspace,
+            agent=run_agent,
+            runtime=runtime.name,
         )
 
         if not unsupervised:
@@ -589,6 +651,7 @@ def main(argv: list[str] | None = None) -> int:
         if ollama_plan is not None:
             ollama_plan.start()
         agent_ran = True
+        session_started_at = datetime.now().astimezone()
         # Injected API key values are never baked into cmd's argv (see
         # _build_session_command); supply them through the subprocess
         # environment instead so they don't show up via `ps`/process listings.
@@ -611,6 +674,17 @@ def main(argv: list[str] | None = None) -> int:
         else:
             exit_code = container_cli.run(cmd, env=api_key_values or None)
 
+        rate_limited = bool(
+            exit_code != 0
+            and log_path is not None
+            and observability.log_is_rate_limited(log_path)
+        )
+        if rate_limited:
+            exit_code = observability.RATE_LIMIT_EXIT_CODE
+            print("[W] Agent rate limited (HTTP 429); returning temporary-failure exit 75")
+        observability.finish_record(
+            record_path, exit_code=exit_code, rate_limited=rate_limited
+        )
         return exit_code
     finally:
         if ollama_plan is not None:
@@ -620,6 +694,58 @@ def main(argv: list[str] | None = None) -> int:
                 _finalize_worktree(args, project=project, wt=wt, exit_code=exit_code)
             elif isinstance(wt, jj_workspace_mod.JjWorkspace):
                 jj_workspace_mod.remove(project, wt)
+        if agent_ran and args.json_summary:
+            _write_json_summary(
+                args.json_summary,
+                session_id=session_id,
+                container_name=container_name,
+                workspace=workspace,
+                agent=run_agent,
+                worktree=wt,
+                project=project,
+                exit_code=exit_code,
+                started_at=session_started_at,
+                ended_at=datetime.now().astimezone(),
+            )
+
+
+def _write_json_summary(
+    destination: str,
+    *,
+    session_id: str,
+    container_name: str | None,
+    workspace: Path,
+    agent: str,
+    worktree,
+    project: Path,
+    exit_code: int,
+    started_at: datetime | None,
+    ended_at: datetime,
+) -> None:
+    bookmark = None
+    change_id = None
+    if worktree is not None:
+        bookmark = worktree.branch if _is_git_worktree(worktree) else worktree.bookmark
+        if isinstance(worktree, jj_workspace_mod.JjWorkspace):
+            change_id = jj_workspace_mod.change_id(project, worktree.bookmark)
+    payload = {
+        "session_id": session_id,
+        "container_name": container_name,
+        "workspace_path": str(workspace.resolve()),
+        "agent": agent,
+        "bookmark": bookmark,
+        "jj_change_id": change_id,
+        "exit_code": exit_code,
+        "started_at": started_at.isoformat() if started_at else None,
+        "ended_at": ended_at.isoformat(),
+    }
+    line = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+    if destination == "-":
+        print(line)
+        return
+    path = Path(destination).expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(line + "\n", encoding="utf-8")
 
 
 def _write_transcript_markdown(log_path: Path) -> None:
@@ -703,7 +829,9 @@ def _dry_run(
     print(f"Would render sandbox assets under: {context_dir}")
     print(f"Would render devcontainer under: {project / '.devcontainer'}")
     preview_runtime = (
-        container_cli.select_runtime(args.runtime, dry_run=True) if run_agent else None
+        container_cli.select_runtime(args.runtime, dry_run=True)
+        if run_agent or args.build_only
+        else None
     )
     if preview_runtime == container_cli.CHROOT:
         base_dockerfile, build_context = None, context_dir
@@ -725,7 +853,7 @@ def _dry_run(
     ):
         print(warning)
 
-    if run_agent is None:
+    if run_agent is None and not args.build_only:
         print(
             "Would initialize config files only; no agent container would be started."
         )
@@ -746,6 +874,9 @@ def _dry_run(
             dry_run=True,
             verbose=args.verbose,
         )
+    if args.build_only:
+        print(f"Would build image only: {args.image_tag}")
+        return 0
     ollama_plan = (
         ollama_network.prepare(runtime, dry_run=True) if pi_ollama_enabled else None
     )
@@ -1341,6 +1472,7 @@ def _build_session_command(
     create_prompt_files: bool,
     api_key_values: dict[str, str] | None = None,
     ollama_add_host: str | None = None,
+    session_id: str | None = None,
 ) -> tuple[list[str], Path | None, bool, list[str] | None]:
     # Agent availability is validated up front in main() via _ensure_agent_available.
     extra_mounts = list(args.extra_mounts)
@@ -1418,12 +1550,13 @@ def _build_session_command(
     run_mode_agent = run_agent
     unsupervised = bool(args.prompt or args.prompt_text)
     log_path: Path | None = None
-    # Unsupervised runs get a named container so that on timeout the runtime can
-    # be told to stop it explicitly (rather than relying on SIGKILL to the CLI
-    # process, which does not guarantee the backing VM is reclaimed).
-    container_name = (
-        f"project-sandbox-{uuid.uuid4().hex[:12]}" if unsupervised else None
-    )
+    # Every container is named from the reported session id. Besides making
+    # timeout cleanup reliable, this lets a restarted orchestrator correlate a
+    # persistent session record with `container ls --format json`.
+    container_name = getattr(args, "container_name", None)
+    if runtime.is_container and container_name is None:
+        session_id = getattr(args, "session_id", None) or observability.new_session_id()
+        container_name = observability.container_name(session_id)
     container_stop_argv = (
         container_cli.build_stop_argv(runtime, container_name)
         if container_name is not None and runtime.is_container

@@ -205,6 +205,31 @@ Then run:
 uv run project-sandbox /absolute/path/to/repo --dockerfile /absolute/path/to/repo/Dockerfile
 ```
 
+## Session observability and image warm-up
+
+Every direct container run reports a session ID and a container name derived
+from it. Session records survive CLI restarts in
+`$XDG_STATE_HOME/project-sandbox/sessions/` (defaulting to
+`~/.local/state/project-sandbox/sessions/`). List them for an orchestrator with:
+
+```bash
+uv run project-sandbox sessions list --json
+```
+
+Records whose CLI process disappeared without completing are reported as
+`orphaned`; `container_name` can be matched against the selected runtime's
+container listing. Completed HTTP 429 failures are marked `rate_limited` and
+return exit code 75 (`EX_TEMPFAIL`), while timeouts continue to return 124.
+
+Warm the image cache without starting an agent or container with:
+
+```bash
+uv run project-sandbox /path/to/project --build-only
+```
+
+The usual image source, runtime, cache, `--force-build`, and resource options
+apply. `--dry-run --build-only` previews the build without writing files.
+
 ## Devcontainer Flow
 
 Before starting the devcontainer, run
@@ -294,6 +319,15 @@ Related flags:
 - `--worktree-dir <path>` — where to place the worktree/workspace root (default:
   a sibling `<repo>-worktrees` / `<repo>-workspaces` directory).
 
+Parallel `--branch` runs against one repository are supported when every active
+run uses a distinct branch/bookmark (and therefore a distinct worktree/workspace).
+Do not run two agents on the same branch at once: reuse is intended for sequential
+runs and a shared working copy is not multi-writer-safe. For jj repositories,
+project-sandbox serializes the short `jj workspace add` setup phase with a
+repository-scoped filesystem lock; agent execution remains parallel. Image cache
+checks and first builds are also serialized per generated build context, so a
+second run waits for and reuses an identical image instead of building it twice.
+
 ## Unsupervised Sessions
 
 Run the agent without a TTY, starting from a prompt and writing all output to a
@@ -351,6 +385,16 @@ uv run project-sandbox \
   becomes Pi's default model.
 - `--log FILE` overrides the default log path under
   `.project-sandbox/sessions/<agent>-main-<timestamp>.log`.
+- `--json-summary PATH` writes one compact JSON object after the session and
+  worktree cleanup completes. Use `-` to print the JSON line on stdout. The
+  object contains `session_id`, `container_name`, `workspace_path`, `agent`,
+  `bookmark`, `jj_change_id`, `exit_code`, `started_at`, and `ended_at`.
+  `jj_change_id` is null for git repositories and runs without `--branch`.
+- `--branch NAME` uses a predictable sibling directory by default:
+  `<repo>-worktrees/<name>` for git and `<repo>-workspaces/<name>` for jj
+  (slashes are made filesystem-safe). `--keep-workspace` leaves that registered
+  directory in place, and a later run for the same branch/bookmark reuses it.
+  The exact absolute path is reported as `workspace_path` in the JSON summary.
 - For headless `claude` runs, a readable markdown transcript is rendered
   automatically beside the log by parsing the stream-json events. This is
   best-effort: a parse failure prints a warning but never fails the run.
