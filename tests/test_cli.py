@@ -2914,46 +2914,52 @@ class PiOllamaTests(TestCase):
             self.assertIn("ollama.project-sandbox.internal", rendered)
 
 
+def _headless_dry_run(agent: str, *extra: str) -> tuple[int, str]:
+    """Dry-run an unsupervised session and return (exit code, printed command)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        project = Path(tmp)
+        (project / "README.md").write_text("# demo\n", encoding="utf-8")
+        host_home = project / "home"
+        paths = _agent_paths(host_home)
+        for key in paths:
+            paths[key].mkdir(parents=True, exist_ok=True)
+        out = io.StringIO()
+        with (
+            patch.object(
+                cli,
+                "read_identity",
+                return_value=GitIdentity("Ada", "ada@example.com"),
+            ),
+            patch.object(cli.config_agents, "_agent_host_paths", return_value=paths),
+            contextlib.redirect_stdout(out),
+        ):
+            rc = cli.main(
+                [
+                    "--dry-run",
+                    "--no-build",
+                    "--no-firewall",
+                    "--agent",
+                    agent,
+                    "--prompt-text",
+                    "do something",
+                    *extra,
+                    str(project),
+                    "python:3.12-slim",
+                ]
+            )
+        return rc, out.getvalue()
+
+
 class EffortSelectionTests(TestCase):
     """--effort passes PROJECT_SANDBOX_EFFORT into unsupervised agent runs."""
 
-    def _headless_dry_run_with_effort(self, agent: str, effort: str | None) -> str:
-        with tempfile.TemporaryDirectory() as tmp:
-            project = Path(tmp)
-            (project / "README.md").write_text("# demo\n", encoding="utf-8")
-            host_home = project / "home"
-            paths = _agent_paths(host_home)
-            for key in paths:
-                paths[key].mkdir(parents=True, exist_ok=True)
-            out = io.StringIO()
-            extra = ["--effort", effort] if effort else []
-            with (
-                patch.object(
-                    cli,
-                    "read_identity",
-                    return_value=GitIdentity("Ada", "ada@example.com"),
-                ),
-                patch.object(
-                    cli.config_agents, "_agent_host_paths", return_value=paths
-                ),
-                contextlib.redirect_stdout(out),
-            ):
-                rc = cli.main(
-                    [
-                        "--dry-run",
-                        "--no-build",
-                        "--no-firewall",
-                        "--agent",
-                        agent,
-                        "--prompt-text",
-                        "do something",
-                        *extra,
-                        str(project),
-                        "python:3.12-slim",
-                    ]
-                )
-            self.assertEqual(rc, 0)
-            return out.getvalue()
+    def _headless_dry_run_with_effort(
+        self, agent: str, effort: str | None, *extra_args: str
+    ) -> str:
+        extra = ["--effort", effort] if effort else []
+        rc, output = _headless_dry_run(agent, *extra, *extra_args)
+        self.assertEqual(rc, 0)
+        return output
 
     def test_effort_injected_for_claude_headless(self) -> None:
         output = self._headless_dry_run_with_effort("claude", "high")
@@ -2987,20 +2993,10 @@ class EffortSelectionTests(TestCase):
         output = self._headless_dry_run_with_effort("pi", "high")
         self.assertIn("PROJECT_SANDBOX_EFFORT=high", output)
 
-    def test_pi_rejects_unsupported_max_effort_before_startup(self) -> None:
-        with self.assertRaisesRegex(
-            SystemExit, "Pi does not support --effort max"
-        ):
-            cli.main(
-                [
-                    "--agent",
-                    "pi",
-                    "--effort",
-                    "max",
-                    "/tmp/project",
-                    "python:3.12-slim",
-                ]
-            )
+    def test_max_effort_injected_for_pi_headless(self) -> None:
+        # Pi's --thinking accepts max, so it must not be rejected or rewritten.
+        output = self._headless_dry_run_with_effort("pi", "max")
+        self.assertIn("PROJECT_SANDBOX_EFFORT=max", output)
 
     def test_no_effort_does_not_inject_env_var(self) -> None:
         output = self._headless_dry_run_with_effort("claude", None)
@@ -3224,6 +3220,27 @@ class EffortSelectionTests(TestCase):
             result = out.getvalue()
             self.assertIn("PROJECT_SANDBOX_MODEL=sonnet", result)
             self.assertIn("PROJECT_SANDBOX_EFFORT=high", result)
+
+
+class PiToolAllowlistTests(TestCase):
+    """--pi-tools is opt-in and only reaches Pi sessions."""
+
+    def test_no_allowlist_injected_by_default(self) -> None:
+        # Pi's own default tool set must stay in place; a read-only default
+        # would leave the agent unable to edit files in its own sandbox.
+        rc, output = _headless_dry_run("pi")
+        self.assertEqual(rc, 0)
+        self.assertNotIn("PROJECT_SANDBOX_PI_TOOLS", output)
+
+    def test_allowlist_injected_when_requested(self) -> None:
+        rc, output = _headless_dry_run("pi", "--pi-tools", "read,grep,find,ls")
+        self.assertEqual(rc, 0)
+        self.assertIn("PROJECT_SANDBOX_PI_TOOLS=read,grep,find,ls", output)
+
+    def test_allowlist_not_injected_for_other_agents(self) -> None:
+        rc, output = _headless_dry_run("claude", "--pi-tools", "read")
+        self.assertEqual(rc, 0)
+        self.assertNotIn("PROJECT_SANDBOX_PI_TOOLS", output)
 
 
 class VerboseAgentConfigTests(TestCase):

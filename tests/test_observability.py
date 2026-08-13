@@ -88,6 +88,39 @@ class ObservabilityTests(TestCase):
     def test_failure_without_log_is_not_rate_limited(self) -> None:
         self.assertFalse(observability.is_rate_limited_failure(1, None))
 
+    def test_pi_json_stream_failure_is_detected(self) -> None:
+        # Pi exits 0 in --mode json even when the turn errored out, so the
+        # stream itself is the only evidence the run failed.
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "pi.log"
+            log.write_text(
+                'firewall ready\n{"type": "session", "id": "pi-1"}\n'
+                '{"type": "message_end", "message": {"role": "assistant", '
+                '"stopReason": "error", "errorMessage": "boom"}}\n',
+                encoding="utf-8",
+            )
+            self.assertTrue(observability.pi_json_stream_failed(log))
+
+    def test_pi_json_stream_success_is_not_a_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "pi.log"
+            log.write_text(
+                '{"type": "message_end", "message": {"role": "assistant", '
+                '"stopReason": "error"}}\n'
+                '{"type": "message_end", "message": {"role": "assistant", '
+                '"stopReason": "stop"}}\n',
+                encoding="utf-8",
+            )
+            # Pi retries through errored turns; only the last one decides.
+            self.assertFalse(observability.pi_json_stream_failed(log))
+
+    def test_pi_json_stream_without_events_is_not_a_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "pi.log"
+            log.write_text("firewall ready\n", encoding="utf-8")
+            self.assertFalse(observability.pi_json_stream_failed(log))
+        self.assertFalse(observability.pi_json_stream_failed(None))
+
     def test_recovered_early_429_does_not_reclassify_a_later_failure(self) -> None:
         # Only the end of the log decides: a 429 the agent retried through and
         # recovered from must not turn an unrelated failure into exit 75, which

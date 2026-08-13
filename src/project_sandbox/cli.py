@@ -48,9 +48,6 @@ from .paths import (
 )
 
 SUPPORTED_AGENTS = ("claude", "codex", "opencode", "pi", "bash")
-# Agents whose headless output is newline-delimited JSON, and so can be
-# translated to markdown live and rendered into a transcript afterwards.
-JSON_STREAM_AGENTS = ("claude", "codex", "pi", "opencode")
 PROMPT_MOUNT_TARGET = "/project-sandbox-prompt"
 
 
@@ -166,6 +163,15 @@ def build_parser() -> ArgumentParser:
         ),
     )
     p.add_argument(
+        "--pi-tools",
+        metavar="TOOLS",
+        help=(
+            "Comma-separated Pi tool allowlist, e.g. --pi-tools read,grep,find,ls "
+            "for a read-only session. Only takes effect together with --agent pi; "
+            "when omitted, Pi's own default tool set applies."
+        ),
+    )
+    p.add_argument(
         "--branch",
         help=(
             "Run the agent in a git worktree / jj workspace on this branch "
@@ -240,9 +246,9 @@ def build_parser() -> ArgumentParser:
             "Examples for OpenCode: --agent opencode --model openai/gpt-5.4-mini "
             "--effort low or --agent opencode --model openai/gpt-5.4-mini "
             "--effort high. "
-            "Examples for Pi: --agent pi --model sonnet --effort low or "
-            "--agent pi --model sonnet --effort high (Pi combines these into a "
-            "single --model sonnet:high-shaped flag)."
+            "Examples for Pi: --agent pi --model anthropic/sonnet --effort low "
+            "or --agent pi --model anthropic/sonnet --effort high (Pi receives "
+            "the model unchanged plus a separate --thinking flag)."
         ),
     )
     p.add_argument(
@@ -313,10 +319,6 @@ def main(argv: list[str] | None = None) -> int:
     if args.build_only and args.no_build:
         raise SystemExit("--build-only and --no-build are mutually exclusive")
     run_agent = _requested_agent(args)
-    if run_agent == "pi" and args.effort == "max":
-        raise SystemExit(
-            "Pi does not support --effort max; use low, medium, high, or xhigh"
-        )
     pi_ollama_enabled = _pi_ollama_enabled(args, run_agent)
     _validate_api_key_injection_args(args, run_agent)
     _validate_ollama_models(args.ollama_model)
@@ -675,22 +677,20 @@ def main(argv: list[str] | None = None) -> int:
                 timeout=args.timeout,
                 container_stop_argv=container_stop_argv,
                 verbose=args.verbose,
-                markdown_agent=run_agent if run_agent in JSON_STREAM_AGENTS else None,
                 env=api_key_values or None,
             )
             if not args.verbose:
                 print(f"Wrote {session.count_lines(log_path)} lines to {log_path}")
-            if run_agent in JSON_STREAM_AGENTS:
+            if run_agent in ("claude", "codex", "pi"):
                 _write_transcript_markdown(log_path)
             if (
                 run_agent == "pi"
                 and exit_code == 0
-                and observability.pi_json_run_failed(log_path)
+                and observability.pi_json_stream_failed(log_path)
             ):
-                # `pi --mode json` exits 0 even when the turn ended in an error,
-                # so an orchestrator would read a failed run as a clean one.
+                # Pi's JSON output mode exits 0 even when the turn errored out.
                 exit_code = 1
-                print("[W] Pi ended with a failed turn; reporting exit 1")
+                print("[W] Pi reported a failed turn; reporting exit 1")
         else:
             exit_code = container_cli.run(cmd, env=api_key_values or None)
 
@@ -1620,6 +1620,8 @@ def _build_session_command(
         extra_env.append(f"PROJECT_SANDBOX_MODEL={args.model}")
     if getattr(args, "effort", None):
         extra_env.append(f"PROJECT_SANDBOX_EFFORT={args.effort}")
+    if run_agent == "pi" and getattr(args, "pi_tools", None):
+        extra_env.append(f"PROJECT_SANDBOX_PI_TOOLS={args.pi_tools}")
     run_mode_agent = run_agent
     unsupervised = bool(args.prompt or args.prompt_text)
     log_path: Path | None = None

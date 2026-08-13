@@ -97,53 +97,6 @@ CODEX_EVENTS = [
     },
 ]
 
-PI_EVENTS = [
-    {"type": "session", "id": "pi-123", "cwd": "/workspace"},
-    {"type": "agent_start"},
-    {
-        "type": "tool_execution_start",
-        "toolCallId": "call-1",
-        "toolName": "read",
-        "args": {"path": "README.md"},
-    },
-    {
-        "type": "tool_execution_end",
-        "toolCallId": "call-1",
-        "toolName": "read",
-        "result": "# Demo",
-        "isError": False,
-    },
-    {
-        "type": "message_end",
-        "message": {
-            "role": "assistant",
-            "content": [{"type": "text", "text": "Pi finished."}],
-        },
-    },
-]
-
-OPENCODE_EVENTS = [
-    {"type": "step_start", "sessionID": "oc-123", "part": {"type": "step-start"}},
-    {
-        "type": "tool_use",
-        "sessionID": "oc-123",
-        "part": {
-            "type": "tool",
-            "tool": "bash",
-            "state": {
-                "status": "completed",
-                "input": {"command": "pwd"},
-                "output": "/workspace",
-            },
-        },
-    },
-    {
-        "type": "text",
-        "sessionID": "oc-123",
-        "part": {"type": "text", "text": "OpenCode finished."},
-    },
-]
-
 
 class TranscriptRenderTests(TestCase):
     def test_render_includes_header_text_tool_and_result(self) -> None:
@@ -304,26 +257,42 @@ class TranscriptLogToMarkdownTests(TestCase):
             self.assertIn("Done.", text)
             self.assertNotIn("Reading additional input", text)
 
-    def test_renders_pi_and_opencode_events(self) -> None:
-        pi = transcript.render_pi_markdown(PI_EVENTS)
-        self.assertIn("# Pi session transcript", pi)
-        self.assertIn("### 🔧 read", pi)
-        self.assertIn("Pi finished.", pi)
-
-        opencode = transcript.render_opencode_markdown(OPENCODE_EVENTS)
-        self.assertIn("# OpenCode session transcript", opencode)
-        self.assertIn("### 🔧 bash", opencode)
-        self.assertIn("OpenCode finished.", opencode)
-
-    def test_pi_renders_structured_tool_results_and_assistant_errors(self) -> None:
+    def test_writes_pi_json_event_stream_sidecar(self) -> None:
         events = [
+            {"type": "session", "id": "pi-123", "cwd": "/workspace"},
+            {"type": "agent_start"},
+            {
+                "type": "message_end",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "Pi is done."}],
+                },
+            },
+            {"type": "agent_end", "messages": []},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "pi-main.log"
+            log_path.write_text(
+                "firewall ready\n" + _log_lines(*events), encoding="utf-8"
+            )
+            md_path = transcript.log_to_markdown(log_path)
+            self.assertIsNotNone(md_path)
+            text = md_path.read_text(encoding="utf-8")
+            self.assertIn("# Pi session transcript", text)
+            self.assertIn("Pi is done.", text)
+
+    def test_pi_transcript_renders_tool_calls_and_failure(self) -> None:
+        events = [
+            {"type": "session", "id": "pi-9", "cwd": "/workspace"},
+            {
+                "type": "tool_execution_start",
+                "toolName": "read",
+                "args": {"path": "README.md"},
+            },
             {
                 "type": "tool_execution_end",
                 "toolName": "read",
-                "result": {
-                    "content": [{"type": "text", "text": "file contents"}],
-                    "details": {"truncation": None},
-                },
+                "result": "# demo",
                 "isError": False,
             },
             {
@@ -331,81 +300,18 @@ class TranscriptLogToMarkdownTests(TestCase):
                 "message": {
                     "role": "assistant",
                     "content": [],
-                    "errorMessage": "provider failed",
+                    "stopReason": "error",
+                    "errorMessage": "provider unreachable",
                 },
             },
         ]
-
-        md = transcript.render_pi_markdown(events)
-
-        self.assertIn("file contents", md)
-        self.assertNotIn("'details'", md)
-        self.assertIn("- **Status:** error", md)
-        self.assertIn("provider failed", md)
-
-    def test_pi_failed_turn_reports_error_next_to_partial_text(self) -> None:
-        # A turn that errored can still carry text; the transcript has to show
-        # why the run failed, since Pi's JSON mode exits 0 either way.
-        events = [
-            {
-                "type": "message_end",
-                "message": {
-                    "role": "assistant",
-                    "content": [{"type": "text", "text": "partial answer"}],
-                    "stopReason": "error",
-                    "errorMessage": "Connection error.",
-                },
-            }
-        ]
-
-        md = transcript.render_pi_markdown(events)
-
-        self.assertIn("partial answer", md)
-        self.assertIn("- **Status:** error", md)
-        self.assertIn("Connection error.", md)
-
-    def test_live_markdown_renders_pi_tool_calls(self) -> None:
-        live = transcript.LiveMarkdown("pi")
-        self.assertIn("Session", live.feed(json.dumps(PI_EVENTS[0]) + "\n"))
-        self.assertEqual(live.feed(json.dumps(PI_EVENTS[1]) + "\n"), "")
-        rendered = live.feed(json.dumps(PI_EVENTS[2]) + "\n")
-        self.assertIn("### 🔧 read", rendered)
-        self.assertIn("README.md", rendered)
-        self.assertIn("Pi finished.", live.feed(json.dumps(PI_EVENTS[-1]) + "\n"))
-
-    def test_error_only_opencode_log_still_writes_transcript(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            log_path = Path(tmp) / "opencode-main.log"
-            log_path.write_text(
-                # Shape taken from a real `opencode run --format json` failure:
-                # the human-readable text sits under error.data.message.
-                _log_lines(
-                    {
-                        "type": "error",
-                        "timestamp": 1786656530813,
-                        "sessionID": "ses_002f8dfccffe",
-                        "error": {
-                            "name": "UnknownError",
-                            "data": {"message": "unavailable", "ref": "err_e3dfd14e"},
-                        },
-                    }
-                ),
-                encoding="utf-8",
-            )
-
+            log_path = Path(tmp) / "pi-main.log"
+            log_path.write_text(_log_lines(*events), encoding="utf-8")
             md_path = transcript.log_to_markdown(log_path)
-
             self.assertIsNotNone(md_path)
             text = md_path.read_text(encoding="utf-8")
-            self.assertIn("# OpenCode session transcript", text)
+            self.assertIn("### 🔧 read", text)
+            self.assertIn("### ↳ read result", text)
             self.assertIn("- **Status:** error", text)
-            self.assertIn('"message": "unavailable"', text)
-
-    def test_live_markdown_translates_json_but_preserves_plain_text(self) -> None:
-        live = transcript.LiveMarkdown("opencode")
-        rendered = live.feed(json.dumps(OPENCODE_EVENTS[-1]) + "\n")
-        self.assertIn("## Assistant", rendered)
-        self.assertIn("OpenCode finished.", rendered)
-        self.assertNotIn('"type": "text"', rendered)
-        self.assertEqual(live.feed("container warning\n"), "container warning\n")
-        self.assertEqual(live.feed("container warning\n", preserve_plain=False), "")
+            self.assertIn("provider unreachable", text)

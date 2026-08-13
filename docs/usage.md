@@ -360,13 +360,17 @@ uv run project-sandbox \
   entrypoint turns them into each agent's own flags — `--model` plus `--effort`
   for Claude, `--model` plus `-c model_reasoning_effort=...` for Codex, `--model`
   plus `--variant` for OpenCode, and `--model` plus `--thinking` for Pi. Pi model
-  values are never rewritten, so `provider/id[:thinking]` forms remain intact.
-  Pi supports `low`, `medium`, `high`, and `xhigh` through this option (not
-  `max`). They are ignored for Bash.
-- `--pi-tools TOOLS` sets Pi's comma-separated tool allowlist. It defaults to
-  the read-only `read,grep,find,ls` set. Pi headless sessions also explicitly
-  approve project-local resources and write Pi's JSON event stream to the
-  structured session log (with a Markdown transcript sidecar).
+  values are never rewritten, so `provider/id[:thinking]` forms remain intact,
+  and every `--effort` level maps onto a Pi thinking level. They are ignored for
+  Bash.
+- `--pi-tools TOOLS` sets Pi's comma-separated tool allowlist; pass
+  `--pi-tools read,grep,find,ls` for a read-only session. Only meaningful with
+  `--agent pi`; when omitted, Pi's own default tool set applies, so the agent
+  can still edit files and run commands. Pi headless sessions also approve
+  project-local resources and write Pi's JSON event stream to the structured
+  session log (with a Markdown transcript sidecar). Because Pi's JSON output
+  mode always exits 0, project-sandbox inspects that stream and reports exit 1
+  when the final turn errored or was aborted.
 - `--pi-ollama` (only with `--agent pi`) extends the firewall to reach a
   host-run Ollama server and pre-configures Pi to use it as the default
   provider while Ollama remains bound to `127.0.0.1:11434`. It is a no-op with

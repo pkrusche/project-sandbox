@@ -1,9 +1,8 @@
 """Render a human-readable markdown transcript from headless agent JSON logs.
 
-Headless agents emit newline-delimited JSON (one event per line). Claude uses
+Headless claude runs emit newline-delimited JSON (one event per line) via
 `claude -p --output-format stream-json --verbose`; headless Codex runs emit
-events via `codex exec --json`, Pi uses `--mode json`, and OpenCode uses
-`run --format json`. The session log also holds
+newline-delimited JSON via `codex exec --json`. The session log also holds
 plain-text preamble from the container entrypoint and firewall, so the parser
 tolerates and skips any line that is not a JSON object.
 """
@@ -30,8 +29,6 @@ def log_to_markdown(log_path: Path) -> Path | None:
         markdown = render_codex_markdown(events)
     elif _has_pi_events(events):
         markdown = render_pi_markdown(events)
-    elif _has_opencode_events(events):
-        markdown = render_opencode_markdown(events)
     else:
         return None
     md_path = log_path.with_suffix(".md")
@@ -68,59 +65,85 @@ def _has_codex_events(events: list[dict]) -> bool:
 
 def _has_pi_events(events: list[dict]) -> bool:
     return any(
-        e.get("type") in ("session", "agent_start", "turn_start", "message_end")
-        for e in events
+        e.get("type") in ("agent_start", "agent_end", "message_end") for e in events
     )
 
 
-def _has_opencode_events(events: list[dict]) -> bool:
-    return any(
-        e.get("type") in ("step_start", "step_finish", "tool_use", "text", "error")
-        for e in events
-    )
+def render_pi_markdown(events: list[dict]) -> str:
+    parts: list[str] = ["# Pi session transcript", ""]
+    # Pi reports a failed turn only through the last assistant message, so the
+    # result section is rendered from whatever the final one says.
+    final_assistant: dict = {}
+    for event in events:
+        etype = event.get("type")
+        if etype == "session":
+            parts.extend(_render_pi_header(event))
+        elif etype == "message_end":
+            message = event.get("message")
+            if not isinstance(message, dict) or message.get("role") != "assistant":
+                continue
+            final_assistant = message
+            parts.extend(_render_pi_assistant(message))
+        elif etype == "tool_execution_start":
+            parts.extend(
+                _render_tool_use(
+                    str(event.get("toolName", "tool")), event.get("args", {})
+                )
+            )
+        elif etype == "tool_execution_end":
+            label = "error" if event.get("isError") else "result"
+            result = _truncate(_tool_result_text(event.get("result")))
+            parts.extend(
+                [
+                    f"### ↳ {event.get('toolName', 'tool')} {label}",
+                    "",
+                    *_code_block(result),
+                    "",
+                ]
+            )
+    parts.extend(_render_pi_result(final_assistant))
+    text = "\n".join(parts)
+    while "\n\n\n" in text:
+        text = text.replace("\n\n\n", "\n\n")
+    return text.strip() + "\n"
 
 
-class LiveMarkdown:
-    """Translate one agent JSONL record at a time while retaining raw logs."""
-
-    def __init__(self, agent: str):
-        self.agent = agent
-        self.tool_names: dict[str, str] = {}
-
-    def feed(self, line: str, *, preserve_plain: bool = True) -> str:
-        """Return Markdown for a JSON line, or plain text for non-JSON output."""
-        try:
-            event = json.loads(line)
-        except ValueError:
-            return line if preserve_plain else ""
-        if not isinstance(event, dict):
-            return line if preserve_plain else ""
-        parts = self._event(event)
-        if not parts:
-            return ""
-        return "\n".join(parts).strip() + "\n\n"
-
-    def _event(self, event: dict) -> list[str]:
-        if self.agent == "claude":
-            etype = event.get("type")
-            if etype == "assistant":
-                return _render_assistant(event, self.tool_names)
-            if etype == "user":
-                return _render_user(event, self.tool_names)
-            if etype == "result":
-                return _render_result(event)
-            return []
-        if self.agent == "codex":
-            if event.get("type") == "item.completed":
-                return _render_codex_item(event.get("item"))
-            if event.get("type") == "turn.failed":
-                return _render_codex_failure(event)
-            return []
-        if self.agent == "pi":
-            return _render_pi_event(event)
-        if self.agent == "opencode":
-            return _render_opencode_event(event)
+def _render_pi_header(event: dict) -> list[str]:
+    rows = []
+    if event.get("id"):
+        rows.append(f"- **Session:** `{event['id']}`")
+    if event.get("cwd"):
+        rows.append(f"- **Working dir:** `{event['cwd']}`")
+    if not rows:
         return []
+    return [*rows, "", "---", ""]
+
+
+def _render_pi_assistant(message: dict) -> list[str]:
+    out: list[str] = []
+    content = message.get("content")
+    for block in content if isinstance(content, list) else []:
+        if not isinstance(block, dict):
+            continue
+        thinking = block.get("type") == "thinking"
+        value = block.get("thinking") if thinking else block.get("text")
+        if not isinstance(value, str) or not value.strip():
+            continue
+        label = "Assistant (thinking)" if thinking else "Assistant"
+        rendered = _blockquote(value.strip()) if thinking else value.strip()
+        out.extend([f"## {label}", "", rendered, ""])
+    return out
+
+
+def _render_pi_result(message: dict) -> list[str]:
+    stop_reason = message.get("stopReason")
+    if stop_reason not in ("error", "aborted"):
+        return []
+    out = ["---", "", "## Result", "", f"- **Status:** {stop_reason}", ""]
+    error = message.get("errorMessage")
+    if isinstance(error, str) and error.strip():
+        out.extend([error.strip(), ""])
+    return out
 
 
 def render_markdown(events: list[dict]) -> str:
@@ -165,116 +188,6 @@ def render_codex_markdown(events: list[dict]) -> str:
     while "\n\n\n" in text:
         text = text.replace("\n\n\n", "\n\n")
     return text.strip() + "\n"
-
-
-def render_pi_markdown(events: list[dict]) -> str:
-    return _render_event_transcript("Pi", events, _render_pi_event)
-
-
-def render_opencode_markdown(events: list[dict]) -> str:
-    return _render_event_transcript("OpenCode", events, _render_opencode_event)
-
-
-def _render_event_transcript(name: str, events: list[dict], renderer) -> str:
-    parts = [f"# {name} session transcript", ""]
-    for event in events:
-        parts.extend(renderer(event))
-    text = "\n".join(parts)
-    while "\n\n\n" in text:
-        text = text.replace("\n\n\n", "\n\n")
-    return text.strip() + "\n"
-
-
-def _render_pi_event(event: dict) -> list[str]:
-    etype = event.get("type")
-    if etype == "session":
-        rows = []
-        if event.get("id"):
-            rows.append(f"- **Session:** `{event['id']}`")
-        if event.get("cwd"):
-            rows.append(f"- **Working dir:** `{event['cwd']}`")
-        return [*rows, "", "---", ""] if rows else []
-    if etype == "message_end":
-        message = event.get("message")
-        if not isinstance(message, dict) or message.get("role") != "assistant":
-            return []
-        out: list[str] = []
-        text = _message_text(message.get("content"))
-        if text:
-            out.extend(["## Assistant", "", text, ""])
-        # A failed turn can still carry partial text, so the error is reported
-        # alongside it rather than only when the message came back empty.
-        stop_reason = message.get("stopReason")
-        error = message.get("errorMessage")
-        has_error_text = isinstance(error, str) and error.strip()
-        if stop_reason in ("error", "aborted") or has_error_text:
-            out.extend(
-                _render_error(error if has_error_text else f"Request {stop_reason}")
-            )
-        return out
-    if etype == "tool_execution_start":
-        name = str(event.get("toolName") or "tool")
-        rendered = json.dumps(
-            event.get("args", {}), indent=2, ensure_ascii=False, sort_keys=True
-        )
-        return [f"### 🔧 {name}", "", *_code_block(_truncate(rendered), "json"), ""]
-    if etype == "tool_execution_end":
-        name = str(event.get("toolName") or "tool")
-        label = "error" if event.get("isError") else "result"
-        result = _tool_result_text(event.get("result"))
-        return [f"### ↳ {name} {label}", "", *_code_block(_truncate(result)), ""]
-    return []
-
-
-def _render_opencode_event(event: dict) -> list[str]:
-    etype = event.get("type")
-    part = event.get("part")
-    if etype in ("text", "reasoning") and isinstance(part, dict):
-        value = part.get("text")
-        if isinstance(value, str) and value.strip():
-            heading = "## Assistant" if etype == "text" else "## Assistant (thinking)"
-            body = value.strip() if etype == "text" else _blockquote(value.strip())
-            return [heading, "", body, ""]
-    if etype == "tool_use" and isinstance(part, dict):
-        name = str(part.get("tool") or "tool")
-        state = part.get("state") if isinstance(part.get("state"), dict) else {}
-        out = [f"### 🔧 {name}", ""]
-        tool_input = state.get("input")
-        if tool_input is not None:
-            rendered = json.dumps(
-                tool_input, indent=2, ensure_ascii=False, sort_keys=True
-            )
-            out.extend([*_code_block(_truncate(rendered), "json"), ""])
-        status = state.get("status")
-        result = state.get("output") if status == "completed" else state.get("error")
-        if result is not None:
-            label = "error" if status == "error" else "result"
-            out.extend(
-                [
-                    f"#### {label.title()}",
-                    "",
-                    *_code_block(_truncate(_tool_result_text(result))),
-                    "",
-                ]
-            )
-        return out
-    if etype == "error":
-        return _render_error(event.get("error"))
-    return []
-
-
-def _message_text(content: object) -> str:
-    if isinstance(content, str):
-        return content.strip()
-    if not isinstance(content, list):
-        return ""
-    chunks = []
-    for block in content:
-        if isinstance(block, dict) and block.get("type") == "text":
-            text = block.get("text")
-            if isinstance(text, str):
-                chunks.append(text)
-    return "\n".join(chunks).strip()
 
 
 def _render_codex_item(item: object) -> list[str]:
@@ -445,24 +358,7 @@ def _tool_result_text(content: object) -> str:
             elif isinstance(block, dict):
                 chunks.append(f"[{block.get('type', 'content')}]")
         return "\n".join(chunks)
-    if isinstance(content, dict):
-        # Pi tool results wrap their human-readable output in a `content` list.
-        # Prefer that over dumping implementation details such as truncation
-        # metadata, but retain arbitrary structured results as valid JSON.
-        if "content" in content:
-            text = _tool_result_text(content["content"])
-            if text:
-                return text
-        return json.dumps(content, ensure_ascii=False, sort_keys=True)
     return str(content)
-
-
-def _render_error(error: object) -> list[str]:
-    text = _tool_result_text(error).strip()
-    out = ["## Result", "", "- **Status:** error"]
-    if text:
-        out.extend(["", *_code_block(_truncate(text))])
-    return [*out, ""]
 
 
 def _code_block(text: str, info: str = "") -> list[str]:
