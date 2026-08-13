@@ -603,8 +603,6 @@ def main(argv: list[str] | None = None) -> int:
         session_container_name = (
             observability.container_name(session_id) if runtime.is_container else None
         )
-        args.session_id = session_id
-        args.container_name = session_container_name
         cmd, log_path, unsupervised, container_stop_argv = _build_session_command(
             args,
             project=project,
@@ -674,11 +672,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             exit_code = container_cli.run(cmd, env=api_key_values or None)
 
-        rate_limited = bool(
-            exit_code != 0
-            and log_path is not None
-            and observability.log_is_rate_limited(log_path)
-        )
+        rate_limited = observability.is_rate_limited_failure(exit_code, log_path)
         if rate_limited:
             exit_code = observability.RATE_LIMIT_EXIT_CODE
             print("[W] Agent rate limited (HTTP 429); returning temporary-failure exit 75")
@@ -1553,10 +1547,11 @@ def _build_session_command(
     # Every container is named from the reported session id. Besides making
     # timeout cleanup reliable, this lets a restarted orchestrator correlate a
     # persistent session record with `container ls --format json`.
-    container_name = getattr(args, "container_name", None)
-    if runtime.is_container and container_name is None:
-        session_id = getattr(args, "session_id", None) or observability.new_session_id()
-        container_name = observability.container_name(session_id)
+    container_name: str | None = None
+    if runtime.is_container:
+        container_name = observability.container_name(
+            session_id or observability.new_session_id()
+        )
     container_stop_argv = (
         container_cli.build_stop_argv(runtime, container_name)
         if container_name is not None and runtime.is_container

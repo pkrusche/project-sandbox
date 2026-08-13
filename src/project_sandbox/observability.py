@@ -9,6 +9,7 @@ from typing import Any
 
 
 RATE_LIMIT_EXIT_CODE = 75  # EX_TEMPFAIL: callers should retry after a backoff.
+TIMEOUT_EXIT_CODE = 124  # Matches session.run()'s timeout exit code.
 
 
 def new_session_id() -> str:
@@ -101,6 +102,18 @@ def print_sessions(*, as_json: bool) -> None:
             f"{item.get('session_id', '-')}\t{item.get('status', '-')}\t"
             f"{item.get('container_name') or '-'}\t{item.get('workspace_path', '-')}"
         )
+
+
+def is_rate_limited_failure(exit_code: int, log_path: Path | None) -> bool:
+    """Classify a finished session as a rate-limit failure.
+
+    Timeouts keep their 124 exit code even when the log mentions a 429: agents
+    routinely recover from transient rate limits, and an orchestrator must not
+    be told to retry-without-counting a run that is simply too slow.
+    """
+    if exit_code in (0, TIMEOUT_EXIT_CODE) or log_path is None:
+        return False
+    return log_is_rate_limited(log_path)
 
 
 def log_is_rate_limited(path: Path) -> bool:
