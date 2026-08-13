@@ -12,13 +12,13 @@ Skipping is correctness-safe: it only happens on an exact fingerprint+tag match,
 and any read/parse problem degrades to "not cached" so the build runs.
 """
 
-import fcntl
 import hashlib
 import json
-import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+
+from . import host_locks
 
 # Top-level files in the generated context that fully determine the CLI image.
 # The CLI always builds context_dir/"Dockerfile"; entrypoint.sh, init-firewall.sh
@@ -42,14 +42,8 @@ def build_lock(context_dir: Path) -> Iterator[None]:
     cache-check/build/state-write sequence; locking only ``write_state`` would
     still allow two first-time callers to build the same image.
     """
-    key = hashlib.sha256(str(context_dir.resolve()).encode()).hexdigest()[:16]
-    lock_path = Path(tempfile.gettempdir()) / f"project-sandbox-build-{key}.lock"
-    with open(lock_path, "w") as handle:
-        fcntl.flock(handle, fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(handle, fcntl.LOCK_UN)
+    with host_locks.path_lock("build", context_dir):
+        yield
 
 
 def state_path(context_dir: Path) -> Path:

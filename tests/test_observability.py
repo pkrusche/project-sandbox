@@ -125,6 +125,31 @@ class ObservabilityTests(TestCase):
         self.assertEqual(record["status"], "interrupted")
         self.assertIsNotNone(record["ended_at"])
 
+    def test_unwritable_state_dir_degrades_to_no_record(self) -> None:
+        # Recording is observability, not part of running the agent: it must
+        # never turn a working session into a traceback.
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.dict(os.environ, {"XDG_STATE_HOME": tmp}),
+        ):
+            # A file where the state directory should be: mkdir/write both fail.
+            (Path(tmp) / "project-sandbox").write_text("", encoding="utf-8")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                path = observability.start_record(
+                    session_id="doomed",
+                    container=None,
+                    project=Path("/project"),
+                    workspace=Path("/workspace"),
+                    agent="codex",
+                    runtime="docker",
+                )
+                # The caller closes the record unconditionally; None is a no-op.
+                observability.finish_record(path, exit_code=0)
+
+            self.assertIsNone(path)
+            self.assertIn("Could not record session doomed", out.getvalue())
+
     def test_relative_state_home_is_ignored(self) -> None:
         # An invalid XDG_STATE_HOME must not scatter records into the CWD.
         with patch.dict(os.environ, {"XDG_STATE_HOME": "relative/state"}):

@@ -407,7 +407,8 @@ def main(argv: list[str] | None = None) -> int:
     session_started_at: datetime | None = None
     # Doubles as the "record still open" marker: cleared once the session's
     # outcome has been written, so the finally block can close out a record left
-    # behind by an interrupt or an exception.
+    # behind by an interrupt or an exception. Stays None when the session could
+    # not be recorded at all, which never blocks the run.
     record_path: Path | None = None
     try:
         if not is_chroot:

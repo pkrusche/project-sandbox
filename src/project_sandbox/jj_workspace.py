@@ -1,16 +1,16 @@
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import os
 import posixpath
 import shutil
 import subprocess
-import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+
+from . import host_locks
 
 
 @dataclass(slots=True)
@@ -104,14 +104,8 @@ def _workspace_lock(repo: Path) -> Iterator[None]:
     permit ``workspace add`` to race with bookmark deletion or
     ``workspace forget``.
     """
-    key = hashlib.sha256(str(repo.resolve()).encode()).hexdigest()[:16]
-    lock_path = Path(tempfile.gettempdir()) / f"project-sandbox-jj-workspace-{key}.lock"
-    with open(lock_path, "w") as handle:
-        fcntl.flock(handle, fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(handle, fcntl.LOCK_UN)
+    with host_locks.path_lock("jj-workspace", repo):
+        yield
 
 
 def path_for(

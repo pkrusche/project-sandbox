@@ -1,11 +1,11 @@
-import fcntl
 import hashlib
 import subprocess
-import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+
+from . import host_locks
 
 
 @dataclass(slots=True)
@@ -76,16 +76,11 @@ def _teardown_lock(repo: Path) -> Iterator[None]:
     branches into the main checkout's HEAD, pushing, and removing worktrees. An
     exclusive file lock keyed by the repo path keeps those teardowns from
     interleaving. (Concurrent writes from *inside* the containers are a
-    separate, still-open problem — see the clone-per-subagent item in TODO.md.)
+    separate, still-open problem — see the clone-per-subagent item in
+    ROADMAP.md.)
     """
-    key = hashlib.sha256(str(repo.resolve()).encode()).hexdigest()[:16]
-    lock_path = Path(tempfile.gettempdir()) / f"project-sandbox-git-teardown-{key}.lock"
-    with open(lock_path, "w") as handle:
-        fcntl.flock(handle, fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(handle, fcntl.LOCK_UN)
+    with host_locks.path_lock("git-teardown", repo):
+        yield
 
 
 def finalize(
