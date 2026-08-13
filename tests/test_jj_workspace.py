@@ -116,6 +116,40 @@ class PathForCollisionTests(unittest.TestCase):
         self.assertIsNone(jj_workspace_mod.git_backend_mount(repo, ws))
 
 
+class SetupLockTests(unittest.TestCase):
+    def test_setup_holds_repository_lock_around_setup_decisions(self) -> None:
+        repo = Path("/tmp/fake/repo")
+        expected = jj_workspace_mod.JjWorkspace(Path("/tmp/ws"), "feature")
+        lock_active = False
+
+        @contextlib.contextmanager
+        def fake_lock(locked_repo):
+            nonlocal lock_active
+            self.assertEqual(locked_repo, repo.resolve())
+            lock_active = True
+            try:
+                yield
+            finally:
+                lock_active = False
+
+        def fake_setup(locked_repo, bookmark, start_at, workspace_dir):
+            self.assertTrue(lock_active)
+            self.assertEqual(
+                (locked_repo, bookmark, start_at, workspace_dir),
+                (repo.resolve(), "feature", None, None),
+            )
+            return expected
+
+        with (
+            patch.object(jj_workspace_mod, "_setup_lock", side_effect=fake_lock),
+            patch.object(jj_workspace_mod, "_setup_locked", side_effect=fake_setup),
+        ):
+            actual = jj_workspace_mod.setup(repo, "feature")
+
+        self.assertIs(actual, expected)
+        self.assertFalse(lock_active)
+
+
 class ListWorkspacesTests(unittest.TestCase):
     """_list_workspaces() must trust a successful templated call outright,
     never re-classify its output by scanning for ':' — a character that can

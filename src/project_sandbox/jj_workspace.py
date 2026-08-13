@@ -32,6 +32,19 @@ def setup(
     workspace_dir: Path | None = None,
 ) -> JjWorkspace:
     repo = repo.resolve()
+    # `jj workspace add` mutates shared repository state and concurrent calls
+    # can corrupt the invoking working copy (jj#9314). Keep all observations
+    # used to decide how to add the workspace under the same repository lock.
+    with _setup_lock(repo):
+        return _setup_locked(repo, bookmark, start_at, workspace_dir)
+
+
+def _setup_locked(
+    repo: Path,
+    bookmark: str,
+    start_at: str | None,
+    workspace_dir: Path | None,
+) -> JjWorkspace:
     ws_path = path_for(repo, bookmark, workspace_dir=workspace_dir)
 
     bookmark_exists = _bookmark_exists(repo, bookmark)
@@ -82,6 +95,19 @@ def setup(
     )
 
 
+@contextmanager
+def _setup_lock(repo: Path) -> Iterator[None]:
+    """Serialize jj workspace creation for all processes using ``repo``."""
+    key = hashlib.sha256(str(repo.resolve()).encode()).hexdigest()[:16]
+    lock_path = Path(tempfile.gettempdir()) / f"project-sandbox-jj-setup-{key}.lock"
+    with open(lock_path, "w") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
 def path_for(
     repo: Path,
     bookmark: str,
@@ -94,6 +120,19 @@ def path_for(
         suffix = hashlib.sha256(bookmark.encode()).hexdigest()[:6]
         safe = f"{safe}-{suffix}"
     return ws_root / safe
+
+
+def change_id(repo: Path, bookmark: str) -> str | None:
+    """Return the bookmark tip's stable jj change ID, if it can be resolved."""
+    try:
+        value = _jj(
+            repo,
+            ["log", "--no-graph", "-r", bookmark, "-T", "change_id"],
+            capture=True,
+        )
+    except subprocess.CalledProcessError:
+        return None
+    return value.strip() or None
 
 
 def repo_store_mount(repo: Path, ws_path: Path) -> tuple[Path, str]:
