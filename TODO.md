@@ -1,32 +1,55 @@
 # TODO - outstanding items
 
-## Firewall: verify multi-resolver rules on a real iptables host
+## Machine-readable outputs from session runs
 
-Code is complete and the render path is covered by
-`tests/test_renderers.py::test_firewall_collects_all_resolvers_not_just_first`.
-The unit tests are render-only by policy and do not exercise live iptables.
-Outstanding: run the rendered script on a host with iptables and multiple
-`nameserver` entries in `resolv.conf`, then confirm allowlisted-domain
-pre-resolution works across the resolver setup and post-firewall DNS egress does
-not leak before treating this as shipped.
+- [ ] Emit a machine-readable session summary (single JSON line on stdout, or
+      `--json-summary <path>`): session id, container name, workspace path, agent,
+      resulting bookmark + jj change_id, exit code, start/end time. Removes the need
+      for sbx-loop to infer session outcome from logs and jj polling.
+- [ ] Add a "reuse existing workspace" functionality with a documented, predictable workspace
+      path derived from the branch name — so automated callers passing `--keep-workspace` 
+      know where to look. Also, workspace path should be in the session summary output.
 
-## Isolate concurrent subagents in separate clones, merge back on teardown
+## Concurrent --branch runs
 
-Every `--branch` jj agent shares one repo's `.jj/repo` store and — since we now
-also mount the git backend — its `.git`, both bind-mounted read-write into each
-container. That fits jj's concurrent-workspace model on a shared-kernel runtime,
-but concurrent writes from *inside* multiple containers to a single shared store
-are not obviously safe across separate VMs (Apple `container` + VirtioFS), where
-lock-file and rename atomicity may not hold.
+- [ ] Document (and enforce) a concurrency contract for parallel `--branch` runs:
+      serialize `jj workspace add` internally (jj#9314 can corrupt the caller).
+- [ ] Guard the `.build-state.json` image fingerprint cache against duplicate
+      concurrent first-builds.
 
-Plan: give each subagent its own clone, then merge/rebase the agent's bookmark 
-back into the parent repo during teardown. This removes the shared-store race 
-entirely and keeps each agent's blast radius isolated.
+## pi agent support improvements
 
-Note the git-worktree (`--branch` non-jj) path — which shares `.git` the same way —
-should use the same approach.
+- [ ] Verify/ensure `pi-headless` passes `-a`/`--approve`. Without it pi silently
+      ignores project-local `.agents/skills`, exits 0, and produces a plausible
+      result with no skill loaded. Currently the highest-risk unknown.
+- [ ] Verify `--model` / `--effort` map onto pi's `--model` / `--thinking`, including
+      whether `provider/id[:thinking]` strings survive intact.
+- [ ] Pass through a pi tool allowlist (`--tools read,grep,find,ls`) so a review job
+      can run read-only. A reviewer that can edit will "fix" what it should be judging.
+- [ ] Confirm `--api-key-env` reaches pi as a provider env var (`ANTHROPIC_API_KEY`
+      etc.) and that pi's `--api-key` flag is never used internally (argv leak).
 
-Interim mitigation already in place: a host-side exclusive lock serializes
-`jj_workspace.finalize()` (`_teardown_lock`), so concurrent teardowns can't
-interleave their store mutations. It does not address concurrent in-container
-writes; this item supersedes it.
+## P1 — observability & failure taxonomy
+
+- [ ] Surface pi's `--mode json` event stream as the structured session output — this
+      is probably the cheapest way to satisfy item 1 for pi, rather than inventing a
+      separate contract.
+- [ ] Extract token/cost totals from that stream into the session summary, so callers
+      can enforce a per-task spend ceiling.
+- [ ] Distinguish rate-limit (429) exits from generic agent failure, alongside the
+      existing timeout → 124. Rate limits want longer backoff and no retry-count
+      increment.
+- [ ] Add `project-sandbox sessions list --json` (or equivalent) so a restarting
+      orchestrator can detect orphaned/still-running sessions instead of scanning
+      `.project-sandbox/sessions/` and guessing.
+- [ ] Make the container name deterministic and reported, so orphan detection can
+      match against `container ls --format json`.
+
+## P2 — gateway / config
+
+- [ ] Support injecting a custom pi provider config (baseUrl + scoped token) for the
+      agentgateway sidecar path, so no real provider key enters the agent VM.
+- [ ] Add a build-only / warm-up invocation that builds the image without starting an
+      agent, so an orchestrator can pre-build once before launching N parallel jobs.
+- [ ] Pin/verify the image's `openspec` version supports `instructions … --json`
+      (v1.7.0+), since the whole OpenSpec drive strategy depends on it.
