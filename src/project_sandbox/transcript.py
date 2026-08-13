@@ -68,13 +68,15 @@ def _has_codex_events(events: list[dict]) -> bool:
 
 def _has_pi_events(events: list[dict]) -> bool:
     return any(
-        e.get("type") in ("session", "agent_start", "message_end") for e in events
+        e.get("type")
+        in ("session", "agent_start", "message_end", "extension_error")
+        for e in events
     )
 
 
 def _has_opencode_events(events: list[dict]) -> bool:
     return any(
-        e.get("type") in ("step_start", "step_finish", "tool_use", "text")
+        e.get("type") in ("step_start", "step_finish", "tool_use", "text", "error")
         for e in events
     )
 
@@ -198,7 +200,12 @@ def _render_pi_event(event: dict) -> list[str]:
         if not isinstance(message, dict) or message.get("role") != "assistant":
             return []
         text = _message_text(message.get("content"))
-        return ["## Assistant", "", text, ""] if text else []
+        if text:
+            return ["## Assistant", "", text, ""]
+        error = message.get("errorMessage")
+        if isinstance(error, str) and error.strip():
+            return _render_error(error)
+        return []
     if etype == "tool_execution_start":
         name = str(event.get("toolName") or "tool")
         rendered = json.dumps(
@@ -210,6 +217,8 @@ def _render_pi_event(event: dict) -> list[str]:
         label = "error" if event.get("isError") else "result"
         result = _tool_result_text(event.get("result"))
         return [f"### ↳ {name} {label}", "", *_code_block(_truncate(result)), ""]
+    if etype == "extension_error":
+        return _render_error(event.get("error") or event.get("message"))
     return []
 
 
@@ -246,13 +255,7 @@ def _render_opencode_event(event: dict) -> list[str]:
             )
         return out
     if etype == "error":
-        return [
-            "## Result",
-            "",
-            "- **Status:** error",
-            _tool_result_text(event.get("error")),
-            "",
-        ]
+        return _render_error(event.get("error"))
     return []
 
 
@@ -438,7 +441,24 @@ def _tool_result_text(content: object) -> str:
             elif isinstance(block, dict):
                 chunks.append(f"[{block.get('type', 'content')}]")
         return "\n".join(chunks)
+    if isinstance(content, dict):
+        # Pi tool results wrap their human-readable output in a `content` list.
+        # Prefer that over dumping implementation details such as truncation
+        # metadata, but retain arbitrary structured results as valid JSON.
+        if "content" in content:
+            text = _tool_result_text(content["content"])
+            if text:
+                return text
+        return json.dumps(content, ensure_ascii=False, sort_keys=True)
     return str(content)
+
+
+def _render_error(error: object) -> list[str]:
+    text = _tool_result_text(error).strip()
+    out = ["## Result", "", "- **Status:** error"]
+    if text:
+        out.extend(["", *_code_block(_truncate(text))])
+    return [*out, ""]
 
 
 def _code_block(text: str, info: str = "") -> list[str]:

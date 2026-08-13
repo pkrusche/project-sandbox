@@ -315,6 +315,55 @@ class TranscriptLogToMarkdownTests(TestCase):
         self.assertIn("### 🔧 bash", opencode)
         self.assertIn("OpenCode finished.", opencode)
 
+    def test_pi_renders_structured_tool_results_and_assistant_errors(self) -> None:
+        events = [
+            {
+                "type": "tool_execution_end",
+                "toolName": "read",
+                "result": {
+                    "content": [{"type": "text", "text": "file contents"}],
+                    "details": {"truncation": None},
+                },
+                "isError": False,
+            },
+            {
+                "type": "message_end",
+                "message": {
+                    "role": "assistant",
+                    "content": [],
+                    "errorMessage": "provider failed",
+                },
+            },
+        ]
+
+        md = transcript.render_pi_markdown(events)
+
+        self.assertIn("file contents", md)
+        self.assertNotIn("'details'", md)
+        self.assertIn("- **Status:** error", md)
+        self.assertIn("provider failed", md)
+
+    def test_error_only_opencode_log_still_writes_transcript(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "opencode-main.log"
+            log_path.write_text(
+                _log_lines(
+                    {
+                        "type": "error",
+                        "error": {"name": "ProviderError", "message": "unavailable"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            md_path = transcript.log_to_markdown(log_path)
+
+            self.assertIsNotNone(md_path)
+            text = md_path.read_text(encoding="utf-8")
+            self.assertIn("# OpenCode session transcript", text)
+            self.assertIn("- **Status:** error", text)
+            self.assertIn('"message": "unavailable"', text)
+
     def test_live_markdown_translates_json_but_preserves_plain_text(self) -> None:
         live = transcript.LiveMarkdown("opencode")
         rendered = live.feed(json.dumps(OPENCODE_EVENTS[-1]) + "\n")
