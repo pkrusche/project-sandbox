@@ -359,8 +359,13 @@ uv run project-sandbox \
   CLI forwards them as `PROJECT_SANDBOX_MODEL` / `PROJECT_SANDBOX_EFFORT`, and the
   entrypoint turns them into each agent's own flags — `--model` plus `--effort`
   for Claude, `--model` plus `-c model_reasoning_effort=...` for Codex, `--model`
-  plus `--variant` for OpenCode, and a single combined `--model <model>:<effort>`
-  for Pi (Pi has no separate effort flag). They are ignored for Bash.
+  plus `--variant` for OpenCode, and `--model` plus `--thinking` for Pi. Pi model
+  values are never rewritten, so `provider/id[:thinking]` forms remain intact.
+  They are ignored for Bash.
+- `--pi-tools TOOLS` sets Pi's comma-separated tool allowlist. It defaults to
+  the read-only `read,grep,find,ls` set. Pi headless sessions also explicitly
+  approve project-local resources and write Pi's JSON event stream to the
+  structured session log (with a Markdown transcript sidecar).
 - `--pi-ollama` (only with `--agent pi`) extends the firewall to reach a
   host-run Ollama server and pre-configures Pi to use it as the default
   provider while Ollama remains bound to `127.0.0.1:11434`. It is a no-op with

@@ -5,9 +5,9 @@
 - [ ] Verify/ensure `pi-headless` passes `-a`/`--approve`. Without it pi silently
       ignores project-local `.agents/skills`, exits 0, and produces a plausible
       result with no skill loaded.
-- [ ] Verify `--model` / `--effort` map onto pi's `--model` / `--thinking`, including
+- [x] Verify `--model` / `--effort` map onto pi's `--model` / `--thinking`, including
       whether `provider/id[:thinking]` strings survive intact.
-- [ ] Pass through a pi tool allowlist (`--tools read,grep,find,ls`).
+- [x] Pass through a pi tool allowlist (`--tools read,grep,find,ls`).
 - [x] Surface pi's `--mode json` event stream as the structured session output
 - [ ] Support injecting a custom pi provider config (baseUrl + scoped token) for the
       agentgateway sidecar path, so no real provider key enters the agent VM.
