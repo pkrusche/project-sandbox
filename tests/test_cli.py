@@ -3902,6 +3902,28 @@ class RustCargoFlagTests(TestCase):
 
         self.assertIn("RUN rustup component add clippy rustfmt", content)
 
+    def test_render_rust_cargo_dockerfile_preserves_path_for_login_shells(
+        self,
+    ) -> None:
+        from project_sandbox import dockerfile as df
+
+        with tempfile.TemporaryDirectory() as tmp:
+            context_dir = Path(tmp) / ".project-sandbox"
+            context_dir.mkdir()
+            out_path = df.render_rust_cargo_dockerfile(
+                context_dir,
+                rust_version=None,
+                has_cargo_toml=True,
+                has_cargo_lock=True,
+            )
+            content = out_path.read_text(encoding="utf-8")
+
+        self.assertIn(
+            "'export PATH=\"/usr/local/cargo/bin:/usr/local/rustup/bin:$PATH\"'",
+            content,
+        )
+        self.assertIn("> /etc/profile.d/rust-toolchain.sh", content)
+
     def test_rust_version_flag_passes_through_to_dockerfile(self) -> None:
         """--rust 1.87 with --rust-cargo writes a Dockerfile referencing 1.87."""
         import argparse
