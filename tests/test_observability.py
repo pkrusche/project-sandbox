@@ -68,3 +68,20 @@ class ObservabilityTests(TestCase):
             log = Path(tmp) / "session.log"
             log.write_text("authentication failed\n")
             self.assertFalse(observability.log_is_rate_limited(log))
+
+    def test_timeout_keeps_its_exit_code_despite_429_in_log(self) -> None:
+        # A transient, recovered-from 429 in the log must not reclassify a
+        # timeout (or a success) as a rate-limit failure.
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "session.log"
+            log.write_text("HTTP 429 Too Many Requests; retrying\n")
+            self.assertTrue(observability.is_rate_limited_failure(1, log))
+            self.assertFalse(
+                observability.is_rate_limited_failure(
+                    observability.TIMEOUT_EXIT_CODE, log
+                )
+            )
+            self.assertFalse(observability.is_rate_limited_failure(0, log))
+
+    def test_failure_without_log_is_not_rate_limited(self) -> None:
+        self.assertFalse(observability.is_rate_limited_failure(1, None))

@@ -3346,6 +3346,77 @@ class JsonSessionSummaryTests(TestCase):
             self.assertEqual(payload["bookmark"], "automation/run")
             self.assertEqual(payload["jj_change_id"], "zvlyw3m0")
 
+
+class SessionsListCommandTests(TestCase):
+    def test_lists_recorded_sessions_as_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            os.environ, {"XDG_STATE_HOME": tmp}
+        ):
+            path = cli.observability.start_record(
+                session_id="s1",
+                container="project-sandbox-s1",
+                project=Path("/project"),
+                workspace=Path("/workspace"),
+                agent="codex",
+                runtime="docker",
+            )
+            cli.observability.finish_record(path, exit_code=0)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = cli.main(["sessions", "list", "--json"])
+
+        self.assertEqual(rc, 0)
+        records = json.loads(out.getvalue())
+        self.assertEqual(records[0]["session_id"], "s1")
+        self.assertEqual(records[0]["status"], "completed")
+
+    def test_rejects_unknown_arguments(self) -> None:
+        with self.assertRaisesRegex(SystemExit, "sessions list"):
+            cli.main(["sessions", "list", "--verbose"])
+
+
+class BuildOnlyTests(TestCase):
+    def test_rejects_conflicting_flags(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cases = [
+                (["--no-build"], "--build-only and --no-build"),
+                (["--agent", "bash"], "cannot be combined with --agent"),
+                (["--prompt-text", "hi"], "cannot be combined with a prompt"),
+            ]
+            for extra, message in cases:
+                with self.subTest(extra=extra):
+                    with self.assertRaisesRegex(SystemExit, message):
+                        cli.main(["--build-only", *extra, tmp])
+
+    def test_dry_run_previews_build_without_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            out = io.StringIO()
+            with (
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
+                contextlib.redirect_stdout(out),
+            ):
+                rc = cli.main(
+                    [
+                        "--dry-run",
+                        "--build-only",
+                        "--runtime",
+                        "docker",
+                        str(project),
+                        "python:3.12-slim",
+                    ]
+                )
+
+            self.assertEqual(rc, 0)
+            self.assertIn("Would build image only:", out.getvalue())
+            self.assertFalse((project / ".project-sandbox").exists())
+
+
 class DefaultImageTagTests(TestCase):
     def test_differs_per_project(self) -> None:
         with (

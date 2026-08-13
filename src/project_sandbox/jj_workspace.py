@@ -124,10 +124,21 @@ def path_for(
 
 def change_id(repo: Path, bookmark: str) -> str | None:
     """Return the bookmark tip's stable jj change ID, if it can be resolved."""
+    # --ignore-working-copy keeps this a pure read: it runs outside the setup/
+    # teardown locks, so it must not snapshot the caller's working copy while a
+    # concurrent session mutates the shared store.
     try:
         value = _jj(
             repo,
-            ["log", "--no-graph", "-r", bookmark, "-T", "change_id"],
+            [
+                "log",
+                "--ignore-working-copy",
+                "--no-graph",
+                "-r",
+                bookmark,
+                "-T",
+                "change_id",
+            ],
             capture=True,
         )
     except subprocess.CalledProcessError:
