@@ -159,38 +159,39 @@ def is_rate_limited_failure(exit_code: int, log_path: Path | None) -> bool:
     return log_is_rate_limited(log_path)
 
 
-def pi_json_run_failed(log_path: Path | None) -> bool:
-    """Detect a headless Pi run that failed but still exited 0.
+def pi_json_stream_failed(path: Path | None) -> bool:
+    """Detect a failed Pi run whose JSON event stream still exited 0.
 
-    `pi --mode json` skips the exit-code mapping that `pi -p` performs in text
-    mode, so a provider outage, an aborted turn, or an exhausted rate-limit
-    retry ends the process with status 0. Mirror Pi's own text-mode rule and
-    let the last assistant message decide: a turn that only failed before a
-    successful auto-retry still counts as a success.
+    Pi only maps a failed request onto a non-zero exit code in its text output
+    mode; under `--mode json` an errored or aborted turn is reported purely as
+    the final assistant message's `stopReason` and the process still exits 0.
+    Without this, an unsupervised Pi session that never reached the model would
+    be recorded as a success.
     """
-    if log_path is None:
+    if path is None:
         return False
-    stop_reason: object = None
+    last_stop_reason: str | None = None
     try:
-        with open(log_path, encoding="utf-8", errors="replace") as handle:
+        with open(path, encoding="utf-8", errors="replace") as handle:
             for line in handle:
                 line = line.strip()
-                # Cheap prefilter: the serialized event always carries its own
-                # type, so a line without it cannot be the record we need.
                 if not line.startswith("{") or '"message_end"' not in line:
                     continue
                 try:
                     event = json.loads(line)
                 except ValueError:
                     continue
-                if not isinstance(event, dict) or event.get("type") != "message_end":
-                    continue
                 message = event.get("message")
-                if isinstance(message, dict) and message.get("role") == "assistant":
+                if event.get("type") != "message_end" or not isinstance(message, dict):
+                    continue
+                if message.get("role") == "assistant":
                     stop_reason = message.get("stopReason")
+                    last_stop_reason = (
+                        stop_reason if isinstance(stop_reason, str) else None
+                    )
     except OSError:
         return False
-    return stop_reason in ("error", "aborted")
+    return last_stop_reason in ("error", "aborted")
 
 
 def log_is_rate_limited(path: Path) -> bool:

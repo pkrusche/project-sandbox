@@ -97,15 +97,14 @@ case "${1:-bash}" in
       pi)
         shift
         export PI_SKIP_VERSION_CHECK=1 PI_OFFLINE=1
-        if [ -z "${PROJECT_SANDBOX_MODEL:-}" ] && [ -n "${PROJECT_SANDBOX_EFFORT:-}" ]; then
-          echo "[W] Pi effort was set but no model was provided; ignoring PROJECT_SANDBOX_EFFORT." >&2
+        if [ -n "${PROJECT_SANDBOX_PI_TOOLS:-}" ]; then
+          set -- --tools "$PROJECT_SANDBOX_PI_TOOLS" "$@"
+        fi
+        if [ -n "${PROJECT_SANDBOX_EFFORT:-}" ]; then
+          set -- --thinking "$PROJECT_SANDBOX_EFFORT" "$@"
         fi
         if [ -n "${PROJECT_SANDBOX_MODEL:-}" ]; then
-          if [ -n "${PROJECT_SANDBOX_EFFORT:-}" ]; then
-            set -- --model "${PROJECT_SANDBOX_MODEL}:${PROJECT_SANDBOX_EFFORT}" "$@"
-          else
-            set -- --model "${PROJECT_SANDBOX_MODEL}" "$@"
-          fi
+          set -- --model "${PROJECT_SANDBOX_MODEL}" "$@"
         fi
         log_project_sandbox_agent_command pi "$@"
         exec pi "$@"
@@ -154,18 +153,15 @@ case "${1:-bash}" in
         shift
         export PI_SKIP_VERSION_CHECK=1 PI_OFFLINE=1
         load_project_sandbox_prompt pi-headless || exit $?
-        # -p keeps the run non-interactive explicitly; --mode json only selects
-        # the output format, and pi documents --print as the headless switch.
-        set -- -p --mode json "$PROMPT" --approve
-        if [ -z "${PROJECT_SANDBOX_MODEL:-}" ] && [ -n "${PROJECT_SANDBOX_EFFORT:-}" ]; then
-          echo "[W] Pi effort was set but no model was provided; ignoring PROJECT_SANDBOX_EFFORT." >&2
+        set -- -p "$PROMPT" --approve --mode json
+        if [ -n "${PROJECT_SANDBOX_PI_TOOLS:-}" ]; then
+          set -- --tools "$PROJECT_SANDBOX_PI_TOOLS" "$@"
+        fi
+        if [ -n "${PROJECT_SANDBOX_EFFORT:-}" ]; then
+          set -- --thinking "$PROJECT_SANDBOX_EFFORT" "$@"
         fi
         if [ -n "${PROJECT_SANDBOX_MODEL:-}" ]; then
-          if [ -n "${PROJECT_SANDBOX_EFFORT:-}" ]; then
-            set -- --model "${PROJECT_SANDBOX_MODEL}:${PROJECT_SANDBOX_EFFORT}" "$@"
-          else
-            set -- --model "${PROJECT_SANDBOX_MODEL}" "$@"
-          fi
+          set -- --model "${PROJECT_SANDBOX_MODEL}" "$@"
         fi
         log_project_sandbox_agent_command pi "$@"
         exec pi "$@"
