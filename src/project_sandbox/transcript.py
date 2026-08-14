@@ -30,6 +30,8 @@ def log_to_markdown(log_path: Path) -> Path | None:
         markdown = render_codex_markdown(events)
     elif _has_pi_events(events):
         markdown = render_pi_markdown(events)
+    elif _has_opencode_events(events):
+        markdown = render_opencode_markdown(events)
     else:
         return None
     md_path = log_path.with_suffix(".md")
@@ -68,6 +70,53 @@ def _has_pi_events(events: list[dict]) -> bool:
     return any(
         e.get("type") in ("agent_start", "agent_end", "message_end") for e in events
     )
+
+
+def _has_opencode_events(events: list[dict]) -> bool:
+    return any(
+        e.get("type") in ("step_start", "step_finish", "tool_use", "text", "error")
+        for e in events
+    )
+
+
+class LiveMarkdown:
+    """Translate one agent JSONL record at a time while retaining raw logs."""
+
+    def __init__(self, agent: str):
+        self.agent = agent
+        self.tool_names: dict[str, str] = {}
+
+    def feed(self, line: str, *, preserve_plain: bool = True) -> str:
+        try:
+            event = json.loads(line)
+        except ValueError:
+            return line if preserve_plain else ""
+        if not isinstance(event, dict):
+            return line if preserve_plain else ""
+        parts = self._event(event)
+        return "\n".join(parts).strip() + "\n\n" if parts else ""
+
+    def _event(self, event: dict) -> list[str]:
+        etype = event.get("type")
+        if self.agent == "claude":
+            if etype == "assistant":
+                return _render_assistant(event, self.tool_names)
+            if etype == "user":
+                return _render_user(event, self.tool_names)
+            if etype == "result":
+                return _render_result(event)
+        elif self.agent == "codex":
+            if etype == "item.completed":
+                return _render_codex_item(event.get("item"))
+            if etype == "turn.failed":
+                return _render_codex_failure(event)
+        elif self.agent == "pi" and etype == "message_end":
+            message = event.get("message")
+            if isinstance(message, dict) and message.get("role") == "assistant":
+                return _render_pi_assistant(message)
+        elif self.agent == "opencode":
+            return _render_opencode_event(event)
+        return []
 
 
 def render_pi_markdown(events: list[dict]) -> str:
@@ -189,6 +238,38 @@ def render_codex_markdown(events: list[dict]) -> str:
     while "\n\n\n" in text:
         text = text.replace("\n\n\n", "\n\n")
     return text.strip() + "\n"
+
+
+def render_opencode_markdown(events: list[dict]) -> str:
+    parts: list[str] = ["# OpenCode session transcript", ""]
+    for event in events:
+        parts.extend(_render_opencode_event(event))
+    text = "\n".join(parts)
+    while "\n\n\n" in text:
+        text = text.replace("\n\n\n", "\n\n")
+    return text.strip() + "\n"
+
+
+def _render_opencode_event(event: dict) -> list[str]:
+    etype = event.get("type")
+    part = event.get("part")
+    if etype in ("text", "reasoning") and isinstance(part, dict):
+        value = part.get("text")
+        if isinstance(value, str) and value.strip():
+            heading = "Assistant" if etype == "text" else "Assistant (thinking)"
+            body = value.strip() if etype == "text" else _blockquote(value.strip())
+            return [f"## {heading}", "", body, ""]
+    if etype == "tool_use" and isinstance(part, dict):
+        name = str(part.get("tool") or "tool")
+        state = part.get("state") if isinstance(part.get("state"), dict) else {}
+        rendered = json.dumps(
+            state.get("input", {}), indent=2, ensure_ascii=False, sort_keys=True
+        )
+        return [f"### 🔧 {name}", "", *_code_block(_truncate(rendered), "json"), ""]
+    if etype == "error":
+        error = event.get("error")
+        return ["## Result", "", "- **Status:** error", "", str(error), ""]
+    return []
 
 
 def _render_codex_item(item: object) -> list[str]:

@@ -678,10 +678,11 @@ def main(argv: list[str] | None = None) -> int:
                 container_stop_argv=container_stop_argv,
                 verbose=args.verbose,
                 env=api_key_values or None,
+                markdown_agent=run_agent,
             )
             if not args.verbose:
                 print(f"Wrote {session.count_lines(log_path)} lines to {log_path}")
-            if run_agent in ("claude", "codex", "pi"):
+            if run_agent in ("claude", "codex", "opencode", "pi"):
                 _write_transcript_markdown(log_path)
             if (
                 run_agent == "pi"

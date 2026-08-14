@@ -99,6 +99,38 @@ CODEX_EVENTS = [
 
 
 class TranscriptRenderTests(TestCase):
+    def test_live_markdown_renders_json_and_optionally_preserves_plain_text(
+        self,
+    ) -> None:
+        formatter = transcript.LiveMarkdown("codex")
+        event = json.dumps(
+            {
+                "type": "item.completed",
+                "item": {"type": "agent_message", "text": "Done."},
+            }
+        )
+
+        self.assertIn("## Assistant", formatter.feed(event))
+        self.assertEqual(formatter.feed("firewall ready\n"), "firewall ready\n")
+        self.assertEqual(formatter.feed("firewall ready\n", preserve_plain=False), "")
+
+    def test_render_opencode_json_events(self) -> None:
+        events = [
+            {"type": "text", "part": {"text": "Finished."}},
+            {
+                "type": "tool_use",
+                "part": {"tool": "bash", "state": {"input": {"command": "pwd"}}},
+            },
+        ]
+
+        md = transcript.render_opencode_markdown(events)
+
+        self.assertIn("# OpenCode session transcript", md)
+        self.assertIn("## Assistant", md)
+        self.assertIn("Finished.", md)
+        self.assertIn("### 🔧 bash", md)
+        self.assertIn('"command": "pwd"', md)
+
     def test_render_includes_header_text_tool_and_result(self) -> None:
         md = transcript.render_markdown(SAMPLE_EVENTS)
 

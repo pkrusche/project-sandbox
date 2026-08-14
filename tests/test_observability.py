@@ -163,7 +163,7 @@ class ObservabilityTests(TestCase):
                 encoding="utf-8",
             )
 
-            self.assertTrue(observability.pi_json_run_failed(log))
+            self.assertTrue(observability.pi_json_stream_failed(log))
 
     def test_pi_failure_before_a_successful_retry_is_not_a_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -192,15 +192,15 @@ class ObservabilityTests(TestCase):
                 encoding="utf-8",
             )
 
-            self.assertFalse(observability.pi_json_run_failed(log))
+            self.assertFalse(observability.pi_json_stream_failed(log))
 
     def test_pi_failure_detection_ignores_other_logs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             log = Path(tmp) / "session.log"
             log.write_text("plain agent output\nnot json\n", encoding="utf-8")
 
-            self.assertFalse(observability.pi_json_run_failed(log))
-        self.assertFalse(observability.pi_json_run_failed(None))
+            self.assertFalse(observability.pi_json_stream_failed(log))
+        self.assertFalse(observability.pi_json_stream_failed(None))
 
     def test_interrupted_session_is_not_left_running(self) -> None:
         with (
