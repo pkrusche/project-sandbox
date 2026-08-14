@@ -1137,6 +1137,69 @@ class CliTests(TestCase):
                 )
         self.assertIn("--keep-workspace requires --branch", str(raised.exception))
 
+    def test_failed_pi_json_run_is_reported_as_a_nonzero_exit(self) -> None:
+        # `pi --mode json` exits 0 even when the turn ended in an error, so the
+        # CLI has to reclassify the run from its own event log.
+        failed_turn = json.dumps(
+            {
+                "type": "message_end",
+                "message": {
+                    "role": "assistant",
+                    "content": [],
+                    "stopReason": "error",
+                    "errorMessage": "Connection error.",
+                },
+            }
+        )
+
+        def fake_run(cmd, *, log_path, **kwargs):
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_path.write_text(failed_turn + "\n", encoding="utf-8")
+            return 0
+
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            paths = _agent_paths(project / "home")
+            paths["pi"].mkdir(parents=True)
+            out = io.StringIO()
+
+            with (
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
+                patch.object(
+                    cli.config_agents, "_agent_host_paths", return_value=paths
+                ),
+                patch.object(
+                    cli.container_cli,
+                    "select_runtime",
+                    return_value=cli.container_cli.DOCKER,
+                ),
+                patch.object(
+                    cli.container_cli, "ensure_system_started", return_value=0
+                ),
+                patch.object(cli.container_cli, "image_exists", return_value=True),
+                patch.object(cli.session, "run", side_effect=fake_run),
+                contextlib.redirect_stdout(out),
+            ):
+                rc = cli.main(
+                    [
+                        "--no-build",
+                        "--agent",
+                        "pi",
+                        "--prompt-text",
+                        "fix this",
+                        str(project),
+                        "python:3.12-slim",
+                    ]
+                )
+
+            self.assertEqual(rc, 1)
+            self.assertIn("failed turn", out.getvalue())
+
     def test_unsupervised_opencode_uses_headless_dispatch_when_available(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
