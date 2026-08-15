@@ -9,7 +9,8 @@ unauthenticated proxy.
 That deployment has these relevant properties:
 
 - agentgateway runs outside `project-sandbox`, under Docker or Apple
-  `container`, and is managed with its own `run.py`;
+  `container`, and its lifecycle is managed independently; project-sandbox and
+  its verification script cannot invoke the external checkout's `run.py`;
 - the LLM data plane is `http://127.0.0.1:4000`, with OpenAI-compatible paths
   below `/v1`;
 - OpenAI and Anthropic provider keys come from `pass` and exist in the gateway
@@ -77,23 +78,32 @@ base URL, model list, and API key. Claude Code and Codex require different
 environment/configuration integration and remain unchanged. Proxy flags with
 any unsupported agent fail before credential staging or container work.
 
-### Accept the gateway key through a dedicated host environment variable
+### Resolve the gateway key from pass with explicit fallbacks
 
-`--agent-proxy-key-env NAME` names the environment variable and defaults to
-`AGENTGATEWAY_API_KEY`; it does not accept the secret value on the command line.
-If the selected variable is empty, the CLI captures
-`pass show agentgateway-api-key` as a fallback. Documentation can populate the
-variable from `<agentgateway-locally>/run.py key`, consistent with that
-repository's SDK usage. A dedicated option keeps the gateway key
-distinguishable from forbidden provider-key injection.
+The CLI does not depend on the external checkout. On a real run it resolves one
+gateway key in this order:
 
-The implementation reads the value only for a real run, never prints it, and
-stages it only in the selected agent's private generated provider
-configuration (or a provider-specific environment reference if the client
-supports one without broadening exposure). File permissions and cleanup match
-the existing private credential staging path. Failure of both the environment
-and `pass` sources aborts before container work. Dry-run validates the variable
-name but neither reads nor requires a key value.
+1. capture `pass show agentgateway-api-key`;
+2. if unavailable or empty, read the environment variable named by
+   `--agent-proxy-key-env NAME`, defaulting to `AGENTGATEWAY_API_KEY`; and
+3. if still unavailable, use `--agent-proxy-key KEY`.
+
+The pass entry name is fixed to match the referenced setup. The environment
+name is configurable for users with a different export convention. The raw
+key option is an explicit last resort: it is redacted by project-sandbox after
+argument parsing, but the program cannot prevent the invoking shell, history,
+or local process inspection from seeing argv. Help and security documentation
+warn about this and recommend pass or environment lookup.
+
+The implementation reads secret sources only for a real run, never prints the
+resolved value, and stages it only in the selected agent's private generated
+provider configuration (or a provider-specific environment reference if the
+client supports one without broadening exposure). File permissions and cleanup
+match the existing private credential staging path. Failure of all three
+sources aborts before network or container work. Dry-run validates option shape
+but does not invoke pass or read environment values; a supplied CLI value is
+already present in argv and is immediately replaced with a redaction marker in
+all generated diagnostics.
 
 ### Force provider credential exclusion
 
@@ -155,11 +165,13 @@ staging, are mounted only for the selected agent, and are never shown verbatim.
 
 ### Ship a user-executable end-to-end checker
 
-Add `scripts/check-agent-proxy.py`, stdlib-only. The script accepts the path to
-an `agentgateway-locally` checkout and pi/OpenCode model selections. It:
+Add `scripts/check-agent-proxy.py`, stdlib-only. The script accepts the proxy URL
+and pi/OpenCode model selections, with no external-checkout path. It:
 
-1. verifies prerequisites without changing gateway state;
-2. obtains the gateway key by invoking `pass show agentgateway-api-key` with captured output (we don't rely on having access to run.py - if the pass entry is different users can adjust the script);
+1. verifies local project-sandbox/runtime prerequisites without changing
+   gateway state;
+2. resolves the key from `pass show agentgateway-api-key`, then its environment
+   fallback, then an explicit script CLI-key fallback;
 3. performs the same authenticated `/v1/models` health/auth/discovery check and
    validates both selections;
 4. creates an isolated temporary project;
@@ -170,11 +182,14 @@ an `agentgateway-locally` checkout and pi/OpenCode model selections. It:
 7. reports per-agent pass/fail and exits nonzero if either command fails or its
    marker is absent.
 
-The key is passed to `project-sandbox` through the dedicated environment
-variable, never argv, and is redacted from command/error output. The script
-does not call `run.py up`, change gateway config, or retain its temporary
-project. Unit tests mock HTTP and subprocess boundaries; the real two-agent run
-is intentionally user-invoked because it consumes provider tokens.
+The checker passes the resolved key to each child `project-sandbox` process
+through the dedicated environment variable rather than repeating it in child
+argv, and redacts it from command/error output. If the user supplied the key to
+the checker as a raw CLI option, its original argv exposure cannot be undone
+and receives the same warning. The script does not start, stop, or reconfigure
+the gateway and does not retain its temporary project. Unit tests mock HTTP and
+subprocess boundaries; the real two-agent run is intentionally user-invoked
+because it consumes provider tokens.
 
 ## Risks / Trade-offs
 
@@ -191,6 +206,9 @@ is intentionally user-invoked because it consumes provider tokens.
 - **Generated config contains the gateway key** → keep it under the private
   temporary credential root, mount only for the chosen agent, clean it with the
   existing credential lifecycle, and exclude it from dry-run/transcripts.
+- **Raw CLI fallback exposes the gateway key in argv** → keep it last in the
+  lookup order, warn in help/docs and at use, redact subsequent output, and
+  recommend pass or environment lookup instead.
 - **E2E checks cost tokens** → run only on explicit user invocation, use minimal
   deterministic prompts, and announce that the check makes two paid requests.
 
@@ -204,8 +222,9 @@ requires migration.
 
 ## Decision notes
 
-- `--agent-proxy-key-env` defaults to `AGENTGATEWAY_API_KEY`; if that is empty,
-  try reading via `pass show agentgateway-api-key`; if that fails, print an error.
+- Gateway key precedence is `pass show agentgateway-api-key`, then the selected
+  environment variable (default `AGENTGATEWAY_API_KEY`), then the raw
+  `--agent-proxy-key` fallback; failure of all three is an error.
 - The E2E checker defaults to discovered alias `gpt-5-mini` for both agents,
   parameterizable via `AGENT_PROXY_TEST_MODEL`, and passes that selection
   through each invocation's regular `--model` option.

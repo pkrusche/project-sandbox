@@ -36,11 +36,13 @@ CLI continue to use their existing credential paths.
 - Add an opt-in `--agent-proxy URL` flag, accepted only with `--agent pi` or
   `--agent opencode`. For the documented setup the URL is
   `http://127.0.0.1:4000/v1`; port 3000 is MCP and is not an LLM endpoint.
-- Add `--agent-proxy-key-env NAME`, naming a host environment variable that
-  contains the gateway bearer key and defaulting to `AGENTGATEWAY_API_KEY`. If
-  that variable is empty, read `pass show agentgateway-api-key` as the fallback
-  used by the referenced setup. The value is staged only for the selected
-  agent's proxy provider and redacted from diagnostics and dry-run output.
+- Resolve the gateway bearer key without access to the external checkout:
+  first capture `pass show agentgateway-api-key`, then fall back to the host
+  environment variable named by `--agent-proxy-key-env NAME` (default
+  `AGENTGATEWAY_API_KEY`), then to an explicit `--agent-proxy-key KEY`. The raw
+  CLI form is the least-safe fallback because shells and process listings may
+  expose argv. Regardless of source, the value is staged only for the selected
+  agent's proxy provider and redacted from project-sandbox output.
 - Reuse the regular `--model` flag for model selection. Proxy mode requires it:
   pi uses `--model <model-id>`, while OpenCode uses
   `--model agent-proxy/<model-id>` to select the generated provider.
@@ -69,8 +71,9 @@ CLI continue to use their existing credential paths.
   one real headless OpenCode session through it and reports a clear pass/fail
   result for each.
 - `--dry-run --agent-proxy ... --model ...` previews the redacted plan and marks
-  model discovery/provider generation as deferred without reading the key,
-  contacting the proxy, writing files, or starting containers.
+  model discovery/provider generation as deferred without invoking pass,
+  reading an environment key, contacting the proxy, writing files, or starting
+  containers. A raw CLI fallback is parsed but never echoed.
 
 `project-sandbox` does **not** install, configure, start, restart, stop, or
 upgrade agentgateway. It does not manage a second VM, per-project networks,
@@ -99,18 +102,20 @@ gateway configuration, provider secrets, the admin UI, request logs, or MCP.
   providers; the Ollama forwarding helper is generalized; `firewall.py` and
   `init-firewall.sh.j2` gain a proxy endpoint rule. A stdlib-only script under
   `scripts/` performs the user-invoked end-to-end check.
-- **Dependencies:** no Python package dependency. The external
-  `agentgateway-locally` checkout, its prerequisites, provider keys, gateway
-  key, and running gateway container are user-managed prerequisites.
+- **Dependencies:** no Python package dependency and no runtime access to an
+  `agentgateway-locally` checkout. The configured service, provider keys,
+  gateway key in `pass` (or an explicit fallback), and running gateway
+  container are user-managed prerequisites.
 - **Docs:** new `docs/agent-proxy.md`; `docs/security.md` explains the exact
   boundary. The external gateway's SQLite request log may contain full prompts
   and completions, and its documented cleanup/retention behavior remains the
   user's responsibility.
 - **Security-impacting:** yes. Provider keys and OAuth credentials must never
-  enter the agent VM; the gateway key must never be printed or included in a
-  process argument; the gateway must retain strict listener authentication.
-  Loopback publishing alone is not treated as a security boundary, including
-  under Apple `container` vmnet networking.
+  enter the agent VM; the gateway key must never be printed. Pass and
+  environment lookup keep it out of argv; the explicit CLI fallback cannot and
+  is documented with a warning. The gateway must retain strict listener
+  authentication. Loopback publishing alone is not treated as a security
+  boundary, including under Apple `container` vmnet networking.
 - **Platform constraint:** no new macOS-26 requirement. The feature uses the
   existing local-Ollama forwarding strategy matrix and fails closed when no
   verified route to host loopback exists.

@@ -9,10 +9,10 @@ gateway bearer key required to use that service.
 
 ### Requirement: Proxy mode is opt-in and limited to supported agents
 
-The CLI SHALL accept `--agent-proxy URL` and `--agent-proxy-key-env NAME` and
-SHALL reuse the regular `--model` option. Proxy mode SHALL be accepted only for
-pi and OpenCode and SHALL require `--model`. When absent, all existing behavior
-SHALL remain unchanged.
+The CLI SHALL accept `--agent-proxy URL`, `--agent-proxy-key-env NAME`, and raw
+`--agent-proxy-key KEY`, and SHALL reuse the regular `--model` option. Proxy
+mode SHALL be accepted only for pi and OpenCode and SHALL require `--model`.
+When absent, all existing behavior SHALL remain unchanged.
 
 #### Scenario: Supported agent opts in
 - **WHEN** the user selects pi or OpenCode with proxy URL
@@ -45,9 +45,9 @@ SHALL remain unchanged.
 
 Proxy mode SHALL force `--no-forward-credentials` behavior and reject
 `--api-key-env` and `--api-key-env-file`. No provider API key or host agent
-OAuth credential SHALL enter the agent VM. The gateway bearer key named by
-`--agent-proxy-key-env` SHALL be the sole LLM credential admitted by proxy
-mode and SHALL be staged only for the selected agent.
+OAuth credential SHALL enter the agent VM. The single gateway bearer key
+resolved from the approved source precedence SHALL be the sole LLM credential
+admitted by proxy mode and SHALL be staged only for the selected agent.
 
 #### Scenario: Provider credentials are excluded
 - **WHEN** proxy mode prepares a session
@@ -66,24 +66,37 @@ mode and SHALL be staged only for the selected agent.
 
 ### Requirement: Gateway key input and output handling is secret-safe
 
-The gateway key SHALL be loaded from the host environment variable named by
-`--agent-proxy-key-env`, defaulting to `AGENTGATEWAY_API_KEY`. If it is empty,
-the system SHALL capture `pass show agentgateway-api-key`; it SHALL never accept
-the secret as a command-line value. Real runs SHALL fail if neither source
-produces a value. The system SHALL NOT expose the value in argv, logs, errors,
+On real runs the gateway key SHALL be resolved in this order: captured output
+from `pass show agentgateway-api-key`; the host environment variable named by
+`--agent-proxy-key-env`, defaulting to `AGENTGATEWAY_API_KEY`; then raw
+`--agent-proxy-key`. The system SHALL require no access to an external
+`agentgateway-locally` checkout. It SHALL fail if all three sources are empty or
+unavailable. It SHALL NOT expose the resolved value in its logs, errors,
 dry-run output, or transcripts, and SHALL protect and clean secret-bearing
-staged files using the existing private credential lifecycle.
+staged files using the existing private credential lifecycle. When the raw CLI
+fallback is used, the system SHALL warn that the invoking shell, history, and
+process listings may already expose argv and cannot be redacted retroactively.
 
-#### Scenario: Environment key is absent and pass succeeds
-- **WHEN** a real proxy run finds the selected key environment variable empty
-  and `pass show agentgateway-api-key` succeeds
-- **THEN** the CLI uses the captured value without exposing it in argv or output
+#### Scenario: Pass entry succeeds
+- **WHEN** `pass show agentgateway-api-key` returns a non-empty key
+- **THEN** the CLI uses it without reading either fallback
 
-#### Scenario: Both gateway key sources fail
-- **WHEN** the selected environment variable is empty and the `pass` lookup
-  fails or returns empty output
+#### Scenario: Environment fallback succeeds
+- **WHEN** pass lookup fails or is empty and the selected environment variable
+  contains a key
+- **THEN** the CLI uses the environment value without reading the raw CLI
+  fallback
+
+#### Scenario: Raw CLI fallback succeeds with warning
+- **WHEN** pass and environment lookup fail and `--agent-proxy-key` is present
+- **THEN** the CLI uses it, warns about argv/history exposure without echoing
+  the key, and redacts the value from all subsequent project-sandbox output
+
+#### Scenario: All gateway key sources fail
+- **WHEN** pass, the selected environment variable, and the raw CLI fallback
+  are all unavailable or empty
 - **THEN** the CLI exits before network or container work with an error naming
-  the attempted sources but no secret value
+  the attempted source types but no secret value
 
 #### Scenario: Diagnostics are redacted
 - **WHEN** proxy planning, an error, or transcript rendering displays commands
@@ -184,7 +197,8 @@ Dry-run SHALL validate non-secret proxy arguments and the shape of the regular
 `--model` selection, then preview sanitized agent, forwarding, firewall, and
 container plans with discovery/provider generation marked as deferred. It
 SHALL NOT read the gateway-key environment variable, contact the proxy, write
-files, or start a resource.
+files, or start a resource, and SHALL NOT invoke pass. A supplied raw CLI key
+SHALL be redacted from the preview.
 
 #### Scenario: Proxy dry-run
 - **WHEN** a valid proxy invocation includes `--dry-run`
@@ -194,11 +208,12 @@ files, or start a resource.
 
 ### Requirement: Users can verify both supported agents end to end
 
-The repository SHALL provide a stdlib-only executable checker that obtains the
-gateway key from an `agentgateway-locally` checkout, discovers the authenticated
-model catalog, and runs one real headless pi session and one real headless
-OpenCode session through the proxy in an isolated temporary project. Each run
-SHALL select its model through the regular `--model` option.
+The repository SHALL provide a stdlib-only executable checker that requires no
+external checkout, resolves the gateway key from pass with environment and raw
+CLI fallbacks, discovers the authenticated model catalog, and runs one real
+headless pi session and one real headless OpenCode session through the proxy in
+an isolated temporary project. Each run SHALL select its model through the
+regular `--model` option.
 
 #### Scenario: Both agents work
 - **WHEN** the proxy is up, authentication and selected models are valid, and
@@ -218,4 +233,5 @@ SHALL select its model through the regular `--model` option.
 #### Scenario: Checker contains its side effects
 - **WHEN** the checker finishes or is interrupted
 - **THEN** its temporary project is removed, the gateway remains running and
-  unmodified, and the gateway key has not appeared in argv or output
+  unmodified, the key is not repeated in child argv or emitted in output, and
+  any raw-key input received the unavoidable parent-argv exposure warning
