@@ -37,13 +37,13 @@ CLI continue to use their existing credential paths.
   `--agent opencode`. For the documented setup the URL is
   `http://127.0.0.1:4000/v1`; port 3000 is MCP and is not an LLM endpoint.
 - Add `--agent-proxy-key-env NAME`, naming a host environment variable that
-  contains the gateway bearer key. The documented flow populates it from
-  `agentgateway-locally/run.py key`. The value is read by
-  `project-sandbox`, staged only for the selected agent's proxy provider, and
-  redacted from diagnostics and dry-run output.
-- Add a repeatable `--agent-proxy-model ID` flag for the model aliases exposed
-  by agentgateway. At least one model is required; the first is the default
-  where the agent requires one.
+  contains the gateway bearer key and defaulting to `AGENTGATEWAY_API_KEY`. If
+  that variable is empty, read `pass show agentgateway-api-key` as the fallback
+  used by the referenced setup. The value is staged only for the selected
+  agent's proxy provider and redacted from diagnostics and dry-run output.
+- Reuse the regular `--model` flag for model selection. Proxy mode requires it:
+  pi uses `--model <model-id>`, while OpenCode uses
+  `--model agent-proxy/<model-id>` to select the generated provider.
 - **Provider credential exclusion:** proxy mode forces
   `--no-forward-credentials` behavior and rejects `--api-key-env` /
   `--api-key-env-file`. No host agent OAuth state or OpenAI/Anthropic key is
@@ -51,14 +51,16 @@ CLI continue to use their existing credential paths.
   credential admitted by this mode.
 - Perform an authenticated, bounded `GET /v1/models` preflight before starting
   a sandbox. This proves the LLM listener is up, the gateway key is accepted,
-  and every requested model alias is exposed. Errors distinguish unavailable
-  proxy, rejected key, and missing model.
+  discovers the complete model catalog, and verifies the `--model` selection.
+  Errors distinguish unavailable proxy, rejected key, malformed/empty catalog,
+  and an unavailable selected model.
 - Bake proxy provider configuration per supported agent:
-  - **pi:** generated `models.json` with the forwarded proxy base URL, requested
-    models, and gateway key, plus `settings.json` selecting the provider and
-    first model.
+  - **pi:** generated `models.json` with the forwarded proxy base URL, every
+    discovered model, and gateway key, plus `settings.json` selecting the proxy
+    provider. The regular `--model` argument selects the model for the run.
   - **OpenCode:** generated `opencode.json` custom provider with the forwarded
-    proxy base URL, requested models, and gateway key.
+    proxy base URL, every discovered model, and gateway key. The regular
+    `--model agent-proxy/<model-id>` argument selects the model for the run.
 - Reach the loopback listener from the agent VM by generalizing the forwarding
   strategy used by `--pi-ollama` to a configurable port and internal hostname.
   Add the corresponding port-scoped firewall rule.
@@ -66,9 +68,9 @@ CLI continue to use their existing credential paths.
   with authenticated `/v1/models`, then runs one real headless pi session and
   one real headless OpenCode session through it and reports a clear pass/fail
   result for each.
-- `--dry-run --agent-proxy ...` previews redacted provider configuration and
-  commands without reading the key value, contacting the proxy, writing files,
-  or starting containers.
+- `--dry-run --agent-proxy ... --model ...` previews the redacted plan and marks
+  model discovery/provider generation as deferred without reading the key,
+  contacting the proxy, writing files, or starting containers.
 
 `project-sandbox` does **not** install, configure, start, restart, stop, or
 upgrade agentgateway. It does not manage a second VM, per-project networks,

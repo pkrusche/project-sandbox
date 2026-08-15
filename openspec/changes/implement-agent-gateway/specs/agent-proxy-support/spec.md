@@ -9,15 +9,27 @@ gateway bearer key required to use that service.
 
 ### Requirement: Proxy mode is opt-in and limited to supported agents
 
-The CLI SHALL accept `--agent-proxy URL`, `--agent-proxy-key-env NAME`, and a
-repeatable `--agent-proxy-model ID`. Proxy mode SHALL be accepted only for pi
-and OpenCode. When absent, all existing behavior SHALL remain unchanged.
+The CLI SHALL accept `--agent-proxy URL` and `--agent-proxy-key-env NAME` and
+SHALL reuse the regular `--model` option. Proxy mode SHALL be accepted only for
+pi and OpenCode and SHALL require `--model`. When absent, all existing behavior
+SHALL remain unchanged.
 
 #### Scenario: Supported agent opts in
 - **WHEN** the user selects pi or OpenCode with proxy URL
-  `http://127.0.0.1:4000/v1`, a gateway-key environment variable, and at least
-  one model alias
+  `http://127.0.0.1:4000/v1`, a gateway-key environment variable, and a regular
+  `--model` selection
 - **THEN** the CLI configures that agent to use the local proxy
+
+#### Scenario: Regular model selection is required
+- **WHEN** proxy mode is requested without `--model`
+- **THEN** the CLI exits before secret lookup, network, or container work and
+  asks for the regular model option
+
+#### Scenario: OpenCode model names the generated provider
+- **WHEN** OpenCode proxy mode receives a `--model` value without the
+  `agent-proxy/` prefix or with another provider prefix
+- **THEN** the CLI rejects it and shows the required
+  `agent-proxy/<model-id>` form
 
 #### Scenario: Unsupported agent is rejected
 - **WHEN** proxy mode is requested with Claude, Codex, bash, or another agent
@@ -54,16 +66,24 @@ mode and SHALL be staged only for the selected agent.
 
 ### Requirement: Gateway key input and output handling is secret-safe
 
-The gateway key SHALL be supplied through a named host environment variable,
-not a command-line value. Real runs SHALL reject a missing or empty value.
-The system SHALL NOT expose the value in argv, logs, errors, dry-run output, or
-transcripts, and SHALL protect and clean secret-bearing staged files using the
-existing private credential lifecycle.
+The gateway key SHALL be loaded from the host environment variable named by
+`--agent-proxy-key-env`, defaulting to `AGENTGATEWAY_API_KEY`. If it is empty,
+the system SHALL capture `pass show agentgateway-api-key`; it SHALL never accept
+the secret as a command-line value. Real runs SHALL fail if neither source
+produces a value. The system SHALL NOT expose the value in argv, logs, errors,
+dry-run output, or transcripts, and SHALL protect and clean secret-bearing
+staged files using the existing private credential lifecycle.
 
-#### Scenario: Gateway key is missing
-- **WHEN** a real proxy run names an unset or empty key environment variable
+#### Scenario: Environment key is absent and pass succeeds
+- **WHEN** a real proxy run finds the selected key environment variable empty
+  and `pass show agentgateway-api-key` succeeds
+- **THEN** the CLI uses the captured value without exposing it in argv or output
+
+#### Scenario: Both gateway key sources fail
+- **WHEN** the selected environment variable is empty and the `pass` lookup
+  fails or returns empty output
 - **THEN** the CLI exits before network or container work with an error naming
-  the variable but not a value
+  the attempted sources but no secret value
 
 #### Scenario: Diagnostics are redacted
 - **WHEN** proxy planning, an error, or transcript rendering displays commands
@@ -93,12 +113,16 @@ internal hostname while preserving port and path.
 - **WHEN** no verified native or host-bindable forwarding strategy exists
 - **THEN** startup fails before any container and never widens the proxy bind
 
-### Requirement: Preflight verifies health, authentication, and models
+### Requirement: Preflight discovers models and validates selection
 
 Before starting forwarding resources or containers, the system SHALL perform
 a bounded authenticated `GET <proxy-base>/models` request using the gateway
-bearer key. It SHALL require a valid model-list response containing every
-requested model alias and SHALL NOT mutate or manage the proxy.
+bearer key. It SHALL require a non-empty valid model-list response, validate
+every non-empty string in `data[].id` without changing it, deduplicate exact IDs
+while preserving response order, and use that complete catalog to configure the
+selected agent. It SHALL validate
+the regular `--model` selection against the catalog and SHALL NOT mutate or
+manage the proxy.
 
 #### Scenario: Proxy is unavailable
 - **WHEN** the request cannot connect or times out
@@ -109,9 +133,14 @@ requested model alias and SHALL NOT mutate or manage the proxy.
 - **WHEN** the endpoint returns 401 or 403
 - **THEN** the CLI aborts with gateway-key guidance without exposing the key
 
-#### Scenario: Requested model is absent
-- **WHEN** `/v1/models` succeeds but omits a requested alias
-- **THEN** the CLI lists the missing alias and aborts before container work
+#### Scenario: Catalog is malformed or empty
+- **WHEN** `/v1/models` does not contain a non-empty list of valid model IDs
+- **THEN** the CLI rejects the endpoint before generating agent configuration
+
+#### Scenario: Selected model is absent
+- **WHEN** `/v1/models` succeeds but omits the model selected by `--model`
+- **THEN** the CLI names the unavailable selection and aborts before container
+  work
 
 ### Requirement: Firewall access is scoped to the forwarded proxy endpoint
 
@@ -133,47 +162,52 @@ Ollama support.
 ### Requirement: Pi and OpenCode receive authenticated custom providers
 
 Pi and OpenCode SHALL receive private, agent-specific provider configuration
-containing the forwarded `/v1` base URL, every requested model alias, and the
-gateway key. Pi SHALL select the first model as its default. No unsupported
-agent SHALL receive this provider or key.
+containing the forwarded `/v1` base URL, every model discovered from the
+endpoint, and the gateway key. Model selection SHALL use only the existing
+`--model` dispatch; no proxy-specific model-list flag or discovery-order default
+SHALL be introduced. No unsupported agent SHALL receive this provider or key.
 
 #### Scenario: Pi provider is generated
 - **WHEN** pi runs in proxy mode
-- **THEN** `models.json` and `settings.json` select the authenticated proxy
-  provider and first requested model
+- **THEN** `models.json` contains every discovered model, `settings.json`
+  selects the authenticated proxy provider without a default model, and
+  `--model <model-id>` selects the run model
 
 #### Scenario: OpenCode provider is generated
 - **WHEN** OpenCode runs in proxy mode
-- **THEN** `opencode.json` defines the authenticated proxy provider and supports
-  the existing provider/model selection form
+- **THEN** `opencode.json` defines provider `agent-proxy` with every discovered
+  model and `--model agent-proxy/<model-id>` selects the run model
 
 ### Requirement: Dry run is complete, redacted, and side-effect free
 
-Dry-run SHALL validate non-secret proxy arguments and preview sanitized agent,
-forwarding, firewall, and container plans without reading the gateway-key
-environment variable, contacting the proxy, writing files, or starting a
-resource.
+Dry-run SHALL validate non-secret proxy arguments and the shape of the regular
+`--model` selection, then preview sanitized agent, forwarding, firewall, and
+container plans with discovery/provider generation marked as deferred. It
+SHALL NOT read the gateway-key environment variable, contact the proxy, write
+files, or start a resource.
 
 #### Scenario: Proxy dry-run
 - **WHEN** a valid proxy invocation includes `--dry-run`
-- **THEN** output contains the URL and model aliases but not the gateway key,
-  and no secret read, network request, filesystem write, or process start occurs
+- **THEN** output contains the URL and selected regular `--model`, states that
+  catalog discovery is deferred, omits the gateway key, and performs no secret
+  read, network request, filesystem write, or process start
 
 ### Requirement: Users can verify both supported agents end to end
 
 The repository SHALL provide a stdlib-only executable checker that obtains the
-gateway key from an `agentgateway-locally` checkout, verifies the authenticated
-model endpoint, and runs one real headless pi session and one real headless
-OpenCode session through the proxy in an isolated temporary project.
+gateway key from an `agentgateway-locally` checkout, discovers the authenticated
+model catalog, and runs one real headless pi session and one real headless
+OpenCode session through the proxy in an isolated temporary project. Each run
+SHALL select its model through the regular `--model` option.
 
 #### Scenario: Both agents work
-- **WHEN** the proxy is up, authentication and requested models are valid, and
+- **WHEN** the proxy is up, authentication and selected models are valid, and
   each headless agent returns its unique expected marker
 - **THEN** the checker reports both agents passed and exits zero
 
 #### Scenario: Proxy precheck fails
-- **WHEN** the proxy is down, rejects the key, returns malformed model data, or
-  lacks a requested model
+- **WHEN** the proxy is down, rejects the key, returns malformed/empty model
+  data, or lacks a selected model
 - **THEN** the checker fails before launching either agent with an actionable,
   redacted error
 

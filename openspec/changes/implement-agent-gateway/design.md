@@ -40,8 +40,8 @@ hostname while preserving `--pi-ollama` behavior.
 - Admit only the gateway bearer key needed by the proxy's mandatory client
   authentication, and handle it as a secret in staging, diagnostics, dry-run,
   and process execution.
-- Validate proxy availability, authentication, and requested models before any
-  sandbox starts.
+- Discover the complete gateway model catalog and validate the regular
+  `--model` selection before any sandbox starts.
 - Configure pi and OpenCode to use the authenticated OpenAI-compatible endpoint.
 - Reuse the verified local-Ollama forwarding and firewall patterns.
 - Give users one executable end-to-end check that exercises both supported
@@ -79,19 +79,21 @@ any unsupported agent fail before credential staging or container work.
 
 ### Accept the gateway key through a dedicated host environment variable
 
-`--agent-proxy-key-env NAME` names the environment variable; it does not accept
-the secret value on the command line. Documentation populates the variable
-from `<agentgateway-locally>/run.py key`, consistent with that repository's SDK
-usage. A dedicated option keeps the gateway key distinguishable from forbidden
-provider-key injection.
+`--agent-proxy-key-env NAME` names the environment variable and defaults to
+`AGENTGATEWAY_API_KEY`; it does not accept the secret value on the command line.
+If the selected variable is empty, the CLI captures
+`pass show agentgateway-api-key` as a fallback. Documentation can populate the
+variable from `<agentgateway-locally>/run.py key`, consistent with that
+repository's SDK usage. A dedicated option keeps the gateway key
+distinguishable from forbidden provider-key injection.
 
 The implementation reads the value only for a real run, never prints it, and
 stages it only in the selected agent's private generated provider
 configuration (or a provider-specific environment reference if the client
 supports one without broadening exposure). File permissions and cleanup match
-the existing private credential staging path. Missing or empty values fail
-before container work. Dry-run validates the variable name but neither reads
-nor requires its value.
+the existing private credential staging path. Failure of both the environment
+and `pass` sources aborts before container work. Dry-run validates the variable
+name but neither reads nor requires a key value.
 
 ### Force provider credential exclusion
 
@@ -104,16 +106,29 @@ OAuth file is admitted. The gateway key is the sole explicit exception.
 
 Before creating forwarding resources or starting a container, the CLI requests
 `<proxy-base>/models` with `Authorization: Bearer <gateway key>` and a bounded
-timeout. A successful JSON response must list every `--agent-proxy-model` ID.
-This replaces a weak TCP-connect probe and gives actionable failures:
+timeout. The response is the sole source of the proxy provider's model catalog:
+every non-empty string in the OpenAI-compatible `data[].id` fields is preserved
+exactly, duplicate IDs are removed while preserving response order, and the
+result is rendered into the selected agent's provider configuration. An empty
+catalog is an error. This replaces a weak TCP-connect probe and gives actionable
+failures:
 
 - connection/timeout: start or troubleshoot `agentgateway-locally`;
 - 401/403: refresh or correct the gateway key;
-- malformed response: endpoint is not the expected LLM API; and
-- absent model: correct the alias or external gateway configuration.
+- malformed or empty response: endpoint is not the expected LLM API; and
+- absent selected model: correct `--model` or the external gateway
+  configuration.
 
-Dry-run skips the request. The preflight does not start, restart, or mutate the
-gateway.
+Proxy mode removes the separate `--agent-proxy-model` surface and requires the
+existing `--model` argument. Pi receives the discovered model ID unchanged
+(`--model <model-id>`). OpenCode's existing syntax includes the generated
+provider ID (`--model agent-proxy/<model-id>`); validation strips that prefix
+before comparing with discovery and rejects any other provider prefix. This
+keeps one model-selection mechanism across ordinary and proxy-backed runs.
+
+Dry-run skips the request, reports discovery/provider generation as deferred,
+and validates only the shape of `--model` because no catalog is available. The
+preflight does not start, restart, or mutate the gateway.
 
 ### Keep a loopback URL and reuse runtime forwarding
 
@@ -131,24 +146,27 @@ ports may also be reachable over vmnet.
 ### Render agent-specific providers
 
 For pi, generated `models.json` contains an OpenAI-completions provider with the
-forwarded `/v1` base URL, requested model aliases, and gateway key;
-`settings.json` selects it and the first model. For OpenCode, generated
-`opencode.json` contains the equivalent custom provider. Secret-bearing files
-use private staging, are mounted only for the selected agent, and are never
-shown verbatim.
+forwarded `/v1` base URL, every model returned by discovery, and the gateway
+key; `settings.json` selects the proxy provider but does not choose a default
+model. For OpenCode, generated `opencode.json` contains the equivalent custom
+provider and every discovered model. In both cases the existing `--model`
+dispatch selects the model for the run. Secret-bearing files use private
+staging, are mounted only for the selected agent, and are never shown verbatim.
 
 ### Ship a user-executable end-to-end checker
 
 Add `scripts/check-agent-proxy.py`, stdlib-only. The script accepts the path to
-an `agentgateway-locally` checkout and optional model overrides. It:
+an `agentgateway-locally` checkout and pi/OpenCode model selections. It:
 
 1. verifies prerequisites without changing gateway state;
-2. obtains the gateway key by invoking `run.py key` with captured output;
-3. performs the same authenticated `/v1/models` health/auth/model check;
+2. obtains the gateway key by invoking `pass show agentgateway-api-key` with captured output (we don't rely on having access to run.py - if the pass entry is different users can adjust the script);
+3. performs the same authenticated `/v1/models` health/auth/discovery check and
+   validates both selections;
 4. creates an isolated temporary project;
-5. runs a headless pi session through the proxy with a prompt requiring a
-   unique exact marker;
-6. runs the equivalent headless OpenCode session with a different marker; and
+5. runs a headless pi session through the proxy using regular
+   `--model <model-id>` and a prompt requiring a unique exact marker;
+6. runs the equivalent headless OpenCode session using regular
+   `--model agent-proxy/<model-id>` and a different marker; and
 7. reports per-agent pass/fail and exits nonzero if either command fails or its
    marker is absent.
 
@@ -186,6 +204,8 @@ requires migration.
 
 ## Decision notes
 
-- `--agent-proxy-key-env` should default to `AGENTGATEWAY_API_KEY`; if that is empty, 
+- `--agent-proxy-key-env` defaults to `AGENTGATEWAY_API_KEY`; if that is empty,
   try reading via `pass show agentgateway-api-key`; if that fails, print an error.
-- the E2E checker should default to gpt-5-mini as the model alias, parameterizable via env variable
+- The E2E checker defaults to discovered alias `gpt-5-mini` for both agents,
+  parameterizable via `AGENT_PROXY_TEST_MODEL`, and passes that selection
+  through each invocation's regular `--model` option.
