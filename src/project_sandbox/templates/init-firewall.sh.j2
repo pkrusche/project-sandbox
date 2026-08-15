@@ -29,6 +29,7 @@ for dns in "${DNS4_LIST[@]}"; do
   match=$(iptables-save -t nat 2>/dev/null | grep -- "$dns" || true)
   [ -n "$match" ] && NAT4+="$match"$'\n'
 done
+
 NAT6=""
 if [ "$IPV6_FW" = "1" ]; then
   for dns6 in "${DNS6_LIST[@]}"; do
@@ -160,6 +161,16 @@ for domain in "${DOMAINS[@]}"; do
     done < <(dig +noall +answer +time=5 AAAA "$domain" 2>/dev/null | awk '$4=="AAAA" {print $5}' || true)
   fi
 done
+
+{% if agent_proxy_port %}
+# Authenticated agent proxy: allow only its forwarded address and TCP port.
+while IFS= read -r proxy_ip; do
+  [[ "$proxy_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || continue
+  printf '%s\t%s # project-sandbox-dns-pin\n' "$proxy_ip" "agent-proxy.project-sandbox.internal" >> /etc/hosts
+  iptables -A OUTPUT -d "$proxy_ip" -p tcp --dport {{ agent_proxy_port }} -j ACCEPT
+  iptables -A INPUT -s "$proxy_ip" -p tcp --sport {{ agent_proxy_port }} -m conntrack --ctstate ESTABLISHED -j ACCEPT
+done < <(getent ahostsv4 agent-proxy.project-sandbox.internal 2>/dev/null | awk '{print $1}' | sort -u)
+{% endif %}
 
 {% if allow_host_network %}
 # ============================================================

@@ -225,3 +225,16 @@ The tool does not protect against:
   exists (delete or merge it first, or omit the flag to reuse the existing one).
 - `jj` is installed in the container and configured with the same global
   name/email identity passed to Git.
+# Agent gateway boundary
+
+Proxy mode provides provider-credential isolation, not immunity from local
+spend. OpenAI/Anthropic keys and host OAuth state are excluded, but the agent
+VM receives the gateway bearer key and can spend through the reachable local
+gateway during its session. The generated selected-agent config is mode 0600,
+mounted only for that agent, redacted from diagnostics, and removed after use.
+
+Loopback publishing is not a confinement boundary, particularly with Apple
+`container` vmnet. Keep the gateway's strict listener authentication enabled
+and never expose an unauthenticated listener. The external gateway's SQLite
+request log can contain complete prompts and responses; follow its retention,
+inspection, and pruning guidance before using sensitive material.

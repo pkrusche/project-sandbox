@@ -112,6 +112,7 @@ def render(
     *,
     pi_ollama: bool = False,
     ollama_models: list[str] | None = None,
+    agent_proxy: tuple[str, list[str], str, str] | None = None,
 ) -> dict[str, Path]:
     """Render all agent config files and return a dict of written paths."""
     paths: dict[str, Path] = {}
@@ -130,7 +131,15 @@ def render(
         paths[key] = out
     out_dir = _ensure_project_subdir(context_dir, "pi")
     settings_out = out_dir / "settings.json"
-    if pi_ollama:
+    if agent_proxy and agent_proxy[3] == "pi":
+        base_url, models, key, _agent = agent_proxy
+        models_out = out_dir / "models.json"
+        models_out.write_text(
+            _pi_proxy_models_json(base_url, models, key), encoding="utf-8"
+        )
+        models_out.chmod(0o600)
+        settings_out.write_text(_pi_proxy_settings_json(), encoding="utf-8")
+    elif pi_ollama:
         models = list(ollama_models) if ollama_models else list(DEFAULT_OLLAMA_MODELS)
         models_out = out_dir / "models.json"
         models_out.write_text(_pi_ollama_models_json(models), encoding="utf-8")
@@ -138,6 +147,13 @@ def render(
     else:
         settings_out.write_text(_pi_settings_json(), encoding="utf-8")
     paths["pi"] = settings_out
+    if agent_proxy and agent_proxy[3] == "opencode":
+        base_url, models, key, _agent = agent_proxy
+        opencode_dir = _ensure_project_subdir(context_dir, "opencode")
+        out = opencode_dir / "opencode.json"
+        out.write_text(_opencode_proxy_json(base_url, models, key), encoding="utf-8")
+        out.chmod(0o600)
+        paths["opencode"] = out
     return paths
 
 
@@ -264,6 +280,60 @@ def _pi_ollama_settings_json(default_model: str) -> str:
         "lastChangelogVersion": _PI_NPM_VERSION_PIN,
     }
     return json.dumps(settings, indent=2) + "\n"
+
+
+def _pi_proxy_models_json(base_url: str, models: list[str], key: str) -> str:
+    return (
+        json.dumps(
+            {
+                "providers": {
+                    "agent-proxy": {
+                        "baseUrl": base_url,
+                        "api": "openai-completions",
+                        "apiKey": key,
+                        "models": [{"id": model} for model in models],
+                    }
+                }
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+
+
+def _pi_proxy_settings_json() -> str:
+    return (
+        json.dumps(
+            {
+                "defaultProjectTrust": "always",
+                "defaultProvider": "agent-proxy",
+                "theme": "light/dark",
+                "lastChangelogVersion": _PI_NPM_VERSION_PIN,
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+
+
+def _opencode_proxy_json(base_url: str, models: list[str], key: str) -> str:
+    return (
+        json.dumps(
+            {
+                "$schema": "https://opencode.ai/config.json",
+                "provider": {
+                    "agent-proxy": {
+                        "npm": "@ai-sdk/openai-compatible",
+                        "name": "Agent Proxy",
+                        "options": {"baseURL": base_url, "apiKey": key},
+                        "models": {model: {"name": model} for model in models},
+                    },
+                },
+            },
+            indent=2,
+        )
+        + "\n"
+    )
 
 
 def _pi_settings_json() -> str:

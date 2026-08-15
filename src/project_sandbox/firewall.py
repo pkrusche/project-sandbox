@@ -30,6 +30,7 @@ def render(
     extra_domains: list[str],
     allow_github: bool = False,
     pi_ollama: bool = False,
+    agent_proxy_port: int | None = None,
 ) -> Path:
     _validate_domains(extra_domains)
     tmpl = templating.get_template("init-firewall.sh.j2")
@@ -40,6 +41,7 @@ def render(
         allow_github=allow_github,
         allow_host_network=False,
         pi_ollama=pi_ollama,
+        agent_proxy_port=agent_proxy_port,
     )
     _write(
         tmpl,
@@ -48,6 +50,7 @@ def render(
         allow_github=allow_github,
         allow_host_network=True,
         pi_ollama=pi_ollama,
+        agent_proxy_port=agent_proxy_port,
     )
     return container
 
@@ -60,6 +63,7 @@ def _write(
     allow_github: bool,
     allow_host_network: bool,
     pi_ollama: bool,
+    agent_proxy_port: int | None,
 ) -> Path:
     out.write_text(
         tmpl.render(
@@ -67,6 +71,7 @@ def _write(
             allow_github=allow_github,
             allow_host_network=allow_host_network,
             pi_ollama=pi_ollama,
+            agent_proxy_port=agent_proxy_port,
         )
         + "\n",
         encoding="utf-8",

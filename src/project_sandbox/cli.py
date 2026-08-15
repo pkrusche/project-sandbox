@@ -12,6 +12,7 @@ from pathlib import Path
 
 from . import (
     __version__,
+    agent_proxy,
     build_cache,
     chroot,
     config_agents,
@@ -151,6 +152,22 @@ def build_parser() -> ArgumentParser:
             "pre-configure Pi to use it as the default provider. Only takes "
             "effect together with --agent pi; a no-op otherwise."
         ),
+    )
+    p.add_argument(
+        "--agent-proxy",
+        metavar="URL",
+        help="Route pi or OpenCode through an authenticated local agentgateway; see docs/agent-proxy.md.",
+    )
+    p.add_argument(
+        "--agent-proxy-key-env",
+        default=agent_proxy.DEFAULT_KEY_ENV,
+        metavar="NAME",
+        help="Gateway-key environment fallback (default: AGENTGATEWAY_API_KEY).",
+    )
+    p.add_argument(
+        "--agent-proxy-key",
+        metavar="KEY",
+        help="Unsafe last-resort gateway key; shell history and process listings may expose it.",
     )
     p.add_argument(
         "--ollama-model",
@@ -320,6 +337,7 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--build-only and --no-build are mutually exclusive")
     run_agent = _requested_agent(args)
     pi_ollama_enabled = _pi_ollama_enabled(args, run_agent)
+    proxy_port = _validate_agent_proxy_args(args, run_agent)
     _validate_api_key_injection_args(args, run_agent)
     _validate_ollama_models(args.ollama_model)
     is_chroot = args.runtime == container_cli.CHROOT.name
@@ -352,7 +370,7 @@ def main(argv: list[str] | None = None) -> int:
     # depend on.
     if (
         run_agent is not None
-        and args.no_forward_credentials
+        and (args.no_forward_credentials or args.agent_proxy)
         and run_agent not in available_agents
     ):
         available_agents = (*available_agents, run_agent)
@@ -377,6 +395,29 @@ def main(argv: list[str] | None = None) -> int:
             identity=identity,
             available_agents=available_agents,
         )
+
+    proxy_key: str | None = None
+    proxy_models: list[str] = []
+    proxy_base_url: str | None = None
+    if args.agent_proxy:
+        proxy_key, key_source = agent_proxy.resolve_key(
+            args.agent_proxy_key_env, args.agent_proxy_key
+        )
+        if key_source == "command line":
+            print(
+                "[W] --agent-proxy-key was exposed in argv/shell history; prefer pass or an environment variable."
+            )
+        proxy_models = agent_proxy.discover_models(args.agent_proxy, proxy_key)
+        selected = (
+            args.model.removeprefix("agent-proxy/")
+            if run_agent == "opencode"
+            else args.model
+        )
+        if selected not in proxy_models:
+            raise SystemExit(
+                f"Selected model {selected!r} is unavailable from the agent proxy"
+            )
+        proxy_base_url = agent_proxy.forwarded_url(args.agent_proxy)
 
     # Validate fatal inputs BEFORE creating a worktree, so a bad build source,
     # missing prompt, or unwritable log path fails without first orphaning a
@@ -445,6 +486,7 @@ def main(argv: list[str] | None = None) -> int:
                 extra_domains=args.extra_domain,
                 allow_github=allow_github,
                 pi_ollama=pi_ollama_enabled,
+                agent_proxy_port=proxy_port,
             )
         else:
             chroot.render(context_dir)
@@ -453,8 +495,11 @@ def main(argv: list[str] | None = None) -> int:
             context_dir,
             pi_ollama=pi_ollama_enabled,
             ollama_models=args.ollama_model,
+            agent_proxy=(proxy_base_url, proxy_models, proxy_key, run_agent)
+            if proxy_base_url and proxy_key and run_agent
+            else None,
         )
-        forward_credentials = not args.no_forward_credentials
+        forward_credentials = not args.no_forward_credentials and not args.agent_proxy
         # Before staging, ask the agent's own CLI to refresh its host token so the
         # container starts with a near-full window. bash may run claude, so it
         # refreshes the claude token; opencode/pi have no delegated refresh (no-op).
@@ -608,8 +653,15 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Image ready: {args.image_tag}")
             return 0
 
-        if pi_ollama_enabled:
-            ollama_plan = ollama_network.prepare(runtime)
+        if pi_ollama_enabled or args.agent_proxy:
+            ollama_plan = ollama_network.prepare(
+                runtime,
+                hostname=agent_proxy.HOSTNAME
+                if args.agent_proxy
+                else ollama_network.HOSTNAME,
+                port=proxy_port or ollama_network.PORT,
+                label="Agent proxy" if args.agent_proxy else "Ollama",
+            )
             if args.verbose:
                 print(ollama_network.describe(ollama_plan))
 
@@ -716,6 +768,12 @@ def main(argv: list[str] | None = None) -> int:
             )
         if ollama_plan is not None:
             ollama_plan.close()
+        if args.agent_proxy:
+            for secret_file in (
+                context_dir / "pi" / "models.json",
+                context_dir / "opencode" / "opencode.json",
+            ):
+                secret_file.unlink(missing_ok=True)
         if wt is not None:
             if agent_ran:
                 _finalize_worktree(args, project=project, wt=wt, exit_code=exit_code)
@@ -838,6 +896,43 @@ def _pi_ollama_enabled(args, run_agent: str | None) -> bool:
     return bool(args.pi_ollama and run_agent == "pi")
 
 
+def _validate_agent_proxy_args(args, run_agent: str | None) -> int | None:
+    if not args.agent_proxy:
+        if (
+            args.agent_proxy_key
+            or args.agent_proxy_key_env != agent_proxy.DEFAULT_KEY_ENV
+        ):
+            raise SystemExit(
+                "--agent-proxy-key-env/--agent-proxy-key require --agent-proxy"
+            )
+        return None
+    if run_agent not in ("pi", "opencode"):
+        raise SystemExit("--agent-proxy supports only --agent pi or --agent opencode")
+    if not args.model:
+        raise SystemExit("--agent-proxy requires the regular --model option")
+    _validate_env_name(args.agent_proxy_key_env, source="--agent-proxy-key-env")
+    if args.no_firewall:
+        print(
+            "[W] --agent-proxy with --no-firewall: its internal hostname may not resolve; firewall hostname pinning is disabled."
+        )
+    if args.pi_ollama:
+        raise SystemExit("--agent-proxy and --pi-ollama are mutually exclusive")
+    if args.api_key_env or args.api_key_env_file:
+        raise SystemExit(
+            "--agent-proxy cannot be combined with --api-key-env or --api-key-env-file"
+        )
+    if run_agent == "opencode":
+        model = args.model
+        if not model.startswith("agent-proxy/") or not model.removeprefix(
+            "agent-proxy/"
+        ):
+            raise SystemExit(
+                "OpenCode proxy models must use --model agent-proxy/<model-id>"
+            )
+    _path, port = agent_proxy.validate_url(args.agent_proxy)
+    return port
+
+
 def _ensure_agent_available(run_agent: str, available_agents: tuple[str, ...]) -> None:
     if run_agent in available_agents:
         return
@@ -879,6 +974,12 @@ def _dry_run(
         _validate_chroot_session(run_agent)
 
     print("DRY RUN: no files, worktrees, images, or containers will be created.")
+    if args.agent_proxy:
+        print(f"Would use agent proxy: {args.agent_proxy}")
+        print(f"Would select model: {args.model}")
+        print(
+            "Would defer authenticated model discovery and private provider generation."
+        )
     if worktree is not None:
         print(f"Would use worktree at: {workspace}")
         if isinstance(worktree, jj_workspace_mod.JjWorkspace):
@@ -940,8 +1041,21 @@ def _dry_run(
     if args.build_only:
         print(f"Would build image only: {args.image_tag}")
         return 0
+    proxy_port = (
+        agent_proxy.validate_url(args.agent_proxy)[1] if args.agent_proxy else None
+    )
     ollama_plan = (
-        ollama_network.prepare(runtime, dry_run=True) if pi_ollama_enabled else None
+        ollama_network.prepare(
+            runtime,
+            dry_run=True,
+            hostname=agent_proxy.HOSTNAME
+            if args.agent_proxy
+            else ollama_network.HOSTNAME,
+            port=proxy_port or ollama_network.PORT,
+            label="Agent proxy" if args.agent_proxy else "Ollama",
+        )
+        if pi_ollama_enabled or args.agent_proxy
+        else None
     )
     if ollama_plan is not None:
         print(f"Would use {ollama_network.describe(ollama_plan)}")
@@ -1338,6 +1452,7 @@ def _warn_byok_provider_allowlist(args, run_agent: str | None) -> None:
     if (
         run_agent not in ("opencode", "pi")
         or args.no_firewall
+        or args.agent_proxy
         or (run_agent == "pi" and args.pi_ollama)
     ):
         return
@@ -1550,6 +1665,11 @@ def _build_session_command(
 ) -> tuple[list[str], Path | None, bool, list[str] | None]:
     # Agent availability is validated up front in main() via _ensure_agent_available.
     extra_mounts = list(args.extra_mounts)
+    if getattr(args, "agent_proxy", None) and run_agent == "opencode":
+        extra_mounts.append(
+            f"type=bind,source={(context_dir / 'opencode').resolve(strict=False)},"
+            "target=/project-sandbox-config/opencode,readonly"
+        )
     if worktree is not None:
         if isinstance(worktree, jj_workspace_mod.JjWorkspace):
             vcs_dir = (project / ".jj").resolve()
@@ -1723,7 +1843,9 @@ def _build_session_command(
             f"type=bind,source={mask_source},target={WORKSPACE_CARGO_TARGET},readonly"
         )
 
-    forward_credentials = not getattr(args, "no_forward_credentials", False)
+    forward_credentials = not getattr(
+        args, "no_forward_credentials", False
+    ) and not getattr(args, "agent_proxy", None)
     runtime_credential_dirs = config_agents.filter_credential_dirs(
         credential_dirs, run_mode_agent
     )

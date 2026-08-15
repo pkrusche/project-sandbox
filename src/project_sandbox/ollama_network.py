@@ -26,22 +26,25 @@ class ForwardingPlan:
     endpoint: str | None = None
     add_host: str | None = None
     proxy: subprocess.Popen[str] | None = None
+    hostname: str = HOSTNAME
+    port: int = PORT
+    label: str = "Ollama"
 
     def start(self) -> None:
         if self.strategy != "linux-bridge-socat":
             return
         if not self.endpoint:
-            raise SystemExit("Internal error: Ollama bridge endpoint is missing")
+            raise SystemExit(f"Internal error: {self.label} bridge endpoint is missing")
         socat = shutil.which("socat")
         if socat is None:
             raise SystemExit(
-                "--pi-ollama requires socat for this Linux bridge runtime; "
+                f"{self.label} requires socat for this Linux bridge runtime; "
                 "install socat and retry."
             )
         argv = [
             socat,
-            f"TCP-LISTEN:{PORT},bind={self.endpoint},reuseaddr,fork",
-            f"TCP:127.0.0.1:{PORT}",
+            f"TCP-LISTEN:{self.port},bind={self.endpoint},reuseaddr,fork",
+            f"TCP:127.0.0.1:{self.port}",
         ]
         try:
             self.proxy = subprocess.Popen(
@@ -81,57 +84,94 @@ class ForwardingPlan:
         self.close()
 
 
-def prepare(runtime: Runtime, *, dry_run: bool = False) -> ForwardingPlan:
+def prepare(
+    runtime: Runtime,
+    *,
+    dry_run: bool = False,
+    hostname: str = HOSTNAME,
+    port: int = PORT,
+    label: str = "Ollama",
+) -> ForwardingPlan:
     """Select and validate the safest forwarding strategy for ``runtime``."""
     if runtime == CHROOT:
         return ForwardingPlan(
             "chroot-shared-loopback",
             endpoint="127.0.0.1",
-            add_host=f"{HOSTNAME}:127.0.0.1",
+            add_host=f"{hostname}:127.0.0.1",
+            hostname=hostname,
+            port=port,
+            label=label,
         )
 
     if runtime == APPLE_CONTAINER:
         if dry_run:
-            return ForwardingPlan("apple-preconfigured-localhost-dns")
+            return ForwardingPlan(
+                "apple-preconfigured-localhost-dns",
+                hostname=hostname,
+                port=port,
+                label=label,
+            )
         try:
-            endpoint = socket.gethostbyname(HOSTNAME)
+            endpoint = socket.gethostbyname(hostname)
         except socket.gaierror as exc:
-            raise SystemExit(_apple_setup_error()) from exc
+            raise SystemExit(_apple_setup_error(hostname)) from exc
         _validate_endpoint(endpoint, allow_documentation=True)
-        return ForwardingPlan("apple-preconfigured-localhost-dns", endpoint=endpoint)
+        return ForwardingPlan(
+            "apple-preconfigured-localhost-dns",
+            endpoint=endpoint,
+            hostname=hostname,
+            port=port,
+            label=label,
+        )
 
     info = {} if dry_run else _runtime_info(runtime)
     if runtime == PODMAN and _podman_is_rootless_or_machine(info):
         return ForwardingPlan(
-            "podman-native-host-alias", add_host=f"{HOSTNAME}:host-gateway"
+            "podman-native-host-alias",
+            add_host=f"{hostname}:host-gateway",
+            hostname=hostname,
+            port=port,
+            label=label,
         )
     if runtime == DOCKER and _docker_is_desktop(info):
         return ForwardingPlan(
-            "docker-desktop-host-alias", add_host=f"{HOSTNAME}:host-gateway"
+            "docker-desktop-host-alias",
+            add_host=f"{hostname}:host-gateway",
+            hostname=hostname,
+            port=port,
+            label=label,
         )
     if dry_run:
-        return ForwardingPlan("runtime-probe-required")
+        return ForwardingPlan(
+            "runtime-probe-required", hostname=hostname, port=port, label=label
+        )
 
     endpoint = _bridge_gateway(runtime)
     _validate_endpoint(endpoint)
-    _validate_bindable(endpoint)
+    _validate_bindable(endpoint, port=port, label=label)
     return ForwardingPlan(
         "linux-bridge-socat",
         endpoint=endpoint,
-        add_host=f"{HOSTNAME}:{endpoint}",
+        add_host=f"{hostname}:{endpoint}",
+        hostname=hostname,
+        port=port,
+        label=label,
     )
 
 
 def describe(plan: ForwardingPlan) -> str:
     suffix = f" ({plan.endpoint})" if plan.endpoint else ""
-    return f"Ollama forwarding strategy: {plan.strategy}{suffix}"
+    return f"{plan.label} forwarding strategy: {plan.strategy}{suffix}"
 
 
-def _apple_setup_error() -> str:
+def _apple_setup_error(hostname: str = HOSTNAME) -> str:
+    setup_command = (
+        f"sudo container system dns create {hostname} --localhost 203.0.113.113"
+    )
     return (
         "Apple container localhost forwarding is not configured for "
-        f"{HOSTNAME}. Run this command yourself, then retry:\n  "
-        f"{APPLE_SETUP_COMMAND}\n"
+        f"{hostname}. Run this command yourself, then retry:\n  "
+        f"{setup_command}\n"
         "This changes macOS DNS/packet-filter state and may disable Private Relay; "
         "project-sandbox will never invoke sudo or change it automatically."
     )
@@ -220,13 +260,15 @@ def _validate_endpoint(value: str, *, allow_documentation: bool = False) -> None
         raise SystemExit(f"Unsafe Ollama forwarding endpoint: {value}")
 
 
-def _validate_bindable(endpoint: str) -> None:
+def _validate_bindable(
+    endpoint: str, *, port: int = PORT, label: str = "Ollama"
+) -> None:
     probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        probe.bind((endpoint, PORT))
+        probe.bind((endpoint, port))
     except OSError as exc:
         raise SystemExit(
-            f"Cannot bind the Ollama proxy to {endpoint}:{PORT}: {exc}"
+            f"Cannot bind the {label} proxy to {endpoint}:{port}: {exc}"
         ) from exc
     finally:
         probe.close()
