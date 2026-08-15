@@ -1,190 +1,187 @@
 ## Purpose
 
-Let a session route pi's or OpenCode's LLM traffic through a user-managed
-local proxy that holds the real provider credentials, so the agent VM never
-possesses a usable API key or OAuth credential. `project-sandbox` does not
-start or manage the proxy; it configures the agent to use it.
+Route pi or OpenCode LLM traffic through the authenticated local service
+configured by `pkrusche/agentgateway-locally`, keeping provider API keys and
+host OAuth credentials out of the agent VM while admitting only the narrower
+gateway bearer key required to use that service.
 
 ## ADDED Requirements
 
-### Requirement: Agent proxy is opt-in and limited to supported agents
-The CLI SHALL accept an `--agent-proxy URL` flag. When the flag is absent,
-all existing behavior SHALL be unchanged. The flag SHALL be accepted only
-when the selected agent is `pi` or `opencode`; any other agent selection
-SHALL be rejected with an error naming the supported agents, since Claude
-Code and Codex CLI remain on the pass-through credential mechanism.
+### Requirement: Proxy mode is opt-in and limited to supported agents
 
-#### Scenario: Flag absent
-- **WHEN** the user runs the CLI without `--agent-proxy`
-- **THEN** no proxy forwarding resource is created, no firewall rule
-  references a proxy endpoint, no agent receives proxy provider
-  configuration, and credential forwarding behaves exactly as today
+The CLI SHALL accept `--agent-proxy URL`, `--agent-proxy-key-env NAME`, and a
+repeatable `--agent-proxy-model ID`. Proxy mode SHALL be accepted only for pi
+and OpenCode. When absent, all existing behavior SHALL remain unchanged.
 
-#### Scenario: Flag with a supported agent
-- **WHEN** the user runs `--agent pi --agent-proxy http://127.0.0.1:3000`
-  (or the same with `--agent opencode`)
-- **THEN** the CLI accepts the flag and proceeds to configure that agent to
-  reach the proxy
+#### Scenario: Supported agent opts in
+- **WHEN** the user selects pi or OpenCode with proxy URL
+  `http://127.0.0.1:4000/v1`, a gateway-key environment variable, and at least
+  one model alias
+- **THEN** the CLI configures that agent to use the local proxy
 
-#### Scenario: Flag with an unsupported agent
-- **WHEN** the user runs `--agent-proxy` with `--agent claude`, `--agent
-  codex`, `--agent bash`, or no agent selection that resolves to pi or
-  OpenCode
-- **THEN** the CLI exits with an error before starting any container,
-  stating that the agent proxy supports only `pi` and `opencode`
+#### Scenario: Unsupported agent is rejected
+- **WHEN** proxy mode is requested with Claude, Codex, bash, or another agent
+- **THEN** the CLI exits before container work and names pi and OpenCode as the
+  supported agents
 
-#### Scenario: Conflict with --pi-ollama
-- **WHEN** the user runs `--agent pi --agent-proxy ... --pi-ollama`
-- **THEN** the CLI exits with an error before starting any container,
-  stating the two provider configurations are mutually exclusive
+#### Scenario: Existing behavior is unchanged
+- **WHEN** no proxy URL is supplied
+- **THEN** no proxy preflight, forwarding, firewall rule, credential handling,
+  or provider configuration occurs
 
-### Requirement: Proxy mode forbids credential forwarding into the agent VM
-When `--agent-proxy` is set, the system SHALL behave as if
-`--no-forward-credentials` were also set — no host agent credential is
-staged, mounted, or forwarded into the agent VM — and SHALL reject
-`--api-key-env` and `--api-key-env-file` as conflicting flags. The baked
-provider configuration SHALL contain only a sentinel API-key value, never a
-real credential.
+### Requirement: Provider credentials are excluded while the gateway key is admitted
 
-#### Scenario: Proxy mode forces no credential forwarding
-- **WHEN** the user runs with `--agent-proxy` and does not pass
-  `--no-forward-credentials`
-- **THEN** the session behaves as though `--no-forward-credentials` were
-  set, and any previously staged credentials for the project are removed as
-  that flag already specifies
+Proxy mode SHALL force `--no-forward-credentials` behavior and reject
+`--api-key-env` and `--api-key-env-file`. No provider API key or host agent
+OAuth credential SHALL enter the agent VM. The gateway bearer key named by
+`--agent-proxy-key-env` SHALL be the sole LLM credential admitted by proxy
+mode and SHALL be staged only for the selected agent.
 
-#### Scenario: Explicit credential-injection flag is rejected
-- **WHEN** the user runs with `--agent-proxy` together with `--api-key-env`
-  or `--api-key-env-file`
-- **THEN** the CLI exits with an error before starting any container,
-  explaining that proxy mode and credential injection are mutually exclusive
+#### Scenario: Provider credentials are excluded
+- **WHEN** proxy mode prepares a session
+- **THEN** stale staged credentials are purged and no OpenAI/Anthropic key,
+  host agent credential file, or unrelated credential mount is included
 
-#### Scenario: Agent VM holds only a sentinel
-- **WHEN** a session runs with `--agent-proxy` and agent setup completes
-- **THEN** the agent's baked provider configuration contains the proxy base
-  URL and a sentinel key value, and no real provider API key or OAuth
-  credential is present in the agent VM's environment or mounted files
+#### Scenario: Gateway key is present where required
+- **WHEN** a supported agent is configured for an authenticated proxy
+- **THEN** its private provider configuration can authenticate with the gateway
+  key and no other agent profile or general environment receives that key
 
-### Requirement: Proxy URL is loopback-only and reached via runtime forwarding
-The CLI SHALL accept only a loopback proxy URL (a `http://127.0.0.1:<port>`
-shaped address) and SHALL reject other hosts. The agent VM SHALL reach the
-proxy through the same verified runtime-specific loopback-forwarding
-mechanism used for local Ollama support, applied to the proxy's port, under
-a dedicated internal hostname. Runtimes with no verified forwarding strategy
-SHALL fail with a clear unsupported-mode error before any container starts,
-and SHALL NOT fall back to a wildcard listener or require the proxy to bind
-beyond loopback.
+#### Scenario: Generic credential injection conflicts
+- **WHEN** proxy mode is combined with `--api-key-env` or
+  `--api-key-env-file`
+- **THEN** the CLI rejects the invocation before reading or staging secrets
 
-#### Scenario: Non-loopback URL rejected
-- **WHEN** the user passes `--agent-proxy http://0.0.0.0:3000` or a
-  non-loopback hostname
-- **THEN** the CLI exits with an error explaining the proxy must listen on
-  host loopback
+### Requirement: Gateway key input and output handling is secret-safe
 
-#### Scenario: Loopback proxy reachable through runtime strategy
-- **WHEN** a supported runtime is selected and the proxy is listening on the
-  given loopback port
-- **THEN** the sandbox reaches the proxy through the selected forwarding
-  path without the proxy changing its bind address
+The gateway key SHALL be supplied through a named host environment variable,
+not a command-line value. Real runs SHALL reject a missing or empty value.
+The system SHALL NOT expose the value in argv, logs, errors, dry-run output, or
+transcripts, and SHALL protect and clean secret-bearing staged files using the
+existing private credential lifecycle.
 
-#### Scenario: No safe forwarding path
-- **WHEN** the selected runtime mode provides neither verified native
-  forwarding nor a safe, host-bindable bridge address for the proxy port
-- **THEN** startup fails with a clear unsupported-mode error and no
-  container is started
+#### Scenario: Gateway key is missing
+- **WHEN** a real proxy run names an unset or empty key environment variable
+- **THEN** the CLI exits before network or container work with an error naming
+  the variable but not a value
 
-### Requirement: Preflight reachability check fails fast
-Before starting any container (outside `--dry-run`), the system SHALL
-attempt a bounded TCP connection to the configured proxy URL and SHALL abort
-the run with an actionable error, referencing the agent-proxy documentation,
-if the proxy is not accepting connections. The system SHALL NOT attempt to
-start, restart, or otherwise manage the proxy process.
+#### Scenario: Diagnostics are redacted
+- **WHEN** proxy planning, an error, or transcript rendering displays commands
+  or provider configuration
+- **THEN** the gateway key value is absent and any secret field is represented
+  by a fixed redaction marker
 
-#### Scenario: Proxy not running
-- **WHEN** the user runs with `--agent-proxy` and nothing is listening at
-  the configured URL
-- **THEN** the CLI aborts before starting any container with an error that
-  names the URL and points at the local proxy setup documentation
+### Requirement: Proxy URL uses host loopback and runtime-safe forwarding
 
-#### Scenario: Proxy dies mid-session
-- **WHEN** the proxy stops after the agent VM has started
-- **THEN** the agent's requests fail, and the system does not restart the
-  proxy or fall back to direct provider credentials
+The proxy URL SHALL use HTTP, a loopback host, and an explicit port; wildcard
+and non-loopback hosts SHALL be rejected. The documented setup SHALL use
+`http://127.0.0.1:4000/v1`. The agent VM SHALL reach that endpoint through the
+verified runtime-specific local-service forwarding mechanism under a dedicated
+internal hostname while preserving port and path.
 
-### Requirement: Firewall scopes access to the proxy endpoint
-When the proxy is active and the firewall is enabled, the rendered firewall
-rules SHALL include a port-scoped allow rule for the forwarded proxy
-endpoint, following the same pattern as the existing Ollama endpoint rule,
-and SHALL leave all other firewall behavior unchanged. When the firewall is
-disabled, the CLI SHALL warn that the baked internal proxy hostname will not
-resolve, mirroring the existing Ollama warning.
+#### Scenario: Referenced LLM endpoint is accepted
+- **WHEN** the user supplies `http://127.0.0.1:4000/v1`
+- **THEN** the in-container provider URL targets port 4000 and retains `/v1`
 
-#### Scenario: Proxy endpoint allow rule
-- **WHEN** the agent VM starts with `--agent-proxy` and the firewall enabled
-- **THEN** the rendered firewall rules permit outbound TCP to the forwarded
-  proxy endpoint on its port, and the remaining allowlist is the same as an
-  equivalent non-proxy session
+#### Scenario: MCP or unsafe endpoint is not silently substituted
+- **WHEN** the user supplies port 3000, `0.0.0.0`, or a non-loopback host
+- **THEN** the CLI never rewrites it to the documented LLM endpoint; unsafe
+  hosts are rejected and endpoint/API validation fails clearly for a non-LLM
+  listener
 
-#### Scenario: Non-proxy sessions unaffected
-- **WHEN** a session runs without `--agent-proxy`
-- **THEN** the rendered firewall rules contain no proxy endpoint rule
+#### Scenario: Runtime has no safe forwarding path
+- **WHEN** no verified native or host-bindable forwarding strategy exists
+- **THEN** startup fails before any container and never widens the proxy bind
 
-#### Scenario: Firewall disabled with proxy active
-- **WHEN** the user runs with `--agent-proxy` and the firewall disabled
-- **THEN** the CLI prints a warning that the baked proxy hostname relies on
-  firewall initialization and will not resolve inside the container
+### Requirement: Preflight verifies health, authentication, and models
 
-### Requirement: Proxy models are named explicitly
-The CLI SHALL accept a repeatable `--agent-proxy-model ID` flag naming the
-models the proxy exposes, SHALL require at least one model when
-`--agent-proxy` is set, and SHALL bake the given models into the generated
-provider configuration with the first model as the default where the agent
-requires one.
+Before starting forwarding resources or containers, the system SHALL perform
+a bounded authenticated `GET <proxy-base>/models` request using the gateway
+bearer key. It SHALL require a valid model-list response containing every
+requested model alias and SHALL NOT mutate or manage the proxy.
 
-#### Scenario: No model named
-- **WHEN** the user runs with `--agent-proxy` and no `--agent-proxy-model`
-- **THEN** the CLI exits with an error asking for at least one model name
+#### Scenario: Proxy is unavailable
+- **WHEN** the request cannot connect or times out
+- **THEN** the CLI aborts with guidance to start or troubleshoot the external
+  gateway and no container is started
 
-#### Scenario: Multiple models named
-- **WHEN** the user passes `--agent-proxy-model` more than once
-- **THEN** every named model appears in the generated provider
-  configuration and the first is used as the default model
+#### Scenario: Gateway key is rejected
+- **WHEN** the endpoint returns 401 or 403
+- **THEN** the CLI aborts with gateway-key guidance without exposing the key
 
-### Requirement: Pi is configured to use the proxy
-When `--agent pi --agent-proxy` is active, the system SHALL bake a pi
-custom-provider configuration (`models.json`) whose base URL points at the
-proxy's forwarded endpoint with the configured model list and a sentinel
-API key, and SHALL bake `settings.json` selecting that provider and its
-default model, following the same generated-config shape as the existing
+#### Scenario: Requested model is absent
+- **WHEN** `/v1/models` succeeds but omits a requested alias
+- **THEN** the CLI lists the missing alias and aborts before container work
+
+### Requirement: Firewall access is scoped to the forwarded proxy endpoint
+
+With the firewall enabled, proxy mode SHALL add a TCP allow rule scoped to the
+forwarded proxy address and port and leave all other firewall behavior
+unchanged. Without proxy mode no such rule SHALL appear. With `--no-firewall`,
+the CLI SHALL emit the same class of hostname-resolution warning used by local
 Ollama support.
 
-#### Scenario: Pi provider config baked
-- **WHEN** a session runs `--agent pi --agent-proxy ...`
-- **THEN** the generated `models.json` defines a provider whose base URL is
-  the proxy's in-container endpoint, listing the configured models with a
-  sentinel key, and `settings.json` sets that provider and the first model
-  as defaults
+#### Scenario: Proxy rule is added
+- **WHEN** proxy mode runs with the firewall enabled
+- **THEN** the proxy endpoint and only its configured TCP port are added to the
+  equivalent session's existing rules
 
-### Requirement: OpenCode is configured to use the proxy
-When `--agent opencode --agent-proxy` is active, the system SHALL generate
-an OpenCode configuration defining a custom provider whose `baseURL` points
-at the proxy's forwarded endpoint with the configured models and a sentinel
-key, such that the existing `--model <provider>/<model>` selection works
-against it.
+#### Scenario: Non-proxy firewall is unchanged
+- **WHEN** proxy mode is absent
+- **THEN** rendered rules contain no proxy endpoint or hostname
 
-#### Scenario: OpenCode provider config generated
-- **WHEN** a session runs `--agent opencode --agent-proxy ...`
-- **THEN** the generated OpenCode configuration defines a custom provider
-  with the proxy `baseURL`, the configured models, and a sentinel key, and
-  contains no real provider credential
+### Requirement: Pi and OpenCode receive authenticated custom providers
 
-### Requirement: Dry run previews without side effects
-When `--dry-run` is combined with `--agent-proxy`, the CLI SHALL print the
-provider configuration it would bake and the commands it would run, SHALL
-write no files and start no container or forwarding resource, and SHALL NOT
-require the proxy to be running.
+Pi and OpenCode SHALL receive private, agent-specific provider configuration
+containing the forwarded `/v1` base URL, every requested model alias, and the
+gateway key. Pi SHALL select the first model as its default. No unsupported
+agent SHALL receive this provider or key.
 
-#### Scenario: Dry run with proxy flags
-- **WHEN** the user runs `--dry-run --agent-proxy ... --agent-proxy-model m1`
-- **THEN** the CLI prints the baked provider configuration and planned
-  commands, performs no reachability check, and writes nothing
+#### Scenario: Pi provider is generated
+- **WHEN** pi runs in proxy mode
+- **THEN** `models.json` and `settings.json` select the authenticated proxy
+  provider and first requested model
+
+#### Scenario: OpenCode provider is generated
+- **WHEN** OpenCode runs in proxy mode
+- **THEN** `opencode.json` defines the authenticated proxy provider and supports
+  the existing provider/model selection form
+
+### Requirement: Dry run is complete, redacted, and side-effect free
+
+Dry-run SHALL validate non-secret proxy arguments and preview sanitized agent,
+forwarding, firewall, and container plans without reading the gateway-key
+environment variable, contacting the proxy, writing files, or starting a
+resource.
+
+#### Scenario: Proxy dry-run
+- **WHEN** a valid proxy invocation includes `--dry-run`
+- **THEN** output contains the URL and model aliases but not the gateway key,
+  and no secret read, network request, filesystem write, or process start occurs
+
+### Requirement: Users can verify both supported agents end to end
+
+The repository SHALL provide a stdlib-only executable checker that obtains the
+gateway key from an `agentgateway-locally` checkout, verifies the authenticated
+model endpoint, and runs one real headless pi session and one real headless
+OpenCode session through the proxy in an isolated temporary project.
+
+#### Scenario: Both agents work
+- **WHEN** the proxy is up, authentication and requested models are valid, and
+  each headless agent returns its unique expected marker
+- **THEN** the checker reports both agents passed and exits zero
+
+#### Scenario: Proxy precheck fails
+- **WHEN** the proxy is down, rejects the key, returns malformed model data, or
+  lacks a requested model
+- **THEN** the checker fails before launching either agent with an actionable,
+  redacted error
+
+#### Scenario: One agent fails
+- **WHEN** pi or OpenCode exits nonzero, times out, or omits its expected marker
+- **THEN** the checker reports the failing agent and exits nonzero
+
+#### Scenario: Checker contains its side effects
+- **WHEN** the checker finishes or is interrupted
+- **THEN** its temporary project is removed, the gateway remains running and
+  unmodified, and the gateway key has not appeared in argv or output

@@ -1,167 +1,191 @@
 ## Context
 
-`project-sandbox` currently has two ways an agent VM gets LLM credentials:
-forwarded host OAuth credentials (`config_agents.sync_credentials`, disabled
-by `--no-forward-credentials`) and staged API keys (`--api-key-env` /
-`--api-key-env-file`, which require `--no-forward-credentials`). Both place a
-live, usable credential inside the agent VM for the session's duration.
+`project-sandbox` currently forwards host agent credentials or injects selected
+API-key environment variables. Both place a provider credential in the agent
+VM. This change adds a provider-isolating path built around the concrete local
+deployment in `pkrusche/agentgateway-locally` rather than an abstract,
+unauthenticated proxy.
 
-This change adds a third path: the user runs an AI proxy (e.g.
-`agentgateway`) locally on the host, holding the real provider credentials in
-its own environment, and `project-sandbox` points the agent at it. An earlier
-draft of this change orchestrated the proxy as a managed sidecar VM
-(per-project `container network`, health-gated startup, generated gateway
-config, partitioned `secrets.env`, egress collapse, a hard macOS-26 gate).
-That draft is superseded: the proxy is now entirely user-managed, which
-deletes the whole orchestration surface and its platform constraint.
+That deployment has these relevant properties:
 
-Relevant in-repo prior art:
-- `ollama_network.py` already solves "reach a loopback-bound host service
-  from the agent VM" per runtime (Apple `container` localhost DNS, native
-  host-gateway mappings, a managed `socat` bridge fallback), with a
-  port-scoped firewall rule and baked pi provider config
-  (`--pi-ollama`). This change generalizes that mechanism to the proxy's
-  port rather than inventing anything new.
-- The credential-forwarding flag is `--no-forward-credentials` (`cli.py`);
-  `--api-key-env` / `--api-key-env-file` already model "explicit credential
-  injection" and give the conflict surface to reject.
-- pi's custom-provider config (`models.json` `providers.<id>.baseUrl` /
-  `apiKey` / `models`, `settings.json` `defaultProvider`) is already
-  rendered by `config_agents.py` for the Ollama case; OpenCode supports the
-  equivalent via a custom provider block in `opencode.json`.
+- agentgateway runs outside `project-sandbox`, under Docker or Apple
+  `container`, and is managed with its own `run.py`;
+- the LLM data plane is `http://127.0.0.1:4000`, with OpenAI-compatible paths
+  below `/v1`;
+- OpenAI and Anthropic provider keys come from `pass` and exist in the gateway
+  container environment, never in its tracked configuration;
+- every LLM request requires `Authorization: Bearer <gateway key>` under a
+  strict API-key policy; and
+- request logging is enabled and can persist full prompts and completions in
+  the gateway's SQLite database.
+
+The gateway key is a narrower credential, not a sentinel. A process in the
+agent VM can use it to spend through the reachable local gateway. It cannot use
+the key directly with OpenAI or Anthropic, and an off-host attacker cannot use
+it unless the gateway is separately made reachable. The design protects
+provider credentials from extraction and reuse; it does not prevent an active
+sandbox from making authorized requests.
+
+Existing `ollama_network.py` provides the runtime-specific mechanism for
+reaching a host-loopback service without widening that service to `0.0.0.0`.
+The implementation will generalize that mechanism to a supplied port and
+hostname while preserving `--pi-ollama` behavior.
 
 ## Goals / Non-Goals
 
 **Goals:**
-- No API key or OAuth credential is ever staged, mounted, or set as an
-  environment variable inside the agent VM when `--agent-proxy` is active;
-  the agent holds only a non-secret sentinel.
-- Keep `project-sandbox`'s job small: validate flags, bake provider config,
-  make the loopback proxy reachable, scope the firewall, fail fast if the
-  proxy is not listening. Never start, stop, configure, or supervise the
-  proxy itself.
-- Reuse existing mechanisms: the `ollama_network.py` forwarding strategies,
-  the `firewall.render(...)` port-scoped-rule pattern, and
-  `config_agents.py`'s provider-config rendering.
-- Support exactly the agents whose provider config is fully host-renderable
-  as a custom provider: pi and OpenCode.
 
-**Non-Goals (this change):**
-- Proxy lifecycle orchestration of any kind — no sidecar VM, no
-  `container network create`, no health-gated startup beyond a single
-  preflight TCP check, no teardown. The proxy outlives and predates
-  sessions at the user's discretion.
-- Claude Code and Codex CLI routing. Both keep the existing pass-through
-  credential mechanism unchanged; nothing in this change alters their
-  behavior. (They can be revisited later; their exclusion here is a scoping
-  decision, not a technical impossibility.)
-- Generating or validating the proxy's own configuration. The docs give a
-  worked `agentgateway` example; `project-sandbox` never reads or writes
-  proxy config.
-- Client authentication between agent and proxy. The baked key is a
-  sentinel; proxies that require a real client key on the listener are not
-  supported in this change (documented, and a candidate follow-on).
-- Egress collapse (allowing *only* the proxy from the agent VM). The normal
-  firewall allowlist stays as-is, plus one port-scoped proxy rule. With no
-  credential in the VM, direct provider egress is unauthenticated; collapse
-  is a hardening follow-on, not a prerequisite for the isolation goal.
-- Verifying the proxy's upstream credential handling, TLS posture, or
-  logging. That trust boundary belongs to the user and is documented as
-  such.
+- Keep OpenAI/Anthropic API keys and host agent OAuth state out of the agent VM
+  whenever proxy mode is active.
+- Admit only the gateway bearer key needed by the proxy's mandatory client
+  authentication, and handle it as a secret in staging, diagnostics, dry-run,
+  and process execution.
+- Validate proxy availability, authentication, and requested models before any
+  sandbox starts.
+- Configure pi and OpenCode to use the authenticated OpenAI-compatible endpoint.
+- Reuse the verified local-Ollama forwarding and firewall patterns.
+- Give users one executable end-to-end check that exercises both supported
+  agents through the real proxy.
+
+**Non-Goals:**
+
+- Installing or managing `agentgateway-locally`, its `pass` entries, provider
+  keys, container, image pin, configuration, UI, logs, or lifecycle.
+- Supporting an unauthenticated listener or a sentinel client key. The
+  referenced setup deliberately requires client authentication.
+- Routing Claude Code, Codex CLI, bash, MCP, or arbitrary application traffic.
+- Guaranteeing that a compromised active sandbox cannot spend through the
+  gateway or disclose prompts. The gateway key authorizes requests, and the
+  referenced gateway stores request logs by default.
+- Collapsing all agent egress to the proxy. Existing firewall behavior remains,
+  with one additive proxy rule.
+- Reproducing the external repository's configuration in this repository.
 
 ## Decisions
 
-**User-managed local proxy over orchestrated sidecar.** The superseding
-decision. Rationale: the orchestration draft required a second VM per
-session, per-project network management, IP discovery, health gating,
-teardown paths, secrets partitioning, and a macOS-26 floor — all to stand up
-a process the user can start with one documented command. A user-managed
-proxy also naturally serves several concurrent sessions and survives session
-restarts. The cost is that `project-sandbox` can no longer *guarantee* the
-proxy's config is sane (e.g. that it doesn't log prompts or inline secrets);
-the docs own that guidance instead.
+### Treat `agentgateway-locally` as a prerequisite
 
-**pi and OpenCode only.** Both accept a custom provider with an arbitrary
-`baseUrl`/`baseURL`, a model list, and an API key from host-renderable
-config files that `project-sandbox` already generates or stages. Claude Code
-and Codex would need env-var/base-URL wiring interleaved with their
-credential handling — precisely the surface this change avoids touching;
-per the requesting decision they remain on pass-through credentials.
+The project documentation links to the external setup and records only the
+integration contract: authenticated LLM endpoint, gateway-key acquisition,
+model aliases, and lifecycle ownership. This avoids maintaining a second copy
+of security-sensitive agentgateway YAML or container configuration.
 
-**Loopback-only proxy URL, reached via the existing forwarding
-strategies.** `--agent-proxy` accepts only a loopback URL
-(`http://127.0.0.1:<port>` shaped). The agent VM reaches it through the same
-runtime-strategy selection `--pi-ollama` uses, generalized to the proxy's
-port, under a dedicated hostname (e.g. `agent-proxy.project-sandbox.internal`
-for the Apple localhost-DNS strategy). This keeps the proxy off `0.0.0.0`
-and inherits an already-tested reachability matrix instead of adding a new
-one. Runtimes with no safe strategy fail with the same
-unsupported-mode-style error `local-ollama-support` defines.
+### Keep the existing pi/OpenCode scope
 
-**Sentinel API key, not a forwarded key.** The baked provider config carries
-a fixed non-secret sentinel so the agent's client libraries see *an* API key
-without a real one existing in the VM. Whether it is a static string or a
-per-session random value is an implementation detail (see Open Questions).
+Both agents accept a host-rendered custom provider with an arbitrary OpenAI
+base URL, model list, and API key. Claude Code and Codex require different
+environment/configuration integration and remain unchanged. Proxy flags with
+any unsupported agent fail before credential staging or container work.
 
-**Preflight TCP check instead of a managed health gate.** Before any
-container starts, the CLI attempts one bounded TCP connect to the proxy URL
-and aborts with a clear "is your proxy running? see docs/agent-proxy.md"
-error on failure. Skipped under `--dry-run`. This catches the dominant
-failure mode (proxy not started) without any lifecycle coupling; a proxy
-dying mid-session simply fails the agent's requests, which is acceptable and
-documented.
+### Accept the gateway key through a dedicated host environment variable
 
-**Additive firewall rule, not egress collapse.** Firewall rendering gains a
-proxy endpoint parameter producing one port-scoped ACCEPT rule, exactly like
-the `pi_ollama` rule; everything else is unchanged. Rationale in Non-Goals.
-As with `--pi-ollama`, `--no-firewall` skips the hostname pin and rule, so
-the CLI reuses the same style of warning that the baked hostname will not
-resolve.
+`--agent-proxy-key-env NAME` names the environment variable; it does not accept
+the secret value on the command line. Documentation populates the variable
+from `<agentgateway-locally>/run.py key`, consistent with that repository's SDK
+usage. A dedicated option keeps the gateway key distinguishable from forbidden
+provider-key injection.
 
-**Mutual exclusion with `--pi-ollama`.** Both features bake pi's
-`models.json`/`defaultProvider`; combining them in one session is rejected
-rather than merged. Merging is possible later if a real use case appears.
+The implementation reads the value only for a real run, never prints it, and
+stages it only in the selected agent's private generated provider
+configuration (or a provider-specific environment reference if the client
+supports one without broadening exposure). File permissions and cleanup match
+the existing private credential staging path. Missing or empty values fail
+before container work. Dry-run validates the variable name but neither reads
+nor requires its value.
+
+### Force provider credential exclusion
+
+Proxy mode behaves as `--no-forward-credentials`, purges stale staged agent
+credentials, and rejects `--api-key-env` and `--api-key-env-file`. Tests inspect
+the complete environment and mount plan to ensure no provider credential or
+OAuth file is admitted. The gateway key is the sole explicit exception.
+
+### Use an authenticated HTTP preflight
+
+Before creating forwarding resources or starting a container, the CLI requests
+`<proxy-base>/models` with `Authorization: Bearer <gateway key>` and a bounded
+timeout. A successful JSON response must list every `--agent-proxy-model` ID.
+This replaces a weak TCP-connect probe and gives actionable failures:
+
+- connection/timeout: start or troubleshoot `agentgateway-locally`;
+- 401/403: refresh or correct the gateway key;
+- malformed response: endpoint is not the expected LLM API; and
+- absent model: correct the alias or external gateway configuration.
+
+Dry-run skips the request. The preflight does not start, restart, or mutate the
+gateway.
+
+### Keep a loopback URL and reuse runtime forwarding
+
+`--agent-proxy` accepts an HTTP loopback URL with an explicit port and optional
+`/v1` suffix. The documented value is `http://127.0.0.1:4000/v1`. It rejects
+wildcard and non-loopback hosts. The generalized forwarding helper rewrites the
+host portion to a dedicated in-container hostname while preserving scheme,
+port, and path. Runtime selection and safe fallback behavior match local Ollama.
+
+The firewall adds a TCP allow rule scoped to that forwarded hostname/address
+and port. This does not assert that loopback is a security boundary: the strict
+gateway API-key policy remains required, especially because Apple `container`
+ports may also be reachable over vmnet.
+
+### Render agent-specific providers
+
+For pi, generated `models.json` contains an OpenAI-completions provider with the
+forwarded `/v1` base URL, requested model aliases, and gateway key;
+`settings.json` selects it and the first model. For OpenCode, generated
+`opencode.json` contains the equivalent custom provider. Secret-bearing files
+use private staging, are mounted only for the selected agent, and are never
+shown verbatim.
+
+### Ship a user-executable end-to-end checker
+
+Add `scripts/check-agent-proxy.py`, stdlib-only. The script accepts the path to
+an `agentgateway-locally` checkout and optional model overrides. It:
+
+1. verifies prerequisites without changing gateway state;
+2. obtains the gateway key by invoking `run.py key` with captured output;
+3. performs the same authenticated `/v1/models` health/auth/model check;
+4. creates an isolated temporary project;
+5. runs a headless pi session through the proxy with a prompt requiring a
+   unique exact marker;
+6. runs the equivalent headless OpenCode session with a different marker; and
+7. reports per-agent pass/fail and exits nonzero if either command fails or its
+   marker is absent.
+
+The key is passed to `project-sandbox` through the dedicated environment
+variable, never argv, and is redacted from command/error output. The script
+does not call `run.py up`, change gateway config, or retain its temporary
+project. Unit tests mock HTTP and subprocess boundaries; the real two-agent run
+is intentionally user-invoked because it consumes provider tokens.
 
 ## Risks / Trade-offs
 
-- **The proxy config is out of our control** → a misconfigured proxy (wrong
-  upstream key, prompt logging, listener on `0.0.0.0`) silently weakens the
-  posture. Mitigation: `docs/agent-proxy.md` gives a known-good
-  `agentgateway` example (loopback bind, env-var credential references) and
-  `docs/security.md` states the trust boundary explicitly.
-- **Loopback proxy is host-global** → any local process can use the proxy
-  and thus the credentials behind it. Same exposure class as a
-  loopback-bound Ollama; documented, with client-auth support noted as a
-  follow-on.
-- **Sentinel breaks against proxies that validate client keys** → rejected
-  scope for now; the docs say the listener must not require client
-  authentication.
-- **`agentgateway` is pre-1.0** and its config schema may shift → this now
-  only affects the documented example, not code; the docs pin the version
-  the example was verified against.
-- **Model list is user-asserted** → `--agent-proxy-model` values are baked
-  as-given; a typo surfaces as a provider/model error inside the agent, not
-  at preflight. Acceptable; the CLI cannot enumerate an arbitrary proxy's
-  models cheaply.
+- **Gateway key theft permits local spend** → state the boundary plainly;
+  minimize staging, redact it, and rely on the external setup's strict auth and
+  easy key rotation. This is narrower than provider-key theft but not harmless.
+- **External configuration can drift** → authenticated `/v1/models` verifies
+  the integration contract at runtime; docs link to the known setup rather than
+  copying its YAML.
+- **Prompt/completion persistence** → documentation points to the external
+  request-log retention and pruning guidance before users run sensitive work.
+- **Loopback is not confinement under every runtime** → require auth regardless
+  of bind address and never recommend an unauthenticated listener.
+- **Generated config contains the gateway key** → keep it under the private
+  temporary credential root, mount only for the chosen agent, clean it with the
+  existing credential lifecycle, and exclude it from dry-run/transcripts.
+- **E2E checks cost tokens** → run only on explicit user invocation, use minimal
+  deterministic prompts, and announce that the check makes two paid requests.
 
 ## Migration Plan
 
-Fully opt-in and additive: omitting `--agent-proxy` leaves every existing
-code path unchanged, including Claude Code / Codex credential pass-through
-and `--pi-ollama`. No data migration; rollback is not passing the flag.
-Relative to the superseded sidecar draft, nothing was ever shipped, so there
-is no deprecation path to manage.
+The feature is additive. Without `--agent-proxy`, behavior is unchanged. Users
+first configure and start `agentgateway-locally`, export its gateway key into a
+chosen host variable, then opt into proxy mode. Rollback is omitting the proxy
+flags. No prior sidecar or sentinel implementation shipped, so no stored state
+requires migration.
 
-## Open Questions
+## Decision notes
 
-- Sentinel value: static placeholder vs. per-session random string. Either
-  satisfies "no real credential in the VM"; random slightly reduces the risk
-  of the value being mistaken for a working key elsewhere. Decide at
-  implementation time.
-- pi provider `api` dialect for the baked config: default to
-  `openai-completions` (matching the Ollama path and agentgateway's
-  OpenAI-compatible routes) — whether an override flag is worth adding can
-  be decided when the docs example is verified end-to-end.
-- Whether `--agent-proxy-model` should have a default when omitted (probably
-  not: fail with a clear "name at least one model" error, since we cannot
-  guess what the proxy serves).
+- `--agent-proxy-key-env` should default to `AGENTGATEWAY_API_KEY`; if that is empty, 
+  try reading via `pass show agentgateway-api-key`; if that fails, print an error.
+- the E2E checker should default to gpt-5-mini as the model alias, parameterizable via env variable
