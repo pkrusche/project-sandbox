@@ -87,10 +87,10 @@ The system SHALL use `host.docker.internal` for Apple `container` and `ollama.pr
 
 #### Scenario: No dynamic address exposed to the agent process
 - **WHEN** the container starts with `--pi-ollama` set
-- **THEN** no `OLLAMA_HOST` (or equivalent) environment variable is set, and Pi's provider configuration references the fixed hostname rather than a runtime-discovered value
+- **THEN** no `OLLAMA_HOST` (or equivalent) environment variable is set, and Pi's provider configuration references the runtime-selected hostname rather than a dynamically exposed address
 
 ### Requirement: Pi's Ollama provider and default model are pre-configured
-When `--pi-ollama` is set, the system SHALL bake `~/.pi/agent/models.json` with an `ollama` provider entry pointing at `http://ollama.project-sandbox.internal:11434/v1` using the `openai-completions` API shape, and SHALL bake `~/.pi/settings.json` setting `defaultProvider` to `ollama` and `defaultModel` to a configured model ID.
+When `--pi-ollama` is set, the system SHALL bake `~/.pi/agent/models.json` with an `ollama` provider entry pointing at the runtime-selected hostname on port 11434 using the `openai-completions` API shape, and SHALL bake `~/.pi/settings.json` setting `defaultProvider` to `ollama` and `defaultModel` to a configured model ID. Apple `container` SHALL use `http://host.docker.internal:11434/v1`; other adapters SHALL use `http://ollama.project-sandbox.internal:11434/v1`.
 
 #### Scenario: Default model list
 - **WHEN** `--pi-ollama` is set without any `--ollama-model` flags

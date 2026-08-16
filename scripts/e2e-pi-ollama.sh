@@ -75,6 +75,12 @@ if [ "$RUNTIME" = auto ]; then
   fi
 fi
 
+if [ "$RUNTIME" = "apple-container" ]; then
+  OLLAMA_HOSTNAME="host.docker.internal"
+else
+  OLLAMA_HOSTNAME="ollama.project-sandbox.internal"
+fi
+
 # --- Detect Ollama ---------------------------------------------------------
 echo "Checking for a host Ollama server on 127.0.0.1:11434 ..."
 if ! curl -sf --max-time 2 http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
@@ -138,7 +144,7 @@ printf "# pi-ollama e2e\n" > "$TMP_PROJECT/README.md"
 prompt=$(
   cat <<EOF
 Run these two shell commands exactly, in order, and do nothing else:
-1. curl -sf http://ollama.project-sandbox.internal:11434/api/tags -o network-check.json
+1. curl -sf http://${OLLAMA_HOSTNAME}:11434/api/tags -o network-check.json
 2. printf '${AGENT_CHECK_MARKER}\n' > agent-check.txt
 Stop after both commands succeed. Do not explain what you did.
 EOF
@@ -163,7 +169,7 @@ cmd+=("$TMP_PROJECT" "$BASE_IMAGE")
 
 echo
 echo "Test project: $TMP_PROJECT"
-echo "Configuration: runtime=$RUNTIME requested_runtime=$REQUESTED_RUNTIME base_image=$BASE_IMAGE ollama_model=$OLLAMA_MODEL timeout=${TIMEOUT}s no_build=$NO_BUILD"
+echo "Configuration: runtime=$RUNTIME requested_runtime=$REQUESTED_RUNTIME ollama_hostname=$OLLAMA_HOSTNAME base_image=$BASE_IMAGE ollama_model=$OLLAMA_MODEL timeout=${TIMEOUT}s no_build=$NO_BUILD"
 echo
 echo "Running pi + Ollama unsupervised check"
 if (cd "$ROOT" && "${cmd[@]}") 2>&1 | tee "$RUN_LOG"; then
@@ -184,6 +190,8 @@ fi
 echo
 echo "Verifying rendered Pi config"
 assert_file_contains "$TMP_PROJECT/.project-sandbox/pi/models.json" "\"$OLLAMA_MODEL\""
+assert_file_contains "$TMP_PROJECT/.project-sandbox/pi/models.json" \
+  "http://${OLLAMA_HOSTNAME}:11434/v1"
 assert_file_contains "$TMP_PROJECT/.project-sandbox/pi/settings.json" "\"defaultProvider\": \"ollama\""
 
 echo
