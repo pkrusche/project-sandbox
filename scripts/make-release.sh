@@ -55,7 +55,10 @@ confirm() {
     local prompt="$1"
     local reply
     read -r -p "$prompt [y/N] " reply
-    [[ "${reply,,}" == "y" ]]
+    case "$reply" in
+        y|Y) return 0 ;;
+        *) return 1 ;;
+    esac
 }
 
 prompt_token() {
