@@ -64,7 +64,22 @@ or leave agent work after the session:
 All three scripts default to `--runtime chroot` on Linux and accept
 `--runtime chroot|auto|apple-container|docker|podman`, `--base-image IMAGE`,
 `--no-build`, and `--keep`. Run `./scripts/run-e2e-tests.sh` to execute the
-smoke, env-injection, git, and jj suites together with the same defaults.
+complete E2E matrix available on the host. This also includes Dockerfile-tamper
+checks, container timeout teardown when a real runtime is selected, and
+availability-gated Ollama checks. Pass `--with-agent-proxy` only when you intend
+to make its two billable LLM requests.
+
+Use the unified host-side entry point for full local verification:
+
+```bash
+./scripts/run-host-tests.sh
+./scripts/run-host-tests.sh --runtime docker
+./scripts/run-host-tests.sh --runtime apple-container --with-agent-proxy
+```
+
+It runs `uv sync --locked`, compile checks, Ruff, pytest, and the complete E2E
+aggregator in that order. On Linux the default `chroot` runtime keeps the run
+portable; select a real runtime to include container-only checks.
 
 ## Releasing
 

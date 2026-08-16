@@ -1,22 +1,27 @@
 #!/usr/bin/env bash
-# Run all project-sandbox end-to-end tests.
+# Run all project-sandbox end-to-end tests available on this host.
 #
 # Sequentially executes:
 #   1. e2e-test.sh           — artifact-generation smoke test (no container needed)
 #   2. e2e-env-injection.sh  — bash-agent env/API-key forwarding
 #   3. e2e-git-workflow.sh   — git rebase/merge/nothing workflows
 #   4. e2e-jj-workflow.sh    — jj rebase/merge/nothing workflows (skipped if jj not on PATH)
-#   5. e2e-pi-ollama.sh      — Pi + Ollama networking/config (skipped if Ollama is
-#                              not reachable on 127.0.0.1:11434)
+#   5. e2e-dockerfile-tamper.sh — Dockerfile integrity and override behavior
+#   6. verify-timeout-teardown.sh — container/VM cleanup after timeout
+#   7. e2e-pi-ollama.sh      — Pi + Ollama networking/config
+#   8. check-agent-proxy.py  — real Pi/OpenCode gateway calls (explicit opt-in)
 #
 # Usage:
 #   scripts/run-e2e-tests.sh [--runtime chroot|auto|apple-container|docker|podman]
 #                            [--base-image IMAGE] [--no-build] [--keep]
+#                            [--with-agent-proxy]
 #
 #   --runtime NAME   runtime forwarded to workflow scripts (default: chroot on Linux, auto otherwise)
 #   --base-image IMG base image forwarded to workflow scripts (default: python:3.12-slim)
 #   --no-build       forward --no-build to workflow scripts
 #   --keep           keep temporary directories on failure for debugging
+#   --with-agent-proxy
+#                    run the billable agent-proxy checker
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -29,8 +34,9 @@ fi
 BASE_IMAGE="python:3.12-slim"
 NO_BUILD=0
 KEEP=0
+WITH_AGENT_PROXY=0
 
-usage() { sed -n '2,16p' "$0"; }
+usage() { sed -n '2,24p' "$0"; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -38,6 +44,7 @@ while [ $# -gt 0 ]; do
     --base-image) BASE_IMAGE="${2:?--base-image needs a value}"; shift 2 ;;
     --no-build)   NO_BUILD=1; shift ;;
     --keep)       KEEP=1; shift ;;
+    --with-agent-proxy) WITH_AGENT_PROXY=1; shift ;;
     -h|--help)    usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage >&2; exit 64 ;;
   esac
@@ -82,7 +89,45 @@ else
   echo
 fi
 
-# 5. Pi + Ollama: networking and baked config (only if Ollama is reachable;
+# Resolve a concrete runtime for checks that require a real container and do
+# not accept chroot/auto. Selecting chroot deliberately keeps the aggregate
+# suite host-only even if Docker or Podman happens to be installed.
+CONTAINER_RUNTIME=""
+case "$RUNTIME" in
+  apple-container|docker|podman) CONTAINER_RUNTIME="$RUNTIME" ;;
+  auto)
+    if [ "$(uname -s)" = Darwin ] && command -v container >/dev/null 2>&1; then
+      CONTAINER_RUNTIME="apple-container"
+    elif command -v docker >/dev/null 2>&1; then
+      CONTAINER_RUNTIME="docker"
+    elif command -v podman >/dev/null 2>&1; then
+      CONTAINER_RUNTIME="podman"
+    fi
+    ;;
+esac
+
+# 5. Dockerfile tamper detection always runs its portable host checks. Add its
+# real-container override check when this invocation permits a build.
+TAMPER_ARGS=()
+[ "$KEEP" = 1 ] && TAMPER_ARGS+=(--keep)
+if [ -n "$CONTAINER_RUNTIME" ] && [ "$NO_BUILD" = 0 ]; then
+  TAMPER_ARGS+=(--with-container --runtime "$CONTAINER_RUNTIME" --base-image "$BASE_IMAGE")
+fi
+run_suite "dockerfile-tamper" "$ROOT/scripts/e2e-dockerfile-tamper.sh" "${TAMPER_ARGS[@]}"
+
+# 6. Timeout teardown necessarily builds and kills a real container. Skip it
+# for chroot, unavailable auto runtimes, and explicit --no-build runs.
+if [ -n "$CONTAINER_RUNTIME" ] && [ "$NO_BUILD" = 0 ]; then
+  run_suite "timeout-teardown" \
+    "$ROOT/scripts/verify-timeout-teardown.sh" --runtime "$CONTAINER_RUNTIME"
+else
+  echo "========================================"
+  echo "Suite: timeout-teardown  (SKIPPED — select a container runtime without --no-build)"
+  echo "========================================"
+  echo
+fi
+
+# 7. Pi + Ollama: networking and baked config (only if Ollama is reachable;
 # chroot cannot run --agent pi, so fall back to auto runtime detection)
 if command -v curl >/dev/null 2>&1 && curl -sf --max-time 2 http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
   PI_OLLAMA_RUNTIME="$RUNTIME"
@@ -94,6 +139,18 @@ if command -v curl >/dev/null 2>&1 && curl -sf --max-time 2 http://127.0.0.1:114
 else
   echo "========================================"
   echo "Suite: pi-ollama  (SKIPPED — Ollama not reachable on 127.0.0.1:11434)"
+  echo "========================================"
+  echo
+fi
+
+# 8. The proxy checker performs two real, billable LLM requests. Never trigger
+# it merely because a listener happens to be present on localhost.
+if [ "$WITH_AGENT_PROXY" = 1 ]; then
+  run_suite "agent-proxy" \
+    uv run python "$ROOT/scripts/check-agent-proxy.py" --base-image "$BASE_IMAGE"
+else
+  echo "========================================"
+  echo "Suite: agent-proxy  (SKIPPED — pass --with-agent-proxy; makes two billable requests)"
   echo "========================================"
   echo
 fi
