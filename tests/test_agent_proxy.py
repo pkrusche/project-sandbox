@@ -7,7 +7,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
-from project_sandbox import agent_proxy, config_agents
+from project_sandbox import agent_proxy, cli, config_agents
+from project_sandbox.git_identity import GitIdentity
 
 
 def _load_checker():
@@ -94,6 +95,99 @@ class AgentProxyTests(unittest.TestCase):
                 self.assertIn("gateway-key", config)
                 self.assertLess(config.index('"b"'), config.index('"a"'))
                 self.assertEqual(paths[selected].parent, root / selected)
+
+    def test_render_removes_stale_proxy_configs_and_only_stages_selected_agent(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pi_proxy = root / "pi" / "models.json"
+            opencode_proxy = root / "opencode" / "opencode.json"
+
+            config_agents.render(
+                root,
+                agent_proxy=("http://proxy:4000/v1", ["model"], "old-key", "pi"),
+            )
+            self.assertTrue(pi_proxy.exists())
+
+            config_agents.render(
+                root,
+                agent_proxy=(
+                    "http://proxy:4000/v1",
+                    ["model"],
+                    "new-key",
+                    "opencode",
+                ),
+            )
+            self.assertFalse(pi_proxy.exists())
+            self.assertTrue(opencode_proxy.exists())
+
+            config_agents.render(root)
+            self.assertFalse(pi_proxy.exists())
+            self.assertFalse(opencode_proxy.exists())
+
+    def test_proxy_key_is_staged_only_after_image_build(self) -> None:
+        with TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            context = project / ".project-sandbox"
+            secret_file = context / "pi" / "models.json"
+
+            def build_image(**_kwargs) -> int:
+                self.assertFalse(secret_file.exists())
+                return 0
+
+            def run(_command, **_kwargs) -> int:
+                self.assertIn("gateway-key", secret_file.read_text(encoding="utf-8"))
+                return 0
+
+            with (
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
+                patch.object(
+                    cli.container_cli,
+                    "select_runtime",
+                    return_value=cli.container_cli.DOCKER,
+                ),
+                patch.object(
+                    cli.container_cli, "ensure_system_started", return_value=0
+                ),
+                patch.object(cli.container_cli, "build_image", side_effect=build_image),
+                patch.object(cli.container_cli, "run", side_effect=run),
+                patch.object(
+                    cli.ollama_network,
+                    "prepare",
+                    return_value=cli.ollama_network.ForwardingPlan(
+                        "docker-desktop-host-alias"
+                    ),
+                ),
+                patch.object(
+                    cli.agent_proxy,
+                    "resolve_key",
+                    return_value=("gateway-key", "environment"),
+                ),
+                patch.object(
+                    cli.agent_proxy, "discover_models", return_value=["model"]
+                ),
+            ):
+                self.assertEqual(
+                    cli.main(
+                        [
+                            "--agent",
+                            "pi",
+                            "--agent-proxy",
+                            "http://127.0.0.1:4000/v1",
+                            "--model",
+                            "model",
+                            str(project),
+                            "python:3.12-slim",
+                        ]
+                    ),
+                    0,
+                )
+            self.assertFalse(secret_file.exists())
 
     def test_checker_runs_both_agents_and_requires_both_to_pass(self) -> None:
         checker = _load_checker()

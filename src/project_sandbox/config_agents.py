@@ -130,6 +130,14 @@ def render(
         out.write_text(_codex_config_toml(approval_policy), encoding="utf-8")
         paths[key] = out
     out_dir = _ensure_project_subdir(context_dir, "pi")
+    # These files contain the agent-proxy bearer key.  Remove any copy left by
+    # an interrupted prior run before deciding which provider (if any) this
+    # render should configure.  In particular, Pi mounts this whole directory
+    # for ordinary runs, so retaining a stale models.json would silently admit
+    # an old gateway credential into a non-proxy container.
+    (out_dir / "models.json").unlink(missing_ok=True)
+    opencode_dir = _ensure_project_subdir(context_dir, "opencode")
+    (opencode_dir / "opencode.json").unlink(missing_ok=True)
     settings_out = out_dir / "settings.json"
     if agent_proxy and agent_proxy[3] == "pi":
         base_url, models, key, _agent = agent_proxy
@@ -149,7 +157,6 @@ def render(
     paths["pi"] = settings_out
     if agent_proxy and agent_proxy[3] == "opencode":
         base_url, models, key, _agent = agent_proxy
-        opencode_dir = _ensure_project_subdir(context_dir, "opencode")
         out = opencode_dir / "opencode.json"
         out.write_text(_opencode_proxy_json(base_url, models, key), encoding="utf-8")
         out.chmod(0o600)

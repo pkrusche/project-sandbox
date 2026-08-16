@@ -491,13 +491,15 @@ def main(argv: list[str] | None = None) -> int:
         else:
             chroot.render(context_dir)
 
+        # Render only secret-free agent configuration before the image build.
+        # The build context may be the whole project and synthesized Dockerfiles
+        # use ``COPY . .``, so a proxy provider file rendered here could leak the
+        # gateway key into the build context or an image layer.  This call also
+        # removes secret-bearing proxy files left by an interrupted prior run.
         cfg = config_agents.render(
             context_dir,
             pi_ollama=pi_ollama_enabled,
             ollama_models=args.ollama_model,
-            agent_proxy=(proxy_base_url, proxy_models, proxy_key, run_agent)
-            if proxy_base_url and proxy_key and run_agent
-            else None,
         )
         forward_credentials = not args.no_forward_credentials and not args.agent_proxy
         # Before staging, ask the agent's own CLI to refresh its host token so the
@@ -652,6 +654,14 @@ def main(argv: list[str] | None = None) -> int:
         if args.build_only:
             print(f"Image ready: {args.image_tag}")
             return 0
+
+        # The image build is complete, so it is now safe to stage the selected
+        # agent's private proxy provider configuration in the project context.
+        if proxy_base_url and proxy_key and run_agent:
+            cfg = config_agents.render(
+                context_dir,
+                agent_proxy=(proxy_base_url, proxy_models, proxy_key, run_agent),
+            )
 
         if pi_ollama_enabled or args.agent_proxy:
             ollama_plan = ollama_network.prepare(
