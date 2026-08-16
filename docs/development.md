@@ -67,7 +67,8 @@ All three scripts default to `--runtime chroot` on Linux and accept
 complete E2E matrix available on the host. This also includes Dockerfile-tamper
 checks, container timeout teardown when a real runtime is selected, and
 availability-gated Ollama checks. Pass `--with-agent-proxy` only when you intend
-to make its two billable LLM requests.
+to run the gateway-only network/credential isolation audit followed by two
+billable Pi/OpenCode LLM requests.
 
 Use the unified host-side entry point for full local verification:
 

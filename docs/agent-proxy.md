@@ -46,11 +46,24 @@ history, and process listings can already expose argv. Prefer `pass` or the
 environment. Rotate the key using the gateway's procedure. HTTP 401/403 means
 the listener rejected it; update the pass entry/export, then retry.
 
-The CLI authenticates to `/models`, validates the selected model, and configures
-only the selected agent. `--dry-run` performs no pass/environment lookup,
-network access, file write, or container start. For a real, billable two-agent
-check run `scripts/check-agent-proxy.py`; it makes one minimal LLM request with
-each supported agent.
+The CLI authenticates to `/models` and validates the selected model. For Bash
+proxy sessions it configures both Pi and OpenCode; for other sessions it
+configures the selected agent. `--dry-run` performs no pass/environment lookup,
+network access, file write, or container start.
+
+Run the non-billable isolation check with a real container runtime:
+
+```bash
+uv run python scripts/e2e-agent-proxy-isolation.py --runtime docker
+```
+
+It checks that the gateway remains reachable while OpenAI, Anthropic, GitHub,
+and an unrelated public host are unreachable. It also checks that only the
+injected gateway key is present as credential-like environment state, that Pi
+and OpenCode contain the expected proxy URL, model, and key, and that known host
+credential files or extra mounted secret files are absent. For a real,
+billable two-agent check run `scripts/check-agent-proxy.py`; it makes one
+minimal LLM request with each supported agent.
 
 On Apple `container`, both agent-proxy and Ollama forwarding use
 `host.docker.internal`. Configure that name once before using either feature:

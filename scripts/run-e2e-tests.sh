@@ -9,7 +9,8 @@
 #   5. e2e-dockerfile-tamper.sh — Dockerfile integrity and override behavior
 #   6. verify-timeout-teardown.sh — container/VM cleanup after timeout
 #   7. e2e-pi-ollama.sh      — Pi + Ollama networking/config
-#   8. check-agent-proxy.py  — real Pi/OpenCode gateway calls (explicit opt-in)
+#   8. e2e-agent-proxy-isolation.py — gateway-only network/credential audit
+#   9. check-agent-proxy.py  — real Pi/OpenCode gateway calls (explicit opt-in)
 #
 # Usage:
 #   scripts/run-e2e-tests.sh [--runtime chroot|auto|apple-container|docker|podman]
@@ -21,7 +22,7 @@
 #   --no-build       forward --no-build to workflow scripts
 #   --keep           keep temporary directories on failure for debugging
 #   --with-agent-proxy
-#                    run the billable agent-proxy checker
+#                    run proxy isolation plus the billable agent checker
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -36,7 +37,7 @@ NO_BUILD=0
 KEEP=0
 WITH_AGENT_PROXY=0
 
-usage() { sed -n '2,24p' "$0"; }
+usage() { sed -n '2,26p' "$0"; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -143,9 +144,23 @@ else
   echo
 fi
 
-# 8. The proxy checker performs two real, billable LLM requests. Never trigger
-# it merely because a listener happens to be present on localhost.
+# 8–9. Proxy isolation is non-billable, followed by the two-request agent check.
+# Never trigger either merely because a listener happens to be present.
 if [ "$WITH_AGENT_PROXY" = 1 ]; then
+  if [ -n "$CONTAINER_RUNTIME" ]; then
+    PROXY_ISOLATION_ARGS=(--runtime "$CONTAINER_RUNTIME" --base-image "$BASE_IMAGE")
+    [ "$NO_BUILD" = 1 ] && PROXY_ISOLATION_ARGS+=(--no-build)
+    [ "$KEEP" = 1 ] && PROXY_ISOLATION_ARGS+=(--keep)
+    run_suite "agent-proxy-isolation" \
+      uv run python "$ROOT/scripts/e2e-agent-proxy-isolation.py" "${PROXY_ISOLATION_ARGS[@]}"
+  else
+    echo "========================================"
+    echo "Suite: agent-proxy-isolation"
+    echo "========================================"
+    echo "Suite FAIL: select apple-container, docker, podman, or an available auto runtime"
+    echo
+    overall_fail=1
+  fi
   run_suite "agent-proxy" \
     uv run python "$ROOT/scripts/check-agent-proxy.py" --base-image "$BASE_IMAGE"
 else
