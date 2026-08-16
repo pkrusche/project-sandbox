@@ -410,7 +410,8 @@ class AgentProxyTests(unittest.TestCase):
             def run(command, **_kwargs) -> int:
                 self.assertIn("--env-file", command)
                 self.assertEqual(
-                    Path(command[command.index("--env-file") + 1]), env_file
+                    Path(command[command.index("--env-file") + 1]).resolve(),
+                    env_file.resolve(),
                 )
                 self.assertEqual(env_file.stat().st_mode & 0o777, 0o600)
                 self.assertIn("OPENAI_API_KEY=gateway-key", env_file.read_text())
