@@ -84,6 +84,23 @@ portable; select a real runtime to include container-only checks.
 
 ## Releasing
 
+Before creating a release, run the comprehensive host test suite against every
+supported real container runtime available to you:
+
+```bash
+./scripts/run-host-tests.sh --runtime apple-container --with-agent-proxy
+./scripts/run-host-tests.sh --runtime docker --with-agent-proxy
+./scripts/run-host-tests.sh --runtime podman --with-agent-proxy
+```
+
+Run the Apple container command on macOS and the Docker and Podman commands on
+hosts where those runtimes are installed. The local agent gateway and its key
+must be configured before running this matrix. `--with-agent-proxy` includes the
+non-billable gateway isolation audit followed by two billable Pi/OpenCode LLM
+requests. Confirm that every applicable runtime passes before starting the
+release workflow; record any unavailable runtime in the release notes or pull
+request verification summary.
+
 `scripts/make-release.sh` drives the full release workflow interactively:
 
 1. Verifies the working copy is clean (jj-aware).
