@@ -14,6 +14,13 @@ DEFAULT_KEY_ENV = "AGENTGATEWAY_API_KEY"
 REDACTED = "[REDACTED]"
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Keep the gateway bearer key on the validated loopback origin."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 def validate_url(value: str) -> tuple[str, int]:
     parsed = urlsplit(value)
     if parsed.scheme != "http" or parsed.hostname not in (
@@ -74,7 +81,8 @@ def discover_models(base_url: str, key: str, *, timeout: float = 10) -> list[str
         headers={"Authorization": f"Bearer {key}", "Accept": "application/json"},
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        opener = urllib.request.build_opener(_NoRedirectHandler())
+        with opener.open(request, timeout=timeout) as response:
             payload = json.load(response)
     except urllib.error.HTTPError as exc:
         if exc.code in (401, 403):

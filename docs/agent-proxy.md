@@ -12,9 +12,9 @@ The OpenAI-compatible LLM endpoint is loopback port 4000 under `/v1`. Port
 3000 is MCP, not an LLM endpoint. With the gateway running:
 
 ```bash
-project-sandbox . --agent pi --agent-proxy http://127.0.0.1:4000/v1 \
+project-sandbox . python:3.14 --agent pi --agent-proxy http://127.0.0.1:4000/v1 \
   --model gpt-5-mini --prompt-text 'Reply with OK'
-project-sandbox . --agent opencode --agent-proxy http://127.0.0.1:4000/v1 \
+project-sandbox . python:3.14 --agent opencode --agent-proxy http://127.0.0.1:4000/v1 \
   --model agent-proxy/gpt-5-mini --prompt-text 'Reply with OK'
 ```
 
@@ -31,4 +31,3 @@ only the selected agent. `--dry-run` performs no pass/environment lookup,
 network access, file write, or container start. For a real, billable two-agent
 check run `scripts/check-agent-proxy.py`; it makes one minimal LLM request with
 each supported agent.
-

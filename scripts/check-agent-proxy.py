@@ -37,6 +37,8 @@ def run_agent(project: Path, agent: str, model: str, marker: str, args, env) -> 
         agent,
         "--agent-proxy",
         args.proxy,
+        "--agent-proxy-key-env",
+        args.key_env,
         "--model",
         model,
         "--timeout",

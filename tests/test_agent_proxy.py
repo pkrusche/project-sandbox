@@ -57,8 +57,10 @@ class AgentProxyTests(unittest.TestCase):
                 ("raw-key", "command line"),
             )
 
-    @patch("project_sandbox.agent_proxy.urllib.request.urlopen")
-    def test_discovery_preserves_order_and_deduplicates(self, urlopen: Mock) -> None:
+    @patch("project_sandbox.agent_proxy.urllib.request.build_opener")
+    def test_discovery_preserves_order_and_deduplicates(
+        self, build_opener: Mock
+    ) -> None:
         response = Mock()
         response.__enter__ = Mock(
             return_value=io.StringIO(
@@ -66,13 +68,30 @@ class AgentProxyTests(unittest.TestCase):
             )
         )
         response.__exit__ = Mock(return_value=False)
-        urlopen.return_value = response
+        opener = build_opener.return_value
+        opener.open.return_value = response
         self.assertEqual(
             agent_proxy.discover_models("http://127.0.0.1:4000/v1", "secret"),
             ["b", "a"],
         )
-        request = urlopen.call_args.args[0]
+        request = opener.open.call_args.args[0]
         self.assertEqual(request.get_header("Authorization"), "Bearer secret")
+        self.assertIsInstance(
+            build_opener.call_args.args[0], agent_proxy._NoRedirectHandler
+        )
+
+    def test_discovery_does_not_forward_credentials_across_redirects(self) -> None:
+        handler = agent_proxy._NoRedirectHandler()
+        self.assertIsNone(
+            handler.redirect_request(
+                Mock(),
+                Mock(),
+                302,
+                "Found",
+                {},
+                "http://example.com/models",
+            )
+        )
 
     def test_agent_renderers_include_complete_catalog_and_key(self) -> None:
         for selected in ("pi", "opencode"):
@@ -218,6 +237,33 @@ class AgentProxyTests(unittest.TestCase):
             patch.object(checker, "run_agent", side_effect=[True, False]),
         ):
             self.assertEqual(checker.main([]), 1)
+
+    @patch("subprocess.run")
+    def test_checker_propagates_custom_key_environment_name(self, run: Mock) -> None:
+        checker = _load_checker()
+        run.return_value = Mock(
+            returncode=0,
+            stdout="CUSTOM_MARKER\n",
+            stderr="",
+        )
+        args = checker.parser().parse_args(["--key-env", "CUSTOM_GATEWAY_KEY"])
+        env = {"CUSTOM_GATEWAY_KEY": "secret"}
+
+        self.assertTrue(
+            checker.run_agent(
+                Path("/tmp/project"),
+                "pi",
+                "model",
+                "CUSTOM_MARKER",
+                args,
+                env,
+            )
+        )
+        command = run.call_args.args[0]
+        self.assertEqual(
+            command[command.index("--agent-proxy-key-env") + 1],
+            "CUSTOM_GATEWAY_KEY",
+        )
 
 
 if __name__ == "__main__":
