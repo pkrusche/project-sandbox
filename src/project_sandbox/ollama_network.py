@@ -14,10 +14,12 @@ from typing import Self
 from .container_cli import APPLE_CONTAINER, CHROOT, DOCKER, PODMAN, Runtime
 
 HOSTNAME = "ollama.project-sandbox.internal"
+APPLE_HOSTNAME = "host.docker.internal"
 PORT = 11434
 APPLE_SETUP_COMMAND = (
-    f"sudo container system dns create {HOSTNAME} --localhost 203.0.113.113"
+    f"sudo container system dns create {APPLE_HOSTNAME} --localhost 203.0.113.113"
 )
+APPLE_RESTART_COMMAND = "container system stop && container system start"
 
 
 @dataclass
@@ -93,6 +95,7 @@ def prepare(
     label: str = "Ollama",
 ) -> ForwardingPlan:
     """Select and validate the safest forwarding strategy for ``runtime``."""
+    hostname = forwarding_hostname(runtime, hostname)
     if runtime == CHROOT:
         return ForwardingPlan(
             "chroot-shared-loopback",
@@ -104,21 +107,8 @@ def prepare(
         )
 
     if runtime == APPLE_CONTAINER:
-        if dry_run:
-            return ForwardingPlan(
-                "apple-preconfigured-localhost-dns",
-                hostname=hostname,
-                port=port,
-                label=label,
-            )
-        try:
-            endpoint = socket.gethostbyname(hostname)
-        except socket.gaierror as exc:
-            raise SystemExit(_apple_setup_error(hostname)) from exc
-        _validate_endpoint(endpoint, allow_documentation=True)
         return ForwardingPlan(
-            "apple-preconfigured-localhost-dns",
-            endpoint=endpoint,
+            "apple-configured-host-alias",
             hostname=hostname,
             port=port,
             label=label,
@@ -159,21 +149,24 @@ def prepare(
     )
 
 
+def forwarding_hostname(runtime: Runtime, fallback: str) -> str:
+    """Return the runtime-native name used to reach a host-loopback service."""
+    return APPLE_HOSTNAME if runtime == APPLE_CONTAINER else fallback
+
+
 def describe(plan: ForwardingPlan) -> str:
     suffix = f" ({plan.endpoint})" if plan.endpoint else ""
     return f"{plan.label} forwarding strategy: {plan.strategy}{suffix}"
 
 
-def _apple_setup_error(hostname: str = HOSTNAME) -> str:
-    setup_command = (
-        f"sudo container system dns create {hostname} --localhost 203.0.113.113"
-    )
+def apple_setup_notice(label: str) -> str:
+    """Explain the administrator-managed Apple localhost forwarding setup."""
     return (
-        "Apple container localhost forwarding is not configured for "
-        f"{hostname}. Run this command yourself, then retry:\n  "
-        f"{setup_command}\n"
-        "This changes macOS DNS/packet-filter state and may disable Private Relay; "
-        "project-sandbox will never invoke sudo or change it automatically."
+        f"[W] {label} forwarding with Apple container requires this one-time setup:\n"
+        f"    {APPLE_SETUP_COMMAND}\n"
+        "This DNS change might disable network connectivity. Restart the container "
+        "system afterward with:\n"
+        f"    {APPLE_RESTART_COMMAND}"
     )
 
 

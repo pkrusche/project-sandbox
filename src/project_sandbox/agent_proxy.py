@@ -42,9 +42,9 @@ def validate_url(value: str) -> tuple[str, int]:
     return parsed.path.rstrip("/") or "", port
 
 
-def forwarded_url(value: str) -> str:
+def forwarded_url(value: str, *, hostname: str = HOSTNAME) -> str:
     path, port = validate_url(value)
-    return urlunsplit(("http", f"{HOSTNAME}:{port}", path, "", ""))
+    return urlunsplit(("http", f"{hostname}:{port}", path, "", ""))
 
 
 def resolve_key(env_name: str, raw_key: str | None) -> tuple[str, str]:

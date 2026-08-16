@@ -1,3 +1,4 @@
+import contextlib
 import importlib.util
 import io
 import json
@@ -25,6 +26,12 @@ class AgentProxyTests(unittest.TestCase):
         self.assertEqual(
             agent_proxy.forwarded_url("http://127.0.0.1:4567/v1"),
             "http://agent-proxy.project-sandbox.internal:4567/v1",
+        )
+        self.assertEqual(
+            agent_proxy.forwarded_url(
+                "http://127.0.0.1:4567/v1", hostname="host.docker.internal"
+            ),
+            "http://host.docker.internal:4567/v1",
         )
         for value in (
             "https://127.0.0.1:4000/v1",
@@ -157,6 +164,7 @@ class AgentProxyTests(unittest.TestCase):
 
             def run(_command, **_kwargs) -> int:
                 self.assertIn("gateway-key", secret_file.read_text(encoding="utf-8"))
+                self.assertIn("PROJECT_SANDBOX_MODEL=agent-proxy/model", _command)
                 return 0
 
             with (
@@ -207,6 +215,257 @@ class AgentProxyTests(unittest.TestCase):
                     0,
                 )
             self.assertFalse(secret_file.exists())
+
+    def test_bash_proxy_environment_is_available_interactively_and_headless(
+        self,
+    ) -> None:
+        for headless in (False, True):
+            with self.subTest(headless=headless), TemporaryDirectory() as tmp:
+                project = Path(tmp)
+                captured: dict[str, object] = {}
+
+                def run(command, _captured=captured, _project=project, **kwargs) -> int:
+                    _captured["command"] = command
+                    _captured["env"] = kwargs.get("env")
+                    pi_models = json.loads(
+                        (
+                            _project / ".project-sandbox" / "pi" / "models.json"
+                        ).read_text()
+                    )
+                    pi_settings = json.loads(
+                        (
+                            _project / ".project-sandbox" / "pi" / "settings.json"
+                        ).read_text()
+                    )
+                    opencode = json.loads(
+                        (
+                            _project / ".project-sandbox" / "opencode" / "opencode.json"
+                        ).read_text()
+                    )
+                    self.assertEqual(
+                        pi_models["providers"]["agent-proxy"]["apiKey"],
+                        "gateway-key",
+                    )
+                    self.assertEqual(pi_settings["defaultModel"], "model")
+                    self.assertEqual(
+                        opencode["provider"]["agent-proxy"]["options"]["apiKey"],
+                        "gateway-key",
+                    )
+                    self.assertEqual(opencode["model"], "agent-proxy/model")
+                    return 0
+
+                args = [
+                    "--agent",
+                    "bash",
+                    "--agent-proxy",
+                    "http://127.0.0.1:4000/v1",
+                    "--model",
+                    "model",
+                    "--no-build",
+                    "--verbose",
+                ]
+                if headless:
+                    args += ["--prompt-text", "true"]
+                args += [str(project), "python:3.12-slim"]
+
+                with (
+                    patch.object(
+                        cli,
+                        "read_identity",
+                        return_value=GitIdentity("Ada", "ada@example.com"),
+                    ),
+                    patch.object(
+                        cli.container_cli,
+                        "select_runtime",
+                        return_value=cli.container_cli.DOCKER,
+                    ),
+                    patch.object(
+                        cli.container_cli, "ensure_system_started", return_value=0
+                    ),
+                    patch.object(cli.container_cli, "image_exists", return_value=True),
+                    patch.object(cli.container_cli, "run", side_effect=run),
+                    patch.object(cli.session, "run", side_effect=run),
+                    patch.object(
+                        cli.ollama_network,
+                        "prepare",
+                        return_value=cli.ollama_network.ForwardingPlan(
+                            "docker-desktop-host-alias"
+                        ),
+                    ),
+                    patch.object(
+                        cli.agent_proxy,
+                        "resolve_key",
+                        return_value=("gateway-key", "environment"),
+                    ),
+                    patch.object(
+                        cli.agent_proxy, "discover_models", return_value=["model"]
+                    ),
+                ):
+                    self.assertEqual(cli.main(args), 0)
+
+                self.assertEqual(
+                    captured["env"],
+                    {
+                        "OPENAI_BASE_URL": (
+                            "http://agent-proxy.project-sandbox.internal:4000/v1"
+                        ),
+                        "OPENAI_API_KEY": "gateway-key",
+                        "OPENAI_MODEL": "model",
+                    },
+                )
+                command = captured["command"]
+                self.assertIsInstance(command, list)
+                self.assertNotIn("gateway-key", command)
+                for name in ("OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL"):
+                    self.assertIn(name, command)
+                self.assertIn("target=/project-sandbox-config/pi", " ".join(command))
+                self.assertIn(
+                    "target=/project-sandbox-config/opencode", " ".join(command)
+                )
+                self.assertFalse(
+                    (project / ".project-sandbox" / "pi" / "models.json").exists()
+                )
+                self.assertFalse(
+                    (
+                        project / ".project-sandbox" / "opencode" / "opencode.json"
+                    ).exists()
+                )
+
+    def test_bash_proxy_renderer_preconfigures_pi_and_opencode(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_agents.render(
+                root,
+                agent_proxy=(
+                    "http://proxy:4000/v1",
+                    ["other", "selected"],
+                    "gateway-key",
+                    "bash",
+                ),
+                agent_proxy_model="selected",
+            )
+
+            pi_models = json.loads((root / "pi" / "models.json").read_text())
+            pi_settings = json.loads((root / "pi" / "settings.json").read_text())
+            opencode = json.loads((root / "opencode" / "opencode.json").read_text())
+            self.assertEqual(
+                pi_models["providers"]["agent-proxy"]["apiKey"], "gateway-key"
+            )
+            self.assertEqual(pi_settings["defaultProvider"], "agent-proxy")
+            self.assertEqual(pi_settings["defaultModel"], "selected")
+            self.assertEqual(
+                opencode["provider"]["agent-proxy"]["options"]["apiKey"],
+                "gateway-key",
+            )
+            self.assertEqual(opencode["model"], "agent-proxy/selected")
+
+    def test_bash_proxy_dry_run_previews_only_redacted_environment_names(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            output = io.StringIO()
+            with (
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
+                patch.object(cli.agent_proxy, "resolve_key") as resolve_key,
+                patch.object(cli.agent_proxy, "discover_models") as discover_models,
+                contextlib.redirect_stdout(output),
+            ):
+                self.assertEqual(
+                    cli.main(
+                        [
+                            "--dry-run",
+                            "--no-build",
+                            "--runtime",
+                            "docker",
+                            "--agent",
+                            "bash",
+                            "--agent-proxy",
+                            "http://127.0.0.1:4000/v1",
+                            "--agent-proxy-key",
+                            "raw-secret",
+                            "--model",
+                            "model",
+                            str(project),
+                            "python:3.12-slim",
+                        ]
+                    ),
+                    0,
+                )
+            text = output.getvalue()
+            self.assertIn("OPENAI_BASE_URL, OPENAI_API_KEY, OPENAI_MODEL", text)
+            self.assertNotIn("raw-secret", text)
+            resolve_key.assert_not_called()
+            discover_models.assert_not_called()
+
+    def test_bash_proxy_apple_env_file_is_private_and_removed(self) -> None:
+        with TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            env_file = project / ".project-sandbox" / "api-keys.env"
+
+            def run(command, **_kwargs) -> int:
+                self.assertIn("--env-file", command)
+                self.assertEqual(
+                    Path(command[command.index("--env-file") + 1]), env_file
+                )
+                self.assertEqual(env_file.stat().st_mode & 0o777, 0o600)
+                self.assertIn("OPENAI_API_KEY=gateway-key", env_file.read_text())
+                self.assertNotIn("gateway-key", command)
+                return 0
+
+            with (
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
+                patch.object(
+                    cli.container_cli,
+                    "select_runtime",
+                    return_value=cli.container_cli.APPLE_CONTAINER,
+                ),
+                patch.object(
+                    cli.container_cli, "ensure_system_started", return_value=0
+                ),
+                patch.object(cli.container_cli, "image_exists", return_value=True),
+                patch.object(cli.container_cli, "run", side_effect=run),
+                patch.object(
+                    cli.ollama_network,
+                    "prepare",
+                    return_value=cli.ollama_network.ForwardingPlan(
+                        "apple-configured-host-alias", label="Agent proxy"
+                    ),
+                ),
+                patch.object(
+                    cli.agent_proxy,
+                    "resolve_key",
+                    return_value=("gateway-key", "environment"),
+                ),
+                patch.object(
+                    cli.agent_proxy, "discover_models", return_value=["model"]
+                ),
+            ):
+                self.assertEqual(
+                    cli.main(
+                        [
+                            "--agent",
+                            "bash",
+                            "--agent-proxy",
+                            "http://127.0.0.1:4000/v1",
+                            "--model",
+                            "model",
+                            "--no-build",
+                            str(project),
+                            "python:3.12-slim",
+                        ]
+                    ),
+                    0,
+                )
+            self.assertFalse(env_file.exists())
 
     def test_checker_runs_both_agents_and_requires_both_to_pass(self) -> None:
         checker = _load_checker()

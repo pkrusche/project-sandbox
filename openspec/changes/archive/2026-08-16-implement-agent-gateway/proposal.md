@@ -23,9 +23,10 @@ or Anthropic after exfiltration. This change therefore provides **provider
 credential isolation**, not protection from misuse of the local gateway during
 a session.
 
-Scope remains limited to **pi** and **OpenCode**, whose custom provider
-configuration can be rendered completely by the host. Claude Code and Codex
-CLI continue to use their existing credential paths.
+Scope includes **pi**, **OpenCode**, and **Bash**. Pi and OpenCode receive custom
+provider configuration; interactive and headless Bash receive the equivalent
+standard OpenAI-compatible environment. Claude Code and Codex CLI continue to
+use their existing credential paths.
 
 ## What Changes
 
@@ -33,8 +34,8 @@ CLI continue to use their existing credential paths.
   linking to its setup and security documentation, and showing the supported
   `project-sandbox` invocation. The documentation does not duplicate or fork
   the gateway configuration.
-- Add an opt-in `--agent-proxy URL` flag, accepted only with `--agent pi` or
-  `--agent opencode`. For the documented setup the URL is
+- Add an opt-in `--agent-proxy URL` flag, accepted with `--agent pi`,
+  `--agent opencode`, or `--agent bash`. For the documented setup the URL is
   `http://127.0.0.1:4000/v1`; port 3000 is MCP and is not an LLM endpoint.
 - Resolve the gateway bearer key without access to the external checkout:
   first capture `pass show agentgateway-api-key`, then fall back to the host
@@ -63,9 +64,14 @@ CLI continue to use their existing credential paths.
   - **OpenCode:** generated `opencode.json` custom provider with the forwarded
     proxy base URL, every discovered model, and gateway key. The regular
     `--model agent-proxy/<model-id>` argument selects the model for the run.
+  - **Bash:** standard `OPENAI_BASE_URL`, `OPENAI_API_KEY`, and `OPENAI_MODEL`
+    variables for both interactive shells and headless prompt commands, plus
+    pre-configured Pi and OpenCode providers using the selected default model.
 - Reach the loopback listener from the agent VM by generalizing the forwarding
   strategy used by `--pi-ollama` to a configurable port and internal hostname.
-  Add the corresponding port-scoped firewall rule.
+  Add the corresponding port-scoped firewall rule. In proxy mode, omit normal
+  provider domains and the broad devcontainer host-gateway exception; retain
+  only user-requested `--extra-domain` / `--allow-github` additions.
 - Add a user-executable, stdlib-only end-to-end checker. It verifies the proxy
   with authenticated `/v1/models`, then runs one real headless pi session and
   one real headless OpenCode session through it and reports a clear pass/fail
@@ -83,7 +89,7 @@ gateway configuration, provider secrets, the admin UI, request logs, or MCP.
 
 ### New Capabilities
 
-- `agent-proxy-support`: opt-in routing of pi and OpenCode LLM traffic through
+- `agent-proxy-support`: opt-in routing of pi, OpenCode, and Bash LLM traffic through
   the authenticated, user-managed `agentgateway-locally` service, including
   provider credential exclusion, gateway-key handling, authenticated
   preflight/model validation, loopback forwarding, firewall scoping, generated

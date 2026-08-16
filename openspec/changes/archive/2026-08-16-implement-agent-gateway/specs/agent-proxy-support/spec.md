@@ -1,6 +1,6 @@
 ## Purpose
 
-Route pi or OpenCode LLM traffic through the authenticated local service
+Route pi, OpenCode, or Bash LLM traffic through the authenticated local service
 configured by `pkrusche/agentgateway-locally`, keeping provider API keys and
 host OAuth credentials out of the agent VM while admitting only the narrower
 gateway bearer key required to use that service.
@@ -11,11 +11,11 @@ gateway bearer key required to use that service.
 
 The CLI SHALL accept `--agent-proxy URL`, `--agent-proxy-key-env NAME`, and raw
 `--agent-proxy-key KEY`, and SHALL reuse the regular `--model` option. Proxy
-mode SHALL be accepted only for pi and OpenCode and SHALL require `--model`.
+mode SHALL be accepted only for pi, OpenCode, and Bash and SHALL require `--model`.
 When absent, all existing behavior SHALL remain unchanged.
 
 #### Scenario: Supported agent opts in
-- **WHEN** the user selects pi or OpenCode with proxy URL
+- **WHEN** the user selects pi, OpenCode, or Bash with proxy URL
   `http://127.0.0.1:4000/v1`, a gateway-key environment variable, and a regular
   `--model` selection
 - **THEN** the CLI configures that agent to use the local proxy
@@ -32,8 +32,8 @@ When absent, all existing behavior SHALL remain unchanged.
   `agent-proxy/<model-id>` form
 
 #### Scenario: Unsupported agent is rejected
-- **WHEN** proxy mode is requested with Claude, Codex, bash, or another agent
-- **THEN** the CLI exits before container work and names pi and OpenCode as the
+- **WHEN** proxy mode is requested with Claude, Codex, or another agent
+- **THEN** the CLI exits before container work and names pi, OpenCode, and Bash as the
   supported agents
 
 #### Scenario: Existing behavior is unchanged
@@ -56,8 +56,9 @@ admitted by proxy mode and SHALL be staged only for the selected agent.
 
 #### Scenario: Gateway key is present where required
 - **WHEN** a supported agent is configured for an authenticated proxy
-- **THEN** its private provider configuration can authenticate with the gateway
-  key and no other agent profile or general environment receives that key
+- **THEN** Pi/OpenCode private provider configuration or the selected Bash
+  session environment can authenticate with the gateway key, and no unrelated
+  agent profile or process receives that key
 
 #### Scenario: Generic credential injection conflicts
 - **WHEN** proxy mode is combined with `--api-key-env` or
@@ -126,6 +127,13 @@ internal hostname while preserving port and path.
 - **WHEN** no verified native or host-bindable forwarding strategy exists
 - **THEN** startup fails before any container and never widens the proxy bind
 
+#### Scenario: Apple localhost DNS setup is administrator-managed
+- **WHEN** Apple `container` is selected for proxy forwarding
+- **THEN** the provider uses `host.docker.internal`, the CLI prints the exact
+  `sudo container system dns create host.docker.internal --localhost 203.0.113.113`
+  setup command, and warns that the change might disable network connectivity
+  and requires restarting the container system afterward
+
 ### Requirement: Preflight discovers models and validates selection
 
 Before starting forwarding resources or containers, the system SHALL perform
@@ -155,30 +163,48 @@ manage the proxy.
 - **THEN** the CLI names the unavailable selection and aborts before container
   work
 
-### Requirement: Firewall access is scoped to the forwarded proxy endpoint
+### Requirement: Proxy firewall defaults to gateway-only egress
 
 With the firewall enabled, proxy mode SHALL add a TCP allow rule scoped to the
-forwarded proxy address and port and leave all other firewall behavior
-unchanged. Without proxy mode no such rule SHALL appear. With `--no-firewall`,
-the CLI SHALL emit the same class of hostname-resolution warning used by local
-Ollama support.
+forwarded proxy address and port, omit the normal provider-domain allowlist and
+the devcontainer's broad host-gateway exception, and retain only domains the
+user explicitly adds with `--extra-domain` or `--allow-github`. It SHALL NOT
+infer domain exceptions from a Bash prompt. Without proxy mode no such rule
+SHALL appear. With `--no-firewall`, the CLI SHALL emit the same class of
+hostname-resolution warning used by local Ollama support.
 
 #### Scenario: Proxy rule is added
 - **WHEN** proxy mode runs with the firewall enabled
 - **THEN** the proxy endpoint and only its configured TCP port are added to the
-  equivalent session's existing rules
+  equivalent session's existing rules and reachability is checked after the
+  final default-deny and reject rules are installed
+
+#### Scenario: Default provider endpoints are excluded
+- **WHEN** proxy mode runs without explicit domain options
+- **THEN** OpenAI, Anthropic, GitHub, and the broad host gateway are not
+  allowlisted, so LLM traffic can leave only through the scoped gateway rule
+
+#### Scenario: Explicit domain additions are retained
+- **WHEN** proxy mode includes `--extra-domain example.com` or `--allow-github`
+- **THEN** those requested destinations are added without restoring any other
+  default provider endpoint
 
 #### Scenario: Non-proxy firewall is unchanged
 - **WHEN** proxy mode is absent
 - **THEN** rendered rules contain no proxy endpoint or hostname
 
-### Requirement: Pi and OpenCode receive authenticated custom providers
+### Requirement: Supported agents receive authenticated proxy configuration
 
 Pi and OpenCode SHALL receive private, agent-specific provider configuration
 containing the forwarded `/v1` base URL, every model discovered from the
 endpoint, and the gateway key. Model selection SHALL use only the existing
 `--model` dispatch; no proxy-specific model-list flag or discovery-order default
 SHALL be introduced. No unsupported agent SHALL receive this provider or key.
+For interactive and headless Bash sessions, the equivalent configuration SHALL
+be supplied as `OPENAI_BASE_URL`, `OPENAI_API_KEY`, and `OPENAI_MODEL`. Bash
+sessions SHALL additionally receive both private Pi and OpenCode proxy configs,
+including the forwarded URL, discovered catalog, gateway key, and selected
+default model.
 
 #### Scenario: Pi provider is generated
 - **WHEN** pi runs in proxy mode
@@ -190,6 +216,23 @@ SHALL be introduced. No unsupported agent SHALL receive this provider or key.
 - **WHEN** OpenCode runs in proxy mode
 - **THEN** `opencode.json` defines provider `agent-proxy` with every discovered
   model and `--model agent-proxy/<model-id>` selects the run model
+
+#### Scenario: Interactive Bash receives proxy environment
+- **WHEN** Bash runs interactively in proxy mode
+- **THEN** the shell receives the forwarded URL, gateway key, and selected model
+  as `OPENAI_BASE_URL`, `OPENAI_API_KEY`, and `OPENAI_MODEL`
+
+#### Scenario: Headless Bash receives proxy environment
+- **WHEN** Bash runs with `--prompt` or `--prompt-text` in proxy mode
+- **THEN** the executed command inherits the same three variables, with the key
+  absent from process argv, logs, and transcripts
+
+#### Scenario: Bash can launch pre-configured Pi and OpenCode
+- **WHEN** interactive or headless Bash starts in proxy mode with a selected
+  model
+- **THEN** Pi defaults to provider `agent-proxy` and that model, OpenCode
+  defaults to `agent-proxy/<model>`, and both mounted configs contain the
+  forwarded catalog and gateway key
 
 ### Requirement: Dry run is complete, redacted, and side-effect free
 

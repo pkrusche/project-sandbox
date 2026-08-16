@@ -43,7 +43,8 @@ hostname while preserving `--pi-ollama` behavior.
   and process execution.
 - Discover the complete gateway model catalog and validate the regular
   `--model` selection before any sandbox starts.
-- Configure pi and OpenCode to use the authenticated OpenAI-compatible endpoint.
+- Configure pi, OpenCode, and interactive/headless Bash to use the authenticated
+  OpenAI-compatible endpoint.
 - Reuse the verified local-Ollama forwarding and firewall patterns.
 - Give users one executable end-to-end check that exercises both supported
   agents through the real proxy.
@@ -54,7 +55,7 @@ hostname while preserving `--pi-ollama` behavior.
   keys, container, image pin, configuration, UI, logs, or lifecycle.
 - Supporting an unauthenticated listener or a sentinel client key. The
   referenced setup deliberately requires client authentication.
-- Routing Claude Code, Codex CLI, bash, MCP, or arbitrary application traffic.
+- Routing Claude Code, Codex CLI, MCP, or arbitrary application traffic.
 - Guaranteeing that a compromised active sandbox cannot spend through the
   gateway or disclose prompts. The gateway key authorizes requests, and the
   referenced gateway stores request logs by default.
@@ -71,12 +72,15 @@ integration contract: authenticated LLM endpoint, gateway-key acquisition,
 model aliases, and lifecycle ownership. This avoids maintaining a second copy
 of security-sensitive agentgateway YAML or container configuration.
 
-### Keep the existing pi/OpenCode scope
+### Support pi, OpenCode, and Bash explicitly
 
-Both agents accept a host-rendered custom provider with an arbitrary OpenAI
-base URL, model list, and API key. Claude Code and Codex require different
-environment/configuration integration and remain unchanged. Proxy flags with
-any unsupported agent fail before credential staging or container work.
+Pi and OpenCode accept a host-rendered custom provider with an arbitrary OpenAI
+base URL, model list, and API key. Bash receives the same connection through
+the standard `OPENAI_BASE_URL`, `OPENAI_API_KEY`, and `OPENAI_MODEL` environment
+contract, which naturally covers both interactive shells and headless prompt
+commands. Claude Code and Codex require different configuration integration and
+remain unchanged. Proxy flags with any unsupported agent fail before credential
+staging or container work.
 
 ### Resolve the gateway key from pass with explicit fallbacks
 
@@ -146,10 +150,19 @@ preflight does not start, restart, or mutate the gateway.
 `/v1` suffix. The documented value is `http://127.0.0.1:4000/v1`. It rejects
 wildcard and non-loopback hosts. The generalized forwarding helper rewrites the
 host portion to a dedicated in-container hostname while preserving scheme,
-port, and path. Runtime selection and safe fallback behavior match local Ollama.
+port, and path. On Apple `container`, the runtime-specific hostname is
+`host.docker.internal`, which the user configures with the runtime's localhost
+DNS command. The CLI never invokes `sudo`; it prints the exact command and
+warns that the DNS change might disable network connectivity and should be
+followed by a container-system restart. Runtime selection and safe fallback
+behavior otherwise match local Ollama.
 
 The firewall adds a TCP allow rule scoped to that forwarded hostname/address
-and port. This does not assert that loopback is a security boundary: the strict
+and port, then probes the endpoint after the final default-deny rules are in
+place. Proxy mode omits the normal OpenAI/Anthropic domains and the
+devcontainer's broad host-gateway exception. `--extra-domain` and
+`--allow-github` remain explicit opt-ins; prompt inspection never widens proxy
+mode automatically. This does not assert that loopback is a security boundary: the strict
 gateway API-key policy remains required, especially because Apple `container`
 ports may also be reachable over vmnet.
 
@@ -162,6 +175,15 @@ model. For OpenCode, generated `opencode.json` contains the equivalent custom
 provider and every discovered model. In both cases the existing `--model`
 dispatch selects the model for the run. Secret-bearing files use private
 staging, are mounted only for the selected agent, and are never shown verbatim.
+Bash instead receives the forwarded base URL, gateway key, and selected model
+through standard OpenAI environment variables. Docker and Podman inherit bare
+variable names from the protected subprocess environment; Apple `container`
+uses the existing mode-0600 staged env-file path, which proxy cleanup removes.
+Bash can also launch Pi or OpenCode, so its session renders and mounts both
+private provider configs. Pi's `defaultProvider` / `defaultModel` and
+OpenCode's top-level `model` select the requested model without extra shell
+arguments; the configs share the discovered catalog and gateway key and follow
+the same post-session cleanup.
 
 ### Ship a user-executable end-to-end checker
 

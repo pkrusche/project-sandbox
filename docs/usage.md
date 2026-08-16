@@ -380,18 +380,17 @@ uv run project-sandbox \
   when the container startup probe reaches Ollama. Unsupported modes fail
   closed; project-sandbox never falls back to `0.0.0.0`.
 
-  Apple `container` requires one-time, user-controlled localhost DNS setup:
+  Apple `container` requires a one-time localhost DNS mapping shared by Ollama
+  and agent-proxy forwarding:
 
   ```bash
-  sudo container system dns create ollama.project-sandbox.internal \
-    --localhost 203.0.113.113
+  sudo container system dns create host.docker.internal --localhost 203.0.113.113
   ```
 
-  Run that command yourself before `--pi-ollama`. Project-sandbox verifies the
-  mapping but never invokes `sudo` or changes it. Apple documents that localhost
-  DNS changes packet-filter state, may disable Private Relay, and may need
-  re-establishing after a restart. Combining `--pi-ollama` with `--no-firewall`
-  remains unsupported because fixed-hostname setup and the port rule live in
+  This might disable network connectivity. Restart the container system after
+  creating the mapping with `container system stop` followed by
+  `container system start`. Combining `--pi-ollama` with `--no-firewall` remains
+  unsupported because the port-scoped allow rule and connectivity probe live in
   firewall initialization.
 - `--ollama-model MODEL_ID` overrides the built-in default Ollama model list
   baked into Pi's `models.json`. Repeatable; only meaningful with

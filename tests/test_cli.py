@@ -1355,6 +1355,28 @@ class CliTests(TestCase):
         self.assertFalse(cli._allow_github(args, "bash"))
         self.assertTrue(cli._allow_github(explicit, "bash"))
 
+    def test_agent_proxy_does_not_infer_github_allowlist_from_bash_prompt(
+        self,
+    ) -> None:
+        parser = cli.build_parser()
+        base = [
+            "--agent",
+            "bash",
+            "--agent-proxy",
+            "http://127.0.0.1:4000/v1",
+            "--model",
+            "model",
+            "--prompt-text",
+            "copilot -p 'summarize this repo'",
+        ]
+        inferred = parser.parse_args([*base, "/tmp/project", "python:3.12-slim"])
+        explicit = parser.parse_args(
+            ["--allow-github", *base, "/tmp/project", "python:3.12-slim"]
+        )
+
+        self.assertFalse(cli._allow_github(inferred, "bash"))
+        self.assertTrue(cli._allow_github(explicit, "bash"))
+
     def _headless_dry_run(self, *extra_args: str) -> str:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
@@ -2853,7 +2875,7 @@ class PiOllamaTests(TestCase):
             cli._warn_byok_provider_allowlist(args, "pi")
         self.assertEqual(out.getvalue(), "")
 
-    def test_pi_ollama_threaded_into_firewall_render(self) -> None:
+    def test_pi_ollama_uses_apple_native_hostname_in_config_and_firewall(self) -> None:
         # Regression: dry-run tests above all pass --no-firewall, which never
         # reaches firewall.render at all — so the one-line
         # `pi_ollama=pi_ollama_enabled` wiring in cli.main's real (non-dry-run)
@@ -2881,7 +2903,7 @@ class PiOllamaTests(TestCase):
                 patch.object(
                     cli.container_cli,
                     "select_runtime",
-                    return_value=cli.container_cli.DOCKER,
+                    return_value=cli.container_cli.APPLE_CONTAINER,
                 ),
                 patch.object(
                     cli.container_cli, "ensure_system_started", return_value=0
@@ -2911,7 +2933,17 @@ class PiOllamaTests(TestCase):
                 encoding="utf-8"
             )
             self.assertIn("--dport 11434", rendered)
-            self.assertIn("ollama.project-sandbox.internal", rendered)
+            self.assertIn("host.docker.internal", rendered)
+            self.assertNotIn("ollama.project-sandbox.internal", rendered)
+            models = json.loads(
+                (project / ".project-sandbox" / "pi" / "models.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(
+                models["providers"]["ollama"]["baseUrl"],
+                "http://host.docker.internal:11434/v1",
+            )
 
 
 def _headless_dry_run(agent: str, *extra: str) -> tuple[int, str]:

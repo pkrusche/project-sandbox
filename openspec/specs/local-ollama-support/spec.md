@@ -33,8 +33,8 @@ When `--pi-ollama` is set, the system SHALL reach an Ollama server listening on 
 - **THEN** the system uses that mapping without starting `socat`
 
 #### Scenario: Apple localhost DNS is not preconfigured
-- **WHEN** Apple `container` is selected and `ollama.project-sandbox.internal` has not been configured with the runtime's localhost DNS facility
-- **THEN** startup fails without invoking `sudo` or changing host networking and prints the exact administrator command the user can run manually
+- **WHEN** Apple `container` is selected and `host.docker.internal` has not been configured with the runtime's localhost DNS facility
+- **THEN** startup fails without invoking `sudo` or changing host networking and prints `sudo container system dns create host.docker.internal --localhost 203.0.113.113`, warns that the change might disable network connectivity, and instructs the user to restart the container system afterward
 
 #### Scenario: Local Linux bridge fallback is required
 - **WHEN** the selected runtime uses a local Linux bridge whose host bridge address is bindable and no native loopback mapping is available
@@ -78,12 +78,12 @@ When `--pi-ollama` is set and the firewall is enabled, the system SHALL determin
 - **WHEN** `--pi-ollama` is set on a direct (non-devcontainer) CLI run
 - **THEN** the gateway-discovery and port-scoped allow rule are applied even though the broader devcontainer-only `allow_host_network` all-ports gateway rule is not active
 
-### Requirement: A fixed hostname resolves to the selected Ollama endpoint
-The system SHALL make `ollama.project-sandbox.internal` resolve to the adapter-selected endpoint inside the container when `--pi-ollama` is set and SHALL pin the verified address for the container lifetime where the runtime permits it.
+### Requirement: A runtime-selected hostname resolves to the Ollama endpoint
+The system SHALL use `host.docker.internal` for Apple `container` and `ollama.project-sandbox.internal` for other adapters when `--pi-ollama` is set, and SHALL pin the verified address for the container lifetime where the runtime permits it.
 
 #### Scenario: Container startup with Pi-Ollama enabled
 - **WHEN** the container starts with `--pi-ollama` set and the firewall enabled
-- **THEN** `ollama.project-sandbox.internal` resolves to the verified runtime-native or bridge-proxy endpoint
+- **THEN** the runtime-selected hostname resolves to the verified native or bridge-proxy endpoint
 
 #### Scenario: No dynamic address exposed to the agent process
 - **WHEN** the container starts with `--pi-ollama` set

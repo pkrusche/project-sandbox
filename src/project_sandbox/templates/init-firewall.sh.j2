@@ -7,6 +7,31 @@ mapfile -t DNS6_LIST < <(awk '/^nameserver/ && $2 ~ /:/  {print $2}' /etc/resolv
 # Fallback if no IPv4 resolver found
 [ -z "${DNS4_LIST[0]+x}" ] && DNS4_LIST=("127.0.0.11")
 
+# Resolve runtime-provided host aliases before modifying any NAT or filter
+# tables. Apple container's configured host.docker.internal path depends on
+# runtime DNS plumbing that must remain available long enough to pin the result
+# into /etc/hosts below.
+{% if agent_proxy_port %}
+mapfile -t AGENT_PROXY_IP4_LIST < <(
+  getent ahostsv4 "{{ agent_proxy_hostname }}" 2>/dev/null |
+    awk '{print $1}' | sort -u
+)
+if [ -z "${AGENT_PROXY_IP4_LIST[0]+x}" ]; then
+  echo "ERROR: Runtime host alias {{ agent_proxy_hostname }} did not resolve before firewall initialization." >&2
+{% if agent_proxy_hostname == "host.docker.internal" %}
+  echo "Configure it with: sudo container system dns create host.docker.internal --localhost 203.0.113.113" >&2
+  echo "WARNING: This might disable network connectivity; afterward restart with: container system stop && container system start" >&2
+{% endif %}
+  exit 1
+fi
+{% endif %}
+{% if pi_ollama %}
+mapfile -t OLLAMA_HOST_IP4_LIST < <(
+  getent ahostsv4 "{{ ollama_hostname }}" 2>/dev/null |
+    awk '{print $1}' | sort -u
+)
+{% endif %}
+
 IPV6_FW=1
 if ! ip6tables -L >/dev/null 2>&1; then
   if sysctl -w net.ipv6.conf.all.disable_ipv6=1 \
@@ -109,6 +134,7 @@ fi
 {% endif %}
 
 DOMAINS=(
+{% if not agent_proxy_port %}
   "api.anthropic.com"
   "claude.ai"
   "code.claude.com"
@@ -116,6 +142,7 @@ DOMAINS=(
   "api.openai.com"
   "auth.openai.com"
   "chatgpt.com"
+{% endif %}
 {% if allow_github %}
   "github.com"
   "api.github.com"
@@ -166,10 +193,10 @@ done
 # Authenticated agent proxy: allow only its forwarded address and TCP port.
 while IFS= read -r proxy_ip; do
   [[ "$proxy_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || continue
-  printf '%s\t%s # project-sandbox-dns-pin\n' "$proxy_ip" "agent-proxy.project-sandbox.internal" >> /etc/hosts
+  printf '%s\t%s # project-sandbox-dns-pin\n' "$proxy_ip" "{{ agent_proxy_hostname }}" >> /etc/hosts
   iptables -A OUTPUT -d "$proxy_ip" -p tcp --dport {{ agent_proxy_port }} -j ACCEPT
   iptables -A INPUT -s "$proxy_ip" -p tcp --sport {{ agent_proxy_port }} -m conntrack --ctstate ESTABLISHED -j ACCEPT
-done < <(getent ahostsv4 agent-proxy.project-sandbox.internal 2>/dev/null | awk '{print $1}' | sort -u)
+done < <(printf '%s\n' "${AGENT_PROXY_IP4_LIST[@]}")
 {% endif %}
 
 {% if allow_host_network %}
@@ -207,21 +234,20 @@ fi
 # IPv4-only: every supported runtime's (Apple container/Docker/Podman)
 # default gateway is reachable over IPv4, matching the all-ports rule above
 # whose IPv6 counterpart exists only for the unrelated IDE-forwarding case.
-OLLAMA_HOST_IP4=$(getent ahostsv4 ollama.project-sandbox.internal | awk 'NR == 1 {print $1}') || true
+OLLAMA_HOST_IP4="${OLLAMA_HOST_IP4_LIST[0]:-}"
 OLLAMA_HOST_IF4=$(ip -4 route get "$OLLAMA_HOST_IP4" 2>/dev/null | awk 'NR == 1 {for (i=1; i<=NF; i++) if ($i == "dev") {print $(i+1); exit}}') || true
 if [ -n "$OLLAMA_HOST_IP4" ]; then
   echo "Allowing host Ollama endpoint (IPv4): $OLLAMA_HOST_IP4:11434"
   iptables -A OUTPUT -p tcp --dport 11434 -d "$OLLAMA_HOST_IP4" -o "${OLLAMA_HOST_IF4:-eth0}" -j ACCEPT
   if ! grep -q '^.*[[:space:]]ollama\.project-sandbox\.internal\([[:space:]]\|$\)' /etc/hosts; then
-    printf '%s\tollama.project-sandbox.internal # project-sandbox-dns-pin\n' "$OLLAMA_HOST_IP4" >> /etc/hosts
-  fi
-  if ! curl --fail --silent --show-error --max-time 3 \
-      http://ollama.project-sandbox.internal:11434/api/tags >/dev/null; then
-    echo "ERROR: the selected runtime path cannot reach loopback-bound Ollama on port 11434." >&2
-    exit 1
+    printf '%s\t{{ ollama_hostname }} # project-sandbox-dns-pin\n' "$OLLAMA_HOST_IP4" >> /etc/hosts
   fi
 else
   echo "ERROR: --pi-ollama could not resolve its runtime-selected Ollama endpoint." >&2
+{% if ollama_hostname == "host.docker.internal" %}
+  echo "Configure it with: sudo container system dns create host.docker.internal --localhost 203.0.113.113" >&2
+  echo "WARNING: This might disable network connectivity; afterward restart with: container system stop && container system start" >&2
+{% endif %}
   exit 1
 fi
 {% endif %}
@@ -258,6 +284,28 @@ if [ "$IPV6_FW" = "1" ]; then
   ip6tables -A OUTPUT -j REJECT --reject-with icmp6-adm-prohibited
   ip6tables -A INPUT -j REJECT --reject-with icmp6-adm-prohibited
 fi
+
+{% if agent_proxy_port %}
+# Exercise the real sandbox-to-host path after the final firewall rules are in
+# place. HTTP error statuses are acceptable here; this probe verifies only that
+# the proxy listener can be reached and returns an HTTP response.
+if ! curl --silent --show-error --connect-timeout 3 --max-time 5 \
+  --output /dev/null \
+  "http://{{ agent_proxy_hostname }}:{{ agent_proxy_port }}/"; then
+  echo "ERROR: Agent proxy is unreachable from inside the sandbox at {{ agent_proxy_hostname }}:{{ agent_proxy_port }}." >&2
+  echo "Verify the runtime host alias and that the proxy is listening on 127.0.0.1:{{ agent_proxy_port }}." >&2
+  exit 1
+fi
+{% endif %}
+{% if pi_ollama %}
+# Verify Ollama through the final port-scoped firewall, not merely before the
+# default-deny policy and terminal reject rules are installed.
+if ! curl --fail --silent --show-error --connect-timeout 3 --max-time 5 \
+    "http://{{ ollama_hostname }}:11434/api/tags" >/dev/null; then
+  echo "ERROR: the final firewall cannot reach loopback-bound Ollama at {{ ollama_hostname }}:11434." >&2
+  exit 1
+fi
+{% endif %}
 
 echo "Firewall initialized."
 # grep -c already prints 0 (and exits non-zero) when nothing matches, so no

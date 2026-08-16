@@ -24,7 +24,8 @@
       `AGENTGATEWAY_API_KEY`), and raw `--agent-proxy-key KEY` to `cli.py` with
       help pointing to `docs/agent-proxy.md` and warning on the raw-key option;
       reuse existing `--model` and do not add a proxy-specific model-list flag.
-- [x] 2.2 Validate before container work: supported agent (`pi` or `opencode`),
+- [x] 2.2 Validate before container work: supported agent (`pi`, `opencode`, or
+      `bash`),
       HTTP loopback URL with explicit port, required regular `--model`, valid
       gateway key environment-variable name, mutual exclusion with
       `--pi-ollama`, and rejection of `--api-key-env` /
@@ -66,14 +67,21 @@
       unchanged. Preserve scheme, explicit port, and `/v1` when constructing the
       in-container proxy URL.
 - [x] 3.2 Use a dedicated internal hostname such as
-      `agent-proxy.project-sandbox.internal`; preserve Apple localhost-DNS's
-      exact-admin-command/never-sudo behavior and all runtime safety checks.
+      `agent-proxy.project-sandbox.internal` where the runtime permits it; use
+      the configured `host.docker.internal` alias on Apple `container` and
+      preserve localhost-DNS's exact-admin-command/never-sudo behavior,
+      restart/network-connectivity warning, and all runtime safety checks.
 - [x] 3.3 Extend `firewall.render()` / `init-firewall.sh.j2` with a port-scoped
-      allow rule and hostname pin for proxy sessions only. Reuse the Ollama-style
-      `--no-firewall` warning.
+      allow rule and hostname pin for proxy sessions only, and probe through
+      the final deny-by-default rules. Reuse the Ollama-style `--no-firewall`
+      warning.
 - [x] 3.4 Test forwarding selection for non-default ports and paths, proxy-only
       firewall output, unchanged Ollama rendering, unsafe endpoint rejection,
       and no-firewall warnings.
+- [x] 3.5 Make proxy-mode egress gateway-only by omitting default provider
+      domains and the devcontainer host-gateway exception. Preserve only
+      explicit `--extra-domain` / `--allow-github` additions, disable inferred
+      Bash/Copilot widening, and add renderer and CLI regression tests.
 
 ## 4. Agent provider configuration
 
@@ -92,6 +100,14 @@
       no provider key/OAuth state is present; regular `--model` is passed
       unchanged to each agent; non-proxy behavior is unchanged; serialized
       diagnostics are redacted.
+- [x] 4.5 Support interactive and headless Bash by injecting the forwarded URL,
+      gateway key, and selected model as `OPENAI_BASE_URL`, `OPENAI_API_KEY`, and
+      `OPENAI_MODEL`; keep the key out of argv, clean Apple's staged env file,
+      and add CLI regression tests for both modes.
+- [x] 4.6 In Bash proxy mode, render and mount both Pi and OpenCode provider
+      configs with the forwarded URL, discovered catalog, gateway key, and
+      selected default model; preserve secret cleanup and add renderer/session
+      regression tests.
 
 ## 5. User-executable end-to-end checker
 
@@ -123,13 +139,13 @@
 
 ## 6. Manual integration verification
 
-- [ ] 6.1 Follow `docs/agent-proxy.md` verbatim against the referenced setup and
+- [x] 6.1 Follow `docs/agent-proxy.md` verbatim against the referenced setup and
       run `scripts/check-agent-proxy.py`. Confirm its authenticated proxy check,
       headless pi run, and headless OpenCode run all pass.
-- [ ] 6.2 Inspect the agent VMs/staging plan: the gateway key and proxy URL are
+- [x] 6.2 Inspect the agent VMs/staging plan: the gateway key and proxy URL are
       present only where required; OpenAI/Anthropic keys and host OAuth state are
       absent; dry-run and transcripts contain no gateway key.
-- [ ] 6.3 Stop the proxy and confirm a new session and the checker both fail at
+- [x] 6.3 Stop the proxy and confirm a new session and the checker both fail at
       authenticated preflight without starting an agent container. Restart it,
       rotate the gateway key, and confirm the old key is rejected and the new
       key succeeds.

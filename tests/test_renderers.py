@@ -109,6 +109,69 @@ class RendererTests(TestCase):
             self.assertNotIn("--dport 22", firewall_text)
             self.assertNotIn("--sport 22", firewall_text)
 
+    def test_agent_proxy_reachability_probe_runs_inside_final_firewall(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            firewall.render(
+                context,
+                extra_domains=[],
+                agent_proxy_port=4000,
+                agent_proxy_hostname="host.docker.internal",
+            )
+            text = (context / "init-firewall.sh").read_text(encoding="utf-8")
+
+            probe = '"http://host.docker.internal:4000/"'
+            resolution = 'getent ahostsv4 "host.docker.internal"'
+            self.assertLess(text.index(resolution), text.index("iptables -t nat -F"))
+            self.assertIn('"${AGENT_PROXY_IP4_LIST[@]}"', text)
+            self.assertIn(probe, text)
+            self.assertIn("--connect-timeout 3 --max-time 5", text)
+            self.assertGreater(text.index(probe), text.index("iptables -P OUTPUT DROP"))
+            self.assertGreater(
+                text.index(probe),
+                text.index("iptables -A OUTPUT -j REJECT"),
+            )
+
+    def test_agent_proxy_firewall_is_gateway_only_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            firewall.render(
+                context,
+                extra_domains=[],
+                agent_proxy_port=4000,
+            )
+            for filename in (
+                "init-firewall.sh",
+                "init-firewall-devcontainer.sh",
+            ):
+                with self.subTest(filename=filename):
+                    text = (context / filename).read_text(encoding="utf-8")
+                    self.assertIn("--dport 4000", text)
+                    for domain in (
+                        "api.openai.com",
+                        "api.anthropic.com",
+                        "github.com",
+                    ):
+                        self.assertNotIn(domain, text)
+                    self.assertNotIn(
+                        "Host gateway (port-forwarding / IDE attach)", text
+                    )
+
+    def test_agent_proxy_firewall_keeps_explicit_domain_additions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            firewall.render(
+                context,
+                extra_domains=["internal.example.com"],
+                allow_github=True,
+                agent_proxy_port=4000,
+            )
+            text = (context / "init-firewall.sh").read_text(encoding="utf-8")
+            self.assertIn("internal.example.com", text)
+            self.assertIn('"github.com"', text)
+            self.assertNotIn('"api.openai.com"', text)
+            self.assertNotIn('"api.anthropic.com"', text)
+
     def test_dockerfile_pins_and_verifies_mutable_remote_installs(self) -> None:
         import re
 
@@ -1981,6 +2044,25 @@ class RendererTests(TestCase):
                 # Reuses the existing gateway-discovery approach.
                 self.assertIn("ip -4 route", text)
 
+    def test_firewall_pi_ollama_accepts_runtime_selected_hostname(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            firewall.render(
+                context,
+                extra_domains=[],
+                pi_ollama=True,
+                ollama_hostname="host.docker.internal",
+            )
+            text = (context / "init-firewall.sh").read_text(encoding="utf-8")
+            self.assertIn('getent ahostsv4 "host.docker.internal"', text)
+            self.assertIn('"http://host.docker.internal:11434/api/tags"', text)
+            self.assertNotIn("ollama.project-sandbox.internal", text)
+            self.assertIn("sudo container system dns create host.docker.internal", text)
+            probe = '"http://host.docker.internal:11434/api/tags"'
+            self.assertGreater(
+                text.index(probe), text.index("iptables -A OUTPUT -j REJECT")
+            )
+
     def test_firewall_pi_ollama_absent_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             context = Path(tmp)
@@ -2088,6 +2170,22 @@ class RendererTests(TestCase):
             # and silently falls back to dark. "light/dark" is its documented
             # syntax for following the terminal background.
             self.assertEqual(settings["theme"], "light/dark")
+
+    def test_render_pi_ollama_accepts_runtime_selected_base_url(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            config_agents.render(
+                context,
+                pi_ollama=True,
+                ollama_base_url="http://host.docker.internal:11434/v1",
+            )
+            models = json.loads(
+                (context / "pi" / "models.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                models["providers"]["ollama"]["baseUrl"],
+                "http://host.docker.internal:11434/v1",
+            )
 
     def test_render_pi_ollama_honors_custom_model_list(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
