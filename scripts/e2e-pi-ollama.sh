@@ -26,7 +26,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 RUNTIME="auto"
 BASE_IMAGE="python:3.12-slim"
-OLLAMA_MODEL="qwen2.5-coder"
+OLLAMA_MODEL="qwen3.5:9b"
 TIMEOUT=300
 NO_BUILD=0
 KEEP=0
