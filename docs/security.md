@@ -101,10 +101,10 @@ the container and:
   pinned where the runtime permits it.
 - Ollama itself stays on host loopback. Local Linux bridge modes conditionally
   require `socat`, bound to the exact validated bridge address and terminated
-  with the sandbox. Apple `container` instead requires the user to preconfigure
-  localhost DNS; project-sandbox never invokes `sudo`. That Apple facility
-  changes macOS packet-filter state and may disable Private Relay, so its setup
-  remains an explicit administrator decision.
+  with the sandbox. Apple `container` requires the administrator-managed
+  `host.docker.internal` localhost DNS mapping described in `docs/usage.md`.
+  Creating it might disable network connectivity, so restart the container
+  system immediately afterward.
 - Mirrors the IPv4 allowlist into a parallel IPv6 set; falls back to disabling
   IPv6 via `sysctl` when `ip6_tables` is unavailable. The script exits with an
   error if both `ip6tables` and `sysctl` are unavailable.
@@ -225,3 +225,28 @@ The tool does not protect against:
   exists (delete or merge it first, or omit the flag to reuse the existing one).
 - `jj` is installed in the container and configured with the same global
   name/email identity passed to Git.
+# Agent gateway boundary
+
+Proxy mode provides provider-credential isolation, not immunity from local
+spend. OpenAI/Anthropic keys and host OAuth state are excluded, but the agent
+VM receives the gateway bearer key and can spend through the reachable local
+gateway during its session. Pi/OpenCode generated config and Apple `container`'s
+Bash env file are mode 0600, scoped to the selected session, redacted from
+diagnostics, and removed after use. Docker/Podman Bash sessions inherit only
+bare environment names through argv; values travel in the protected subprocess
+environment.
+Because Bash can launch either bundled agent, Bash proxy sessions mount private
+Pi and OpenCode proxy configs in addition to the `OPENAI_*` environment. Both
+configs contain the same gateway key, are mode 0600 before mounting, and are
+removed from staging after the session.
+
+Proxy-mode egress is gateway-only by default: normal OpenAI/Anthropic domains
+and the devcontainer's broad host-gateway exception are omitted. The exact
+forwarded gateway address and TCP port remain allowed. Only explicit
+`--extra-domain` and `--allow-github` options widen that policy.
+
+Loopback publishing is not a confinement boundary, particularly with Apple
+`container` vmnet. Keep the gateway's strict listener authentication enabled
+and never expose an unauthenticated listener. The external gateway's SQLite
+request log can contain complete prompts and responses; follow its retention,
+inspection, and pruning guidance before using sensitive material.

@@ -1,4 +1,3 @@
-import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -23,16 +22,19 @@ class OllamaNetworkTests(TestCase):
         )
         runtime_info.assert_not_called()
 
-    def test_apple_requires_preconfigured_dns_without_sudo(self) -> None:
-        with patch.object(socket, "gethostbyname", side_effect=socket.gaierror):
-            with self.assertRaisesRegex(SystemExit, "sudo container system dns create"):
-                ollama_network.prepare(APPLE_CONTAINER)
+    def test_apple_uses_configured_host_alias(self) -> None:
+        plan = ollama_network.prepare(APPLE_CONTAINER)
+        self.assertEqual(plan.strategy, "apple-configured-host-alias")
+        self.assertEqual(plan.hostname, "host.docker.internal")
 
-    def test_apple_accepts_documentation_address(self) -> None:
-        with patch.object(socket, "gethostbyname", return_value="203.0.113.113"):
-            plan = ollama_network.prepare(APPLE_CONTAINER)
-        self.assertEqual(plan.strategy, "apple-preconfigured-localhost-dns")
-        self.assertEqual(plan.endpoint, "203.0.113.113")
+    def test_apple_setup_notice_includes_dns_and_restart_warning(self) -> None:
+        notice = ollama_network.apple_setup_notice("Ollama")
+        self.assertIn(
+            "sudo container system dns create host.docker.internal --localhost 203.0.113.113",
+            notice,
+        )
+        self.assertIn("might disable network connectivity", notice)
+        self.assertIn("container system stop && container system start", notice)
 
     def test_rootless_podman_uses_native_alias(self) -> None:
         with patch.object(

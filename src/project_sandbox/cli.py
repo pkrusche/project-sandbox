@@ -12,6 +12,7 @@ from pathlib import Path
 
 from . import (
     __version__,
+    agent_proxy,
     build_cache,
     chroot,
     config_agents,
@@ -151,6 +152,22 @@ def build_parser() -> ArgumentParser:
             "pre-configure Pi to use it as the default provider. Only takes "
             "effect together with --agent pi; a no-op otherwise."
         ),
+    )
+    p.add_argument(
+        "--agent-proxy",
+        metavar="URL",
+        help="Route pi, OpenCode, or Bash through an authenticated local agentgateway; see docs/agent-proxy.md.",
+    )
+    p.add_argument(
+        "--agent-proxy-key-env",
+        default=agent_proxy.DEFAULT_KEY_ENV,
+        metavar="NAME",
+        help="Gateway-key environment fallback (default: AGENTGATEWAY_API_KEY).",
+    )
+    p.add_argument(
+        "--agent-proxy-key",
+        metavar="KEY",
+        help="Unsafe last-resort gateway key; shell history and process listings may expose it.",
     )
     p.add_argument(
         "--ollama-model",
@@ -320,6 +337,7 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--build-only and --no-build are mutually exclusive")
     run_agent = _requested_agent(args)
     pi_ollama_enabled = _pi_ollama_enabled(args, run_agent)
+    proxy_port = _validate_agent_proxy_args(args, run_agent)
     _validate_api_key_injection_args(args, run_agent)
     _validate_ollama_models(args.ollama_model)
     is_chroot = args.runtime == container_cli.CHROOT.name
@@ -352,7 +370,7 @@ def main(argv: list[str] | None = None) -> int:
     # depend on.
     if (
         run_agent is not None
-        and args.no_forward_credentials
+        and (args.no_forward_credentials or args.agent_proxy)
         and run_agent not in available_agents
     ):
         available_agents = (*available_agents, run_agent)
@@ -378,6 +396,39 @@ def main(argv: list[str] | None = None) -> int:
             available_agents=available_agents,
         )
 
+    proxy_key: str | None = None
+    proxy_models: list[str] = []
+    proxy_base_url: str | None = None
+    proxy_selected_model: str | None = None
+    proxy_hostname = (
+        ollama_network.forwarding_hostname(runtime, agent_proxy.HOSTNAME)
+        if runtime is not None
+        else agent_proxy.HOSTNAME
+    )
+    ollama_hostname = (
+        ollama_network.forwarding_hostname(runtime, ollama_network.HOSTNAME)
+        if runtime is not None
+        else ollama_network.HOSTNAME
+    )
+    ollama_base_url = f"http://{ollama_hostname}:{ollama_network.PORT}/v1"
+    if args.agent_proxy:
+        proxy_key, key_source = agent_proxy.resolve_key(
+            args.agent_proxy_key_env, args.agent_proxy_key
+        )
+        if key_source == "command line":
+            print(
+                "[W] --agent-proxy-key was exposed in argv/shell history; prefer pass or an environment variable."
+            )
+        proxy_models = agent_proxy.discover_models(args.agent_proxy, proxy_key)
+        proxy_selected_model = args.model.removeprefix("agent-proxy/")
+        if proxy_selected_model not in proxy_models:
+            raise SystemExit(
+                f"Selected model {proxy_selected_model!r} is unavailable from the agent proxy"
+            )
+        proxy_base_url = agent_proxy.forwarded_url(
+            args.agent_proxy, hostname=proxy_hostname
+        )
+
     # Validate fatal inputs BEFORE creating a worktree, so a bad build source,
     # missing prompt, or unwritable log path fails without first orphaning a
     # branch/worktree. _resolve_build_source also writes the synthesised
@@ -397,6 +448,12 @@ def main(argv: list[str] | None = None) -> int:
     # construction plus the subprocess environment below then agree on a
     # single snapshot instead of re-reading the files.
     api_key_values = _api_key_env_values(args)
+    if run_agent == "bash" and proxy_base_url and proxy_key:
+        api_key_values = {
+            "OPENAI_BASE_URL": proxy_base_url,
+            "OPENAI_API_KEY": proxy_key,
+            "OPENAI_MODEL": args.model,
+        }
     allow_github = _allow_github(args, run_agent)
     _warn_byok_provider_allowlist(args, run_agent)
     _warn_pi_ollama_no_firewall(args, pi_ollama_enabled)
@@ -445,16 +502,25 @@ def main(argv: list[str] | None = None) -> int:
                 extra_domains=args.extra_domain,
                 allow_github=allow_github,
                 pi_ollama=pi_ollama_enabled,
+                ollama_hostname=ollama_hostname,
+                agent_proxy_port=proxy_port,
+                agent_proxy_hostname=proxy_hostname,
             )
         else:
             chroot.render(context_dir)
 
+        # Render only secret-free agent configuration before the image build.
+        # The build context may be the whole project and synthesized Dockerfiles
+        # use ``COPY . .``, so a proxy provider file rendered here could leak the
+        # gateway key into the build context or an image layer.  This call also
+        # removes secret-bearing proxy files left by an interrupted prior run.
         cfg = config_agents.render(
             context_dir,
             pi_ollama=pi_ollama_enabled,
             ollama_models=args.ollama_model,
+            ollama_base_url=ollama_base_url,
         )
-        forward_credentials = not args.no_forward_credentials
+        forward_credentials = not args.no_forward_credentials and not args.agent_proxy
         # Before staging, ask the agent's own CLI to refresh its host token so the
         # container starts with a near-full window. bash may run claude, so it
         # refreshes the claude token; opencode/pi have no delegated refresh (no-op).
@@ -608,8 +674,26 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Image ready: {args.image_tag}")
             return 0
 
-        if pi_ollama_enabled:
-            ollama_plan = ollama_network.prepare(runtime)
+        # The image build is complete, so it is now safe to stage the selected
+        # agent's private proxy provider configuration in the project context.
+        if proxy_base_url and proxy_key and run_agent:
+            cfg = config_agents.render(
+                context_dir,
+                agent_proxy=(proxy_base_url, proxy_models, proxy_key, run_agent),
+                agent_proxy_model=(
+                    proxy_selected_model if run_agent == "bash" else None
+                ),
+            )
+
+        if pi_ollama_enabled or args.agent_proxy:
+            ollama_plan = ollama_network.prepare(
+                runtime,
+                hostname=proxy_hostname if args.agent_proxy else ollama_hostname,
+                port=proxy_port or ollama_network.PORT,
+                label="Agent proxy" if args.agent_proxy else "Ollama",
+            )
+            if runtime == container_cli.APPLE_CONTAINER:
+                print(ollama_network.apple_setup_notice(ollama_plan.label))
             if args.verbose:
                 print(ollama_network.describe(ollama_plan))
 
@@ -716,6 +800,13 @@ def main(argv: list[str] | None = None) -> int:
             )
         if ollama_plan is not None:
             ollama_plan.close()
+        if args.agent_proxy:
+            for secret_file in (
+                context_dir / "pi" / "models.json",
+                context_dir / "opencode" / "opencode.json",
+                context_dir / "api-keys.env",
+            ):
+                secret_file.unlink(missing_ok=True)
         if wt is not None:
             if agent_ran:
                 _finalize_worktree(args, project=project, wt=wt, exit_code=exit_code)
@@ -838,6 +929,55 @@ def _pi_ollama_enabled(args, run_agent: str | None) -> bool:
     return bool(args.pi_ollama and run_agent == "pi")
 
 
+def _validate_agent_proxy_args(args, run_agent: str | None) -> int | None:
+    if not args.agent_proxy:
+        if (
+            args.agent_proxy_key
+            or args.agent_proxy_key_env != agent_proxy.DEFAULT_KEY_ENV
+        ):
+            raise SystemExit(
+                "--agent-proxy-key-env/--agent-proxy-key require --agent-proxy"
+            )
+        return None
+    if run_agent not in ("pi", "opencode", "bash"):
+        raise SystemExit(
+            "--agent-proxy supports only --agent pi, --agent opencode, or --agent bash"
+        )
+    if not args.model:
+        raise SystemExit("--agent-proxy requires the regular --model option")
+    _validate_env_name(args.agent_proxy_key_env, source="--agent-proxy-key-env")
+    if args.no_firewall:
+        print(
+            "[W] --agent-proxy with --no-firewall: its internal hostname may not resolve; firewall hostname pinning is disabled."
+        )
+    if args.pi_ollama:
+        raise SystemExit("--agent-proxy and --pi-ollama are mutually exclusive")
+    if args.api_key_env or args.api_key_env_file:
+        raise SystemExit(
+            "--agent-proxy cannot be combined with --api-key-env or --api-key-env-file"
+        )
+    if run_agent == "opencode":
+        model = args.model
+        if not model.startswith("agent-proxy/") or not model.removeprefix(
+            "agent-proxy/"
+        ):
+            raise SystemExit(
+                "OpenCode proxy models must use --model agent-proxy/<model-id>"
+            )
+    _path, port = agent_proxy.validate_url(args.agent_proxy)
+    return port
+
+
+def _runtime_model(args, run_agent: str) -> str | None:
+    """Return the provider-qualified model identifier passed to the agent."""
+    model = getattr(args, "model", None)
+    if not model:
+        return None
+    if getattr(args, "agent_proxy", None) and run_agent == "pi":
+        return f"agent-proxy/{model.removeprefix('agent-proxy/')}"
+    return model
+
+
 def _ensure_agent_available(run_agent: str, available_agents: tuple[str, ...]) -> None:
     if run_agent in available_agents:
         return
@@ -879,6 +1019,15 @@ def _dry_run(
         _validate_chroot_session(run_agent)
 
     print("DRY RUN: no files, worktrees, images, or containers will be created.")
+    if args.agent_proxy:
+        print(f"Would use agent proxy: {args.agent_proxy}")
+        print(f"Would select model: {args.model}")
+        print("Would defer authenticated model discovery and proxy configuration.")
+        if run_agent == "bash":
+            print(
+                "Would inject Bash proxy environment: OPENAI_BASE_URL, "
+                "OPENAI_API_KEY, OPENAI_MODEL (values redacted)."
+            )
     if worktree is not None:
         print(f"Would use worktree at: {workspace}")
         if isinstance(worktree, jj_workspace_mod.JjWorkspace):
@@ -940,11 +1089,35 @@ def _dry_run(
     if args.build_only:
         print(f"Would build image only: {args.image_tag}")
         return 0
+    proxy_port = (
+        agent_proxy.validate_url(args.agent_proxy)[1] if args.agent_proxy else None
+    )
     ollama_plan = (
-        ollama_network.prepare(runtime, dry_run=True) if pi_ollama_enabled else None
+        ollama_network.prepare(
+            runtime,
+            dry_run=True,
+            hostname=agent_proxy.HOSTNAME
+            if args.agent_proxy
+            else ollama_network.HOSTNAME,
+            port=proxy_port or ollama_network.PORT,
+            label="Agent proxy" if args.agent_proxy else "Ollama",
+        )
+        if pi_ollama_enabled or args.agent_proxy
+        else None
     )
     if ollama_plan is not None:
+        if runtime == container_cli.APPLE_CONTAINER:
+            print(ollama_network.apple_setup_notice(ollama_plan.label))
         print(f"Would use {ollama_network.describe(ollama_plan)}")
+    preview_api_key_values = (
+        {
+            "OPENAI_BASE_URL": "[REDACTED]",
+            "OPENAI_API_KEY": "[REDACTED]",
+            "OPENAI_MODEL": "[REDACTED]",
+        }
+        if args.agent_proxy and run_agent == "bash"
+        else None
+    )
     cmd, log_path, unsupervised, container_stop_argv = _build_session_command(
         args,
         project=project,
@@ -959,6 +1132,7 @@ def _dry_run(
         pi_cfg=pi_cfg,
         runtime=runtime,
         create_prompt_files=False,
+        api_key_values=preview_api_key_values,
         ollama_add_host=ollama_plan.add_host if ollama_plan else None,
     )
     if unsupervised:
@@ -1310,6 +1484,10 @@ def _validate_session_inputs(args) -> None:
 
 
 def _allow_github(args, run_agent: str | None) -> bool:
+    if getattr(args, "agent_proxy", None):
+        # Proxy mode is gateway-only by default. Do not infer an exception from
+        # a Bash prompt; only the explicit --allow-github flag may widen it.
+        return bool(args.allow_github)
     return bool(args.allow_github or _uses_github_copilot_cli(args, run_agent))
 
 
@@ -1338,6 +1516,7 @@ def _warn_byok_provider_allowlist(args, run_agent: str | None) -> None:
     if (
         run_agent not in ("opencode", "pi")
         or args.no_firewall
+        or args.agent_proxy
         or (run_agent == "pi" and args.pi_ollama)
     ):
         return
@@ -1350,16 +1529,13 @@ def _warn_byok_provider_allowlist(args, run_agent: str | None) -> None:
 
 
 def _warn_pi_ollama_no_firewall(args, pi_ollama_enabled: bool) -> None:
-    # Both the port-scoped gateway allow rule and the
-    # ollama.project-sandbox.internal /etc/hosts pin live in the firewall
-    # script; with --no-firewall neither runs, so Pi's baked config points at
-    # a hostname nothing inside the container resolves.
+    # The port-scoped allow rule, runtime-selected host pin, and connectivity
+    # probe live in the firewall script; with --no-firewall none of them runs.
     if not pi_ollama_enabled or not args.no_firewall:
         return
     print(
-        "[W] --pi-ollama with --no-firewall: the ollama.project-sandbox.internal "
-        "hostname baked into Pi's config will not resolve, since the /etc/hosts "
-        "pin and gateway route are only set up as part of firewall initialization. "
+        "[W] --pi-ollama with --no-firewall: the host pin and gateway route "
+        "are only set up as part of firewall initialization. "
         "Drop --no-firewall, or point Pi at Ollama manually."
     )
 
@@ -1550,6 +1726,11 @@ def _build_session_command(
 ) -> tuple[list[str], Path | None, bool, list[str] | None]:
     # Agent availability is validated up front in main() via _ensure_agent_available.
     extra_mounts = list(args.extra_mounts)
+    if getattr(args, "agent_proxy", None) and run_agent in ("opencode", "bash"):
+        extra_mounts.append(
+            f"type=bind,source={(context_dir / 'opencode').resolve(strict=False)},"
+            "target=/project-sandbox-config/opencode,readonly"
+        )
     if worktree is not None:
         if isinstance(worktree, jj_workspace_mod.JjWorkspace):
             vcs_dir = (project / ".jj").resolve()
@@ -1617,8 +1798,9 @@ def _build_session_command(
     # Model/effort apply in both interactive and headless runs; the entrypoint
     # branch for each agent turns these into the agent's own --model/--effort
     # flags (and ignores them for bash).
-    if getattr(args, "model", None):
-        extra_env.append(f"PROJECT_SANDBOX_MODEL={args.model}")
+    runtime_model = _runtime_model(args, run_agent)
+    if runtime_model:
+        extra_env.append(f"PROJECT_SANDBOX_MODEL={runtime_model}")
     if getattr(args, "effort", None):
         extra_env.append(f"PROJECT_SANDBOX_EFFORT={args.effort}")
     if run_agent == "pi" and getattr(args, "pi_tools", None):
@@ -1723,7 +1905,9 @@ def _build_session_command(
             f"type=bind,source={mask_source},target={WORKSPACE_CARGO_TARGET},readonly"
         )
 
-    forward_credentials = not getattr(args, "no_forward_credentials", False)
+    forward_credentials = not getattr(
+        args, "no_forward_credentials", False
+    ) and not getattr(args, "agent_proxy", None)
     runtime_credential_dirs = config_agents.filter_credential_dirs(
         credential_dirs, run_mode_agent
     )

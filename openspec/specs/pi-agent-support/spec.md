@@ -3,9 +3,7 @@
 ## Purpose
 
 Support pi.dev's `pi` coding agent as a selectable agent in project-sandbox, alongside `claude`, `codex`, and `opencode`.
-
 ## Requirements
-
 ### Requirement: Pi is a selectable agent
 The CLI SHALL accept `"pi"` as a valid value for `--agent`, alongside `claude`, `codex`, and `opencode`.
 
@@ -18,19 +16,31 @@ The CLI SHALL accept `"pi"` as a valid value for `--agent`, alongside `claude`, 
 - **THEN** the Dockerfile installs `@earendil-works/pi-coding-agent` pinned to version `0.80.6` via a dedicated `install_pi` template flag
 
 ### Requirement: Pi credentials are mounted as a flat file
-The system SHALL sync and mount Pi's credential file (`~/.pi/agent/auth.json`, mode 0600) into the container at `/project-sandbox-secrets/pi`, without mounting any `/project-sandbox-config/pi` path.
+When credential forwarding is enabled, the system SHALL sync Pi's credential file (`~/.pi/agent/auth.json`, mode 0600) through the generic single-file credential path. It SHALL mount the staged file read-only at `/project-sandbox-secrets/pi` and copy it to `$HOME/.pi/agent/auth.json` only when Pi is the selected direct agent or the execution mode is intentionally multi-agent. It SHALL NOT mount a `/project-sandbox-config/pi` path solely for credential forwarding.
 
 #### Scenario: Credentials present on host
 - **WHEN** `~/.pi/agent/auth.json` exists on the host and Pi is the selected agent
-- **THEN** the file is synced via the generic single-file credential sync path and bind-mounted read-only at `/project-sandbox-secrets/pi` (then copied to `$HOME/.pi/agent/auth.json`) inside the container
+- **THEN** the file is staged, bind-mounted read-only at `/project-sandbox-secrets/pi`, and copied to `$HOME/.pi/agent/auth.json` inside the container
+
+#### Scenario: Pi credentials excluded from another named-agent run
+- **WHEN** `~/.pi/agent/auth.json` exists on the host and Claude, Codex, or OpenCode is the selected agent
+- **THEN** `/project-sandbox-secrets/pi` is not mounted and `$HOME/.pi/agent/auth.json` is not provisioned
+
+#### Scenario: Pi credentials included in a bash session
+- **WHEN** `~/.pi/agent/auth.json` exists on the host and bash is selected with credential forwarding enabled
+- **THEN** the staged Pi credential is mounted and provisioned as part of the documented multi-agent environment
+
+#### Scenario: Pi credentials included in a devcontainer
+- **WHEN** `~/.pi/agent/auth.json` exists on the host and a devcontainer is generated with credential forwarding enabled
+- **THEN** the staged Pi credential is included as part of the documented multi-agent devcontainer environment
 
 #### Scenario: Credentials absent on host
 - **WHEN** `~/.pi/agent/auth.json` does not exist on the host
-- **THEN** the container is built and run without a `/project-sandbox-secrets/pi` mount, and no error is raised
+- **THEN** no `/project-sandbox-secrets/pi` mount is created and no error is raised
 
 #### Scenario: No baked config file
-- **WHEN** the container is built with Pi enabled
-- **THEN** no `/project-sandbox-config/pi` mount or rendered config file is created, matching Pi having no host-renderable configuration
+- **WHEN** Pi credentials are eligible for forwarding or the container is built with Pi enabled
+- **THEN** credential forwarding does not create a `/project-sandbox-config/pi` mount or place `auth.json` in a generated configuration directory
 
 ### Requirement: Pi headless dispatch always passes --approve
 The entrypoint SHALL dispatch headless Pi runs via `pi -p --mode json "<prompt>" --approve`, and SHALL always include `--approve` since Pi has no interactive trust prompt available in headless mode. `--mode json` selects the JSON event stream that the live markdown translation and the transcript sidecar are rendered from; `-p` keeps the run non-interactive regardless of output mode.
@@ -93,3 +103,4 @@ The system SHALL NOT attempt OAuth refresh delegation or token-expiry parsing fo
 #### Scenario: Token expiry check with Pi selected
 - **WHEN** the CLI evaluates credential expiry with `--agent pi`
 - **THEN** the expiry lookup returns `None` for Pi and does not raise
+

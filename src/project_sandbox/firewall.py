@@ -30,6 +30,9 @@ def render(
     extra_domains: list[str],
     allow_github: bool = False,
     pi_ollama: bool = False,
+    ollama_hostname: str = "ollama.project-sandbox.internal",
+    agent_proxy_port: int | None = None,
+    agent_proxy_hostname: str = "agent-proxy.project-sandbox.internal",
 ) -> Path:
     _validate_domains(extra_domains)
     tmpl = templating.get_template("init-firewall.sh.j2")
@@ -40,14 +43,22 @@ def render(
         allow_github=allow_github,
         allow_host_network=False,
         pi_ollama=pi_ollama,
+        ollama_hostname=ollama_hostname,
+        agent_proxy_port=agent_proxy_port,
+        agent_proxy_hostname=agent_proxy_hostname,
     )
     _write(
         tmpl,
         context_dir / "init-firewall-devcontainer.sh",
         extra_domains=extra_domains,
         allow_github=allow_github,
-        allow_host_network=True,
+        # Proxy mode is gateway-only by default, including in the generated
+        # devcontainer variant. Do not retain its broad host-gateway exception.
+        allow_host_network=agent_proxy_port is None,
         pi_ollama=pi_ollama,
+        ollama_hostname=ollama_hostname,
+        agent_proxy_port=agent_proxy_port,
+        agent_proxy_hostname=agent_proxy_hostname,
     )
     return container
 
@@ -60,6 +71,9 @@ def _write(
     allow_github: bool,
     allow_host_network: bool,
     pi_ollama: bool,
+    ollama_hostname: str,
+    agent_proxy_port: int | None,
+    agent_proxy_hostname: str,
 ) -> Path:
     out.write_text(
         tmpl.render(
@@ -67,6 +81,9 @@ def _write(
             allow_github=allow_github,
             allow_host_network=allow_host_network,
             pi_ollama=pi_ollama,
+            ollama_hostname=ollama_hostname,
+            agent_proxy_port=agent_proxy_port,
+            agent_proxy_hostname=agent_proxy_hostname,
         )
         + "\n",
         encoding="utf-8",

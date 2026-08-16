@@ -34,9 +34,10 @@ Given `project-sandbox --agent claude /path/to/repo python:3.12-slim`, it also:
 
 With `--agent pi --pi-ollama`, a runtime networking adapter is selected before
 step 4. Native host-loopback forwarding is preferred; local Linux bridge modes
-start a short-lived `socat` proxy on the exact bridge address. Apple `container`
-uses a user-preconfigured localhost DNS mapping and is never modified with
-administrator privileges by project-sandbox.
+start a short-lived `socat` proxy on the exact bridge address. Agent-proxy and
+Ollama sessions on Apple `container` use a user-configured
+`host.docker.internal` localhost DNS mapping; see the setup and restart warning
+in `docs/usage.md`.
 
 On Linux, `--runtime chroot` explicitly selects a dummy filesystem-layout
 verification runtime. It uses rootless `unshare --map-root-user --mount`, bind
