@@ -74,12 +74,14 @@ project-sandbox /absolute/path/to/repo --dockerfile /absolute/path/to/repo/Docke
 
 ## Documentation
 
-- [Documentation index](https://github.com/pkrusche/project-sandbox/tree/main/docs)
-- [Usage guide](https://github.com/pkrusche/project-sandbox/blob/main/docs/usage.md)
-- [Generated files and runtime behavior](https://github.com/pkrusche/project-sandbox/blob/main/docs/runtime.md)
-- [Security model](https://github.com/pkrusche/project-sandbox/blob/main/docs/security.md)
-- [Development guide](https://github.com/pkrusche/project-sandbox/blob/main/docs/development.md)
-- [References and related projects](https://github.com/pkrusche/project-sandbox/blob/main/docs/references.md)
+- [Usage guide](docs/usage.md)
+- [Agent proxy setup and security](docs/agent-proxy.md)
+- [Generated files and runtime behavior](docs/runtime.md)
+- [Security model](docs/security.md)
+- [Development guide](docs/development.md)
+- [References and related projects](docs/references.md)
+- [Changelog](CHANGELOG.md)
+- [Roadmap](ROADMAP.md) and [future work](TODO.md)
 
 ## License
 
