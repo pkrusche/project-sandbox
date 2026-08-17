@@ -11,6 +11,42 @@ from project_sandbox.container_cli import APPLE_CONTAINER, CHROOT, DOCKER, PODMA
 
 
 class OllamaNetworkTests(TestCase):
+    def test_socat_start_failure_names_the_requested_service(self) -> None:
+        plan = ollama_network.ForwardingPlan(
+            "linux-bridge-socat",
+            endpoint="172.17.0.1",
+            port=18080,
+            label="Internet proxy",
+        )
+        with (
+            patch.object(ollama_network.shutil, "which", return_value="/usr/bin/socat"),
+            patch.object(
+                ollama_network.subprocess,
+                "Popen",
+                side_effect=OSError("cannot execute"),
+            ),
+            self.assertRaisesRegex(SystemExit, "Internet proxy socat proxy"),
+        ):
+            plan.start()
+
+    def test_linux_socat_preserves_ipv6_loopback_upstream(self) -> None:
+        process = MagicMock()
+        process.poll.return_value = None
+        plan = ollama_network.ForwardingPlan(
+            "linux-bridge-socat",
+            endpoint="172.17.0.1",
+            port=18080,
+            label="Internet proxy",
+            loopback_host="::1",
+        )
+        with (
+            patch.object(ollama_network.shutil, "which", return_value="/usr/bin/socat"),
+            patch.object(ollama_network.subprocess, "Popen", return_value=process) as popen,
+            patch.object(ollama_network.time, "sleep"),
+        ):
+            plan.start()
+        self.assertEqual(popen.call_args.args[0][-1], "TCP6:[::1]:18080")
+
     def test_multiple_services_share_mapping_and_reject_duplicate_ports(self) -> None:
         plans = ollama_network.prepare_services(
             CHROOT,

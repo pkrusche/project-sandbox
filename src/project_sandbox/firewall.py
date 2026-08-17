@@ -57,8 +57,6 @@ def render(
             destinations.append(
                 LocalTcpDestination("Agent proxy", agent_proxy_hostname, agent_proxy_port)
             )
-        if pi_ollama:
-            destinations.append(LocalTcpDestination("Ollama", ollama_hostname, 11434))
     tmpl = templating.get_template("init-firewall.sh.j2")
     container = _write(
         tmpl,
@@ -78,9 +76,9 @@ def render(
         context_dir / "init-firewall-devcontainer.sh",
         extra_domains=extra_domains,
         allow_github=allow_github,
-        # Proxy mode is gateway-only by default, including in the generated
-        # devcontainer variant. Do not retain its broad host-gateway exception.
-        allow_host_network=agent_proxy_port is None,
+        # Internet-proxy mode permits only its explicit, port-scoped local
+        # destinations, including in the generated devcontainer variant.
+        allow_host_network=policy == NORMAL and agent_proxy_port is None,
         pi_ollama=pi_ollama,
         ollama_hostname=ollama_hostname,
         agent_proxy_port=agent_proxy_port,

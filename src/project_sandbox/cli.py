@@ -509,7 +509,7 @@ def main(argv: list[str] | None = None) -> int:
                 context_dir,
                 extra_domains=args.extra_domain,
                 allow_github=allow_github,
-                pi_ollama=pi_ollama_enabled and internet_proxy_config is None,
+                pi_ollama=pi_ollama_enabled,
                 ollama_hostname=ollama_hostname,
                 agent_proxy_port=proxy_port,
                 agent_proxy_hostname=proxy_hostname,
@@ -1005,6 +1005,11 @@ def _validate_internet_proxy_args(args) -> internet_proxy.InternetProxy | None:
     if not value:
         return None
     config = internet_proxy.parse(value)
+    if args.runtime == container_cli.CHROOT.name:
+        raise SystemExit(
+            "--internet-proxy does not support --runtime chroot because chroot "
+            "sessions cannot enforce an isolated firewall; use a container runtime"
+        )
     if args.no_firewall:
         raise SystemExit(
             "--internet-proxy cannot be combined with --no-firewall: proxy "

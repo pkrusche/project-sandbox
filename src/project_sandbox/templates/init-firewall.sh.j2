@@ -25,7 +25,7 @@ if [ -z "${LOCAL_SERVICE_IP4_LIST[0]+x}" ]; then
   exit 1
 fi
 {% endif %}
-{% if pi_ollama %}
+{% if pi_ollama and policy == "normal" %}
 mapfile -t OLLAMA_HOST_IP4_LIST < <(
   getent ahostsv4 "{{ ollama_hostname }}" 2>/dev/null |
     awk '{print $1}' | sort -u
@@ -231,7 +231,7 @@ if [ "$IPV6_FW" = "1" ]; then
 fi
 {% endif %}
 
-{% if pi_ollama %}
+{% if pi_ollama and policy == "normal" %}
 # ============================================================
 # Host gateway (Pi + Ollama)
 # ============================================================

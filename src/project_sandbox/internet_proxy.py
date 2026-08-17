@@ -24,7 +24,7 @@ class InternetProxy:
 
     @property
     def service(self) -> LocalService:
-        return LocalService("Internet proxy", self.port)
+        return LocalService("Internet proxy", self.port, loopback_host=self.host)
 
 
 def parse(value: str) -> InternetProxy:

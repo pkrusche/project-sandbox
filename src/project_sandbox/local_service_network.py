@@ -29,6 +29,7 @@ class LocalService:
     label: str
     port: int
     protocol: str = "tcp"
+    loopback_host: str = "127.0.0.1"
 
     def __post_init__(self) -> None:
         if self.protocol != "tcp":
@@ -46,6 +47,7 @@ class ForwardingPlan:
     hostname: str = HOSTNAME
     port: int = PORT
     label: str = "Ollama"
+    loopback_host: str = "127.0.0.1"
 
     def start(self) -> None:
         if self.strategy != "linux-bridge-socat":
@@ -58,10 +60,15 @@ class ForwardingPlan:
                 f"{self.label} requires socat for this Linux bridge runtime; "
                 "install socat and retry."
             )
+        upstream = (
+            f"TCP6:[{self.loopback_host}]:{self.port}"
+            if ":" in self.loopback_host
+            else f"TCP:{self.loopback_host}:{self.port}"
+        )
         argv = [
             socat,
             f"TCP-LISTEN:{self.port},bind={self.endpoint},reuseaddr,fork",
-            f"TCP:127.0.0.1:{self.port}",
+            upstream,
         ]
         try:
             self.proxy = subprocess.Popen(
@@ -73,12 +80,14 @@ class ForwardingPlan:
                 start_new_session=True,
             )
         except OSError as exc:
-            raise SystemExit(f"Could not start Ollama socat proxy: {exc}") from exc
+            raise SystemExit(
+                f"Could not start {self.label} socat proxy: {exc}"
+            ) from exc
         time.sleep(0.1)
         if self.proxy.poll() is not None:
             stderr = self.proxy.stderr.read().strip() if self.proxy.stderr else ""
             detail = f": {stderr}" if stderr else ""
-            raise SystemExit(f"Ollama socat proxy failed to start{detail}")
+            raise SystemExit(f"{self.label} socat proxy failed to start{detail}")
 
     def close(self) -> None:
         proc = self.proxy
@@ -108,6 +117,7 @@ def prepare(
     hostname: str = HOSTNAME,
     port: int = PORT,
     label: str = "Ollama",
+    loopback_host: str = "127.0.0.1",
 ) -> ForwardingPlan:
     """Select and validate the safest forwarding strategy for ``runtime``."""
     hostname = forwarding_hostname(runtime, hostname)
@@ -119,6 +129,7 @@ def prepare(
             hostname=hostname,
             port=port,
             label=label,
+            loopback_host=loopback_host,
         )
 
     if runtime == APPLE_CONTAINER:
@@ -127,6 +138,7 @@ def prepare(
             hostname=hostname,
             port=port,
             label=label,
+            loopback_host=loopback_host,
         )
 
     info = {} if dry_run else _runtime_info(runtime)
@@ -137,6 +149,7 @@ def prepare(
             hostname=hostname,
             port=port,
             label=label,
+            loopback_host=loopback_host,
         )
     if runtime == DOCKER and _docker_is_desktop(info):
         return ForwardingPlan(
@@ -145,10 +158,15 @@ def prepare(
             hostname=hostname,
             port=port,
             label=label,
+            loopback_host=loopback_host,
         )
     if dry_run:
         return ForwardingPlan(
-            "runtime-probe-required", hostname=hostname, port=port, label=label
+            "runtime-probe-required",
+            hostname=hostname,
+            port=port,
+            label=label,
+            loopback_host=loopback_host,
         )
 
     endpoint = _bridge_gateway(runtime)
@@ -161,6 +179,7 @@ def prepare(
         hostname=hostname,
         port=port,
         label=label,
+        loopback_host=loopback_host,
     )
 
 
@@ -185,6 +204,7 @@ def prepare_services(
             hostname=HOSTNAME,
             port=service.port,
             label=service.label,
+            loopback_host=service.loopback_host,
         )
         # A sandbox needs only one hostname mapping even though Linux needs a
         # separate managed socat listener for each port.

@@ -55,6 +55,19 @@ class InternetProxyTests(TestCase):
             with self.subTest(conflict=conflict), self.assertRaises(SystemExit):
                 cli._validate_internet_proxy_args(args)
 
+    def test_cli_rejects_chroot_without_an_isolated_firewall(self) -> None:
+        args = cli.build_parser().parse_args(
+            [
+                "--runtime",
+                "chroot",
+                "--internet-proxy",
+                "http://127.0.0.1:18080",
+                "project",
+            ]
+        )
+        with self.assertRaisesRegex(SystemExit, "cannot enforce an isolated firewall"):
+            cli._validate_internet_proxy_args(args)
+
     def test_absent_option_is_no_op(self) -> None:
         args = cli.build_parser().parse_args(["project"])
         self.assertIsNone(cli._validate_internet_proxy_args(args))
@@ -65,6 +78,7 @@ class InternetProxyTests(TestCase):
                 Path(tmp),
                 extra_domains=[],
                 policy=firewall.INTERNET_PROXY,
+                pi_ollama=True,
                 local_destinations=[
                     firewall.LocalTcpDestination(
                         "Internet proxy", "host.docker.internal", 18080
@@ -74,11 +88,18 @@ class InternetProxyTests(TestCase):
                     ),
                 ],
             )
-            text = (Path(tmp) / "init-firewall.sh").read_text()
-        self.assertIn("--dport 18080", text)
-        self.assertIn("--dport 11434", text)
-        self.assertNotIn("ipset create allowed-ipv4", text)
-        self.assertNotIn('"api.openai.com"', text)
-        self.assertNotIn("api.github.com/meta", text)
-        self.assertIn("requires enforceable IPv6 firewall policy", text)
-        self.assertIn("--dport 53 -j DROP", text)
+            rendered = [
+                (Path(tmp) / name).read_text()
+                for name in ("init-firewall.sh", "init-firewall-devcontainer.sh")
+            ]
+        for text in rendered:
+            with self.subTest(script=text.splitlines()[-1]):
+                self.assertIn("--dport 18080", text)
+                self.assertIn("--dport 11434", text)
+                self.assertNotIn("ipset create allowed-ipv4", text)
+                self.assertNotIn('"api.openai.com"', text)
+                self.assertNotIn("api.github.com/meta", text)
+                self.assertNotIn("Allowing host gateway", text)
+                self.assertIn("requires enforceable IPv6 firewall policy", text)
+                self.assertIn("--dport 53 -j DROP", text)
+                self.assertIn("final firewall cannot reach loopback-bound Ollama", text)
