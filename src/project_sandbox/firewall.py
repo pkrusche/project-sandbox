@@ -55,7 +55,9 @@ def render(
     if not destinations:
         if agent_proxy_port is not None:
             destinations.append(
-                LocalTcpDestination("Agent proxy", agent_proxy_hostname, agent_proxy_port)
+                LocalTcpDestination(
+                    "Agent proxy", agent_proxy_hostname, agent_proxy_port
+                )
             )
     tmpl = templating.get_template("init-firewall.sh.j2")
     container = _write(

@@ -70,6 +70,24 @@ availability-gated Ollama checks. Pass `--with-agent-proxy` only when you intend
 to run the gateway-only network/credential isolation audit followed by two
 billable Pi/OpenCode LLM requests.
 
+The full Internet-routing acceptance test is deliberately opt-in because it
+stops and restarts both external services and makes real Agentgateway requests:
+
+```bash
+./scripts/run-e2e-tests.sh --runtime docker --with-internet-proxy \
+  --blocked-url https://blocked.example.test/ \
+  --internet-proxy-dir ../internet-proxy-locally \
+  --agentgateway-dir ../agentgateway-locally
+```
+
+Use the denied public-domain fixture configured by `internet-proxy-locally`, not
+the placeholder above. The script verifies the proxy-policy denial separately
+from firewall failures; direct curl, unset-proxy, raw TCP, UDP, and DNS bypasses;
+a real AI completion; cross-service routing; independent failure; fail-closed
+proxy loss; and stable endpoint recovery through `./run.py restart`. Both
+control commands default to `./run.py {action}` and can be overridden on the
+standalone script when an installation uses a different lifecycle command.
+
 Use the unified host-side entry point for full local verification:
 
 ```bash

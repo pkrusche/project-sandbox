@@ -300,7 +300,9 @@ def _validate_endpoint(value: str, *, allow_documentation: bool = False) -> None
     try:
         address = ipaddress.ip_address(value)
     except ValueError as exc:
-        raise SystemExit(f"Unsafe local-service forwarding endpoint: {value!r}") from exc
+        raise SystemExit(
+            f"Unsafe local-service forwarding endpoint: {value!r}"
+        ) from exc
     documentation = any(
         address in network
         for network in (

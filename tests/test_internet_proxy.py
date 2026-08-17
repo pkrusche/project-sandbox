@@ -50,7 +50,11 @@ class InternetProxyTests(TestCase):
 
     def test_cli_rejects_firewall_and_destination_policy_conflicts(self) -> None:
         base = ["--internet-proxy", "http://127.0.0.1:18080"]
-        for conflict in (["--no-firewall"], ["--allow-github"], ["--extra-domain", "x.test"]):
+        for conflict in (
+            ["--no-firewall"],
+            ["--allow-github"],
+            ["--extra-domain", "x.test"],
+        ):
             args = cli.build_parser().parse_args([*base, *conflict, "project"])
             with self.subTest(conflict=conflict), self.assertRaises(SystemExit):
                 cli._validate_internet_proxy_args(args)

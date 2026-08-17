@@ -10,12 +10,13 @@
 #   6. verify-timeout-teardown.sh — container/VM cleanup after timeout
 #   7. e2e-pi-ollama.sh      — Pi + Ollama networking/config
 #   8. e2e-agent-proxy-isolation.py — gateway-only network/credential audit
-#   9. check-agent-proxy.py  — real Pi/OpenCode gateway calls (explicit opt-in)
+#   9. e2e-internet-proxy-isolation.py — routing/bypass/failure audit (explicit opt-in)
+#  10. check-agent-proxy.py  — real Pi/OpenCode gateway calls (explicit opt-in)
 #
 # Usage:
 #   scripts/run-e2e-tests.sh [--runtime chroot|auto|apple-container|docker|podman]
 #                            [--base-image IMAGE] [--no-build] [--keep]
-#                            [--with-agent-proxy]
+#                            [--with-agent-proxy] [--with-internet-proxy]
 #
 #   --runtime NAME   runtime forwarded to workflow scripts (default: chroot on Linux, auto otherwise)
 #   --base-image IMG base image forwarded to workflow scripts (default: python:3.12-slim)
@@ -23,6 +24,10 @@
 #   --keep           keep temporary directories on failure for debugging
 #   --with-agent-proxy
 #                    run proxy isolation plus the billable agent checker
+#   --with-internet-proxy
+#                    run the destructive two-service Internet isolation audit;
+#                    also requires --blocked-url, --internet-proxy-dir, and
+#                    --agentgateway-dir
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -36,8 +41,12 @@ BASE_IMAGE="python:3.12-slim"
 NO_BUILD=0
 KEEP=0
 WITH_AGENT_PROXY=0
+WITH_INTERNET_PROXY=0
+BLOCKED_URL=""
+INTERNET_PROXY_DIR=""
+AGENTGATEWAY_DIR=""
 
-usage() { sed -n '2,26p' "$0"; }
+usage() { sed -n '2,30p' "$0"; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -46,6 +55,10 @@ while [ $# -gt 0 ]; do
     --no-build)   NO_BUILD=1; shift ;;
     --keep)       KEEP=1; shift ;;
     --with-agent-proxy) WITH_AGENT_PROXY=1; shift ;;
+    --with-internet-proxy) WITH_INTERNET_PROXY=1; shift ;;
+    --blocked-url) BLOCKED_URL="${2:?--blocked-url needs a value}"; shift 2 ;;
+    --internet-proxy-dir) INTERNET_PROXY_DIR="${2:?--internet-proxy-dir needs a value}"; shift 2 ;;
+    --agentgateway-dir) AGENTGATEWAY_DIR="${2:?--agentgateway-dir needs a value}"; shift 2 ;;
     -h|--help)    usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage >&2; exit 64 ;;
   esac
@@ -144,7 +157,29 @@ else
   echo
 fi
 
-# 8–9. Proxy isolation is non-billable, followed by the two-request agent check.
+# 8. The combined Internet-proxy audit deliberately controls both external
+# services and makes real AI requests. Never availability-gate this destructive test.
+if [ "$WITH_INTERNET_PROXY" = 1 ]; then
+  if [ -z "$CONTAINER_RUNTIME" ] || [ -z "$BLOCKED_URL" ] || [ -z "$INTERNET_PROXY_DIR" ] || [ -z "$AGENTGATEWAY_DIR" ]; then
+    echo "Suite FAIL: Internet-proxy audit requires a real runtime, --blocked-url, --internet-proxy-dir, and --agentgateway-dir"
+    overall_fail=1
+  else
+    INTERNET_AUDIT_ARGS=(
+      --runtime "$CONTAINER_RUNTIME" --base-image "$BASE_IMAGE"
+      --blocked-url "$BLOCKED_URL" --internet-proxy-dir "$INTERNET_PROXY_DIR"
+      --agentgateway-dir "$AGENTGATEWAY_DIR"
+    )
+    [ "$NO_BUILD" = 1 ] && INTERNET_AUDIT_ARGS+=(--no-build)
+    [ "$KEEP" = 1 ] && INTERNET_AUDIT_ARGS+=(--keep)
+    run_suite "internet-proxy-isolation" \
+      uv run python "$ROOT/scripts/e2e-internet-proxy-isolation.py" "${INTERNET_AUDIT_ARGS[@]}"
+  fi
+else
+  echo "Suite: internet-proxy-isolation  (SKIPPED — pass --with-internet-proxy; destructive and billable)"
+  echo
+fi
+
+# 9–10. Gateway-only isolation is non-billable, followed by two real requests.
 # Never trigger either merely because a listener happens to be present.
 if [ "$WITH_AGENT_PROXY" = 1 ]; then
   if [ -n "$CONTAINER_RUNTIME" ]; then

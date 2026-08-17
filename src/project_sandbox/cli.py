@@ -1049,7 +1049,9 @@ def _local_firewall_destinations(
     if config is None:
         return None
     return [
-        firewall.LocalTcpDestination(service.label, ollama_network.HOSTNAME, service.port)
+        firewall.LocalTcpDestination(
+            service.label, ollama_network.HOSTNAME, service.port
+        )
         for service in _local_services(
             config, proxy_port=proxy_port, pi_ollama_enabled=pi_ollama_enabled
         )
@@ -2038,7 +2040,9 @@ def _build_session_command(
             env_file=staged_api_key_env_file if use_api_key_env_file else None,
             container_name=container_name,
             forward_credentials=forward_credentials,
-            add_hosts=(ollama_add_hosts or ([ollama_add_host] if ollama_add_host else [])),
+            add_hosts=(
+                ollama_add_hosts or ([ollama_add_host] if ollama_add_host else [])
+            ),
         )
     else:
         mounts = container_cli.build_mount_specs(

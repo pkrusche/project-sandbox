@@ -50,7 +50,9 @@ def parse(value: str) -> InternetProxy:
     return InternetProxy(value, parsed.hostname, port)
 
 
-def environment(config: InternetProxy, *, bypass_local_services: bool) -> dict[str, str]:
+def environment(
+    config: InternetProxy, *, bypass_local_services: bool
+) -> dict[str, str]:
     proxy = config.forwarded_url
     values = {
         "HTTP_PROXY": proxy,

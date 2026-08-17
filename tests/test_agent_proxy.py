@@ -306,9 +306,7 @@ class AgentProxyTests(unittest.TestCase):
                 self.assertEqual(
                     captured["env"],
                     {
-                        "OPENAI_BASE_URL": (
-                            "http://host.docker.internal:4000/v1"
-                        ),
+                        "OPENAI_BASE_URL": ("http://host.docker.internal:4000/v1"),
                         "OPENAI_API_KEY": "gateway-key",
                         "OPENAI_MODEL": "model",
                     },

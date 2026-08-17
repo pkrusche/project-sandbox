@@ -41,7 +41,9 @@ class OllamaNetworkTests(TestCase):
         )
         with (
             patch.object(ollama_network.shutil, "which", return_value="/usr/bin/socat"),
-            patch.object(ollama_network.subprocess, "Popen", return_value=process) as popen,
+            patch.object(
+                ollama_network.subprocess, "Popen", return_value=process
+            ) as popen,
             patch.object(ollama_network.time, "sleep"),
         ):
             plan.start()
