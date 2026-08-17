@@ -5,7 +5,7 @@ Provide fail-closed, implementation-neutral routing of ordinary sandbox Internet
 ## ADDED Requirements
 
 ### Requirement: Internet proxy mode is explicitly configured and validated
-The CLI SHALL accept `--internet-proxy URL` only when URL is HTTP, has an explicit valid port, uses `127.0.0.1`, `localhost`, or `::1`, and contains no credentials, query, or fragment. It SHALL reject wildcard and non-loopback hosts. It SHALL expose no implementation-specific proxy flags and SHALL leave all behavior unchanged when the option is absent.
+The CLI SHALL accept `--internet-proxy URL` only when URL is HTTP, has an explicit valid port, uses `127.0.0.1`, `localhost`, or `::1`, contains no credentials, path, query, or fragment, and a supported container runtime is selected. It SHALL reject wildcard and non-loopback hosts. It SHALL reject chroot because its shared host network namespace cannot enforce an isolated sandbox firewall. It SHALL expose no implementation-specific proxy flags and SHALL leave all behavior unchanged when the option is absent.
 
 #### Scenario: Valid loopback listener is accepted
 - **WHEN** the user supplies `--internet-proxy http://127.0.0.1:18080`
@@ -19,6 +19,10 @@ The CLI SHALL accept `--internet-proxy URL` only when URL is HTTP, has an explic
 - **WHEN** `--internet-proxy` is not supplied
 - **THEN** no Internet-proxy validation, preflight, forwarding, environment, or firewall behavior occurs and existing output remains unchanged
 
+#### Scenario: Chroot runtime is selected
+- **WHEN** `--internet-proxy` is combined with `--runtime chroot`
+- **THEN** the CLI rejects the invocation before network or sandbox work and directs the user to a supported container runtime
+
 ### Requirement: Firewall enforcement and external policy ownership are mandatory
 Internet proxy mode SHALL require the firewall and SHALL reject `--no-firewall`, `--extra-domain`, and `--allow-github`. Conflict errors SHALL explain that environment variables are bypassable without firewall enforcement and that Internet destination policy belongs in `internet-proxy-locally`.
 
@@ -31,7 +35,7 @@ Internet proxy mode SHALL require the firewall and SHALL reject `--no-firewall`,
 - **THEN** the CLI rejects the invocation and directs the user to configure equivalent policy in the external filtering proxy
 
 ### Requirement: Proxy forwarding is runtime-safe and implementation-neutral
-The system SHALL forward the configured host-loopback listener under the shared internal hostname `host.docker.internal`, preserving its port. Ollama, Agentgateway, and the Internet proxy SHALL use that single hostname so Apple `container` requires only one administrator-managed localhost DNS entry and other runtimes require only one host mapping. The system SHALL map it through Apple `container` localhost DNS, Docker Desktop and compatible Podman host-gateway forwarding, supported Linux bridge forwarding with managed per-port loopback bridges where required, or retained chroot behavior. It SHALL fail closed when no safe forwarding strategy exists and SHALL NOT widen a loopback bind.
+The system SHALL forward the configured host-loopback listener under the shared internal hostname `host.docker.internal`, preserving its port. Ollama, Agentgateway, and the Internet proxy SHALL use that single hostname so Apple `container` requires only one administrator-managed localhost DNS entry and other supported container runtimes require only one host mapping. The system SHALL map it through Apple `container` localhost DNS, Docker Desktop and compatible Podman host-gateway forwarding, or supported Linux bridge forwarding with managed per-port loopback bridges where required. It SHALL fail closed when no safe forwarding strategy exists and SHALL NOT widen a loopback bind. Chroot forwarding SHALL remain available to local services outside Internet-proxy mode but is not a supported Internet-proxy strategy.
 
 #### Scenario: Runtime forwarding is available
 - **WHEN** the selected runtime has a verified strategy for a loopback service

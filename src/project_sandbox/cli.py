@@ -24,13 +24,15 @@ from . import (
     internet_proxy,
     oauth_refresh,
     observability,
-    local_service_network as ollama_network,
     session,
     token_expiry,
     transcript,
 )
 from . import (
     jj_workspace as jj_workspace_mod,
+)
+from . import (
+    local_service_network as ollama_network,
 )
 from . import (
     worktree as worktree_mod,
@@ -404,6 +406,12 @@ def main(argv: list[str] | None = None) -> int:
             available_agents=available_agents,
         )
 
+    # Fail before model discovery, secret loading, filesystem rendering, image
+    # work, or owned forwarding resources when the external listener is down.
+    # Build-only runs never start a sandbox and therefore need no listener.
+    if internet_proxy_config is not None and run_agent is not None:
+        internet_proxy.preflight(internet_proxy_config)
+
     proxy_key: str | None = None
     proxy_models: list[str] = []
     proxy_base_url: str | None = None
@@ -706,6 +714,11 @@ def main(argv: list[str] | None = None) -> int:
         services = _local_services(
             internet_proxy_config,
             proxy_port=proxy_port,
+            proxy_loopback_host=(
+                agent_proxy.loopback_host(args.agent_proxy)
+                if args.agent_proxy
+                else None
+            ),
             pi_ollama_enabled=pi_ollama_enabled,
         )
         if services:
@@ -717,17 +730,13 @@ def main(argv: list[str] | None = None) -> int:
                     print(ollama_network.describe(plan))
 
         if internet_proxy_config is not None:
-            internet_proxy.preflight(internet_proxy_config)
-
-        proxy_environment = (
-            internet_proxy.environment(
+            # Internet-proxy routing is part of the enforced sandbox policy,
+            # not a user-overridable credential value.
+            api_key_values = internet_proxy.merge_environment(
+                api_key_values,
                 internet_proxy_config,
                 bypass_local_services=bool(proxy_port or pi_ollama_enabled),
             )
-            if internet_proxy_config is not None
-            else {}
-        )
-        api_key_values = {**proxy_environment, **api_key_values}
 
         session_id = observability.new_session_id()
         session_container_name = (
@@ -1028,13 +1037,20 @@ def _local_services(
     config: internet_proxy.InternetProxy | None,
     *,
     proxy_port: int | None,
+    proxy_loopback_host: str | None = None,
     pi_ollama_enabled: bool,
 ) -> list[ollama_network.LocalService]:
     services: list[ollama_network.LocalService] = []
     if config is not None:
         services.append(config.service)
     if proxy_port is not None:
-        services.append(ollama_network.LocalService("Agent proxy", proxy_port))
+        services.append(
+            ollama_network.LocalService(
+                "Agent proxy",
+                proxy_port,
+                loopback_host=proxy_loopback_host or "127.0.0.1",
+            )
+        )
     if pi_ollama_enabled:
         services.append(ollama_network.LocalService("Ollama", ollama_network.PORT))
     return services
@@ -1188,6 +1204,11 @@ def _dry_run(
         _local_services(
             proxy_config,
             proxy_port=proxy_port,
+            proxy_loopback_host=(
+                agent_proxy.loopback_host(args.agent_proxy)
+                if args.agent_proxy
+                else None
+            ),
             pi_ollama_enabled=pi_ollama_enabled,
         ),
         dry_run=True,
@@ -1204,14 +1225,23 @@ def _dry_run(
             "OPENAI_MODEL": "[REDACTED]",
         }
         if args.agent_proxy and run_agent == "bash"
-        else _api_key_env_values(args)
+        else _preview_api_key_env_values(args)
     )
+    if args.api_key_env_file:
+        print(
+            "Would inject API key variables from dotenv file(s) without reading "
+            "them during dry-run: " + ", ".join(args.api_key_env_file)
+        )
     if proxy_config is not None:
         proxy_env = internet_proxy.environment(
             proxy_config,
             bypass_local_services=bool(proxy_port or pi_ollama_enabled),
         )
-        preview_api_key_values.update(proxy_env)
+        preview_api_key_values = internet_proxy.merge_environment(
+            preview_api_key_values,
+            proxy_config,
+            bypass_local_services=bool(proxy_port or pi_ollama_enabled),
+        )
         print("Would inject proxy environment: " + ", ".join(proxy_env))
     cmd, log_path, unsupervised, container_stop_argv = _build_session_command(
         args,
@@ -1298,6 +1328,19 @@ def _api_key_env_values(args) -> dict[str, str]:
                 f"--api-key-env {name}: host environment variable is not set"
             )
         values[name] = os.environ[name]
+    return values
+
+
+def _preview_api_key_env_values(args) -> dict[str, str]:
+    """Return only explicitly named variables without reading secret values."""
+    values: dict[str, str] = {}
+    for env_file in getattr(args, "api_key_env_file", []):
+        # Preserve dry-run input validation while deliberately never opening
+        # the dotenv file or parsing its secret contents.
+        _resolve_required_path(env_file, what="--api-key-env-file")
+    for name in getattr(args, "api_key_env", []):
+        _validate_env_name(name, source="--api-key-env")
+        values[name] = "[REDACTED]"
     return values
 
 

@@ -1,3 +1,3 @@
 """Compatibility imports for the former Ollama-specific forwarding module."""
 
-from .local_service_network import *  # noqa: F403
+from .local_service_network import *

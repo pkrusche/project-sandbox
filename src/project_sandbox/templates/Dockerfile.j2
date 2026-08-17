@@ -24,13 +24,13 @@ RUN set -eux; \
 # and replace both per-architecture checksums with the values published in
 # https://nodejs.org/dist/${NODE_VERSION}/SHASUMS256.txt.
 RUN set -euxo pipefail; \
-    NODE_VERSION="v26.5.1"; \
+    NODE_VERSION="v26.7.0"; \
     NODE_ARCH="$(uname -m)"; \
     case "$NODE_ARCH" in \
         x86_64) NODE_ARCH="x64"; \
-            NODE_SHA256="cc7b3484ade63bd203a9d304f21ec37a3b622b988d7bdecf1dc4d68fc44a91b7" ;; \
+            NODE_SHA256="982aa24dd8be4c889c6a8ab337ddff3b0896645b20f4239356e80552c16277ee" ;; \
         aarch64|arm64) NODE_ARCH="arm64"; \
-            NODE_SHA256="0b6b0cc2a1eecbe736f9918de8b5a6c9a48d286b88bec1298a3c1e3376182ea8" ;; \
+            NODE_SHA256="afc7a004018485092ac8985b817b0d5684472bd9472e0b57d2ab88737e50090d" ;; \
         *) echo "Unsupported architecture for Node.js: $NODE_ARCH" >&2; exit 1 ;; \
     esac; \
     node_tmp="$(mktemp -d)"; \
@@ -49,13 +49,13 @@ RUN set -euxo pipefail; \
 # bump JJ_VERSION and replace both per-architecture checksums with the values
 # from the matching release on https://github.com/jj-vcs/jj/releases.
 RUN set -euxo pipefail; \
-    JJ_VERSION="v0.43.0"; \
+    JJ_VERSION="v0.44.0"; \
     JJ_ARCH="$(uname -m)"; \
     case "$JJ_ARCH" in \
         arm64|aarch64) JJ_ARCH="aarch64"; \
-            JJ_SHA256="289197b6bec60b4e57d47260624b617716f737eb02cdfd9155791b2576aa5862" ;; \
+            JJ_SHA256="60d42fa2a9abaa445eff10cd2087458562aaad5a54b90309e5a3787ecc985ff2" ;; \
         x86_64) JJ_ARCH="x86_64"; \
-            JJ_SHA256="59e5588583ac82b623239929368c65b90735931c0f26b5a16c1f04d5bb97643d" ;; \
+            JJ_SHA256="0a07bab4641a55fd2bc2fd1563ba3a3f9a577584086ad74086a1c5b69b3ffce9" ;; \
         *) echo "Unsupported architecture for jj: $JJ_ARCH" >&2; exit 1 ;; \
     esac; \
     jj_tmp="$(mktemp -d)"; \
@@ -70,19 +70,19 @@ RUN set -euxo pipefail; \
 # Global npm tooling is pinned to exact versions (never a floating tag) so a
 # compromised or broken upstream release cannot silently land in an image that
 # later receives workspace and agent credentials. Bump these deliberately.
-RUN npm install -g @fission-ai/openspec@1.7.0
+RUN npm install -g @fission-ai/openspec@1.10.0
 
 {% if install_claude %}
-RUN npm install -g @anthropic-ai/claude-code@2.1.220
+RUN npm install -g @anthropic-ai/claude-code@2.1.245
 {% endif %}
 {% if install_codex %}
-RUN npm install -g @openai/codex@0.146.0
+RUN npm install -g @openai/codex@0.149.1
 {% endif %}
 {% if install_opencode %}
-RUN npm install -g opencode-ai@1.18.10
+RUN npm install -g opencode-ai@1.18.23
 {% endif %}
 {% if install_pi %}
-RUN npm install -g @earendil-works/pi-coding-agent@0.83.0
+RUN npm install -g @earendil-works/pi-coding-agent@0.84.3
 {% endif %}
 
 {% if source_after_dependencies -%}

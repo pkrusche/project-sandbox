@@ -35,4 +35,4 @@ The proxy URL SHALL use HTTP, a loopback host, and an explicit port; wildcard an
 
 #### Scenario: Container runtime uses one shared hostname mapping
 - **WHEN** Docker Desktop, compatible Podman, a supported Linux bridge runtime, or chroot forwards one or more local services
-- **THEN** `host.docker.internal` is mapped once to the runtime-selected host endpoint and Agentgateway remains restricted to its configured port
+- **THEN** `host.docker.internal` is mapped once to the runtime-selected host endpoint and Agentgateway remains restricted to its configured port; chroot forwarding applies only when Internet-proxy mode is absent

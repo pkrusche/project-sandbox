@@ -50,22 +50,53 @@ class OllamaNetworkTests(TestCase):
         self.assertEqual(popen.call_args.args[0][-1], "TCP6:[::1]:18080")
 
     def test_multiple_services_share_mapping_and_reject_duplicate_ports(self) -> None:
-        plans = ollama_network.prepare_services(
-            CHROOT,
-            [
-                ollama_network.LocalService("Internet proxy", 18080),
-                ollama_network.LocalService("Ollama", 11434),
-            ],
-        )
-        self.assertEqual(sum(plan.add_host is not None for plan in plans), 1)
-        with self.assertRaisesRegex(SystemExit, "Duplicate local-service port"):
-            ollama_network.prepare_services(
+        with patch.object(
+            ollama_network, "prepare", wraps=ollama_network.prepare
+        ) as prepare:
+            plans = ollama_network.prepare_services(
                 CHROOT,
+                [
+                    ollama_network.LocalService("Internet proxy", 18080),
+                    ollama_network.LocalService("Ollama", 11434),
+                ],
+            )
+        self.assertEqual(sum(plan.add_host is not None for plan in plans), 1)
+        prepare.assert_called_once()
+        with (
+            patch.object(ollama_network, "prepare") as prepare,
+            self.assertRaisesRegex(SystemExit, "Duplicate local-service port"),
+        ):
+            ollama_network.prepare_services(
+                DOCKER,
                 [
                     ollama_network.LocalService("one", 18080),
                     ollama_network.LocalService("two", 18080),
                 ],
             )
+        prepare.assert_not_called()
+
+    def test_linux_services_share_one_discovered_bridge_endpoint(self) -> None:
+        with (
+            patch.object(ollama_network, "_runtime_info", return_value={}) as info,
+            patch.object(
+                ollama_network, "_bridge_gateway", return_value="172.17.0.1"
+            ) as gateway,
+            patch.object(ollama_network, "_validate_bindable") as bindable,
+        ):
+            plans = ollama_network.prepare_services(
+                DOCKER,
+                [
+                    ollama_network.LocalService("Internet proxy", 18080),
+                    ollama_network.LocalService("Agent proxy", 4000),
+                    ollama_network.LocalService("Ollama", 11434),
+                ],
+            )
+
+        info.assert_called_once()
+        gateway.assert_called_once()
+        self.assertEqual(bindable.call_count, 3)
+        self.assertEqual({plan.endpoint for plan in plans}, {"172.17.0.1"})
+        self.assertEqual(sum(plan.add_host is not None for plan in plans), 1)
 
     def test_chroot_uses_shared_loopback_without_runtime_inspection(self) -> None:
         with patch.object(ollama_network, "_runtime_info") as runtime_info:

@@ -38,6 +38,8 @@ class AgentProxyTests(unittest.TestCase):
             "http://0.0.0.0:4000/v1",
             "http://example.com:4000/v1",
             "http://127.0.0.1/v1",
+            "http://127.0.0.1:0/v1",
+            "http://127.0.0.1:65536/v1",
         ):
             with self.subTest(value=value), self.assertRaises(SystemExit):
                 agent_proxy.validate_url(value)

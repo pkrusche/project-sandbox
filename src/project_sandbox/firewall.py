@@ -52,13 +52,10 @@ def render(
     if policy not in (NORMAL, INTERNET_PROXY):
         raise ValueError(f"Unknown firewall policy: {policy}")
     destinations = list(local_destinations or [])
-    if not destinations:
-        if agent_proxy_port is not None:
-            destinations.append(
-                LocalTcpDestination(
-                    "Agent proxy", agent_proxy_hostname, agent_proxy_port
-                )
-            )
+    if not destinations and agent_proxy_port is not None:
+        destinations.append(
+            LocalTcpDestination("Agent proxy", agent_proxy_hostname, agent_proxy_port)
+        )
     tmpl = templating.get_template("init-firewall.sh.j2")
     container = _write(
         tmpl,

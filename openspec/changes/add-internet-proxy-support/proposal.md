@@ -10,6 +10,7 @@ Proxy environment variables can direct cooperative applications through an Inter
 - Collapse firewall egress in Internet-proxy mode to port-scoped forwarded local services, with no direct public destination, provider, GitHub, extra-domain, or DNS access and fail-closed IPv6 handling.
 - Reject incompatible domain-policy flags and keep destination policy and proxy lifecycle in the external `internet-proxy-locally` repository.
 - Preflight the configured listener before launching (except in dry-run), without starting, repairing, or depending on a particular proxy implementation.
+- Reject chroot for Internet-proxy mode because it shares the host network namespace and cannot install an isolated sandbox firewall; retain chroot support for existing local-service forwarding outside this mode.
 - Document the separate iptables, Internet-policy, and AI/MCP boundaries and add CLI, environment, firewall, forwarding, and acceptance coverage.
 
 ## Capabilities
@@ -27,4 +28,5 @@ Proxy environment variables can direct cooperative applications through an Inter
 
 - Affects CLI validation and dry-run output, local-service network setup, container command/environment construction, firewall rendering, templates, runtime preflight, tests, and `docs/internet-proxy.md`.
 - Preserves behavior when `--internet-proxy` is absent and preserves the existing `--agent-proxy` and `--pi-ollama` command-line interfaces.
+- Supports Internet-proxy enforcement on Docker, compatible Podman, and Apple `container`; chroot is intentionally excluded from this mode.
 - Introduces no dependency on Pipelock, Smokescreen, Docker Compose, transparent interception, TLS interception, or external-proxy lifecycle management.

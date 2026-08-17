@@ -41,7 +41,7 @@ def parse(value: str) -> InternetProxy:
         )
     if parsed.username is not None or parsed.password is not None:
         raise SystemExit("--internet-proxy URL must not contain credentials")
-    if port is None:
+    if port is None or not 1 <= port <= 65535:
         raise SystemExit("--internet-proxy requires an explicit valid port")
     if parsed.path not in ("", "/"):
         raise SystemExit("--internet-proxy URL must not contain a path")
@@ -66,6 +66,19 @@ def environment(
     no_proxy = ",".join(bypass)
     values.update({"NO_PROXY": no_proxy, "no_proxy": no_proxy})
     return values
+
+
+def merge_environment(
+    values: dict[str, str],
+    config: InternetProxy,
+    *,
+    bypass_local_services: bool,
+) -> dict[str, str]:
+    """Add policy-owned proxy variables without allowing injected overrides."""
+    return {
+        **values,
+        **environment(config, bypass_local_services=bypass_local_services),
+    }
 
 
 def preflight(config: InternetProxy, *, timeout: float = 2.0) -> None:

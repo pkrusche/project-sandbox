@@ -191,26 +191,41 @@ def prepare_services(
 ) -> list[ForwardingPlan]:
     """Prepare ordered plans, rejecting ambiguous duplicate host ports."""
     ports: set[int] = set()
-    plans: list[ForwardingPlan] = []
     for service in services:
         if service.port in ports:
             raise SystemExit(
                 f"Duplicate local-service port {service.port} requested by {service.label}"
             )
         ports.add(service.port)
-        plan = prepare(
-            runtime,
-            dry_run=dry_run,
-            hostname=HOSTNAME,
-            port=service.port,
-            label=service.label,
-            loopback_host=service.loopback_host,
+    if not services:
+        return []
+
+    first = services[0]
+    base = prepare(
+        runtime,
+        dry_run=dry_run,
+        hostname=HOSTNAME,
+        port=first.port,
+        label=first.label,
+        loopback_host=first.loopback_host,
+    )
+    plans = [base]
+    for service in services[1:]:
+        # Runtime strategy and hostname endpoint are sandbox-wide decisions.
+        # Linux still needs one bindability check and socat listener per port.
+        if base.strategy == "linux-bridge-socat":
+            assert base.endpoint is not None
+            _validate_bindable(base.endpoint, port=service.port, label=service.label)
+        plans.append(
+            ForwardingPlan(
+                base.strategy,
+                endpoint=base.endpoint,
+                hostname=base.hostname,
+                port=service.port,
+                label=service.label,
+                loopback_host=service.loopback_host,
+            )
         )
-        # A sandbox needs only one hostname mapping even though Linux needs a
-        # separate managed socat listener for each port.
-        if plans and plan.add_host == plans[0].add_host:
-            plan.add_host = None
-        plans.append(plan)
     return plans
 
 

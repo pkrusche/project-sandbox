@@ -9,7 +9,7 @@
 ## 2. Parse and Validate Internet Proxy Configuration
 
 - [x] 2.1 Add `--internet-proxy URL` and an Internet-proxy module that accepts only credential-free HTTP URLs on `127.0.0.1`, `localhost`, or `::1` with an explicit valid port and no query or fragment.
-- [x] 2.2 Add early conflict validation for `--no-firewall`, `--extra-domain`, and `--allow-github`, with errors explaining bypass prevention and external destination-policy ownership.
+- [x] 2.2 Add early conflict validation for `--no-firewall`, `--extra-domain`, `--allow-github`, and chroot, with errors explaining bypass prevention, external destination-policy ownership, and the need for an isolated container firewall.
 - [x] 2.3 Construct the forwarded `host.docker.internal` URL while preserving the configured port, with no Pipelock- or Smokescreen-specific behavior.
 - [x] 2.4 Add a bounded host-loopback listener preflight that runs before real sandbox startup, fails actionably, requires no public destination, and is never invoked in dry-run.
 - [x] 2.5 Add CLI tests for valid and invalid URLs, all option conflicts, absent-option no-op behavior, preflight success/failure ordering, and dry-run network isolation.
@@ -19,7 +19,7 @@
 - [x] 3.1 Refactor CLI planning to build and manage an ordered collection of forwarding plans for Internet proxy, Agentgateway, and Ollama while deduplicating their shared `host.docker.internal` runtime mapping and owned-resource cleanup.
 - [x] 3.2 Generate canonical proxy environment values for `HTTP_PROXY`, `HTTPS_PROXY`, `http_proxy`, and `https_proxy` using the forwarded Internet-proxy URL.
 - [x] 3.3 Generate identical `NO_PROXY` and `no_proxy` lists with loopback literals and one `host.docker.internal` entry when Agentgateway, Ollama, or another local service must bypass proxy routing, and test that ordinary Internet destinations still use the configured proxy.
-- [x] 3.4 Feed the same generated environment into container and chroot argv plus interactive, headless, Bash, and inherited agent execution paths.
+- [x] 3.4 Feed the same generated environment into supported container argv plus interactive, headless, Bash, and inherited agent execution paths.
 - [x] 3.5 Extend sanitized dry-run output to preview proxy and bypass variables and forwarding plans without writes, runtime starts, secret reads, or network calls.
 - [x] 3.6 Add environment and session tests for uppercase/lowercase variables, all launch modes, shared-hostname deduplication, Agentgateway coexistence, and Ollama coexistence.
 
@@ -30,7 +30,7 @@
 - [x] 4.3 Resolve or pin `host.docker.internal` once and render separate exact address-and-port TCP ACCEPT rules for the Internet proxy and each enabled Agentgateway, Ollama, or other supported local service.
 - [x] 4.4 Ensure proxy mode creates no ordinary public IPv4/IPv6 ipset entries and admits no provider domains, GitHub ranges, extra domains, resolver access, or broad devcontainer host-gateway access.
 - [x] 4.5 Make inability to establish the intended IPv6 policy fatal in Internet-proxy mode and verify that direct IPv4, direct IPv6, and direct DNS paths remain denied.
-- [x] 4.6 Add renderer and integration tests for one shared hostname across Docker, Podman, Apple `container`, Linux bridge, and chroot; proxy-only port scoping; absence of public allowlists; dual-stack fail-closed behavior; normal-mode compatibility; and simultaneous local-service destinations.
+- [x] 4.6 Add renderer and integration tests for one shared hostname across Docker, Podman, Apple `container`, Linux bridge, and retained non-proxy chroot forwarding; proxy-only port scoping; chroot rejection in Internet-proxy mode; absence of public allowlists; dual-stack fail-closed behavior; normal-mode compatibility; and simultaneous local-service destinations.
 
 ## 5. Document Operations and Security Boundaries
 
