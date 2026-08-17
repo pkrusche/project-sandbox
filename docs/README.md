@@ -1,5 +1,7 @@
 # Documentation
 
+See [Internet proxy](internet-proxy.md) for fail-closed routing through an externally managed filtering proxy.
+
 This directory contains the detailed project-sandbox documentation.
 
 ## Contents

@@ -21,9 +21,10 @@ from . import (
     dockerfile,
     dockerfile_checksum,
     firewall,
+    internet_proxy,
     oauth_refresh,
     observability,
-    ollama_network,
+    local_service_network as ollama_network,
     session,
     token_expiry,
     transcript,
@@ -144,6 +145,11 @@ def build_parser() -> ArgumentParser:
         ),
     )
     p.add_argument("--no-firewall", action="store_true")
+    p.add_argument(
+        "--internet-proxy",
+        metavar="URL",
+        help="Route Internet traffic through a credential-free host-loopback HTTP proxy.",
+    )
     p.add_argument(
         "--pi-ollama",
         action="store_true",
@@ -322,6 +328,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     args = build_parser().parse_args(raw_argv)
 
+    internet_proxy_config = _validate_internet_proxy_args(args)
+
     # Expand a leading "~" once, up front, so every later use of args.log (both
     # validation and session-command construction) agrees on the same absolute
     # path instead of one seeing the raw "~/..." string and the other an
@@ -466,7 +474,7 @@ def main(argv: list[str] | None = None) -> int:
     # setup/build failure before the agent ran (leave git in place, drop the
     # empty jj workspace).
     agent_ran = False
-    ollama_plan: ollama_network.ForwardingPlan | None = None
+    forwarding_plans: list[ollama_network.ForwardingPlan] = []
     exit_code = 1
     session_id = ""
     container_name: str | None = None
@@ -501,10 +509,20 @@ def main(argv: list[str] | None = None) -> int:
                 context_dir,
                 extra_domains=args.extra_domain,
                 allow_github=allow_github,
-                pi_ollama=pi_ollama_enabled,
+                pi_ollama=pi_ollama_enabled and internet_proxy_config is None,
                 ollama_hostname=ollama_hostname,
                 agent_proxy_port=proxy_port,
                 agent_proxy_hostname=proxy_hostname,
+                policy=(
+                    firewall.INTERNET_PROXY
+                    if internet_proxy_config is not None
+                    else firewall.NORMAL
+                ),
+                local_destinations=_local_firewall_destinations(
+                    internet_proxy_config,
+                    proxy_port=proxy_port,
+                    pi_ollama_enabled=pi_ollama_enabled,
+                ),
             )
         else:
             chroot.render(context_dir)
@@ -685,17 +703,31 @@ def main(argv: list[str] | None = None) -> int:
                 ),
             )
 
-        if pi_ollama_enabled or args.agent_proxy:
-            ollama_plan = ollama_network.prepare(
-                runtime,
-                hostname=proxy_hostname if args.agent_proxy else ollama_hostname,
-                port=proxy_port or ollama_network.PORT,
-                label="Agent proxy" if args.agent_proxy else "Ollama",
-            )
+        services = _local_services(
+            internet_proxy_config,
+            proxy_port=proxy_port,
+            pi_ollama_enabled=pi_ollama_enabled,
+        )
+        if services:
+            forwarding_plans = ollama_network.prepare_services(runtime, services)
             if runtime == container_cli.APPLE_CONTAINER:
-                print(ollama_network.apple_setup_notice(ollama_plan.label))
+                print(ollama_network.apple_setup_notice("Local service"))
             if args.verbose:
-                print(ollama_network.describe(ollama_plan))
+                for plan in forwarding_plans:
+                    print(ollama_network.describe(plan))
+
+        if internet_proxy_config is not None:
+            internet_proxy.preflight(internet_proxy_config)
+
+        proxy_environment = (
+            internet_proxy.environment(
+                internet_proxy_config,
+                bypass_local_services=bool(proxy_port or pi_ollama_enabled),
+            )
+            if internet_proxy_config is not None
+            else {}
+        )
+        api_key_values = {**proxy_environment, **api_key_values}
 
         session_id = observability.new_session_id()
         session_container_name = (
@@ -716,7 +748,7 @@ def main(argv: list[str] | None = None) -> int:
             runtime=runtime,
             create_prompt_files=True,
             api_key_values=api_key_values,
-            ollama_add_host=ollama_plan.add_host if ollama_plan else None,
+            ollama_add_hosts=[p.add_host for p in forwarding_plans if p.add_host],
             session_id=session_id,
         )
         container_name = session_container_name
@@ -744,8 +776,8 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 print("Starting container…")
 
-        if ollama_plan is not None:
-            ollama_plan.start()
+        for plan in forwarding_plans:
+            plan.start()
         agent_ran = True
         session_started_at = datetime.now().astimezone()
         # Injected API key values are never baked into cmd's argv (see
@@ -798,8 +830,8 @@ def main(argv: list[str] | None = None) -> int:
             observability.finish_record(
                 record_path, exit_code=exit_code, status="interrupted"
             )
-        if ollama_plan is not None:
-            ollama_plan.close()
+        for plan in reversed(forwarding_plans):
+            plan.close()
         if args.agent_proxy:
             for secret_file in (
                 context_dir / "pi" / "models.json",
@@ -968,6 +1000,57 @@ def _validate_agent_proxy_args(args, run_agent: str | None) -> int | None:
     return port
 
 
+def _validate_internet_proxy_args(args) -> internet_proxy.InternetProxy | None:
+    value = getattr(args, "internet_proxy", None)
+    if not value:
+        return None
+    config = internet_proxy.parse(value)
+    if args.no_firewall:
+        raise SystemExit(
+            "--internet-proxy cannot be combined with --no-firewall: proxy "
+            "environment variables are bypassable without firewall enforcement"
+        )
+    if args.extra_domain or args.allow_github:
+        raise SystemExit(
+            "--internet-proxy cannot be combined with --extra-domain or "
+            "--allow-github; configure Internet destination policy in "
+            "internet-proxy-locally"
+        )
+    return config
+
+
+def _local_services(
+    config: internet_proxy.InternetProxy | None,
+    *,
+    proxy_port: int | None,
+    pi_ollama_enabled: bool,
+) -> list[ollama_network.LocalService]:
+    services: list[ollama_network.LocalService] = []
+    if config is not None:
+        services.append(config.service)
+    if proxy_port is not None:
+        services.append(ollama_network.LocalService("Agent proxy", proxy_port))
+    if pi_ollama_enabled:
+        services.append(ollama_network.LocalService("Ollama", ollama_network.PORT))
+    return services
+
+
+def _local_firewall_destinations(
+    config: internet_proxy.InternetProxy | None,
+    *,
+    proxy_port: int | None,
+    pi_ollama_enabled: bool,
+) -> list[firewall.LocalTcpDestination] | None:
+    if config is None:
+        return None
+    return [
+        firewall.LocalTcpDestination(service.label, ollama_network.HOSTNAME, service.port)
+        for service in _local_services(
+            config, proxy_port=proxy_port, pi_ollama_enabled=pi_ollama_enabled
+        )
+    ]
+
+
 def _runtime_model(args, run_agent: str) -> str | None:
     """Return the provider-qualified model identifier passed to the agent."""
     model = getattr(args, "model", None)
@@ -1092,23 +1175,21 @@ def _dry_run(
     proxy_port = (
         agent_proxy.validate_url(args.agent_proxy)[1] if args.agent_proxy else None
     )
-    ollama_plan = (
-        ollama_network.prepare(
-            runtime,
-            dry_run=True,
-            hostname=agent_proxy.HOSTNAME
-            if args.agent_proxy
-            else ollama_network.HOSTNAME,
-            port=proxy_port or ollama_network.PORT,
-            label="Agent proxy" if args.agent_proxy else "Ollama",
-        )
-        if pi_ollama_enabled or args.agent_proxy
-        else None
+    proxy_config = _validate_internet_proxy_args(args)
+    forwarding_plans = ollama_network.prepare_services(
+        runtime,
+        _local_services(
+            proxy_config,
+            proxy_port=proxy_port,
+            pi_ollama_enabled=pi_ollama_enabled,
+        ),
+        dry_run=True,
     )
-    if ollama_plan is not None:
+    if forwarding_plans:
         if runtime == container_cli.APPLE_CONTAINER:
-            print(ollama_network.apple_setup_notice(ollama_plan.label))
-        print(f"Would use {ollama_network.describe(ollama_plan)}")
+            print(ollama_network.apple_setup_notice("Local service"))
+        for plan in forwarding_plans:
+            print(f"Would use {ollama_network.describe(plan)}")
     preview_api_key_values = (
         {
             "OPENAI_BASE_URL": "[REDACTED]",
@@ -1116,8 +1197,15 @@ def _dry_run(
             "OPENAI_MODEL": "[REDACTED]",
         }
         if args.agent_proxy and run_agent == "bash"
-        else None
+        else _api_key_env_values(args)
     )
+    if proxy_config is not None:
+        proxy_env = internet_proxy.environment(
+            proxy_config,
+            bypass_local_services=bool(proxy_port or pi_ollama_enabled),
+        )
+        preview_api_key_values.update(proxy_env)
+        print("Would inject proxy environment: " + ", ".join(proxy_env))
     cmd, log_path, unsupervised, container_stop_argv = _build_session_command(
         args,
         project=project,
@@ -1133,7 +1221,7 @@ def _dry_run(
         runtime=runtime,
         create_prompt_files=False,
         api_key_values=preview_api_key_values,
-        ollama_add_host=ollama_plan.add_host if ollama_plan else None,
+        ollama_add_hosts=[p.add_host for p in forwarding_plans if p.add_host],
     )
     if unsupervised:
         assert log_path is not None
@@ -1722,6 +1810,7 @@ def _build_session_command(
     create_prompt_files: bool,
     api_key_values: dict[str, str] | None = None,
     ollama_add_host: str | None = None,
+    ollama_add_hosts: list[str] | None = None,
     session_id: str | None = None,
 ) -> tuple[list[str], Path | None, bool, list[str] | None]:
     # Agent availability is validated up front in main() via _ensure_agent_available.
@@ -1944,7 +2033,7 @@ def _build_session_command(
             env_file=staged_api_key_env_file if use_api_key_env_file else None,
             container_name=container_name,
             forward_credentials=forward_credentials,
-            add_hosts=[ollama_add_host] if ollama_add_host else (),
+            add_hosts=(ollama_add_hosts or ([ollama_add_host] if ollama_add_host else [])),
         )
     else:
         mounts = container_cli.build_mount_specs(

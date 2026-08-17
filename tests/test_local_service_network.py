@@ -6,11 +6,29 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from project_sandbox import ollama_network
+from project_sandbox import local_service_network as ollama_network
 from project_sandbox.container_cli import APPLE_CONTAINER, CHROOT, DOCKER, PODMAN
 
 
 class OllamaNetworkTests(TestCase):
+    def test_multiple_services_share_mapping_and_reject_duplicate_ports(self) -> None:
+        plans = ollama_network.prepare_services(
+            CHROOT,
+            [
+                ollama_network.LocalService("Internet proxy", 18080),
+                ollama_network.LocalService("Ollama", 11434),
+            ],
+        )
+        self.assertEqual(sum(plan.add_host is not None for plan in plans), 1)
+        with self.assertRaisesRegex(SystemExit, "Duplicate local-service port"):
+            ollama_network.prepare_services(
+                CHROOT,
+                [
+                    ollama_network.LocalService("one", 18080),
+                    ollama_network.LocalService("two", 18080),
+                ],
+            )
+
     def test_chroot_uses_shared_loopback_without_runtime_inspection(self) -> None:
         with patch.object(ollama_network, "_runtime_info") as runtime_info:
             plan = ollama_network.prepare(CHROOT)
@@ -18,7 +36,7 @@ class OllamaNetworkTests(TestCase):
         self.assertEqual(plan.endpoint, "127.0.0.1")
         self.assertEqual(
             plan.add_host,
-            "ollama.project-sandbox.internal:127.0.0.1",
+            "host.docker.internal:127.0.0.1",
         )
         runtime_info.assert_not_called()
 
@@ -46,7 +64,7 @@ class OllamaNetworkTests(TestCase):
         self.assertEqual(plan.strategy, "podman-native-host-alias")
         self.assertEqual(
             plan.add_host,
-            "ollama.project-sandbox.internal:host-gateway",
+            "host.docker.internal:host-gateway",
         )
 
     def test_docker_desktop_uses_native_alias(self) -> None:

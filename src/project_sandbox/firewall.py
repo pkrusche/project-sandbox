@@ -1,4 +1,5 @@
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 from . import templating
@@ -13,6 +14,17 @@ _HOSTNAME_RE = re.compile(
     r"(?:\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))*"
     r"\.?$"
 )
+
+
+@dataclass(frozen=True)
+class LocalTcpDestination:
+    label: str
+    hostname: str
+    port: int
+
+
+NORMAL = "normal"
+INTERNET_PROXY = "internet-proxy"
 
 
 def _validate_domains(extra_domains: list[str]) -> None:
@@ -33,8 +45,20 @@ def render(
     ollama_hostname: str = "ollama.project-sandbox.internal",
     agent_proxy_port: int | None = None,
     agent_proxy_hostname: str = "agent-proxy.project-sandbox.internal",
+    policy: str = NORMAL,
+    local_destinations: list[LocalTcpDestination] | None = None,
 ) -> Path:
     _validate_domains(extra_domains)
+    if policy not in (NORMAL, INTERNET_PROXY):
+        raise ValueError(f"Unknown firewall policy: {policy}")
+    destinations = list(local_destinations or [])
+    if not destinations:
+        if agent_proxy_port is not None:
+            destinations.append(
+                LocalTcpDestination("Agent proxy", agent_proxy_hostname, agent_proxy_port)
+            )
+        if pi_ollama:
+            destinations.append(LocalTcpDestination("Ollama", ollama_hostname, 11434))
     tmpl = templating.get_template("init-firewall.sh.j2")
     container = _write(
         tmpl,
@@ -46,6 +70,8 @@ def render(
         ollama_hostname=ollama_hostname,
         agent_proxy_port=agent_proxy_port,
         agent_proxy_hostname=agent_proxy_hostname,
+        policy=policy,
+        local_destinations=destinations,
     )
     _write(
         tmpl,
@@ -59,6 +85,8 @@ def render(
         ollama_hostname=ollama_hostname,
         agent_proxy_port=agent_proxy_port,
         agent_proxy_hostname=agent_proxy_hostname,
+        policy=policy,
+        local_destinations=destinations,
     )
     return container
 
@@ -74,6 +102,8 @@ def _write(
     ollama_hostname: str,
     agent_proxy_port: int | None,
     agent_proxy_hostname: str,
+    policy: str,
+    local_destinations: list[LocalTcpDestination],
 ) -> Path:
     out.write_text(
         tmpl.render(
@@ -84,6 +114,8 @@ def _write(
             ollama_hostname=ollama_hostname,
             agent_proxy_port=agent_proxy_port,
             agent_proxy_hostname=agent_proxy_hostname,
+            policy=policy,
+            local_destinations=local_destinations,
         )
         + "\n",
         encoding="utf-8",

@@ -123,7 +123,7 @@ class RendererTests(TestCase):
             probe = '"http://host.docker.internal:4000/"'
             resolution = 'getent ahostsv4 "host.docker.internal"'
             self.assertLess(text.index(resolution), text.index("iptables -t nat -F"))
-            self.assertIn('"${AGENT_PROXY_IP4_LIST[@]}"', text)
+            self.assertIn('"${LOCAL_SERVICE_IP4_LIST[0]}"', text)
             self.assertIn(probe, text)
             self.assertIn("--connect-timeout 3 --max-time 5", text)
             self.assertGreater(text.index(probe), text.index("iptables -P OUTPUT DROP"))

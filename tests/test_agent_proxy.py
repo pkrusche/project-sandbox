@@ -307,7 +307,7 @@ class AgentProxyTests(unittest.TestCase):
                     captured["env"],
                     {
                         "OPENAI_BASE_URL": (
-                            "http://agent-proxy.project-sandbox.internal:4000/v1"
+                            "http://host.docker.internal:4000/v1"
                         ),
                         "OPENAI_API_KEY": "gateway-key",
                         "OPENAI_MODEL": "model",
