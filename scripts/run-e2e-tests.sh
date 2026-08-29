@@ -9,9 +9,10 @@
 #   5. e2e-dockerfile-tamper.sh — Dockerfile integrity and override behavior
 #   6. verify-timeout-teardown.sh — container/VM cleanup after timeout
 #   7. e2e-pi-ollama.sh      — Pi + Ollama networking/config
-#   8. e2e-agent-proxy-isolation.py — gateway-only network/credential audit
-#   9. e2e-internet-proxy-isolation.py — routing/bypass/failure audit (explicit opt-in)
-#  10. check-agent-proxy.py  — real Pi/OpenCode gateway calls (explicit opt-in)
+#   8. e2e-internet-proxy-smoke.py — availability-gated routing/bypass smoke test
+#   9. e2e-agent-proxy-isolation.py — gateway-only network/credential audit
+#  10. e2e-internet-proxy-isolation.py — routing/bypass/failure audit (explicit opt-in)
+#  11. check-agent-proxy.py  — real Pi/OpenCode gateway calls (explicit opt-in)
 #
 # Usage:
 #   scripts/run-e2e-tests.sh [--runtime chroot|auto|apple-container|docker|podman]
@@ -157,7 +158,20 @@ else
   echo
 fi
 
-# 8. The combined Internet-proxy audit deliberately controls both external
+# 8. Non-destructive Internet-proxy smoke test. The script itself detects an
+# absent listener and reports a successful skip before creating anything.
+if [ -n "$CONTAINER_RUNTIME" ]; then
+  INTERNET_SMOKE_ARGS=(--runtime "$CONTAINER_RUNTIME" --base-image "$BASE_IMAGE")
+  [ "$NO_BUILD" = 1 ] && INTERNET_SMOKE_ARGS+=(--no-build)
+  [ "$KEEP" = 1 ] && INTERNET_SMOKE_ARGS+=(--keep)
+  run_suite "internet-proxy-smoke" \
+    uv run python "$ROOT/scripts/e2e-internet-proxy-smoke.py" "${INTERNET_SMOKE_ARGS[@]}"
+else
+  echo "Suite: internet-proxy-smoke  (SKIPPED — select a real container runtime)"
+  echo
+fi
+
+# 9. The combined Internet-proxy audit deliberately controls both external
 # services and makes real AI requests. Never availability-gate this destructive test.
 if [ "$WITH_INTERNET_PROXY" = 1 ]; then
   if [ -z "$CONTAINER_RUNTIME" ] || [ -z "$BLOCKED_URL" ] || [ -z "$INTERNET_PROXY_DIR" ] || [ -z "$AGENTGATEWAY_DIR" ]; then
@@ -179,7 +193,7 @@ else
   echo
 fi
 
-# 9–10. Gateway-only isolation is non-billable, followed by two real requests.
+# 10–11. Gateway-only isolation is non-billable, followed by two real requests.
 # Never trigger either merely because a listener happens to be present.
 if [ "$WITH_AGENT_PROXY" = 1 ]; then
   if [ -n "$CONTAINER_RUNTIME" ]; then

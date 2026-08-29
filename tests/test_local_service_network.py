@@ -120,7 +120,7 @@ class OllamaNetworkTests(TestCase):
             "sudo container system dns create host.docker.internal --localhost 203.0.113.113",
             notice,
         )
-        self.assertIn("might disable network connectivity", notice)
+        self.assertIn("can disrupt container Internet access", notice)
         self.assertIn("container system stop && container system start", notice)
 
     def test_rootless_podman_uses_native_alias(self) -> None:

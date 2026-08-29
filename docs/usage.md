@@ -387,8 +387,9 @@ uv run project-sandbox \
   sudo container system dns create host.docker.internal --localhost 203.0.113.113
   ```
 
-  This might disable network connectivity. Restart the container system after
-  creating the mapping with `container system stop` followed by
+  This DNS/PF change can disrupt container Internet access until runtime
+  networking is rebuilt and might disable Private Relay. Restart the container
+  system after creating the mapping with `container system stop` followed by
   `container system start`. Combining `--pi-ollama` with `--no-firewall` remains
   unsupported because the port-scoped allow rule and connectivity probe live in
   firewall initialization.

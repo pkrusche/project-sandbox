@@ -34,7 +34,7 @@ When `--pi-ollama` is set, the system SHALL reach an Ollama server listening on 
 
 #### Scenario: Apple localhost DNS is not preconfigured
 - **WHEN** Apple `container` is selected and `host.docker.internal` has not been configured with the runtime's localhost DNS facility
-- **THEN** startup fails without invoking `sudo` or changing host networking and prints `sudo container system dns create host.docker.internal --localhost 203.0.113.113`, warns that the change might disable network connectivity, and instructs the user to restart the container system afterward
+- **THEN** startup fails without invoking `sudo` or changing host networking and prints `sudo container system dns create host.docker.internal --localhost 203.0.113.113`, warns that the change can disrupt container Internet access and might disable Private Relay, and instructs the user to restart the container system afterward
 
 #### Scenario: Local Linux bridge fallback is required
 - **WHEN** the selected runtime uses a local Linux bridge whose host bridge address is bindable and no native loopback mapping is available

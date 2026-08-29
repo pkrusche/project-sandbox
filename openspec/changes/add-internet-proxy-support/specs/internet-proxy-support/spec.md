@@ -84,11 +84,15 @@ Before a real sandbox starts, the system SHALL perform a bounded implementation-
 
 #### Scenario: Listener is available
 - **WHEN** a bounded connection to the configured loopback listener succeeds
-- **THEN** sandbox preparation continues without inspecting the proxy implementation
+- **THEN** sandbox preparation continues and a second TCP-only check through the final port-scoped container firewall verifies the forwarded path without inspecting the proxy implementation
 
 #### Scenario: Listener is unavailable
 - **WHEN** no listener responds before the bounded preflight ends
 - **THEN** startup aborts before the sandbox starts and tells the user to start or troubleshoot the external proxy
+
+#### Scenario: Apple localhost redirect requires rebuilt runtime networking
+- **WHEN** the host listener is available but the forwarded TCP path is unavailable inside an Apple container
+- **THEN** firewall initialization aborts and explains that the administrator-managed DNS domain must be configured before restarting the container system
 
 #### Scenario: Dry-run previews proxy mode
 - **WHEN** valid Internet proxy arguments include `--dry-run`

@@ -277,4 +277,9 @@ class InternetProxyTests(TestCase):
                 self.assertNotIn("Allowing host gateway", text)
                 self.assertIn("requires enforceable IPv6 firewall policy", text)
                 self.assertIn("--dport 53 -j DROP", text)
+                self.assertIn("exec 3<>/dev/tcp/host.docker.internal/18080", text)
+                self.assertIn(
+                    "configure the localhost domain and then restart runtime networking",
+                    text,
+                )
                 self.assertIn("final firewall cannot reach loopback-bound Ollama", text)

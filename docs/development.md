@@ -70,6 +70,21 @@ availability-gated Ollama checks. Pass `--with-agent-proxy` only when you intend
 to run the gateway-only network/credential isolation audit followed by two
 billable Pi/OpenCode LLM requests.
 
+When a real container runtime is selected, the aggregate suite also runs a
+non-destructive Internet-proxy smoke test. If no listener is available at
+`http://127.0.0.1:18080`, it prints a `SKIP` note without creating a project,
+building an image, or starting a container. When the listener is present, it
+verifies that allowlisted HTTPS succeeds through the proxy and that
+`curl --noproxy '*'` cannot bypass the sandbox firewall. If Agentgateway is
+also listening on `http://127.0.0.1:4000/v1` and its key is available, the same
+no-credential-forwarding sandbox also verifies authenticated Agent proxy access
+and the absence of forwarded host credential files. Otherwise it prints a skip
+note for that combined scenario. Run it directly with:
+
+```bash
+uv run python scripts/e2e-internet-proxy-smoke.py --runtime apple-container
+```
+
 The full Internet-routing acceptance test is deliberately opt-in because it
 stops and restarts both external services and makes real Agentgateway requests:
 

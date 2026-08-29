@@ -8,12 +8,16 @@ Start the external proxy on loopback with an explicit port, then run a Docker sa
 project-sandbox --internet-proxy http://127.0.0.1:18080 --runtime docker --agent bash . python:3.12-slim
 ```
 
-Apple `container` uses the same command with `--runtime apple-container`. Configure its administrator-managed localhost DNS entry once, heed the command's network-connectivity warning, and restart the container system:
+Apple `container` uses the same command with `--runtime apple-container`. Configure its administrator-managed localhost DNS entry once, then restart the container system so it rebuilds networking with both the localhost redirect and ordinary container Internet access:
 
 ```bash
 sudo container system dns create host.docker.internal --localhost 203.0.113.113
 container system stop && container system start
 ```
+
+The DNS/PF change can disrupt container Internet access before the restart and
+can disable Private Relay. The CLI verifies the final proxy TCP path from inside
+the sandbox, but it never invokes `sudo` or changes this host-wide configuration.
 
 ## Security boundaries
 
@@ -38,4 +42,3 @@ Run these checks with the external proxy's test policy and replace example desti
 3. From inside the sandbox, verify `curl --noproxy '*' https://example.com`, a shell with all six proxy variables unset, arbitrary public-IP TCP connections, and direct UDP/TCP DNS attempts fail.
 4. With Agentgateway and the Internet proxy enabled, stop the Internet proxy first and verify Agentgateway remains reachable; restart it, stop Agentgateway, and verify permitted ordinary Internet access remains. Repeat with `--pi-ollama` and verify Ollama bypass remains port-scoped.
 5. Repeat the supported checks on Docker and Apple `container`. These runtime checks require the external proxy setup and are not part of the isolated unit suite.
-

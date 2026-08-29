@@ -131,8 +131,9 @@ internal hostname while preserving port and path.
 - **WHEN** Apple `container` is selected for proxy forwarding
 - **THEN** the provider uses `host.docker.internal`, the CLI prints the exact
   `sudo container system dns create host.docker.internal --localhost 203.0.113.113`
-  setup command, and warns that the change might disable network connectivity
-  and requires restarting the container system afterward
+  setup command, warns that the change can disrupt container Internet access
+  and might disable Private Relay, and requires restarting the container system
+  afterward
 
 ### Requirement: Preflight discovers models and validates selection
 

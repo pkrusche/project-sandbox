@@ -244,8 +244,8 @@ def apple_setup_notice(label: str) -> str:
     return (
         f"[W] {label} forwarding with Apple container requires this one-time setup:\n"
         f"    {APPLE_SETUP_COMMAND}\n"
-        "This DNS change might disable network connectivity. Restart the container "
-        "system afterward with:\n"
+        "This DNS/PF change can disrupt container Internet access until runtime "
+        "networking is rebuilt. Restart the container system afterward with:\n"
         f"    {APPLE_RESTART_COMMAND}"
     )
 

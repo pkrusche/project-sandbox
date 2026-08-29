@@ -20,7 +20,7 @@ if [ -z "${LOCAL_SERVICE_IP4_LIST[0]+x}" ]; then
   echo "ERROR: Runtime host alias {{ local_destinations[0].hostname }} did not resolve before firewall initialization." >&2
 {% if local_destinations[0].hostname == "host.docker.internal" %}
   echo "Configure it with: sudo container system dns create host.docker.internal --localhost 203.0.113.113" >&2
-  echo "WARNING: This might disable network connectivity; afterward restart with: container system stop && container system start" >&2
+  echo "For Apple container, restart afterward with: container system stop && container system start" >&2
 {% endif %}
   exit 1
 fi
@@ -253,7 +253,7 @@ else
   echo "ERROR: --pi-ollama could not resolve its runtime-selected Ollama endpoint." >&2
 {% if ollama_hostname == "host.docker.internal" %}
   echo "Configure it with: sudo container system dns create host.docker.internal --localhost 203.0.113.113" >&2
-  echo "WARNING: This might disable network connectivity; afterward restart with: container system stop && container system start" >&2
+  echo "For Apple container, restart afterward with: container system stop && container system start" >&2
 {% endif %}
   exit 1
 fi
@@ -306,6 +306,20 @@ if ! curl --silent --show-error --connect-timeout 3 --max-time 5 \
   exit 1
 fi
 {% endif %}
+{% for destination in local_destinations %}
+{% if destination.label == "Internet proxy" %}
+# Verify the TCP listener through the final port-scoped firewall. A proxy may
+# reject an arbitrary HTTP request, so test only connection establishment.
+if ! timeout 5 bash -c \
+    'exec 3<>/dev/tcp/{{ destination.hostname }}/{{ destination.port }}'; then
+  echo "ERROR: Internet proxy is unreachable from inside the sandbox at {{ destination.hostname }}:{{ destination.port }}." >&2
+  echo "For Apple container, configure the localhost domain and then restart runtime networking:" >&2
+  echo "  sudo container system dns create host.docker.internal --localhost 203.0.113.113" >&2
+  echo "  container system stop && container system start" >&2
+  exit 1
+fi
+{% endif %}
+{% endfor %}
 {% if pi_ollama %}
 # Verify Ollama through the final port-scoped firewall, not merely before the
 # default-deny policy and terminal reject rules are installed.
