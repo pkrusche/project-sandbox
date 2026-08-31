@@ -35,7 +35,7 @@ Alternative considered: add a third set of Internet-proxy branches around `ollam
 
 Add an `internet_proxy` module responsible for strict URL parsing, forwarded URL construction using `host.docker.internal`, canonical proxy/no-proxy environment generation, and bounded listener preflight. URL parsing returns a typed configuration containing the original loopback host, explicit port, and forwarded URL. Use a TCP connect preflight because it proves listener availability without needing an implementation-specific endpoint, a public destination, proxy authentication semantics, or redirect handling.
 
-Run semantic CLI conflicts before secret lookup, runtime inspection, filesystem rendering, or network preflight. Reject chroot because it shares the host network namespace: installing the proxy-only rules there would modify the host firewall, while omitting them would make proxy routing bypassable. Run preflight against the original host-loopback address only on real runs and before starting owned forwarding resources or the sandbox. A failed connection names the configured listener and points to `internet-proxy-locally`; it never attempts repair.
+Run semantic CLI conflicts before secret lookup, runtime inspection, filesystem rendering, or network preflight. Reject chroot because it shares the host network namespace: installing the proxy-only rules there would modify the host firewall, while omitting them would make proxy routing bypassable. Run preflight against the original host-loopback address only on real runs and before starting owned forwarding resources or the sandbox. A failed connection names the configured listener and tells the user to start or troubleshoot the configured proxy; it never attempts repair.
 
 Alternative considered: issue an HTTP request through the proxy. Rejected because a meaningful request either depends on proxy-specific health behavior or on a permitted external destination.
 
@@ -65,7 +65,7 @@ When Internet proxy mode is absent, use the existing normal firewall inputs and 
 
 Unit and renderer tests cover parsing, conflicts, environment generation, runtime plan selection, firewall shape, preflight ordering, and dry-run non-mutation. Existing Ollama and Agentgateway suites remain regression gates after the module rename. End-to-end checks are documented for execution with the separately managed proxy test setup rather than made mandatory unit tests, because CI must not depend on Pipelock, Smokescreen, Apple `container`, or a public destination.
 
-The documentation describes iptables as bypass prevention, `internet-proxy-locally` as Internet policy, and `agentgateway-locally` as AI/MCP and credential isolation. Runtime loss of either external service is not healed; scoped firewall paths ensure the other remains independent.
+The documentation describes iptables as bypass prevention, the external proxy as the owner of Internet policy, and `agentgateway-locally` as AI/MCP and credential isolation. Runtime loss of either external service is not healed; scoped firewall paths ensure the other remains independent.
 
 ## Risks / Trade-offs
 
@@ -82,6 +82,6 @@ The documentation describes iptables as bypass prevention, `internet-proxy-local
 1. Introduce the neutral forwarding model, migrate Ollama and Agentgateway to the shared `host.docker.internal` hostname, and retain their existing CLI and port-scoped policy behavior.
 2. Add Internet proxy parsing, conflicts, environment generation, and side-effect-free dry-run preview.
 3. Add typed firewall destinations and the explicit proxy-only policy, then wire forwarding and preflight.
-4. Add documentation and automated coverage, followed by manual acceptance checks against `internet-proxy-locally` on Docker and Apple `container`.
+4. Add documentation and automated coverage, followed by manual acceptance checks against an external filtering proxy on Docker and Apple `container`.
 
 Rollback is removal of the opt-in flag and proxy-only branch; existing sessions and configuration require no data migration. Because the feature is opt-in, reverting leaves non-proxy behavior intact and does not modify the external proxy installation.

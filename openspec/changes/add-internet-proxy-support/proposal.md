@@ -8,7 +8,7 @@ Proxy environment variables can direct cooperative applications through an Inter
 - Generalize local-service forwarding so Internet proxy, Agentgateway, and Ollama endpoints use the same runtime-specific forwarding strategies without changing the existing public Ollama or Agentgateway interfaces.
 - Inject standard upper- and lowercase proxy environment variables plus a generated local-service `NO_PROXY` list into interactive, headless, Bash, and inherited agent environments.
 - Collapse firewall egress in Internet-proxy mode to port-scoped forwarded local services, with no direct public destination, provider, GitHub, extra-domain, or DNS access and fail-closed IPv6 handling.
-- Reject incompatible domain-policy flags and keep destination policy and proxy lifecycle in the external `internet-proxy-locally` repository.
+- Reject incompatible domain-policy flags and keep destination policy and proxy lifecycle in the external proxy implementation.
 - Preflight the configured listener before launching (except in dry-run), without starting, repairing, or depending on a particular proxy implementation.
 - Reject chroot for Internet-proxy mode because it shares the host network namespace and cannot install an isolated sandbox firewall; retain chroot support for existing local-service forwarding outside this mode.
 - Document the separate iptables, Internet-policy, and AI/MCP boundaries and add CLI, environment, firewall, forwarding, and acceptance coverage.

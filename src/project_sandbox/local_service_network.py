@@ -14,10 +14,9 @@ from typing import Self
 from .container_cli import APPLE_CONTAINER, CHROOT, DOCKER, PODMAN, Runtime
 
 HOSTNAME = "host.docker.internal"
-APPLE_HOSTNAME = HOSTNAME
 PORT = 11434
 APPLE_SETUP_COMMAND = (
-    f"sudo container system dns create {APPLE_HOSTNAME} --localhost 203.0.113.113"
+    f"sudo container system dns create {HOSTNAME} --localhost 203.0.113.113"
 )
 APPLE_RESTART_COMMAND = "container system stop && container system start"
 
@@ -120,7 +119,7 @@ def prepare(
     loopback_host: str = "127.0.0.1",
 ) -> ForwardingPlan:
     """Select and validate the safest forwarding strategy for ``runtime``."""
-    hostname = forwarding_hostname(runtime, hostname)
+    hostname = HOSTNAME
     if runtime == CHROOT:
         return ForwardingPlan(
             "chroot-shared-loopback",
@@ -227,11 +226,6 @@ def prepare_services(
             )
         )
     return plans
-
-
-def forwarding_hostname(runtime: Runtime, fallback: str) -> str:
-    """Return the runtime-native name used to reach a host-loopback service."""
-    return HOSTNAME
 
 
 def describe(plan: ForwardingPlan) -> str:

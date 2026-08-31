@@ -22,6 +22,7 @@ from . import (
     dockerfile_checksum,
     firewall,
     internet_proxy,
+    local_service_network,
     oauth_refresh,
     observability,
     session,
@@ -30,9 +31,6 @@ from . import (
 )
 from . import (
     jj_workspace as jj_workspace_mod,
-)
-from . import (
-    local_service_network as ollama_network,
 )
 from . import (
     worktree as worktree_mod,
@@ -417,16 +415,10 @@ def main(argv: list[str] | None = None) -> int:
     proxy_base_url: str | None = None
     proxy_selected_model: str | None = None
     proxy_hostname = (
-        ollama_network.forwarding_hostname(runtime, agent_proxy.HOSTNAME)
-        if runtime is not None
-        else agent_proxy.HOSTNAME
+        local_service_network.HOSTNAME if runtime is not None else agent_proxy.HOSTNAME
     )
-    ollama_hostname = (
-        ollama_network.forwarding_hostname(runtime, ollama_network.HOSTNAME)
-        if runtime is not None
-        else ollama_network.HOSTNAME
-    )
-    ollama_base_url = f"http://{ollama_hostname}:{ollama_network.PORT}/v1"
+    ollama_hostname = local_service_network.HOSTNAME
+    ollama_base_url = f"http://{ollama_hostname}:{local_service_network.PORT}/v1"
     if args.agent_proxy:
         proxy_key, key_source = agent_proxy.resolve_key(
             args.agent_proxy_key_env, args.agent_proxy_key
@@ -482,7 +474,7 @@ def main(argv: list[str] | None = None) -> int:
     # setup/build failure before the agent ran (leave git in place, drop the
     # empty jj workspace).
     agent_ran = False
-    forwarding_plans: list[ollama_network.ForwardingPlan] = []
+    forwarding_plans: list[local_service_network.ForwardingPlan] = []
     exit_code = 1
     session_id = ""
     container_name: str | None = None
@@ -722,12 +714,12 @@ def main(argv: list[str] | None = None) -> int:
             pi_ollama_enabled=pi_ollama_enabled,
         )
         if services:
-            forwarding_plans = ollama_network.prepare_services(runtime, services)
+            forwarding_plans = local_service_network.prepare_services(runtime, services)
             if runtime == container_cli.APPLE_CONTAINER:
-                print(ollama_network.apple_setup_notice("Local service"))
+                print(local_service_network.apple_setup_notice("Local service"))
             if args.verbose:
                 for plan in forwarding_plans:
-                    print(ollama_network.describe(plan))
+                    print(local_service_network.describe(plan))
 
         if internet_proxy_config is not None:
             # Internet-proxy routing is part of the enforced sandbox policy,
@@ -1028,7 +1020,7 @@ def _validate_internet_proxy_args(args) -> internet_proxy.InternetProxy | None:
         raise SystemExit(
             "--internet-proxy cannot be combined with --extra-domain or "
             "--allow-github; configure Internet destination policy in "
-            "internet-proxy-locally"
+            "the external proxy"
         )
     return config
 
@@ -1039,20 +1031,22 @@ def _local_services(
     proxy_port: int | None,
     proxy_loopback_host: str | None = None,
     pi_ollama_enabled: bool,
-) -> list[ollama_network.LocalService]:
-    services: list[ollama_network.LocalService] = []
+) -> list[local_service_network.LocalService]:
+    services: list[local_service_network.LocalService] = []
     if config is not None:
         services.append(config.service)
     if proxy_port is not None:
         services.append(
-            ollama_network.LocalService(
+            local_service_network.LocalService(
                 "Agent proxy",
                 proxy_port,
                 loopback_host=proxy_loopback_host or "127.0.0.1",
             )
         )
     if pi_ollama_enabled:
-        services.append(ollama_network.LocalService("Ollama", ollama_network.PORT))
+        services.append(
+            local_service_network.LocalService("Ollama", local_service_network.PORT)
+        )
     return services
 
 
@@ -1066,7 +1060,7 @@ def _local_firewall_destinations(
         return None
     return [
         firewall.LocalTcpDestination(
-            service.label, ollama_network.HOSTNAME, service.port
+            service.label, local_service_network.HOSTNAME, service.port
         )
         for service in _local_services(
             config, proxy_port=proxy_port, pi_ollama_enabled=pi_ollama_enabled
@@ -1199,7 +1193,7 @@ def _dry_run(
         agent_proxy.validate_url(args.agent_proxy)[1] if args.agent_proxy else None
     )
     proxy_config = _validate_internet_proxy_args(args)
-    forwarding_plans = ollama_network.prepare_services(
+    forwarding_plans = local_service_network.prepare_services(
         runtime,
         _local_services(
             proxy_config,
@@ -1215,9 +1209,9 @@ def _dry_run(
     )
     if forwarding_plans:
         if runtime == container_cli.APPLE_CONTAINER:
-            print(ollama_network.apple_setup_notice("Local service"))
+            print(local_service_network.apple_setup_notice("Local service"))
         for plan in forwarding_plans:
-            print(f"Would use {ollama_network.describe(plan)}")
+            print(f"Would use {local_service_network.describe(plan)}")
     preview_api_key_values = (
         {
             "OPENAI_BASE_URL": "[REDACTED]",

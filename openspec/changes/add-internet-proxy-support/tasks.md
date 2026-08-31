@@ -34,7 +34,7 @@
 
 ## 5. Document Operations and Security Boundaries
 
-- [x] 5.1 Add `docs/internet-proxy.md` with setup references to `internet-proxy-locally`, primary Docker and Apple `container` usage, and no Docker Compose examples.
+- [x] 5.1 Add `docs/internet-proxy.md` with implementation-neutral proxy setup guidance, primary Docker and Apple `container` usage, and no Docker Compose examples.
 - [x] 5.2 Document iptables bypass prevention, external Internet destination-policy ownership, Agentgateway AI/MCP credential isolation, routing-hint limitations, and non-proxy-aware application failure.
 - [x] 5.3 Document independent runtime failure behavior and explicit non-goals, including no proxy lifecycle management, transparent interception, TLS interception, CA installation, policy synchronization, or AI/MCP rerouting.
 - [x] 5.4 Add a concise feature pointer to the user-facing documentation without expanding `README.md` into the full operational guide.

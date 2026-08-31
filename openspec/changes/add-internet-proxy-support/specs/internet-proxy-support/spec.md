@@ -24,7 +24,7 @@ The CLI SHALL accept `--internet-proxy URL` only when URL is HTTP, has an explic
 - **THEN** the CLI rejects the invocation before network or sandbox work and directs the user to a supported container runtime
 
 ### Requirement: Firewall enforcement and external policy ownership are mandatory
-Internet proxy mode SHALL require the firewall and SHALL reject `--no-firewall`, `--extra-domain`, and `--allow-github`. Conflict errors SHALL explain that environment variables are bypassable without firewall enforcement and that Internet destination policy belongs in `internet-proxy-locally`.
+Internet proxy mode SHALL require the firewall and SHALL reject `--no-firewall`, `--extra-domain`, and `--allow-github`. Conflict errors SHALL explain that environment variables are bypassable without firewall enforcement and that Internet destination policy belongs in the external proxy.
 
 #### Scenario: Firewall is disabled
 - **WHEN** `--internet-proxy` is combined with `--no-firewall`
@@ -110,7 +110,7 @@ If the Internet proxy becomes unavailable during a session, ordinary Internet op
 - **THEN** AI/MCP requests through Agentgateway fail and permitted general Internet requests continue through the filtering proxy
 
 ### Requirement: The security boundary is documented
-The repository SHALL document that project-sandbox iptables prevents bypass, `internet-proxy-locally` owns Internet destination/security policy, and `agentgateway-locally` owns AI/MCP routing and provider credential isolation. Documentation SHALL state that proxy environment variables are routing hints, non-proxy-aware applications fail rather than receive transparent interception, loopback publication alone is not the boundary, and Docker and Apple `container` are the primary supported runtimes. It SHALL contain no Docker Compose setup.
+The repository SHALL document that project-sandbox iptables prevents bypass, the external proxy owns Internet destination/security policy, and `agentgateway-locally` owns AI/MCP routing and provider credential isolation. Documentation SHALL state that proxy environment variables are routing hints, non-proxy-aware applications fail rather than receive transparent interception, loopback publication alone is not the boundary, and Docker and Apple `container` are the primary supported runtimes. It SHALL contain no Docker Compose setup.
 
 #### Scenario: User consults Internet proxy documentation
 - **WHEN** the user reads `docs/internet-proxy.md`

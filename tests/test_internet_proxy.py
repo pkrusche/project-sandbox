@@ -76,7 +76,7 @@ class InternetProxyTests(TestCase):
         with patch.object(
             socket, "create_connection", side_effect=OSError("refused")
         ) as connect:
-            with self.assertRaisesRegex(SystemExit, "internet-proxy-locally"):
+            with self.assertRaisesRegex(SystemExit, "configured proxy"):
                 internet_proxy.preflight(config)
         connect.assert_called_once_with(("127.0.0.1", 18080), timeout=2.0)
 
@@ -84,8 +84,8 @@ class InternetProxyTests(TestCase):
         base = ["--internet-proxy", "http://127.0.0.1:18080"]
         for conflict, explanation in (
             (["--no-firewall"], "bypassable without firewall enforcement"),
-            (["--allow-github"], "internet-proxy-locally"),
-            (["--extra-domain", "x.test"], "internet-proxy-locally"),
+            (["--allow-github"], "external proxy"),
+            (["--extra-domain", "x.test"], "external proxy"),
         ):
             args = cli.build_parser().parse_args([*base, *conflict, "project"])
             with (

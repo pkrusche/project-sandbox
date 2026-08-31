@@ -89,5 +89,5 @@ def preflight(config: InternetProxy, *, timeout: float = 2.0) -> None:
     except OSError as exc:
         raise SystemExit(
             f"Internet proxy listener {config.original_url} is unavailable; "
-            "start or troubleshoot internet-proxy-locally before retrying."
+            "start or troubleshoot the configured proxy before retrying."
         ) from exc
