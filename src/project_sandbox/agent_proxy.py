@@ -9,7 +9,8 @@ import urllib.error
 import urllib.request
 from urllib.parse import urlsplit, urlunsplit
 
-HOSTNAME = "agent-proxy.project-sandbox.internal"
+from .local_service_network import HOSTNAME
+
 DEFAULT_KEY_ENV = "AGENTGATEWAY_API_KEY"
 REDACTED = "[REDACTED]"
 

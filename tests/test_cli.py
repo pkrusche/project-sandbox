@@ -2911,11 +2911,13 @@ class PiOllamaTests(TestCase):
                 patch.object(cli.container_cli, "build_image", return_value=0),
                 patch.object(cli.container_cli, "run", return_value=0),
                 patch.object(
-                    cli.ollama_network,
-                    "prepare",
-                    return_value=cli.ollama_network.ForwardingPlan(
-                        "podman-native-host-alias"
-                    ),
+                    cli.local_service_network,
+                    "prepare_services",
+                    return_value=[
+                        cli.local_service_network.ForwardingPlan(
+                            "podman-native-host-alias"
+                        )
+                    ],
                 ),
                 contextlib.redirect_stdout(out),
             ):
