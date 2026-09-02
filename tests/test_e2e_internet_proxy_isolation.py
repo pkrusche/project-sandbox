@@ -1,5 +1,15 @@
+import importlib.util
 from pathlib import Path
 from unittest import TestCase
+
+
+def _load_checker():
+    path = Path(__file__).parents[1] / "scripts/e2e-internet-proxy-isolation.py"
+    spec = importlib.util.spec_from_file_location("e2e_internet_proxy_isolation", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class InternetProxyEndToEndScriptTests(TestCase):
@@ -32,3 +42,24 @@ class InternetProxyEndToEndScriptTests(TestCase):
         ):
             with self.subTest(evidence=evidence):
                 self.assertIn(evidence, self.source)
+
+    def test_uses_current_service_control_commands(self) -> None:
+        args = (
+            _load_checker()
+            .parser()
+            .parse_args(
+                [
+                    "--runtime",
+                    "docker",
+                    "--blocked-url",
+                    "https://blocked.example.test/",
+                    "--internet-proxy-dir",
+                    "/tmp/internet-proxy-locally",
+                    "--agentgateway-dir",
+                    "/tmp/agentgateway-locally",
+                ]
+            )
+        )
+
+        self.assertEqual(args.internet_proxy_control, "uv run ipl {action}")
+        self.assertEqual(args.agentgateway_control, "./run.py {action}")
