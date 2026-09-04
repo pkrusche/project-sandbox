@@ -777,6 +777,13 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 print("Starting container…")
 
+        waited = _wait_for_worktree_metadata(wt, runtime)
+        if waited and args.verbose:
+            print(
+                f"Waited {waited:.1f}s for the new worktree metadata to become "
+                f"visible to {runtime.name}"
+            )
+
         for plan in forwarding_plans:
             plan.start()
         agent_ran = True
@@ -1714,6 +1721,23 @@ def _plan_worktree(args, project: Path):
         worktree_dir=_worktree_dir(args),
     )
     return worktree_mod.Worktree(path=wt_path, branch=args.branch), wt_path
+
+
+def _wait_for_worktree_metadata(wt, runtime) -> float:
+    """Give a freshly created git worktree time to become visible in the VM.
+
+    Container runtimes on macOS share the host filesystem through a metadata
+    cache that can hide a just-recreated ``.git/worktrees`` directory for about
+    a second; a container started in that window sees no gitdir and every git
+    command in it fails (see worktree.METADATA_CACHE_WINDOW). Linux containers
+    bind-mount the host filesystem directly and chroot does not mount at all,
+    so neither needs the wait. Returns the seconds waited.
+    """
+    if not isinstance(wt, worktree_mod.Worktree):
+        return 0.0
+    if not runtime.is_container or sys.platform != "darwin":
+        return 0.0
+    return worktree_mod.wait_for_metadata_visibility(wt)
 
 
 def _worktree_dir(args) -> Path | None:

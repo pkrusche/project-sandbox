@@ -13,7 +13,8 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from project_sandbox import cli
+from project_sandbox import cli, container_cli
+from project_sandbox import worktree as worktree_mod
 from project_sandbox.git_identity import GitIdentity
 
 
@@ -5411,3 +5412,66 @@ class ApiKeyInjectionTests(TestCase):
             )
             self.assertIsNotNone(captured["env"])
             self.assertEqual(captured["env"]["ANTHROPIC_API_KEY"], "super-secret-value")
+
+
+class WorktreeMetadataWaitTests(TestCase):
+    """The cache-window wait applies only where a VM shares the filesystem.
+
+    See worktree.METADATA_CACHE_WINDOW: a container on macOS can mount a
+    just-deleted .git/worktrees directory and fail every git command, while
+    Linux containers bind-mount the host filesystem directly and chroot does
+    not mount at all.
+    """
+
+    def _worktree(self):
+        return worktree_mod.Worktree(
+            path=Path("/repo-worktrees/b"), branch="b", metadata_created_at=100.0
+        )
+
+    def test_waits_for_a_container_runtime_on_macos(self) -> None:
+        with (
+            patch.object(cli.sys, "platform", "darwin"),
+            patch.object(
+                cli.worktree_mod, "wait_for_metadata_visibility", return_value=1.25
+            ) as wait,
+        ):
+            waited = cli._wait_for_worktree_metadata(
+                self._worktree(), container_cli.DOCKER
+            )
+
+        self.assertEqual(waited, 1.25)
+        wait.assert_called_once()
+
+    def test_does_not_wait_on_linux(self) -> None:
+        with (
+            patch.object(cli.sys, "platform", "linux"),
+            patch.object(cli.worktree_mod, "wait_for_metadata_visibility") as wait,
+        ):
+            waited = cli._wait_for_worktree_metadata(
+                self._worktree(), container_cli.DOCKER
+            )
+
+        self.assertEqual(waited, 0.0)
+        wait.assert_not_called()
+
+    def test_does_not_wait_for_chroot(self) -> None:
+        with (
+            patch.object(cli.sys, "platform", "darwin"),
+            patch.object(cli.worktree_mod, "wait_for_metadata_visibility") as wait,
+        ):
+            waited = cli._wait_for_worktree_metadata(
+                self._worktree(), container_cli.CHROOT
+            )
+
+        self.assertEqual(waited, 0.0)
+        wait.assert_not_called()
+
+    def test_does_not_wait_without_a_git_worktree(self) -> None:
+        with (
+            patch.object(cli.sys, "platform", "darwin"),
+            patch.object(cli.worktree_mod, "wait_for_metadata_visibility") as wait,
+        ):
+            waited = cli._wait_for_worktree_metadata(None, container_cli.DOCKER)
+
+        self.assertEqual(waited, 0.0)
+        wait.assert_not_called()
