@@ -60,8 +60,9 @@ concurrent in-container writes; this item supersedes it.
 ## Internet proxy: allow non-loopback proxy hosts
 
 `--internet-proxy` currently accepts only `http://` on `127.0.0.1`, `localhost`, or
-`::1` (`internet_proxy.parse`). The restriction is load-bearing rather than cosmetic:
-three separate mechanisms assume the proxy listens on host loopback.
+`::1` (`internet_proxy.parse`). 
+
+Three separate mechanisms assume the proxy listens on host loopback.
 
 - `InternetProxy.forwarded_url` discards the supplied host and rewrites the container's
   `HTTP_PROXY`/`HTTPS_PROXY` to `http://host.docker.internal:{port}`. Only the port
@@ -86,7 +87,7 @@ Supporting a remote proxy therefore requires, at minimum:
 - Rework `internet_proxy.preflight`, which currently proves a host-side TCP connect to a
   loopback listener; a remote endpoint needs a reachability check that reflects the path
   the container will actually take.
-- Settle the trust model before relaxing anything. Traffic to the proxy is plain `http://`,
+- Figuring out CA certificates & SSL. Traffic to the proxy is plain `http://`,
   which is acceptable across loopback but sends `CONNECT` requests unencrypted once the hop
   crosses a network. The existing rejection of URL credentials follows from the loopback
   assumption and would need revisiting alongside any transport decision.
