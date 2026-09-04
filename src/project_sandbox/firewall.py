@@ -42,9 +42,9 @@ def render(
     extra_domains: list[str],
     allow_github: bool = False,
     pi_ollama: bool = False,
-    ollama_hostname: str = "ollama.project-sandbox.internal",
+    ollama_hostname: str = "host.docker.internal",
     agent_proxy_port: int | None = None,
-    agent_proxy_hostname: str = "agent-proxy.project-sandbox.internal",
+    agent_proxy_hostname: str = "host.docker.internal",
     policy: str = NORMAL,
     local_destinations: list[LocalTcpDestination] | None = None,
 ) -> Path:

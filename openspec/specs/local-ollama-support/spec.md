@@ -78,19 +78,23 @@ When `--pi-ollama` is set and the firewall is enabled, the system SHALL determin
 - **WHEN** `--pi-ollama` is set on a direct (non-devcontainer) CLI run
 - **THEN** the gateway-discovery and port-scoped allow rule are applied even though the broader devcontainer-only `allow_host_network` all-ports gateway rule is not active
 
-### Requirement: A runtime-selected hostname resolves to the Ollama endpoint
-The system SHALL use `host.docker.internal` for Apple `container` and `ollama.project-sandbox.internal` for other adapters when `--pi-ollama` is set, and SHALL pin the verified address for the container lifetime where the runtime permits it.
+### Requirement: One host-loopback alias resolves to the Ollama endpoint
+The system SHALL use the single host-loopback alias `host.docker.internal` for every adapter when `--pi-ollama` is set, and SHALL pin the verified address for the container lifetime where the runtime permits it.
 
 #### Scenario: Container startup with Pi-Ollama enabled
 - **WHEN** the container starts with `--pi-ollama` set and the firewall enabled
-- **THEN** the runtime-selected hostname resolves to the verified native or bridge-proxy endpoint
+- **THEN** `host.docker.internal` resolves to the verified native or bridge-proxy endpoint
+
+#### Scenario: Alias already mapped by the runtime
+- **WHEN** the runtime has already mapped the alias into `/etc/hosts` (for example a Docker `--add-host` entry)
+- **THEN** the firewall's DNS pin recognizes the existing entry for that same alias and does not append a duplicate
 
 #### Scenario: No dynamic address exposed to the agent process
 - **WHEN** the container starts with `--pi-ollama` set
-- **THEN** no `OLLAMA_HOST` (or equivalent) environment variable is set, and Pi's provider configuration references the runtime-selected hostname rather than a dynamically exposed address
+- **THEN** no `OLLAMA_HOST` (or equivalent) environment variable is set, and Pi's provider configuration references the alias rather than a dynamically exposed address
 
 ### Requirement: Pi's Ollama provider and default model are pre-configured
-When `--pi-ollama` is set, the system SHALL bake `~/.pi/agent/models.json` with an `ollama` provider entry pointing at the runtime-selected hostname on port 11434 using the `openai-completions` API shape, and SHALL bake `~/.pi/settings.json` setting `defaultProvider` to `ollama` and `defaultModel` to a configured model ID. Apple `container` SHALL use `http://host.docker.internal:11434/v1`; other adapters SHALL use `http://ollama.project-sandbox.internal:11434/v1`.
+When `--pi-ollama` is set, the system SHALL bake `~/.pi/agent/models.json` with an `ollama` provider entry pointing at the host-loopback alias on port 11434 using the `openai-completions` API shape, and SHALL bake `~/.pi/settings.json` setting `defaultProvider` to `ollama` and `defaultModel` to a configured model ID. Every adapter SHALL use `http://host.docker.internal:11434/v1`.
 
 #### Scenario: Default model list
 - **WHEN** `--pi-ollama` is set without any `--ollama-model` flags

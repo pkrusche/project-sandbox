@@ -110,8 +110,9 @@ process listings may already expose argv and cannot be redacted retroactively.
 The proxy URL SHALL use HTTP, a loopback host, and an explicit port; wildcard
 and non-loopback hosts SHALL be rejected. The documented setup SHALL use
 `http://127.0.0.1:4000/v1`. The agent VM SHALL reach that endpoint through the
-verified runtime-specific local-service forwarding mechanism under a dedicated
-internal hostname while preserving port and path.
+verified runtime-specific local-service forwarding mechanism under the single
+host-loopback alias `host.docker.internal`, used for every adapter, while
+preserving port and path.
 
 #### Scenario: Referenced LLM endpoint is accepted
 - **WHEN** the user supplies `http://127.0.0.1:4000/v1`

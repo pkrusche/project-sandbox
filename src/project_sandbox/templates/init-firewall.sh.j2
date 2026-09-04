@@ -246,7 +246,7 @@ OLLAMA_HOST_IF4=$(ip -4 route get "$OLLAMA_HOST_IP4" 2>/dev/null | awk 'NR == 1 
 if [ -n "$OLLAMA_HOST_IP4" ]; then
   echo "Allowing host Ollama endpoint (IPv4): $OLLAMA_HOST_IP4:11434"
   iptables -A OUTPUT -p tcp --dport 11434 -d "$OLLAMA_HOST_IP4" -o "${OLLAMA_HOST_IF4:-eth0}" -j ACCEPT
-  if ! grep -q '^.*[[:space:]]ollama\.project-sandbox\.internal\([[:space:]]\|$\)' /etc/hosts; then
+  if ! grep -q '^.*[[:space:]]{{ ollama_hostname | replace(".", "\\.") }}\([[:space:]]\|$\)' /etc/hosts; then
     printf '%s\t{{ ollama_hostname }} # project-sandbox-dns-pin\n' "$OLLAMA_HOST_IP4" >> /etc/hosts
   fi
 else
