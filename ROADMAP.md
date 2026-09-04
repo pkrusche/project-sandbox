@@ -1,7 +1,7 @@
 # Roadmap
 
 This file contains functionality researched but not yet planned for execution
-via <TODO.md>.
+in the next release via <TODO.md>.
 
 ## Prebuilt container image distribution
 
@@ -56,3 +56,41 @@ Interim mitigation already in place: one host-side exclusive lock
 (`_workspace_lock`) serializes workspace setup, finalization, and build-failure
 cleanup, so those shared-store mutations cannot interleave. It does not address
 concurrent in-container writes; this item supersedes it.
+
+## Internet proxy: allow non-loopback proxy hosts
+
+`--internet-proxy` currently accepts only `http://` on `127.0.0.1`, `localhost`, or
+`::1` (`internet_proxy.parse`). The restriction is load-bearing rather than cosmetic:
+three separate mechanisms assume the proxy listens on host loopback.
+
+- `InternetProxy.forwarded_url` discards the supplied host and rewrites the container's
+  `HTTP_PROXY`/`HTTPS_PROXY` to `http://host.docker.internal:{port}`. Only the port
+  survives into the sandbox.
+- The proxy is registered as a `LocalService`, so `local_service_network.plan()` selects
+  a runtime-specific bridge (Apple `container`'s localhost DNS alias, or a `socat`
+  listener on Linux bridge runtimes). Both exist only because host loopback is otherwise
+  unreachable from inside a container.
+- `init-firewall.sh.j2` pins one shared hostname — `local_destinations[0].hostname` — into
+  `/etc/hosts` and opens exactly one port-scoped `ACCEPT` rule per destination. Public
+  IPv4, public IPv6, and general outbound DNS are dropped, so the container has no route
+  to an arbitrary remote address even if the proxy variables are set by hand.
+
+Supporting a remote proxy therefore requires, at minimum:
+
+- Preserve the real host and port in `forwarded_url` for non-loopback hosts, and skip the
+  forwarding plan for them instead of bridging a listener that does not exist locally.
+- Generalize the firewall template beyond a single pinned hostname so destinations on
+  different hosts can each be allowlisted by address and exact port.
+- Resolve and pin the proxy hostname at render time, or require a literal IP, because
+  allowlisted names are pre-resolved into `/etc/hosts` and general DNS egress is dropped.
+- Rework `internet_proxy.preflight`, which currently proves a host-side TCP connect to a
+  loopback listener; a remote endpoint needs a reachability check that reflects the path
+  the container will actually take.
+- Settle the trust model before relaxing anything. Traffic to the proxy is plain `http://`,
+  which is acceptable across loopback but sends `CONNECT` requests unencrypted once the hop
+  crosses a network. The existing rejection of URL credentials follows from the loopback
+  assumption and would need revisiting alongside any transport decision.
+
+Interim workaround that needs no code change: run a loopback forwarder on the host
+(`socat`, `stunnel`) pointing at the remote proxy and pass its loopback URL. The sandbox
+keeps its port-scoped guarantee and the remote hop stays outside the security boundary.
