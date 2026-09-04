@@ -253,6 +253,7 @@ class JjWorkspaceSetupTests(unittest.TestCase):
 
         mount = jj_workspace_mod.git_backend_mount(self.repo, ws.path)
         self.assertIsNotNone(mount)
+        assert mount is not None
         source, target = mount
 
         # Source is the real git backend the store points at, and it exists.
@@ -697,6 +698,7 @@ class JjWorkspaceDockerEndToEndTests(unittest.TestCase):
         self._td.cleanup()
 
     def _docker(self, ws_path: Path, bash_cmd: str) -> None:
+        assert DOCKER is not None
         jj_dir = str((self.repo / ".jj").resolve())
         subprocess.run(
             [

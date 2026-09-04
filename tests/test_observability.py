@@ -54,6 +54,7 @@ class ObservabilityTests(TestCase):
                 agent="claude",
                 runtime="apple-container",
             )
+            assert path is not None
             record = json.loads(path.read_text())
             record["pid"] = 999_999_999
             path.write_text(json.dumps(record))

@@ -17,4 +17,5 @@ jobs:
       - run: uv sync
       - run: uv run python -m compileall src tests
       - run: scripts/check-ruff.sh
+      - run: uv run ty check
       - run: uv run pytest -q

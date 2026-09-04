@@ -238,6 +238,7 @@ class TranscriptLogToMarkdownTests(TestCase):
             md_path = transcript.log_to_markdown(log_path)
 
             self.assertIsNotNone(md_path)
+            assert md_path is not None
             self.assertEqual(md_path, log_path.with_suffix(".md"))
             self.assertTrue(md_path.exists())
             text = md_path.read_text(encoding="utf-8")
@@ -283,6 +284,7 @@ class TranscriptLogToMarkdownTests(TestCase):
             md_path = transcript.log_to_markdown(log_path)
 
             self.assertIsNotNone(md_path)
+            assert md_path is not None
             self.assertEqual(md_path, log_path.with_suffix(".md"))
             text = md_path.read_text(encoding="utf-8")
             self.assertIn("# Codex session transcript", text)
@@ -309,6 +311,7 @@ class TranscriptLogToMarkdownTests(TestCase):
             )
             md_path = transcript.log_to_markdown(log_path)
             self.assertIsNotNone(md_path)
+            assert md_path is not None
             text = md_path.read_text(encoding="utf-8")
             self.assertIn("# Pi session transcript", text)
             self.assertIn("Pi is done.", text)
@@ -342,6 +345,7 @@ class TranscriptLogToMarkdownTests(TestCase):
             log_path.write_text(_log_lines(*events), encoding="utf-8")
             md_path = transcript.log_to_markdown(log_path)
             self.assertIsNotNone(md_path)
+            assert md_path is not None
             text = md_path.read_text(encoding="utf-8")
             self.assertIn("### 🔧 read", text)
             self.assertIn("### ↳ read result", text)

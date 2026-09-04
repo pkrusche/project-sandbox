@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import TestCase
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -3351,7 +3351,9 @@ class VerboseAgentConfigTests(TestCase):
 class FinalizeWorktreeTests(TestCase):
     """_finalize_worktree maps CLI flags/exit code onto the module finalize()."""
 
-    def _run_finalize(self, *, exit_code: int, keep_workspace: bool) -> dict:
+    def _run_finalize(
+        self, *, exit_code: int, keep_workspace: bool
+    ) -> dict[str, object]:
         import argparse
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -3370,14 +3372,16 @@ class FinalizeWorktreeTests(TestCase):
                     args, project=project, wt=fake_wt, exit_code=exit_code
                 )
             finalize.assert_called_once()
-            return finalize.call_args.kwargs
+            return dict(finalize.call_args.kwargs)
 
     def test_nonzero_exit_marks_session_failed(self) -> None:
         kwargs = self._run_finalize(exit_code=124, keep_workspace=False)
         self.assertTrue(kwargs["session_failed"])
         self.assertFalse(kwargs["keep_workspace"])
         # The commit message defaults to the branch name plus a timestamp.
-        self.assertIn("feat/x", kwargs["message"])
+        message = kwargs["message"]
+        assert isinstance(message, str)
+        self.assertIn("feat/x", message)
 
     def test_zero_exit_is_not_failed(self) -> None:
         kwargs = self._run_finalize(exit_code=0, keep_workspace=False)
@@ -3697,7 +3701,7 @@ class BuildCacheReuseTests(TestCase):
         image_exists: bool,
         extra_args: list[str] | None = None,
         base_image: str | None = "python:3.12-slim",
-    ) -> tuple[int, str, "patch"]:
+    ) -> tuple[int, str, Mock]:
         host_home = project / "home"
         paths = _agent_paths(host_home)
         paths["claude"].mkdir(parents=True, exist_ok=True)

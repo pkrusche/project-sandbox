@@ -6,6 +6,7 @@ import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import cast
 from unittest.mock import Mock, patch
 
 from project_sandbox import agent_proxy, cli, config_agents
@@ -318,7 +319,7 @@ class AgentProxyTests(unittest.TestCase):
                         "OPENAI_MODEL": "model",
                     },
                 )
-                command = captured["command"]
+                command = cast(list[str], captured["command"])
                 self.assertIsInstance(command, list)
                 self.assertNotIn("gateway-key", command)
                 for name in ("OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL"):

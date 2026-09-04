@@ -25,9 +25,9 @@ _CLAUDE_CONFIG_BASE = {
 }
 
 
-def _claude_config_state(permission_mode: str) -> dict:
+def _claude_config_state(permission_mode: str) -> dict[str, object]:
     """Build the .claude.json config state for a profile's permission mode."""
-    state = dict(_CLAUDE_CONFIG_BASE)
+    state: dict[str, object] = dict(_CLAUDE_CONFIG_BASE)
     if permission_mode == "bypassPermissions":
         state["bypassPermissionsModeAccepted"] = True
         state["permissions"] = {

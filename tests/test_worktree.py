@@ -385,6 +385,7 @@ class GitWorktreeDockerEndToEndTests(TestCase):
         self._td.cleanup()
 
     def _docker(self, wt_path: Path, bash_cmd: str) -> None:
+        assert DOCKER is not None
         git_dir = str((self.repo / ".git").resolve())
         uid = os.getuid()
         subprocess.run(

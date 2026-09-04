@@ -17,6 +17,8 @@ from project_sandbox import config_agents
 
 def _load_module():
     spec = importlib.util.spec_from_file_location("update_pins", SCRIPT)
+    assert spec is not None
+    assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     # Register before exec so dataclass resolution works under
     # `from __future__ import annotations`.

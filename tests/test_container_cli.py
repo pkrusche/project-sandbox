@@ -4,6 +4,7 @@ import io
 import sys
 import tempfile
 from pathlib import Path
+from typing import TypedDict
 from unittest import TestCase
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -29,6 +30,16 @@ from project_sandbox.container_cli import (
     select_runtime,
 )
 from project_sandbox.git_identity import GitIdentity
+
+
+class _CredentialMountArgs(TypedDict):
+    project_abs: Path
+    claude_cfg: Path
+    codex_cfg: Path
+    claude_credentials_dir: Path
+    codex_credentials_dir: Path
+    opencode_credentials_dir: Path
+    pi_credentials_dir: Path
 
 
 class ContainerCliTests(TestCase):
@@ -118,7 +129,7 @@ class ContainerCliTests(TestCase):
         self,
     ) -> None:
         root = Path("/tmp/layout")
-        common = {
+        common: _CredentialMountArgs = {
             "project_abs": root / "workspace",
             "claude_cfg": root / "config/claude/settings.json",
             "codex_cfg": root / "config/codex/config.toml",
@@ -321,7 +332,7 @@ class ContainerCliTests(TestCase):
 
     def test_mount_builder_filters_overbroad_credentials_by_runtime_agent(self) -> None:
         root = Path("/tmp/layout")
-        common = {
+        common: _CredentialMountArgs = {
             "project_abs": root / "workspace",
             "claude_cfg": root / "config/claude/settings.json",
             "codex_cfg": root / "config/codex/config.toml",

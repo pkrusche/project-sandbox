@@ -246,6 +246,7 @@ def _source_dockerfile_fragments(
 
     prefix_index = prefix_indexes[0]
     prefix = stages[prefix_index]
+    assert prefix.alias is not None
     final_index = len(stages) - 1
     if prefix_index == final_index:
         return _DockerfileFragments(
@@ -256,11 +257,11 @@ def _source_dockerfile_fragments(
             after_dependencies=_format_from(internal_name, None) + "\n",
         )
 
-    path_child = final_index
-    while stages[path_child].parent_index is not None:
-        if stages[path_child].parent_index == prefix_index:
+    path_child: int = final_index
+    while (parent_index := stages[path_child].parent_index) is not None:
+        if parent_index == prefix_index:
             break
-        path_child = stages[path_child].parent_index  # type: ignore[assignment]
+        path_child = parent_index
     else:
         unresolved = [
             stage.base

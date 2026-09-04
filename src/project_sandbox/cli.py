@@ -698,6 +698,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Image ready: {args.image_tag}")
             return 0
 
+        assert run_agent is not None
+
         # The image build is complete, so it is now safe to stage the selected
         # agent's private proxy provider configuration in the project context.
         if proxy_base_url and proxy_key and run_agent:
@@ -859,6 +861,7 @@ def main(argv: list[str] | None = None) -> int:
             elif isinstance(wt, jj_workspace_mod.JjWorkspace):
                 jj_workspace_mod.remove(project, wt)
         if agent_ran and args.json_summary:
+            assert run_agent is not None
             _write_json_summary(
                 args.json_summary,
                 session_id=session_id,
@@ -1202,6 +1205,7 @@ def _dry_run(
     if args.build_only:
         print(f"Would build image only: {args.image_tag}")
         return 0
+    assert run_agent is not None
     proxy_port = (
         agent_proxy.validate_url(args.agent_proxy)[1] if args.agent_proxy else None
     )

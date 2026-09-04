@@ -1639,13 +1639,15 @@ class RendererTests(TestCase):
             context = Path(tmp)
             dockerfile.render_entrypoint(context)
             text = (context / "entrypoint.sh").read_text(encoding="utf-8")
-            pi_case = re.search(
-                r"\n      pi\)\n(.*?\n        ;;\n)", text, re.DOTALL
-            ).group(1)
+            pi_match = re.search(r"\n      pi\)\n(.*?\n        ;;\n)", text, re.DOTALL)
+            assert pi_match is not None
+            pi_case = pi_match.group(1)
             self.assertNotIn("--effort", pi_case)
-            pi_headless_case = re.search(
+            pi_headless_match = re.search(
                 r"\n      pi-headless\)\n(.*?\n        ;;\n)", text, re.DOTALL
-            ).group(1)
+            )
+            assert pi_headless_match is not None
+            pi_headless_case = pi_headless_match.group(1)
             self.assertNotIn("--effort", pi_headless_case)
             self.assertIn("--approve", pi_headless_case)
 
