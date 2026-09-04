@@ -663,8 +663,8 @@ def render_python_uv_dockerfile(
         # tag. Bump deliberately and refresh the digest via
         # `docker buildx imagetools inspect ghcr.io/astral-sh/uv:<tag>`.
         (
-            "FROM ghcr.io/astral-sh/uv:0.12.0"
-            "@sha256:606e70c71c852d03f611b1e56a195d08648507018a7057fab82c4974c4eae105"
+            "FROM ghcr.io/astral-sh/uv:0.12.9"
+            "@sha256:8b940d3a9d65bed080436972241af2e21c84b5e8c9193f7014ed71479ee795ff"
             " AS uv-bin"
         ),
         f"FROM python:{python_version}-slim",

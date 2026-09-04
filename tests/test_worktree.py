@@ -477,3 +477,105 @@ class GitWorktreeDockerEndToEndTests(TestCase):
             check=True,
         ).stdout
         self.assertNotIn("agent: add file", main_log)
+
+
+class MetadataVisibilityTests(TestCase):
+    """Regression tests for the VM shared-filesystem cache window.
+
+    Removing a repo's last worktree makes git delete ``.git/worktrees``; the
+    next ``worktree add`` recreates it, and a container started inside the
+    host share's ~1s metadata cache window mounts the deleted directory, so
+    every git command in the container fails with "not a git repository".
+    setup() records when it recreated that directory so the launch path can
+    wait the window out.
+    """
+
+    def setUp(self) -> None:
+        import tempfile
+
+        self._td = tempfile.TemporaryDirectory()
+        self.root = Path(self._td.name)
+        self.repo = self.root / "repo"
+        self.repo.mkdir()
+        _make_repo(self.repo)
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def test_first_worktree_records_creation_time(self) -> None:
+        wt = worktree_mod.setup(self.repo, "first")
+
+        self.assertIsNotNone(wt.metadata_created_at)
+
+    def test_second_worktree_reuses_existing_metadata_dir(self) -> None:
+        worktree_mod.setup(self.repo, "first")
+        second = worktree_mod.setup(self.repo, "second")
+
+        # .git/worktrees already existed, so nothing can be stale in the cache.
+        self.assertIsNone(second.metadata_created_at)
+
+    def test_worktree_after_removing_the_last_one_records_creation_time(self) -> None:
+        first = worktree_mod.setup(self.repo, "first")
+        worktree_mod.finalize(
+            self.repo,
+            first,
+            keep_workspace=False,
+            session_failed=False,
+            message="msg",
+        )
+        self.assertFalse((self.repo / ".git" / "worktrees").exists())
+
+        # This is the sequence the git-workflow e2e runs back to back.
+        second = worktree_mod.setup(self.repo, "second")
+
+        self.assertIsNotNone(second.metadata_created_at)
+
+    def test_reused_registered_worktree_records_nothing(self) -> None:
+        worktree_mod.setup(self.repo, "first")
+        again = worktree_mod.setup(self.repo, "first")
+
+        self.assertIsNone(again.metadata_created_at)
+
+    def test_wait_sleeps_out_the_remaining_window(self) -> None:
+        wt = worktree_mod.Worktree(
+            path=self.repo, branch="b", metadata_created_at=100.0
+        )
+        slept: list[float] = []
+        with (
+            patch.object(worktree_mod.time, "monotonic", return_value=100.5),
+            patch.object(worktree_mod.time, "sleep", slept.append),
+        ):
+            waited = worktree_mod.wait_for_metadata_visibility(wt)
+
+        self.assertAlmostEqual(waited, worktree_mod.METADATA_CACHE_WINDOW - 0.5)
+        self.assertEqual(len(slept), 1)
+        self.assertAlmostEqual(slept[0], worktree_mod.METADATA_CACHE_WINDOW - 0.5)
+
+    def test_wait_is_skipped_once_the_window_has_passed(self) -> None:
+        # Setup work between creating the worktree and starting the container
+        # (image build, credential staging) counts against the window.
+        wt = worktree_mod.Worktree(
+            path=self.repo, branch="b", metadata_created_at=100.0
+        )
+        slept: list[float] = []
+        with (
+            patch.object(
+                worktree_mod.time,
+                "monotonic",
+                return_value=100.0 + worktree_mod.METADATA_CACHE_WINDOW,
+            ),
+            patch.object(worktree_mod.time, "sleep", slept.append),
+        ):
+            waited = worktree_mod.wait_for_metadata_visibility(wt)
+
+        self.assertEqual(waited, 0.0)
+        self.assertEqual(slept, [])
+
+    def test_wait_is_skipped_when_nothing_was_recreated(self) -> None:
+        wt = worktree_mod.Worktree(path=self.repo, branch="b")
+        slept: list[float] = []
+        with patch.object(worktree_mod.time, "sleep", slept.append):
+            waited = worktree_mod.wait_for_metadata_visibility(wt)
+
+        self.assertEqual(waited, 0.0)
+        self.assertEqual(slept, [])

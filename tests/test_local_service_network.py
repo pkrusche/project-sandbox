@@ -6,11 +6,98 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from project_sandbox import ollama_network
+from project_sandbox import local_service_network as ollama_network
 from project_sandbox.container_cli import APPLE_CONTAINER, CHROOT, DOCKER, PODMAN
 
 
 class OllamaNetworkTests(TestCase):
+    def test_socat_start_failure_names_the_requested_service(self) -> None:
+        plan = ollama_network.ForwardingPlan(
+            "linux-bridge-socat",
+            endpoint="172.17.0.1",
+            port=18080,
+            label="Internet proxy",
+        )
+        with (
+            patch.object(ollama_network.shutil, "which", return_value="/usr/bin/socat"),
+            patch.object(
+                ollama_network.subprocess,
+                "Popen",
+                side_effect=OSError("cannot execute"),
+            ),
+            self.assertRaisesRegex(SystemExit, "Internet proxy socat proxy"),
+        ):
+            plan.start()
+
+    def test_linux_socat_preserves_ipv6_loopback_upstream(self) -> None:
+        process = MagicMock()
+        process.poll.return_value = None
+        plan = ollama_network.ForwardingPlan(
+            "linux-bridge-socat",
+            endpoint="172.17.0.1",
+            port=18080,
+            label="Internet proxy",
+            loopback_host="::1",
+        )
+        with (
+            patch.object(ollama_network.shutil, "which", return_value="/usr/bin/socat"),
+            patch.object(
+                ollama_network.subprocess, "Popen", return_value=process
+            ) as popen,
+            patch.object(ollama_network.time, "sleep"),
+        ):
+            plan.start()
+        self.assertEqual(popen.call_args.args[0][-1], "TCP6:[::1]:18080")
+
+    def test_multiple_services_share_mapping_and_reject_duplicate_ports(self) -> None:
+        with patch.object(
+            ollama_network, "prepare", wraps=ollama_network.prepare
+        ) as prepare:
+            plans = ollama_network.prepare_services(
+                CHROOT,
+                [
+                    ollama_network.LocalService("Internet proxy", 18080),
+                    ollama_network.LocalService("Ollama", 11434),
+                ],
+            )
+        self.assertEqual(sum(plan.add_host is not None for plan in plans), 1)
+        prepare.assert_called_once()
+        with (
+            patch.object(ollama_network, "prepare") as prepare,
+            self.assertRaisesRegex(SystemExit, "Duplicate local-service port"),
+        ):
+            ollama_network.prepare_services(
+                DOCKER,
+                [
+                    ollama_network.LocalService("one", 18080),
+                    ollama_network.LocalService("two", 18080),
+                ],
+            )
+        prepare.assert_not_called()
+
+    def test_linux_services_share_one_discovered_bridge_endpoint(self) -> None:
+        with (
+            patch.object(ollama_network, "_runtime_info", return_value={}) as info,
+            patch.object(
+                ollama_network, "_bridge_gateway", return_value="172.17.0.1"
+            ) as gateway,
+            patch.object(ollama_network, "_validate_bindable") as bindable,
+        ):
+            plans = ollama_network.prepare_services(
+                DOCKER,
+                [
+                    ollama_network.LocalService("Internet proxy", 18080),
+                    ollama_network.LocalService("Agent proxy", 4000),
+                    ollama_network.LocalService("Ollama", 11434),
+                ],
+            )
+
+        info.assert_called_once()
+        gateway.assert_called_once()
+        self.assertEqual(bindable.call_count, 3)
+        self.assertEqual({plan.endpoint for plan in plans}, {"172.17.0.1"})
+        self.assertEqual(sum(plan.add_host is not None for plan in plans), 1)
+
     def test_chroot_uses_shared_loopback_without_runtime_inspection(self) -> None:
         with patch.object(ollama_network, "_runtime_info") as runtime_info:
             plan = ollama_network.prepare(CHROOT)
@@ -18,7 +105,7 @@ class OllamaNetworkTests(TestCase):
         self.assertEqual(plan.endpoint, "127.0.0.1")
         self.assertEqual(
             plan.add_host,
-            "ollama.project-sandbox.internal:127.0.0.1",
+            "host.docker.internal:127.0.0.1",
         )
         runtime_info.assert_not_called()
 
@@ -33,7 +120,7 @@ class OllamaNetworkTests(TestCase):
             "sudo container system dns create host.docker.internal --localhost 203.0.113.113",
             notice,
         )
-        self.assertIn("might disable network connectivity", notice)
+        self.assertIn("can disrupt container Internet access", notice)
         self.assertIn("container system stop && container system start", notice)
 
     def test_rootless_podman_uses_native_alias(self) -> None:
@@ -46,7 +133,7 @@ class OllamaNetworkTests(TestCase):
         self.assertEqual(plan.strategy, "podman-native-host-alias")
         self.assertEqual(
             plan.add_host,
-            "ollama.project-sandbox.internal:host-gateway",
+            "host.docker.internal:host-gateway",
         )
 
     def test_docker_desktop_uses_native_alias(self) -> None:

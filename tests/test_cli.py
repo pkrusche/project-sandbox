@@ -2,6 +2,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -13,7 +14,8 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from project_sandbox import cli
+from project_sandbox import cli, container_cli
+from project_sandbox import worktree as worktree_mod
 from project_sandbox.git_identity import GitIdentity
 
 
@@ -2911,11 +2913,13 @@ class PiOllamaTests(TestCase):
                 patch.object(cli.container_cli, "build_image", return_value=0),
                 patch.object(cli.container_cli, "run", return_value=0),
                 patch.object(
-                    cli.ollama_network,
-                    "prepare",
-                    return_value=cli.ollama_network.ForwardingPlan(
-                        "podman-native-host-alias"
-                    ),
+                    cli.local_service_network,
+                    "prepare_services",
+                    return_value=[
+                        cli.local_service_network.ForwardingPlan(
+                            "podman-native-host-alias"
+                        )
+                    ],
                 ),
                 contextlib.redirect_stdout(out),
             ):
@@ -3596,6 +3600,44 @@ class DefaultImageTagTests(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tag = cli._default_image_tag(Path(tmp))
         self.assertRegex(tag, r"^project-sandbox-[a-z0-9._-]+-[0-9a-f]{8}:latest$")
+
+    def test_directory_names_yield_a_valid_oci_reference(self) -> None:
+        # A name component is alphanumeric runs joined by single separators, so
+        # a trailing or doubled separator in the directory name would otherwise
+        # produce a tag the runtime rejects with "invalid reference format".
+        # "audit.0fqiy38_" is a real mkdtemp name: Python's random suffix
+        # alphabet includes "_".
+        reference = re.compile(
+            r"^[a-z0-9]+(?:(?:\.|_|__|-+)[a-z0-9]+)*:[a-zA-Z0-9_][a-zA-Z0-9._-]*$"
+        )
+        names = (
+            "audit.0fqiy38_",
+            "_leading",
+            "trailing_",
+            "trailing.",
+            ".leading",
+            "double__underscore",
+            "mixed._separators",
+            "spaces and specials!",
+            "UPPER_Case",
+            "my_project",
+            "git-e2e.zqcrd3",
+            "___",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            for name in names:
+                with self.subTest(name=name):
+                    project = Path(tmp) / name
+                    project.mkdir()
+                    tag = cli._default_image_tag(project)
+                    self.assertRegex(tag, reference)
+
+    def test_valid_separators_are_preserved(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "git-e2e.zqcrd3"
+            project.mkdir()
+            tag = cli._default_image_tag(project)
+        self.assertTrue(tag.startswith("project-sandbox-git-e2e.zqcrd3-"), tag)
 
     def test_explicit_image_tag_overrides_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -5409,3 +5451,66 @@ class ApiKeyInjectionTests(TestCase):
             )
             self.assertIsNotNone(captured["env"])
             self.assertEqual(captured["env"]["ANTHROPIC_API_KEY"], "super-secret-value")
+
+
+class WorktreeMetadataWaitTests(TestCase):
+    """The cache-window wait applies only where a VM shares the filesystem.
+
+    See worktree.METADATA_CACHE_WINDOW: a container on macOS can mount a
+    just-deleted .git/worktrees directory and fail every git command, while
+    Linux containers bind-mount the host filesystem directly and chroot does
+    not mount at all.
+    """
+
+    def _worktree(self):
+        return worktree_mod.Worktree(
+            path=Path("/repo-worktrees/b"), branch="b", metadata_created_at=100.0
+        )
+
+    def test_waits_for_a_container_runtime_on_macos(self) -> None:
+        with (
+            patch.object(cli.sys, "platform", "darwin"),
+            patch.object(
+                cli.worktree_mod, "wait_for_metadata_visibility", return_value=1.25
+            ) as wait,
+        ):
+            waited = cli._wait_for_worktree_metadata(
+                self._worktree(), container_cli.DOCKER
+            )
+
+        self.assertEqual(waited, 1.25)
+        wait.assert_called_once()
+
+    def test_does_not_wait_on_linux(self) -> None:
+        with (
+            patch.object(cli.sys, "platform", "linux"),
+            patch.object(cli.worktree_mod, "wait_for_metadata_visibility") as wait,
+        ):
+            waited = cli._wait_for_worktree_metadata(
+                self._worktree(), container_cli.DOCKER
+            )
+
+        self.assertEqual(waited, 0.0)
+        wait.assert_not_called()
+
+    def test_does_not_wait_for_chroot(self) -> None:
+        with (
+            patch.object(cli.sys, "platform", "darwin"),
+            patch.object(cli.worktree_mod, "wait_for_metadata_visibility") as wait,
+        ):
+            waited = cli._wait_for_worktree_metadata(
+                self._worktree(), container_cli.CHROOT
+            )
+
+        self.assertEqual(waited, 0.0)
+        wait.assert_not_called()
+
+    def test_does_not_wait_without_a_git_worktree(self) -> None:
+        with (
+            patch.object(cli.sys, "platform", "darwin"),
+            patch.object(cli.worktree_mod, "wait_for_metadata_visibility") as wait,
+        ):
+            waited = cli._wait_for_worktree_metadata(None, container_cli.DOCKER)
+
+        self.assertEqual(waited, 0.0)
+        wait.assert_not_called()

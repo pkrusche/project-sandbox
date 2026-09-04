@@ -11,21 +11,21 @@ mapfile -t DNS6_LIST < <(awk '/^nameserver/ && $2 ~ /:/  {print $2}' /etc/resolv
 # tables. Apple container's configured host.docker.internal path depends on
 # runtime DNS plumbing that must remain available long enough to pin the result
 # into /etc/hosts below.
-{% if agent_proxy_port %}
-mapfile -t AGENT_PROXY_IP4_LIST < <(
-  getent ahostsv4 "{{ agent_proxy_hostname }}" 2>/dev/null |
+{% if local_destinations %}
+mapfile -t LOCAL_SERVICE_IP4_LIST < <(
+  getent ahostsv4 "{{ local_destinations[0].hostname }}" 2>/dev/null |
     awk '{print $1}' | sort -u
 )
-if [ -z "${AGENT_PROXY_IP4_LIST[0]+x}" ]; then
-  echo "ERROR: Runtime host alias {{ agent_proxy_hostname }} did not resolve before firewall initialization." >&2
-{% if agent_proxy_hostname == "host.docker.internal" %}
+if [ -z "${LOCAL_SERVICE_IP4_LIST[0]+x}" ]; then
+  echo "ERROR: Runtime host alias {{ local_destinations[0].hostname }} did not resolve before firewall initialization." >&2
+{% if local_destinations[0].hostname == "host.docker.internal" %}
   echo "Configure it with: sudo container system dns create host.docker.internal --localhost 203.0.113.113" >&2
-  echo "WARNING: This might disable network connectivity; afterward restart with: container system stop && container system start" >&2
+  echo "For Apple container, restart afterward with: container system stop && container system start" >&2
 {% endif %}
   exit 1
 fi
 {% endif %}
-{% if pi_ollama %}
+{% if pi_ollama and policy == "normal" %}
 mapfile -t OLLAMA_HOST_IP4_LIST < <(
   getent ahostsv4 "{{ ollama_hostname }}" 2>/dev/null |
     awk '{print $1}' | sort -u
@@ -34,6 +34,10 @@ mapfile -t OLLAMA_HOST_IP4_LIST < <(
 
 IPV6_FW=1
 if ! ip6tables -L >/dev/null 2>&1; then
+{% if policy == "internet-proxy" %}
+  echo "ERROR: Internet proxy mode requires enforceable IPv6 firewall policy." >&2
+  exit 1
+{% else %}
   if sysctl -w net.ipv6.conf.all.disable_ipv6=1 \
              net.ipv6.conf.default.disable_ipv6=1 \
              net.ipv6.conf.lo.disable_ipv6=1 >/dev/null 2>&1 \
@@ -43,6 +47,7 @@ if ! ip6tables -L >/dev/null 2>&1; then
     echo "ERROR: ip6tables unavailable and sysctl fallback failed."
     exit 1
   fi
+{% endif %}
 fi
 
 # Capture any existing DNS NAT rules (e.g. Docker's embedded resolver redirect)
@@ -115,6 +120,7 @@ if [ "$IPV6_FW" = "1" ]; then
   # outbound DNS"); allowlisted names are pre-resolved into /etc/hosts.
 fi
 
+{% if policy == "normal" %}
 ipset create allowed-ipv4 hash:net family inet
 [ "$IPV6_FW" = "1" ] && ipset create allowed-ipv6 hash:net family inet6
 
@@ -188,15 +194,16 @@ for domain in "${DOMAINS[@]}"; do
     done < <(dig +noall +answer +time=5 AAAA "$domain" 2>/dev/null | awk '$4=="AAAA" {print $5}' || true)
   fi
 done
+{% endif %}
 
-{% if agent_proxy_port %}
-# Authenticated agent proxy: allow only its forwarded address and TCP port.
-while IFS= read -r proxy_ip; do
-  [[ "$proxy_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || continue
-  printf '%s\t%s # project-sandbox-dns-pin\n' "$proxy_ip" "{{ agent_proxy_hostname }}" >> /etc/hosts
-  iptables -A OUTPUT -d "$proxy_ip" -p tcp --dport {{ agent_proxy_port }} -j ACCEPT
-  iptables -A INPUT -s "$proxy_ip" -p tcp --sport {{ agent_proxy_port }} -m conntrack --ctstate ESTABLISHED -j ACCEPT
-done < <(printf '%s\n' "${AGENT_PROXY_IP4_LIST[@]}")
+{% if local_destinations %}
+# Local services share one pinned hostname and remain authorized by exact port.
+LOCAL_SERVICE_IP4="${LOCAL_SERVICE_IP4_LIST[0]}"
+printf '%s\t%s # project-sandbox-dns-pin\n' "$LOCAL_SERVICE_IP4" "{{ local_destinations[0].hostname }}" >> /etc/hosts
+{% for destination in local_destinations %}
+iptables -A OUTPUT -d "$LOCAL_SERVICE_IP4" -p tcp --dport {{ destination.port }} -j ACCEPT
+iptables -A INPUT -s "$LOCAL_SERVICE_IP4" -p tcp --sport {{ destination.port }} -m conntrack --ctstate ESTABLISHED -j ACCEPT
+{% endfor %}
 {% endif %}
 
 {% if allow_host_network %}
@@ -224,7 +231,7 @@ if [ "$IPV6_FW" = "1" ]; then
 fi
 {% endif %}
 
-{% if pi_ollama %}
+{% if pi_ollama and policy == "normal" %}
 # ============================================================
 # Host gateway (Pi + Ollama)
 # ============================================================
@@ -239,14 +246,14 @@ OLLAMA_HOST_IF4=$(ip -4 route get "$OLLAMA_HOST_IP4" 2>/dev/null | awk 'NR == 1 
 if [ -n "$OLLAMA_HOST_IP4" ]; then
   echo "Allowing host Ollama endpoint (IPv4): $OLLAMA_HOST_IP4:11434"
   iptables -A OUTPUT -p tcp --dport 11434 -d "$OLLAMA_HOST_IP4" -o "${OLLAMA_HOST_IF4:-eth0}" -j ACCEPT
-  if ! grep -q '^.*[[:space:]]ollama\.project-sandbox\.internal\([[:space:]]\|$\)' /etc/hosts; then
+  if ! grep -q '^.*[[:space:]]{{ ollama_hostname | replace(".", "\\.") }}\([[:space:]]\|$\)' /etc/hosts; then
     printf '%s\t{{ ollama_hostname }} # project-sandbox-dns-pin\n' "$OLLAMA_HOST_IP4" >> /etc/hosts
   fi
 else
   echo "ERROR: --pi-ollama could not resolve its runtime-selected Ollama endpoint." >&2
 {% if ollama_hostname == "host.docker.internal" %}
   echo "Configure it with: sudo container system dns create host.docker.internal --localhost 203.0.113.113" >&2
-  echo "WARNING: This might disable network connectivity; afterward restart with: container system stop && container system start" >&2
+  echo "For Apple container, restart afterward with: container system stop && container system start" >&2
 {% endif %}
   exit 1
 fi
@@ -275,8 +282,10 @@ if [ "$IPV6_FW" = "1" ]; then
   ip6tables -A OUTPUT -p tcp --dport 53 -j DROP
 fi
 
+{% if policy == "normal" %}
 iptables -A OUTPUT -m set --match-set allowed-ipv4 dst -j ACCEPT
 [ "$IPV6_FW" = "1" ] && ip6tables -A OUTPUT -m set --match-set allowed-ipv6 dst -j ACCEPT
+{% endif %}
 
 iptables -A OUTPUT -j REJECT --reject-with icmp-admin-prohibited
 iptables -A INPUT -j REJECT --reject-with icmp-admin-prohibited
@@ -297,6 +306,20 @@ if ! curl --silent --show-error --connect-timeout 3 --max-time 5 \
   exit 1
 fi
 {% endif %}
+{% for destination in local_destinations %}
+{% if destination.label == "Internet proxy" %}
+# Verify the TCP listener through the final port-scoped firewall. A proxy may
+# reject an arbitrary HTTP request, so test only connection establishment.
+if ! timeout 5 bash -c \
+    'exec 3<>/dev/tcp/{{ destination.hostname }}/{{ destination.port }}'; then
+  echo "ERROR: Internet proxy is unreachable from inside the sandbox at {{ destination.hostname }}:{{ destination.port }}." >&2
+  echo "For Apple container, configure the localhost domain and then restart runtime networking:" >&2
+  echo "  sudo container system dns create host.docker.internal --localhost 203.0.113.113" >&2
+  echo "  container system stop && container system start" >&2
+  exit 1
+fi
+{% endif %}
+{% endfor %}
 {% if pi_ollama %}
 # Verify Ollama through the final port-scoped firewall, not merely before the
 # default-deny policy and terminal reject rules are installed.
@@ -308,6 +331,7 @@ fi
 {% endif %}
 
 echo "Firewall initialized."
+{% if policy == "normal" %}
 # grep -c already prints 0 (and exits non-zero) when nothing matches, so no
 # extra "|| echo 0" fallback is needed -- adding one double-prints "0\n0" for
 # an empty set and breaks the printf %d below.
@@ -319,3 +343,6 @@ if [ "$IPV6_FW" = "1" ]; then
 else
   echo "  IPv6: disabled via sysctl"
 fi
+{% else %}
+echo "  Policy: Internet proxy only (IPv4 and IPv6 fail closed)"
+{% endif %}

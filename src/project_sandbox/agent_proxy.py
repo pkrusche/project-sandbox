@@ -9,7 +9,8 @@ import urllib.error
 import urllib.request
 from urllib.parse import urlsplit, urlunsplit
 
-HOSTNAME = "agent-proxy.project-sandbox.internal"
+from .local_service_network import HOSTNAME
+
 DEFAULT_KEY_ENV = "AGENTGATEWAY_API_KEY"
 REDACTED = "[REDACTED]"
 
@@ -33,8 +34,8 @@ def validate_url(value: str) -> tuple[str, int]:
         port = parsed.port
     except ValueError as exc:
         raise SystemExit("--agent-proxy must contain a valid explicit port") from exc
-    if port is None:
-        raise SystemExit("--agent-proxy must contain an explicit port")
+    if port is None or not 1 <= port <= 65535:
+        raise SystemExit("--agent-proxy must contain a valid explicit port")
     if parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise SystemExit(
             "--agent-proxy must not contain credentials, query, or fragment"
@@ -45,6 +46,14 @@ def validate_url(value: str) -> tuple[str, int]:
 def forwarded_url(value: str, *, hostname: str = HOSTNAME) -> str:
     path, port = validate_url(value)
     return urlunsplit(("http", f"{hostname}:{port}", path, "", ""))
+
+
+def loopback_host(value: str) -> str:
+    """Return the validated host-side listener address."""
+    validate_url(value)
+    host = urlsplit(value).hostname
+    assert host is not None
+    return host
 
 
 def resolve_key(env_name: str, raw_key: str | None) -> tuple[str, str]:

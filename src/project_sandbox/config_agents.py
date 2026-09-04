@@ -77,7 +77,7 @@ def filter_credential_dirs(
     return {name: path for name, path in credential_dirs.items() if name in allowed}
 
 
-OLLAMA_BASE_URL = "http://ollama.project-sandbox.internal:11434/v1"
+OLLAMA_BASE_URL = "http://host.docker.internal:11434/v1"
 
 DEFAULT_OLLAMA_MODELS: tuple[str, ...] = (
     "qwen2.5-coder",
@@ -86,7 +86,7 @@ DEFAULT_OLLAMA_MODELS: tuple[str, ...] = (
 )
 
 # Keep in sync with the pi-coding-agent npm pin in templates/Dockerfile.j2.
-_PI_NPM_VERSION_PIN = "0.83.0"
+_PI_NPM_VERSION_PIN = "0.84.4"
 
 
 def _agent_host_paths(home: Path) -> dict[str, Path]:

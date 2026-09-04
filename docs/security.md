@@ -103,8 +103,9 @@ the container and:
   require `socat`, bound to the exact validated bridge address and terminated
   with the sandbox. Apple `container` requires the administrator-managed
   `host.docker.internal` localhost DNS mapping described in `docs/usage.md`.
-  Creating it might disable network connectivity, so restart the container
-  system immediately afterward.
+  Creating it can disrupt container Internet access until runtime networking is
+  rebuilt and might disable Private Relay, so restart the container system
+  immediately afterward.
 - Mirrors the IPv4 allowlist into a parallel IPv6 set; falls back to disabling
   IPv6 via `sysctl` when `ip6_tables` is unavailable. The script exits with an
   error if both `ip6tables` and `sysctl` are unavailable.

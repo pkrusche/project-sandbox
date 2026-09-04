@@ -1,5 +1,6 @@
 import hashlib
 import subprocess
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -7,11 +8,30 @@ from pathlib import Path
 
 from . import host_locks
 
+# VM-backed container runtimes (every runtime on macOS) reach the host
+# filesystem through a share whose metadata cache serves stale directory
+# entries for about a second. That matters here because git deletes
+# ``.git/worktrees`` itself once the repo's last worktree is removed: the next
+# ``git worktree add`` recreates the directory with a new inode, and a
+# container started inside the cache window mounts the *deleted* one. The new
+# worktree's gitdir is then invisible in the container, and because a ``.git``
+# file pointing at a missing gitdir is fatal to git, every in-container git
+# command — including the entrypoint's ``git config --global`` provisioning —
+# dies with "fatal: not a git repository: <gitdir>" before the agent starts.
+# Measured staleness is ~1.0s and expires on time alone (re-reading does not
+# refresh it), so wait it out with a little margin.
+METADATA_CACHE_WINDOW = 1.5
+
 
 @dataclass(slots=True)
 class Worktree:
     path: Path
     branch: str
+    # Monotonic timestamp of the moment this process created the repo's
+    # ``.git/worktrees`` directory, or None when the directory already existed
+    # (nothing was recreated, so no cache entry can be stale). Consumed by
+    # wait_for_metadata_visibility() before a container mounts the metadata.
+    metadata_created_at: float | None = None
 
 
 def setup(
@@ -43,13 +63,43 @@ def setup(
             f"  Remove or rename it, then retry."
         )
 
+    # git removes .git/worktrees when the last worktree goes away, so the add
+    # below may recreate it; see METADATA_CACHE_WINDOW.
+    metadata_dir_existed = _metadata_dir(repo).is_dir()
+
     if _branch_exists(repo, branch):
         _git(repo, ["worktree", "add", str(wt_path), branch])
-        return Worktree(path=wt_path, branch=branch)
+    else:
+        base_ref = start_at or "HEAD"
+        _git(repo, ["worktree", "add", "-b", branch, str(wt_path), base_ref])
 
-    base_ref = start_at or "HEAD"
-    _git(repo, ["worktree", "add", "-b", branch, str(wt_path), base_ref])
-    return Worktree(path=wt_path, branch=branch)
+    return Worktree(
+        path=wt_path,
+        branch=branch,
+        metadata_created_at=None if metadata_dir_existed else time.monotonic(),
+    )
+
+
+def wait_for_metadata_visibility(wt: Worktree) -> float:
+    """Block until a VM-backed runtime can see this worktree's gitdir.
+
+    Returns the seconds actually spent waiting, which is 0.0 whenever nothing
+    was recreated or enough time has already passed — the timestamp is taken
+    when the directory is created, so image builds and other setup work count
+    against the window rather than adding to it. Callers on a native
+    filesystem (Linux containers, chroot) should skip this entirely.
+    """
+    if wt.metadata_created_at is None:
+        return 0.0
+    remaining = METADATA_CACHE_WINDOW - (time.monotonic() - wt.metadata_created_at)
+    if remaining <= 0:
+        return 0.0
+    time.sleep(remaining)
+    return remaining
+
+
+def _metadata_dir(repo: Path) -> Path:
+    return repo.resolve() / ".git" / "worktrees"
 
 
 def _branch_exists(repo: Path, branch: str) -> bool:
@@ -162,8 +212,6 @@ def _list_worktrees(repo: Path) -> list[str]:
 def _clear_stale_index_lock(repo: Path, wt: Worktree) -> None:
     # A container crash mid-commit may leave index.lock in the worktree metadata.
     # Remove it so the host-side merge/rebase can proceed.
-    git_dir = repo.resolve() / ".git"
-    wt_name = wt.path.name
-    lock = git_dir / "worktrees" / wt_name / "index.lock"
+    lock = _metadata_dir(repo) / wt.path.name / "index.lock"
     if lock.exists():
         lock.unlink()

@@ -110,8 +110,9 @@ process listings may already expose argv and cannot be redacted retroactively.
 The proxy URL SHALL use HTTP, a loopback host, and an explicit port; wildcard
 and non-loopback hosts SHALL be rejected. The documented setup SHALL use
 `http://127.0.0.1:4000/v1`. The agent VM SHALL reach that endpoint through the
-verified runtime-specific local-service forwarding mechanism under a dedicated
-internal hostname while preserving port and path.
+verified runtime-specific local-service forwarding mechanism under the single
+host-loopback alias `host.docker.internal`, used for every adapter, while
+preserving port and path.
 
 #### Scenario: Referenced LLM endpoint is accepted
 - **WHEN** the user supplies `http://127.0.0.1:4000/v1`
@@ -131,8 +132,9 @@ internal hostname while preserving port and path.
 - **WHEN** Apple `container` is selected for proxy forwarding
 - **THEN** the provider uses `host.docker.internal`, the CLI prints the exact
   `sudo container system dns create host.docker.internal --localhost 203.0.113.113`
-  setup command, and warns that the change might disable network connectivity
-  and requires restarting the container system afterward
+  setup command, warns that the change can disrupt container Internet access
+  and might disable Private Relay, and requires restarting the container system
+  afterward
 
 ### Requirement: Preflight discovers models and validates selection
 

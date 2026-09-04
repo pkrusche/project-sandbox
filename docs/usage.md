@@ -332,6 +332,17 @@ repository-scoped filesystem lock; agent execution remains parallel. Image cache
 checks and first builds are also serialized per generated build context, so a
 second run waits for and reuses an identical image instead of building it twice.
 
+On macOS, container runtimes reach the host filesystem through a VM share whose
+metadata cache serves stale directory entries for about a second. Git deletes
+`.git/worktrees` when a repo's last worktree is removed, so a `--branch` run
+started immediately after a previous one finished could mount that deleted
+directory and fail at startup with `fatal: not a git repository: <gitdir>`.
+When project-sandbox recreates `.git/worktrees`, it now waits out the cache
+window (1.5s, measured from directory creation, so build and staging time count
+against it) before starting the container. Linux containers bind-mount the host
+filesystem directly and never wait; `--verbose` reports the wait when one
+happens.
+
 ## Unsupervised Sessions
 
 Run the agent without a TTY, starting from a prompt and writing all output to a
@@ -387,8 +398,9 @@ uv run project-sandbox \
   sudo container system dns create host.docker.internal --localhost 203.0.113.113
   ```
 
-  This might disable network connectivity. Restart the container system after
-  creating the mapping with `container system stop` followed by
+  This DNS/PF change can disrupt container Internet access until runtime
+  networking is rebuilt and might disable Private Relay. Restart the container
+  system after creating the mapping with `container system stop` followed by
   `container system start`. Combining `--pi-ollama` with `--no-firewall` remains
   unsupported because the port-scoped allow rule and connectivity probe live in
   firewall initialization.

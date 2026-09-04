@@ -75,11 +75,11 @@ if [ "$RUNTIME" = auto ]; then
   fi
 fi
 
-if [ "$RUNTIME" = "apple-container" ]; then
-  OLLAMA_HOSTNAME="host.docker.internal"
-else
-  OLLAMA_HOSTNAME="ollama.project-sandbox.internal"
-fi
+# project-sandbox advertises one host-loopback alias for every runtime
+# (local_service_network.HOSTNAME). Pi's baked models.json, the firewall's
+# /etc/hosts pin, and the runtime --add-host all use it, so the agent must be
+# able to reach Ollama under this name whichever runtime is selected.
+OLLAMA_HOSTNAME="host.docker.internal"
 
 # --- Detect Ollama ---------------------------------------------------------
 echo "Checking for a host Ollama server on 127.0.0.1:11434 ..."

@@ -25,8 +25,9 @@ class AgentProxyTests(unittest.TestCase):
     def test_url_validation_and_rewrite_preserve_port_and_path(self) -> None:
         self.assertEqual(
             agent_proxy.forwarded_url("http://127.0.0.1:4567/v1"),
-            "http://agent-proxy.project-sandbox.internal:4567/v1",
+            "http://host.docker.internal:4567/v1",
         )
+        self.assertEqual(agent_proxy.HOSTNAME, cli.local_service_network.HOSTNAME)
         self.assertEqual(
             agent_proxy.forwarded_url(
                 "http://127.0.0.1:4567/v1", hostname="host.docker.internal"
@@ -38,6 +39,8 @@ class AgentProxyTests(unittest.TestCase):
             "http://0.0.0.0:4000/v1",
             "http://example.com:4000/v1",
             "http://127.0.0.1/v1",
+            "http://127.0.0.1:0/v1",
+            "http://127.0.0.1:65536/v1",
         ):
             with self.subTest(value=value), self.assertRaises(SystemExit):
                 agent_proxy.validate_url(value)
@@ -184,11 +187,13 @@ class AgentProxyTests(unittest.TestCase):
                 patch.object(cli.container_cli, "build_image", side_effect=build_image),
                 patch.object(cli.container_cli, "run", side_effect=run),
                 patch.object(
-                    cli.ollama_network,
-                    "prepare",
-                    return_value=cli.ollama_network.ForwardingPlan(
-                        "docker-desktop-host-alias"
-                    ),
+                    cli.local_service_network,
+                    "prepare_services",
+                    return_value=[
+                        cli.local_service_network.ForwardingPlan(
+                            "docker-desktop-host-alias"
+                        )
+                    ],
                 ),
                 patch.object(
                     cli.agent_proxy,
@@ -286,11 +291,13 @@ class AgentProxyTests(unittest.TestCase):
                     patch.object(cli.container_cli, "run", side_effect=run),
                     patch.object(cli.session, "run", side_effect=run),
                     patch.object(
-                        cli.ollama_network,
-                        "prepare",
-                        return_value=cli.ollama_network.ForwardingPlan(
-                            "docker-desktop-host-alias"
-                        ),
+                        cli.local_service_network,
+                        "prepare_services",
+                        return_value=[
+                            cli.local_service_network.ForwardingPlan(
+                                "docker-desktop-host-alias"
+                            )
+                        ],
                     ),
                     patch.object(
                         cli.agent_proxy,
@@ -306,9 +313,7 @@ class AgentProxyTests(unittest.TestCase):
                 self.assertEqual(
                     captured["env"],
                     {
-                        "OPENAI_BASE_URL": (
-                            "http://agent-proxy.project-sandbox.internal:4000/v1"
-                        ),
+                        "OPENAI_BASE_URL": ("http://host.docker.internal:4000/v1"),
                         "OPENAI_API_KEY": "gateway-key",
                         "OPENAI_MODEL": "model",
                     },
@@ -435,11 +440,13 @@ class AgentProxyTests(unittest.TestCase):
                 patch.object(cli.container_cli, "image_exists", return_value=True),
                 patch.object(cli.container_cli, "run", side_effect=run),
                 patch.object(
-                    cli.ollama_network,
-                    "prepare",
-                    return_value=cli.ollama_network.ForwardingPlan(
-                        "apple-configured-host-alias", label="Agent proxy"
-                    ),
+                    cli.local_service_network,
+                    "prepare_services",
+                    return_value=[
+                        cli.local_service_network.ForwardingPlan(
+                            "apple-configured-host-alias", label="Agent proxy"
+                        )
+                    ],
                 ),
                 patch.object(
                     cli.agent_proxy,

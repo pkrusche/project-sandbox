@@ -112,18 +112,14 @@ class RendererTests(TestCase):
     def test_agent_proxy_reachability_probe_runs_inside_final_firewall(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             context = Path(tmp)
-            firewall.render(
-                context,
-                extra_domains=[],
-                agent_proxy_port=4000,
-                agent_proxy_hostname="host.docker.internal",
-            )
+            firewall.render(context, extra_domains=[], agent_proxy_port=4000)
             text = (context / "init-firewall.sh").read_text(encoding="utf-8")
 
+            # The shared host-loopback alias is the default for every adapter.
             probe = '"http://host.docker.internal:4000/"'
             resolution = 'getent ahostsv4 "host.docker.internal"'
             self.assertLess(text.index(resolution), text.index("iptables -t nat -F"))
-            self.assertIn('"${AGENT_PROXY_IP4_LIST[@]}"', text)
+            self.assertIn('"${LOCAL_SERVICE_IP4_LIST[0]}"', text)
             self.assertIn(probe, text)
             self.assertIn("--connect-timeout 3 --max-time 5", text)
             self.assertGreater(text.index(probe), text.index("iptables -P OUTPUT DROP"))
@@ -131,6 +127,27 @@ class RendererTests(TestCase):
                 text.index(probe),
                 text.index("iptables -A OUTPUT -j REJECT"),
             )
+            self.assertIn("sudo container system dns create host.docker.internal", text)
+
+    def test_agent_proxy_accepts_runtime_selected_hostname(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            firewall.render(
+                context,
+                extra_domains=[],
+                agent_proxy_port=4000,
+                agent_proxy_hostname="proxy.example.test",
+            )
+            text = (context / "init-firewall.sh").read_text(encoding="utf-8")
+
+            self.assertIn('getent ahostsv4 "proxy.example.test"', text)
+            self.assertIn('"http://proxy.example.test:4000/"', text)
+            self.assertIn("Runtime host alias proxy.example.test did not resolve", text)
+            self.assertIn(
+                "unreachable from inside the sandbox at proxy.example.test", text
+            )
+            # The Apple DNS hint names the shared alias, so it does not apply.
+            self.assertNotIn("sudo container system dns create", text)
 
     def test_agent_proxy_firewall_is_gateway_only_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2039,10 +2056,25 @@ class RendererTests(TestCase):
                     'iptables -A OUTPUT -p tcp --dport 11434 -d "$OLLAMA_HOST_IP4"',
                     text,
                 )
-                self.assertIn("ollama.project-sandbox.internal", text)
+                self.assertIn("host.docker.internal", text)
                 self.assertIn("project-sandbox-dns-pin", text)
                 # Reuses the existing gateway-discovery approach.
                 self.assertIn("ip -4 route", text)
+
+    def test_firewall_pi_ollama_uses_the_shared_host_alias_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            firewall.render(context, extra_domains=[], pi_ollama=True)
+            text = (context / "init-firewall.sh").read_text(encoding="utf-8")
+            self.assertIn('getent ahostsv4 "host.docker.internal"', text)
+            self.assertIn('"http://host.docker.internal:11434/api/tags"', text)
+            self.assertNotIn("ollama.project-sandbox.internal", text)
+            # The Apple DNS hint is only correct for the shared alias.
+            self.assertIn("sudo container system dns create host.docker.internal", text)
+            probe = '"http://host.docker.internal:11434/api/tags"'
+            self.assertGreater(
+                text.index(probe), text.index("iptables -A OUTPUT -j REJECT")
+            )
 
     def test_firewall_pi_ollama_accepts_runtime_selected_hostname(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2051,17 +2083,24 @@ class RendererTests(TestCase):
                 context,
                 extra_domains=[],
                 pi_ollama=True,
-                ollama_hostname="host.docker.internal",
+                ollama_hostname="ollama.example.test",
             )
             text = (context / "init-firewall.sh").read_text(encoding="utf-8")
-            self.assertIn('getent ahostsv4 "host.docker.internal"', text)
-            self.assertIn('"http://host.docker.internal:11434/api/tags"', text)
-            self.assertNotIn("ollama.project-sandbox.internal", text)
-            self.assertIn("sudo container system dns create host.docker.internal", text)
-            probe = '"http://host.docker.internal:11434/api/tags"'
-            self.assertGreater(
-                text.index(probe), text.index("iptables -A OUTPUT -j REJECT")
+            self.assertIn('getent ahostsv4 "ollama.example.test"', text)
+            self.assertIn('"http://ollama.example.test:11434/api/tags"', text)
+            self.assertIn(
+                "ollama.example.test # project-sandbox-dns-pin",
+                text,
             )
+            # Regression: the /etc/hosts idempotence guard hardcoded the retired
+            # hostname, so it never matched the entry the next line writes.
+            self.assertIn(
+                r"grep -q '^.*[[:space:]]ollama\.example\.test\([[:space:]]\|$\)'",
+                text,
+            )
+            self.assertNotIn("host.docker.internal # project-sandbox-dns-pin", text)
+            # The Apple DNS hint names the shared alias, so it does not apply.
+            self.assertNotIn("sudo container system dns create", text)
 
     def test_firewall_pi_ollama_absent_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2070,7 +2109,8 @@ class RendererTests(TestCase):
             for name in ("init-firewall.sh", "init-firewall-devcontainer.sh"):
                 text = (context / name).read_text(encoding="utf-8")
                 self.assertNotIn("11434", text)
-                self.assertNotIn("ollama.project-sandbox.internal", text)
+                self.assertNotIn("# project-sandbox-dns-pin' /etc/hosts", text)
+                self.assertNotIn("host.docker.internal # project-sandbox-dns-pin", text)
 
     def test_firewall_pi_ollama_scoped_to_ollama_port_not_all_ports(self) -> None:
         # Regression: the CLI (non-devcontainer) firewall variant must not gain
@@ -2151,7 +2191,7 @@ class RendererTests(TestCase):
             models = json.loads(models_path.read_text(encoding="utf-8"))
             provider = models["providers"]["ollama"]
             self.assertEqual(
-                provider["baseUrl"], "http://ollama.project-sandbox.internal:11434/v1"
+                provider["baseUrl"], "http://host.docker.internal:11434/v1"
             )
             self.assertEqual(provider["api"], "openai-completions")
             self.assertEqual(provider["apiKey"], "ollama")
