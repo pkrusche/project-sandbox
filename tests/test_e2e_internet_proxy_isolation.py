@@ -1,4 +1,5 @@
 import importlib.util
+import re
 from pathlib import Path
 from unittest import TestCase
 
@@ -34,14 +35,26 @@ class InternetProxyEndToEndScriptTests(TestCase):
         for evidence in (
             "recognizable proxy-policy denial",
             "AI completion succeeds through Agentgateway",
-            'control(args.internet_proxy_control, "stop"',
-            'control(args.internet_proxy_control, "restart"',
-            'control(args.agentgateway_control, "stop"',
             "proxy loss fails closed without direct fallback",
             "ordinary Internet still works while Agentgateway is stopped",
         ):
             with self.subTest(evidence=evidence):
                 self.assertIn(evidence, self.source)
+
+    def test_service_control_actions_match_the_service_clis(self) -> None:
+        # Both controlled services take up/down/restart and neither has a
+        # "stop": `ipl` (internet-proxy-locally) and agentgateway-locally's
+        # run.py. Comparing the full set also fails if a retired verb returns.
+        actions = set(re.findall(r'control\(\s*args\.(\w+),\s*"(\w+)"', self.source))
+        self.assertEqual(
+            actions,
+            {
+                ("internet_proxy_control", "down"),
+                ("internet_proxy_control", "restart"),
+                ("agentgateway_control", "down"),
+                ("agentgateway_control", "restart"),
+            },
+        )
 
     def test_uses_current_service_control_commands(self) -> None:
         args = (
