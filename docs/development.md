@@ -70,6 +70,40 @@ availability-gated Ollama checks. Pass `--with-agent-proxy` only when you intend
 to run the gateway-only network/credential isolation audit followed by two
 billable Pi/OpenCode LLM requests.
 
+By default every suite that is available on the host runs. To iterate on a
+single one, pass `--only SUITE`; `--list` prints the accepted suite names:
+
+```bash
+./scripts/run-e2e-tests.sh --list
+./scripts/run-e2e-tests.sh --only git-workflow
+```
+
+Naming an opt-in suite with `--only` is itself the opt-in, so `--only
+agent-proxy`, `--only agent-proxy-isolation`, and `--only
+internet-proxy-isolation` run without `--with-agent-proxy` /
+`--with-internet-proxy` (the destructive Internet audit still requires its
+`--blocked-url`, `--internet-proxy-dir`, and `--agentgateway-dir` arguments).
+Availability gates still apply: a selected suite that needs a container
+runtime, `jj`, or Ollama reports a skip when that dependency is missing.
+
+The console output is one progress line per suite:
+
+```
+[1/11] smoke                      PASS (0s)
+[4/11] jj-workflow                SKIP (jj not found on PATH)
+[2/11] env-injection              FAIL (0s)  log: /tmp/project-sandbox-e2e-logs.BNS540/env-injection.log
+```
+
+Each suite's stdout and stderr go to `<suite>.log` in a per-run temp directory.
+A failing suite's log is kept, its path is printed with the failure, and its
+last 20 lines are echoed inline for immediate context. A passing suite's log is
+deleted unless `--keep` is given, which retains every suite's log; when the run
+leaves no logs behind, its temp directory is removed too.
+
+Every run ends with a summary listing each suite it considered, in execution
+order, as `PASS`, `FAIL`, or `SKIP` (with the skip reason), followed by a
+`Ran N suite(s): ...` count. Skipped suites are not counted as run.
+
 When a real container runtime is selected, the aggregate suite also runs a
 non-destructive Internet-proxy smoke test. If no listener is available at
 `http://127.0.0.1:18080`, it prints a `SKIP` note without creating a project,
