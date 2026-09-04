@@ -55,8 +55,14 @@ PROMPT_MOUNT_TARGET = "/project-sandbox-prompt"
 
 def _default_image_tag(project: Path) -> str:
     resolved = project.resolve()
+    # An OCI name component is alphanumeric runs joined by single separators
+    # (".", "_", "__", or a run of "-"), so adjacent separators of different
+    # kinds ("_-", ".-") and leading or trailing ones make the whole reference
+    # invalid and the build fails before it starts. Collapse every separator
+    # run to one "-" rather than only "--", which left a directory named e.g.
+    # "audit.0fqiy38_" producing the rejected tag "...0fqiy38_-<hash>".
     name = re.sub(r"[^a-z0-9._-]", "-", resolved.name.lower())
-    name = re.sub(r"-{2,}", "-", name).strip("-") or "project"
+    name = re.sub(r"[._-]{2,}", "-", name).strip("._-") or "project"
     path_hash = hashlib.sha256(str(resolved).encode()).hexdigest()[:8]
     return f"project-sandbox-{name}-{path_hash}:latest"
 

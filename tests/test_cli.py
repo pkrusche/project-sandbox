@@ -2,6 +2,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -3599,6 +3600,44 @@ class DefaultImageTagTests(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tag = cli._default_image_tag(Path(tmp))
         self.assertRegex(tag, r"^project-sandbox-[a-z0-9._-]+-[0-9a-f]{8}:latest$")
+
+    def test_directory_names_yield_a_valid_oci_reference(self) -> None:
+        # A name component is alphanumeric runs joined by single separators, so
+        # a trailing or doubled separator in the directory name would otherwise
+        # produce a tag the runtime rejects with "invalid reference format".
+        # "audit.0fqiy38_" is a real mkdtemp name: Python's random suffix
+        # alphabet includes "_".
+        reference = re.compile(
+            r"^[a-z0-9]+(?:(?:\.|_|__|-+)[a-z0-9]+)*:[a-zA-Z0-9_][a-zA-Z0-9._-]*$"
+        )
+        names = (
+            "audit.0fqiy38_",
+            "_leading",
+            "trailing_",
+            "trailing.",
+            ".leading",
+            "double__underscore",
+            "mixed._separators",
+            "spaces and specials!",
+            "UPPER_Case",
+            "my_project",
+            "git-e2e.zqcrd3",
+            "___",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            for name in names:
+                with self.subTest(name=name):
+                    project = Path(tmp) / name
+                    project.mkdir()
+                    tag = cli._default_image_tag(project)
+                    self.assertRegex(tag, reference)
+
+    def test_valid_separators_are_preserved(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "git-e2e.zqcrd3"
+            project.mkdir()
+            tag = cli._default_image_tag(project)
+        self.assertTrue(tag.startswith("project-sandbox-git-e2e.zqcrd3-"), tag)
 
     def test_explicit_image_tag_overrides_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
