@@ -182,8 +182,11 @@ def sync_credentials(
     project_sandbox_dir: Path,
     *,
     home: Path | None = None,
+    unsupervised: bool = False,
 ) -> dict[str, Path]:
     """Stage credentials for all agents present on this host.
+
+    Unsupervised sessions exclude OpenCode's host history and runtime state.
 
     Returns a dict keyed by agent name:
       "claude", "claude-devcontainer" — always present
@@ -210,6 +213,7 @@ def sync_credentials(
         result["opencode"] = _sync_opencode_credentials(
             project_sandbox_dir,
             home=_home,
+            unsupervised=unsupervised,
         )
     if host_paths["pi"].exists():
         result["pi"] = _sync_generic_credentials(
@@ -221,7 +225,13 @@ def sync_credentials(
     return result
 
 
-def credentials_dir(project_sandbox_dir: Path, agent: str = "claude") -> Path:
+def credentials_dir(
+    project_sandbox_dir: Path, agent: str = "claude", *, unsupervised: bool = False
+) -> Path:
+    # An interactive sync must never repopulate a directory mounted by an
+    # unsupervised container with host history, even after provisioning finishes.
+    if agent == "opencode" and unsupervised:
+        agent = "opencode-headless"
     if not all(c.isalnum() or c in "._-" for c in agent):
         raise ValueError(f"Invalid credential agent name: {agent}")
     key = str(project_sandbox_dir.resolve(strict=False))
@@ -413,7 +423,9 @@ def _sync_generic_credentials(
             _copy_path(child, out_dir / child.name)
         return out_dir
     for name in include_files:
-        _copy_path(source_dir / name, out_dir / name)
+        # Credential filenames are an allowlist of files, never directory trees.
+        if (source_dir / name).is_file():
+            _copy_path(source_dir / name, out_dir / name)
     return out_dir
 
 
@@ -421,15 +433,29 @@ def _sync_opencode_credentials(
     project_sandbox_dir: Path,
     *,
     home: Path,
+    unsupervised: bool = False,
 ) -> Path:
-    out_dir = credentials_dir(project_sandbox_dir, "opencode")
+    out_dir = credentials_dir(
+        project_sandbox_dir, "opencode", unsupervised=unsupervised
+    )
     _ensure_private_dir(out_dir)
     _remove_stale_project_agent_credentials(project_sandbox_dir, "opencode", None)
     _clear_dir(out_dir)
     source_config = home / ".config" / "opencode"
     target_config = out_dir / ".config" / "opencode"
     for name in ("opencode.json", "opencode.jsonc"):
-        _copy_path(source_config / name, target_config / name)
+        if (source_config / name).is_file():
+            _copy_path(source_config / name, target_config / name)
+    if unsupervised:
+        # Provider credentials share a directory with session databases and logs.
+        # Allow only auth.json; never copy the enclosing data or state trees.
+        source_auth = home / ".local" / "share" / "opencode" / "auth.json"
+        if source_auth.is_file():
+            _copy_path(
+                source_auth,
+                out_dir / ".local" / "share" / "opencode" / "auth.json",
+            )
+        return out_dir
     _copy_dir_contents(
         home / ".local" / "share" / "opencode",
         out_dir / ".local" / "share" / "opencode",

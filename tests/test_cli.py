@@ -1238,6 +1238,13 @@ class CliTests(TestCase):
         self.assertEqual(rc, 0)
         output = out.getvalue()
         self.assertIn("opencode-headless", output)
+        staged = cli.config_agents.credentials_dir(
+            project / ".project-sandbox", "opencode", unsupervised=True
+        )
+        self.assertIn(
+            f"source={staged},target=/project-sandbox-secrets/opencode,readonly",
+            output,
+        )
         self.assertIn("OpenCode provider network access depends", output)
         self.assertIn("--allow-github", output)
 
@@ -1432,7 +1439,7 @@ class CliTests(TestCase):
             "PROJECT_SANDBOX_PROMPT_FILE=/project-sandbox-prompt/prompt.txt",
             out,
         )
-        self.assertIn("target=/project-sandbox-prompt,readonly", out)
+        self.assertIn("target=/project-sandbox-prompt/prompt.txt,readonly", out)
         self.assertNotIn("PROJECT_SANDBOX_PROMPT=echo ok", out)
 
     def test_dry_run_masks_workspace_project_sandbox_after_user_mounts(self) -> None:
@@ -1880,8 +1887,8 @@ class CliTests(TestCase):
             self.assertIsNotNone(log_path)
             self.assertEqual(prompt_file.read_text(encoding="utf-8"), "echo ok")
             self.assertIn(
-                f"type=bind,source={prompt_file.parent.resolve()},"
-                "target=/project-sandbox-prompt,readonly",
+                f"type=bind,source={prompt_file.resolve()},"
+                "target=/project-sandbox-prompt/prompt.txt,readonly",
                 cmd,
             )
             self.assertIn(
@@ -1965,6 +1972,9 @@ class CliTests(TestCase):
             context_dir = project / ".project-sandbox"
             prompt_file = project / "prompt.txt"
             prompt_file.write_text("echo ok", encoding="utf-8")
+            old_prompt = context_dir / "prompt" / "previous-task.txt"
+            old_prompt.parent.mkdir(parents=True)
+            old_prompt.write_text("private historical task", encoding="utf-8")
             claude_cfg = context_dir / "claude" / "settings.json"
             codex_cfg = context_dir / "codex" / "config.toml"
             credential_dirs = {"claude": context_dir / "claude-secrets"}
@@ -1997,15 +2007,14 @@ class CliTests(TestCase):
             )
 
             self.assertTrue(unsupervised)
-            # The prompt is copied into a private staging dir and only that dir
-            # is mounted; the source parent (which could be $HOME) is not.
+            # Only the current staged file is mounted, excluding older prompts.
             staging_dir = context_dir / "prompt"
             staged_file = staging_dir / "prompt.txt"
             self.assertTrue(staged_file.is_file())
             self.assertEqual(staged_file.read_text(encoding="utf-8"), "echo ok")
             self.assertIn(
-                f"type=bind,source={staging_dir.resolve()},"
-                "target=/project-sandbox-prompt,readonly",
+                f"type=bind,source={staged_file.resolve()},"
+                "target=/project-sandbox-prompt/prompt.txt,readonly",
                 cmd,
             )
             self.assertNotIn(
@@ -4882,6 +4891,55 @@ class HostTokenRefreshGatingTests(TestCase):
 
 
 class NoForwardCredentialsTests(TestCase):
+    def test_prompt_controls_unsupervised_credential_staging(self) -> None:
+        for mode in ("interactive", "text", "file"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as tmp:
+                project = Path(tmp)
+                paths = _agent_paths(project / "home")
+                paths["opencode"].mkdir(parents=True)
+                prompt = project / "prompt.txt"
+                prompt.write_text("do the task", encoding="utf-8")
+                options = {
+                    "interactive": [],
+                    "text": ["--prompt-text", "do the task"],
+                    "file": ["--prompt", str(prompt)],
+                }[mode]
+                with (
+                    patch.object(
+                        cli, "read_identity", return_value=GitIdentity(None, None)
+                    ),
+                    patch.object(
+                        cli.config_agents, "_agent_host_paths", return_value=paths
+                    ),
+                    patch.object(
+                        cli.config_agents, "sync_credentials", return_value={}
+                    ) as sync,
+                    patch.object(
+                        cli.container_cli,
+                        "select_runtime",
+                        return_value=cli.container_cli.DOCKER,
+                    ),
+                    patch.object(
+                        cli.container_cli, "ensure_system_started", return_value=0
+                    ),
+                    patch.object(cli.container_cli, "build_image", return_value=1),
+                    contextlib.redirect_stdout(io.StringIO()),
+                ):
+                    cli.main(
+                        [
+                            "--agent",
+                            "opencode",
+                            "--no-token-refresh",
+                            "--no-firewall",
+                            *options,
+                            str(project),
+                            "python:3.12-slim",
+                        ]
+                    )
+                sync.assert_called_once_with(
+                    project / ".project-sandbox", unsupervised=mode != "interactive"
+                )
+
     def test_skips_staging_and_purges_instead(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)

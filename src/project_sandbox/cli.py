@@ -555,7 +555,9 @@ def main(argv: list[str] | None = None) -> int:
                 verbose=args.verbose,
             )
         if forward_credentials:
-            credential_dirs = config_agents.sync_credentials(context_dir)
+            credential_dirs = config_agents.sync_credentials(
+                context_dir, unsupervised=bool(args.prompt or args.prompt_text)
+            )
         else:
             # Read/copy no host credentials, and remove any staged by a previous
             # forwarding run so nothing lingers on disk or can be mounted.
@@ -1122,7 +1124,9 @@ def _dry_run(
     credential_dirs = {
         "claude": config_agents.credentials_dir(context_dir, "claude"),
         **{
-            agent: config_agents.credentials_dir(context_dir, agent)
+            agent: config_agents.credentials_dir(
+                context_dir, agent, unsupervised=bool(args.prompt or args.prompt_text)
+            )
             for agent in ("codex", "opencode", "pi")
             if agent in available_agents
         },
@@ -2011,8 +2015,8 @@ def _build_session_command(
                 print(f"Would stage prompt to: {prompt_file}")
             prompt_target = f"{PROMPT_MOUNT_TARGET}/{source_prompt.name}"
             extra_mounts.append(
-                f"type=bind,source={prompt_staging.resolve()},"
-                f"target={PROMPT_MOUNT_TARGET},readonly"
+                f"type=bind,source={prompt_file.resolve()},"
+                f"target={prompt_target},readonly"
             )
             extra_env.append(f"PROJECT_SANDBOX_PROMPT_FILE={prompt_target}")
         elif args.prompt_text:
@@ -2024,8 +2028,8 @@ def _build_session_command(
             else:
                 print(f"Would write prompt to: {prompt_file}")
             extra_mounts.append(
-                f"type=bind,source={prompts_dir.resolve()},"
-                f"target={PROMPT_MOUNT_TARGET},readonly"
+                f"type=bind,source={prompt_file.resolve()},"
+                f"target={PROMPT_MOUNT_TARGET}/prompt.txt,readonly"
             )
             extra_env.append(
                 f"PROJECT_SANDBOX_PROMPT_FILE={PROMPT_MOUNT_TARGET}/prompt.txt"

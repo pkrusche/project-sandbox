@@ -441,6 +441,102 @@ class RendererTests(TestCase):
             for staged in (codex_staged, opencode_staged, pi_staged):
                 self.assertEqual(staged.stat().st_mode & 0o777, 0o700)
 
+    def test_credential_file_allowlists_do_not_copy_history_directories(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            for directory in (home / ".codex", home / ".pi" / "agent"):
+                history = directory / "auth.json" / "history.log"
+                history.parent.mkdir(parents=True)
+                history.write_text("private historical session", encoding="utf-8")
+            with _credentials_root(root):
+                staged = config_agents.sync_credentials(
+                    root / ".project-sandbox", home=home, unsupervised=True
+                )
+                for agent in ("codex", "pi"):
+                    self.assertEqual(list(staged[agent].iterdir()), [])
+
+    def test_unsupervised_opencode_stages_auth_without_host_history(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            context = root / ".project-sandbox"
+            home = root / "home"
+            files = {
+                ".config/opencode/opencode.json": '{"model":"test"}',
+                ".config/opencode/opencode.jsonc": "{/* config */}",
+                ".local/share/opencode/auth.json": '{"provider":{"key":"secret"}}',
+                ".local/share/opencode/opencode.db": "historical sessions",
+                ".local/share/opencode/storage/session/old.json": "old session",
+                ".local/share/opencode/log/old.log": "old log",
+                ".local/state/opencode/model.json": "old state",
+            }
+            for name, content in files.items():
+                path = home / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, encoding="utf-8")
+            with _credentials_root(root):
+                interactive = config_agents.sync_credentials(context, home=home)[
+                    "opencode"
+                ]
+                self.assertTrue(
+                    (interactive / ".local/share/opencode/opencode.db").exists()
+                )
+                staged = config_agents.credentials_dir(
+                    context, "opencode", unsupervised=True
+                )
+                self.assertNotEqual(staged, interactive)
+                # Even interrupted or older staging must not leave extra files.
+                stale = staged / ".local/share/opencode/opencode.db"
+                stale.parent.mkdir(parents=True)
+                stale.write_text("stale history", encoding="utf-8")
+                for authenticated in (True, False):
+                    with self.subTest(authenticated=authenticated):
+                        if not authenticated:
+                            (home / ".local/share/opencode/auth.json").unlink()
+                        result = config_agents.sync_credentials(
+                            context, home=home, unsupervised=True
+                        )
+                        self.assertEqual(result["opencode"], staged)
+                        # An interactive invocation can run while the headless
+                        # credential directory is still mounted read-only.
+                        config_agents.sync_credentials(context, home=home)
+                        expected = {
+                            ".config/opencode/opencode.json",
+                            ".config/opencode/opencode.jsonc",
+                        }
+                        if authenticated:
+                            expected.add(".local/share/opencode/auth.json")
+                        actual = {
+                            str(path.relative_to(staged))
+                            for path in staged.rglob("*")
+                            if path.is_file()
+                        }
+                        self.assertEqual(actual, expected)
+                        self.assertFalse((staged / ".local/state").exists())
+                        for name in expected:
+                            self.assertEqual((staged / name).read_text(), files[name])
+                            self.assertEqual(
+                                (staged / name).stat().st_mode & 0o777, 0o600
+                            )
+                # Narrowing must never delete the host's history or state.
+                for name, content in files.items():
+                    if not name.endswith("auth.json"):
+                        self.assertEqual((home / name).read_text(), content)
+
+    def test_unsupervised_opencode_does_not_stage_directories_as_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            for name in ("opencode.json", "opencode.jsonc"):
+                history = home / ".config/opencode" / name / "history.log"
+                history.parent.mkdir(parents=True)
+                history.write_text("historical session", encoding="utf-8")
+            with _credentials_root(root):
+                staged = config_agents.sync_credentials(
+                    root / ".project-sandbox", home=home, unsupervised=True
+                )["opencode"]
+                self.assertEqual(list(staged.iterdir()), [])
+
     def test_staged_credentials_never_reach_rendered_dockerfile_or_image_context(
         self,
     ) -> None:
