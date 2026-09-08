@@ -4027,6 +4027,64 @@ class PythonUvFlagTests(TestCase):
         self.assertIn("COPY . .", content)
         self.assertIn("RUN uv sync --frozen &&", content)
 
+    def test_render_keeps_managed_python_readable_by_the_agent(self) -> None:
+        """A uv-downloaded interpreter must not land under root's 0700 home.
+
+        uv fetches its own interpreter whenever the base image cannot satisfy
+        requires-python. Left at its default location the venv symlinks into
+        /root, and every 'uv run' in the sandbox fails with "failed to
+        canonicalize path /opt/venv/bin/python3: Permission denied".
+        """
+        from project_sandbox import dockerfile as df
+
+        with tempfile.TemporaryDirectory() as tmp:
+            context_dir = Path(tmp) / ".project-sandbox"
+            context_dir.mkdir()
+            out_path = df.render_python_uv_dockerfile(
+                context_dir,
+                python_version="3.11",
+                has_pyproject=True,
+                has_uvlock=True,
+            )
+            content = out_path.read_text(encoding="utf-8")
+
+        self.assertIn("ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python", content)
+        self.assertIn(
+            'chown -R "${AGENT_UID}:${AGENT_GID}" /opt/uv-cache /opt/venv /opt/uv-python',
+            content,
+        )
+        # The install dir must be exported before the sync layers that download
+        # the interpreter, or it lands in root's home regardless.
+        self.assertLess(
+            content.index("UV_PYTHON_INSTALL_DIR"), content.index("uv sync")
+        )
+
+    def test_render_preseeds_agent_owned_uv_dirs_without_cache_warm(self) -> None:
+        """Without a lockfile uv must still be able to populate its own dirs.
+
+        No cache-warming layer runs, so nothing chowns /opt afterwards: the
+        directories have to be created for the agent up front or uv cannot
+        create the venv at all.
+        """
+        from project_sandbox import dockerfile as df
+
+        with tempfile.TemporaryDirectory() as tmp:
+            context_dir = Path(tmp) / ".project-sandbox"
+            context_dir.mkdir()
+            out_path = df.render_python_uv_dockerfile(
+                context_dir,
+                python_version="3.11",
+                has_pyproject=True,
+                has_uvlock=False,
+            )
+            content = out_path.read_text(encoding="utf-8")
+
+        self.assertIn(
+            'RUN install -d -o "${AGENT_UID}" -g "${AGENT_GID}" '
+            "/opt/uv-cache /opt/venv /opt/uv-python",
+            content,
+        )
+
     def test_render_omits_cache_warm_when_pyproject_missing(self) -> None:
         from project_sandbox import dockerfile as df
 

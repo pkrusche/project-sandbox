@@ -745,6 +745,20 @@ def render_python_uv_dockerfile(
         "COPY --from=uv-bin /uv /uvx /usr/local/bin/",
         "ENV UV_CACHE_DIR=/opt/uv-cache",
         "ENV UV_PROJECT_ENVIRONMENT=/opt/venv",
+        # A project whose requires-python the base image cannot satisfy makes uv
+        # fetch its own interpreter, which by default lands under the building
+        # root user's home. /root is 0700, so the venv's interpreter symlink
+        # would resolve into a directory the agent cannot traverse and every
+        # 'uv run' would fail with EACCES.
+        "ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python",
+        # Pre-create the three uv directories as the agent so uv still works
+        # when no cache-warming layer ran below and it has to populate them
+        # itself. The agent user is added by the outer sandbox Dockerfile, so
+        # only its numeric id exists at this point.
+        (
+            'RUN install -d -o "${AGENT_UID}" -g "${AGENT_GID}" '
+            "/opt/uv-cache /opt/venv /opt/uv-python"
+        ),
         "WORKDIR /workspace",
     ]
     if has_pyproject and has_uvlock:
@@ -760,7 +774,7 @@ def render_python_uv_dockerfile(
             "",
             "# layer 2: install the project so 'uv run' works offline inside the sandbox",
             "COPY . .",
-            'RUN uv sync --frozen && chown -R "${AGENT_UID}:${AGENT_GID}" /opt/uv-cache /opt/venv',
+            'RUN uv sync --frozen && chown -R "${AGENT_UID}:${AGENT_GID}" /opt/uv-cache /opt/venv /opt/uv-python',
         ]
     out = context_dir / "Dockerfile.python-uv"
     out.write_text("\n".join(lines) + "\n", encoding="utf-8")

@@ -8,11 +8,12 @@
 #   4. jj-workflow              — jj rebase/merge/nothing workflows (skipped if jj not on PATH)
 #   5. dockerfile-tamper        — Dockerfile integrity and override behavior
 #   6. timeout-teardown         — container/VM cleanup after timeout
-#   7. pi-ollama                — Pi + Ollama networking/config
-#   8. internet-proxy-smoke     — availability-gated routing/bypass smoke test
-#   9. internet-proxy-isolation — routing/bypass/failure audit (explicit opt-in)
-#  10. agent-proxy-isolation    — gateway-only network/credential audit (explicit opt-in)
-#  11. agent-proxy              — real Pi/OpenCode gateway calls (explicit opt-in)
+#   7. python-uv                — --python-uv interpreter/venv usable by the agent
+#   8. pi-ollama                — Pi + Ollama networking/config
+#   9. internet-proxy-smoke     — availability-gated routing/bypass smoke test
+#  10. internet-proxy-isolation — routing/bypass/failure audit (explicit opt-in)
+#  11. agent-proxy-isolation    — gateway-only network/credential audit (explicit opt-in)
+#  12. agent-proxy              — real Pi/OpenCode gateway calls (explicit opt-in)
 #
 # The console shows one progress line per suite. Each suite's output is captured
 # in its own temp log file; a failing suite's log is kept and its path reported,
@@ -51,6 +52,7 @@ SUITES=(
   jj-workflow
   dockerfile-tamper
   timeout-teardown
+  python-uv
   pi-ollama
   internet-proxy-smoke
   internet-proxy-isolation
@@ -256,7 +258,19 @@ if selected timeout-teardown; then
   fi
 fi
 
-# 7. Pi + Ollama: networking and baked config (only if Ollama is reachable;
+# 7. --python-uv interpreter/venv usability. Builds its own image from a
+# synthesised Dockerfile, so it needs a real runtime and cannot honour --no-build.
+if selected python-uv; then
+  if [ -n "$CONTAINER_RUNTIME" ] && [ "$NO_BUILD" = 0 ]; then
+    PYTHON_UV_ARGS=(--runtime "$CONTAINER_RUNTIME")
+    [ "$KEEP" = 1 ] && PYTHON_UV_ARGS+=(--keep)
+    run_suite "python-uv" "$ROOT/scripts/e2e-python-uv.sh" "${PYTHON_UV_ARGS[@]}"
+  else
+    skip_suite "python-uv" "select a container runtime without --no-build"
+  fi
+fi
+
+# 8. Pi + Ollama: networking and baked config (only if Ollama is reachable;
 # chroot cannot run --agent pi, so fall back to auto runtime detection)
 if selected pi-ollama; then
   if command -v curl >/dev/null 2>&1 && curl -sf --max-time 2 http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
@@ -271,7 +285,7 @@ if selected pi-ollama; then
   fi
 fi
 
-# 8. Non-destructive Internet-proxy smoke test. The script itself detects an
+# 9. Non-destructive Internet-proxy smoke test. The script itself detects an
 # absent listener and reports a successful skip before creating anything.
 if selected internet-proxy-smoke; then
   if [ -n "$CONTAINER_RUNTIME" ]; then
@@ -285,7 +299,7 @@ if selected internet-proxy-smoke; then
   fi
 fi
 
-# 9. The combined Internet-proxy audit deliberately controls both external
+# 10. The combined Internet-proxy audit deliberately controls both external
 # services and makes real AI requests. Never availability-gate this destructive test.
 if selected internet-proxy-isolation; then
   if [ "$WITH_INTERNET_PROXY" = 1 ]; then
@@ -308,7 +322,7 @@ if selected internet-proxy-isolation; then
   fi
 fi
 
-# 10–11. Gateway-only isolation is non-billable, followed by two real requests.
+# 11–12. Gateway-only isolation is non-billable, followed by two real requests.
 # Never trigger either merely because a listener happens to be present.
 if [ "$WITH_AGENT_PROXY" = 1 ]; then
   if selected agent-proxy-isolation; then

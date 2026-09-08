@@ -63,10 +63,22 @@ or leave agent work after the session:
 
 All three scripts default to `--runtime chroot` on Linux and accept
 `--runtime chroot|auto|apple-container|docker|podman`, `--base-image IMAGE`,
-`--no-build`, and `--keep`. Run `./scripts/run-e2e-tests.sh` to execute the
-complete E2E matrix available on the host. This also includes Dockerfile-tamper
-checks, container timeout teardown when a real runtime is selected, and
-availability-gated Ollama checks. Pass `--with-agent-proxy` only when you intend
+`--no-build`, and `--keep`.
+
+A separate suite covers `--python-uv`, checking inside the sandbox that the
+agent user can actually run `uv` against the baked `/opt/venv`. It builds one
+project whose `requires-python` the base image cannot satisfy, so uv downloads
+its own interpreter during the build — that interpreter must stay outside
+root's home or the agent cannot read it. It synthesises its own Dockerfile, so
+it needs a real container runtime and takes no `--base-image` / `--no-build`:
+
+```bash
+./scripts/e2e-python-uv.sh --runtime apple-container
+```
+
+Run `./scripts/run-e2e-tests.sh` to execute the complete E2E matrix available
+on the host. This also includes Dockerfile-tamper checks, container timeout
+teardown when a real runtime is selected, and availability-gated Ollama checks. Pass `--with-agent-proxy` only when you intend
 to run the gateway-only network/credential isolation audit followed by two
 billable Pi/OpenCode LLM requests.
 
@@ -89,9 +101,9 @@ runtime, `jj`, or Ollama reports a skip when that dependency is missing.
 The console output is one progress line per suite:
 
 ```
-[1/11] smoke                      PASS (0s)
-[4/11] jj-workflow                SKIP (jj not found on PATH)
-[2/11] env-injection              FAIL (0s)  log: /tmp/project-sandbox-e2e-logs.BNS540/env-injection.log
+[1/12] smoke                      PASS (0s)
+[4/12] jj-workflow                SKIP (jj not found on PATH)
+[2/12] env-injection              FAIL (0s)  log: /tmp/project-sandbox-e2e-logs.BNS540/env-injection.log
 ```
 
 Each suite's stdout and stderr go to `<suite>.log` in a per-run temp directory.
