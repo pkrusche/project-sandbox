@@ -33,4 +33,46 @@ The firewall permits only exact forwarded local-service ports and blocks ordinar
 
 If the Internet proxy stops, ordinary Internet operations fail while a running Agentgateway or Ollama remains independently reachable. If Agentgateway stops, its AI/MCP operations fail while permitted Internet requests continue through a running Internet proxy. Project Sandbox never restarts either service.
 
-This feature intentionally provides no proxy lifecycle management, transparent interception, TLS interception, CA installation, policy synchronization, or implicit AI/MCP rerouting. Docker and Apple `container` are the primary runtimes. Docker Compose is not part of the setup.
+This feature intentionally provides no proxy lifecycle management, transparent interception, TLS interception itself, policy synchronization, or implicit AI/MCP rerouting. Docker and Apple `container` are the primary runtimes. Docker Compose is not part of the setup.
+
+## Injecting proxy CA certificates
+
+For a TLS-inspecting corporate proxy, supply its public CA certificate in PEM
+format (one certificate per file). Repeat `--ca-cert` for multiple certificates:
+
+```bash
+project-sandbox --internet-proxy http://127.0.0.1:18080 \
+  --ca-cert /path/to/corporate-root.pem --ca-cert /path/to/intermediate.pem \
+  --runtime docker --agent bash . python:3.12-slim
+```
+
+Inputs must contain only a PEM certificate and optional surrounding whitespace;
+bundles, private keys, end-entity (non-CA) certificates, and unrelated trailing
+content are rejected.
+
+`--ca-cert` requires `--internet-proxy` and its enforced firewall. The proxy URL
+must still use host loopback; installing a CA does not encrypt the HTTP hop to
+the proxy or enable remote proxy hosts. The external proxy performs TLS
+inspection and owns destination policy.
+
+Certificates are copied into the generated build context under content-based
+`.crt` names and baked into the image with `update-ca-certificates`, after all
+package installation and project build steps. The installed public certificates
+are readable by the unprivileged agent regardless of the host's file creation
+permissions. This works with a base image,
+`--dockerfile`, and the generated `.devcontainer/`. It configures session trust;
+it does not make build-time downloads trust the proxy. For build-time trust, use
+the custom Dockerfile `prefix` stage described in [usage](usage.md).
+
+Node is configured with `NODE_USE_SYSTEM_CA=1` to include the OS trust store,
+using its [system CA support](https://nodejs.org/api/cli.html#node_use_system_ca1).
+No extra certificate bundle environment variables are set. Applications with
+private trust stores or explicit TLS configuration may need their own setup.
+
+Only inject CAs you trust: they can authenticate any TLS destination accepted by
+applications using this store, including permitted local services. Certificates
+are public image contents, not runtime secrets; never pass private keys. Changing
+or removing inputs updates the generated files and invalidates the image cache.
+Rebuild the image (including a devcontainer rebuild) to apply changes; `--no-build`
+continues using the existing image. Dry-run validates certificates and previews
+injection without writing files or starting containers.

@@ -87,7 +87,8 @@ Supporting a remote proxy therefore requires, at minimum:
 - Rework `internet_proxy.preflight`, which currently proves a host-side TCP connect to a
   loopback listener; a remote endpoint needs a reachability check that reflects the path
   the container will actually take.
-- Figuring out CA certificates & SSL. Traffic to the proxy is plain `http://`,
+- Securing the remote proxy transport. `--ca-cert` now installs session trust for
+  TLS-inspecting loopback proxies, but traffic to the proxy is still plain `http://`,
   which is acceptable across loopback but sends `CONNECT` requests unencrypted once the hop
   crosses a network. The existing rejection of URL credentials follows from the loopback
   assumption and would need revisiting alongside any transport decision.

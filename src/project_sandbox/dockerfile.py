@@ -1,4 +1,7 @@
+import base64
+import hashlib
 import re
+import ssl
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -73,6 +76,59 @@ class _DockerfileFragments:
     after_dependencies: str
 
 
+def read_ca_certificates(paths: list[str]) -> tuple[bytes, ...]:
+    """Read public PEM certificates before any output or container side effects."""
+    certificates = []
+    for value in paths:
+        path = Path(value).expanduser()
+        try:
+            data = path.read_bytes()
+            text = data.decode("ascii").strip()
+            # OpenSSL accepts trailing content after a valid certificate. Match
+            # the entire PEM envelope so unrelated data cannot enter the image.
+            if (
+                re.fullmatch(
+                    r"-----BEGIN CERTIFICATE-----\s+[A-Za-z0-9+/=\s]+"
+                    r"-----END CERTIFICATE-----",
+                    text,
+                    flags=re.ASCII,
+                )
+                is None
+            ):
+                raise ValueError("expected one PEM certificate per file")
+            payload = "".join(text.splitlines()[1:-1]).split()
+            der = base64.b64decode("".join(payload), validate=True)
+            # OpenSSL also ignores bytes after the DER certificate inside the
+            # PEM payload. Require one complete ASN.1 SEQUENCE, with no suffix.
+            if len(der) < 2 or der[0] != 0x30:
+                raise ValueError("expected a DER certificate sequence")
+            length = der[1]
+            header_size = 2
+            if length & 0x80:
+                length_size = length & 0x7F
+                if not length_size or len(der) < 2 + length_size:
+                    raise ValueError("invalid DER certificate length")
+                header_size += length_size
+                length = int.from_bytes(der[2:header_size], "big")
+            if header_size + length != len(der):
+                raise ValueError("expected one certificate without trailing data")
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            context.load_verify_locations(cadata=text)
+            # Loading a trust store also accepts end-entity certificates. Those
+            # cannot issue the proxy's destination certificates, so reject them
+            # here rather than letting the session fail later during TLS.
+            if context.cert_store_stats()["x509_ca"] != 1:
+                raise ValueError(
+                    "expected a CA certificate, not an end-entity certificate"
+                )
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise SystemExit(
+                f"--ca-cert: cannot load certificate {path}: {exc}"
+            ) from exc
+        certificates.append((text + "\n").encode("ascii"))
+    return tuple(certificates)
+
+
 def render(
     context_dir: Path,
     *,
@@ -81,6 +137,7 @@ def render(
     build_context: Path | None = None,
     install_agents: tuple[str, ...] = ("claude", "codex", "opencode", "pi"),
     warn: Callable[[str], None] | None = None,
+    ca_certificates: tuple[bytes, ...] = (),
 ) -> Path:
     if (base_image is None) == (base_dockerfile is None):
         raise ValueError("Provide exactly one of base_image or base_dockerfile")
@@ -107,12 +164,24 @@ def render(
             build_context=build_context,
         )
 
+    # Content-addressed names make certificate changes invalidate the image
+    # fingerprint through the Dockerfile, and avoid collisions in host filenames.
+    certificate_sources = []
+    for certificate in dict.fromkeys(ca_certificates):
+        name = f"project-sandbox-ca-{hashlib.sha256(certificate).hexdigest()}.crt"
+        (context_dir / name).write_bytes(certificate)
+        certificate_sources.append(copy_prefix + name)
+    for stale in context_dir.glob("project-sandbox-ca-*.crt"):
+        if copy_prefix + stale.name not in certificate_sources:
+            stale.unlink()
+
     tmpl = templating.get_template("Dockerfile.j2")
     shared = {
         "source_before_dependencies": source_before_dependencies,
         "dependency_from": dependency_from,
         "source_after_dependencies": source_after_dependencies,
         "sandbox_copy_prefix": copy_prefix,
+        "ca_certificate_sources": certificate_sources,
         "install_claude": "claude" in install_agents,
         "install_codex": "codex" in install_agents,
         "install_opencode": "opencode" in install_agents,
