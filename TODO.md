@@ -29,29 +29,22 @@
     generally trust the OS store via OpenSSL, but Node/npm's own CA handling
     doesn't always follow `update-ca-certificates` without also setting
     `NODE_EXTRA_CA_CERTS` (and possibly npm's own `cafile` config).
-
-  Open questions:
-  - Where does the injected cert enter the build: a new `--ca-cert PATH`
+  - The injected cert enters the build via a new `--ca-cert PATH` CLI option
     (repeatable, like `--extra-domain`) that `Dockerfile.j2` renders a
-    `COPY`+`update-ca-certificates` step for, reuse of the existing `prefix`
-    stage convention, or both?
-  - Is `update-ca-certificates` (OS trust store) sufficient, or do we also need
-    to set `NODE_EXTRA_CA_CERTS`/`SSL_CERT_FILE`/`REQUESTS_CA_BUNDLE` in the
-    container environment for the Node-based agents and any Python tooling?
-  - Does this only affect the firewall-allowlisted domains (so MITM'ing our
-    own permitted traffic), or is it meant to support an arbitrary corporate
-    TLS-inspecting proxy sitting in front of *all* egress — and if the latter,
-    how does that interact with the domain/IP allowlist model in
-    `init-firewall.sh.j2`, which pins resolved IPs rather than doing DNS at
-    request time?
-  - Is the cert a build-time input (baked into the image, rebuild required to
-    rotate) or a run-time mount (like credentials, refreshed per session)? A
-    build-time cert changes the Dockerfile-checksum trust story described in
-    `docs/security.md`; a mounted one needs its own read-only mount + masking
-    treatment.
-  - Should this apply uniformly to `--dockerfile`, `--base-image`, and the
-    generated `.devcontainer/`, or start narrower (e.g. base-image + direct
-    CLI runs only)?
+    `COPY`+`update-ca-certificates` step for. Since the cert is only used in 
+    the session and not during the build, this step should be last.
+  - Let's run `update-ca-certificates` (OS trust store), no need to set
+    `NODE_EXTRA_CA_CERTS`/`SSL_CERT_FILE`/`REQUESTS_CA_BUNDLE` in the
+    container environment, but since we use node, let's configure node to use
+    the correct system certificates, including the injected one.
+  - We will assume the cert is for an arbitrary corporate TLS-inspecting proxy 
+    sitting in front of *all* egress, but to avoid interactions with IP address
+    pinning, we would enforce --ca-cert to always be used with --internet-proxy
+    s.t. we know traffic will go through the proxy.
+  - The certificate should be a build time input, it gets baked into the Docker
+    image.
+  - This should apply uniformly to `--dockerfile`, `--base-image`, and the
+    generated `.devcontainer/`.
 
 ## Harden the unsupervised modes
 
@@ -88,24 +81,28 @@
     codex/pi credential sync already passes `include_files=("auth.json",)` —
     so those three are already minimal. OpenCode looks like the outlier.
 
-  Open questions:
+  Questions & answers:
   - Is "configs" in scope here the `/project-sandbox-config/<agent>` mount
     (rendered, non-secret settings), or does it mean something the agent
     shouldn't be able to introspect at all in headless mode (e.g. which
     permission-mode profile is active)? These are needed for the agent CLI to
-    run at all, so "harden" here probably means "narrow", not "remove".
+    run at all, so "harden" here probably means "narrow", not "remove". 
+    -> we can keep these settings.
   - For the OpenCode finding: does headless OpenCode need any of
     `.local/share/opencode` / `.local/state/opencode` to function (e.g. model
     cache, provider registration), or can headless runs skip staging those
     directories entirely, or filter them to just the current project's
-    session-scoped files?
+    session-scoped files? 
+    -> we do not require these in the headless sessions.
   - "Session logs" in the TODO text — does this mean the OpenCode session
     history above, or is there a separate host-side artifact still in mind
     (e.g. `.project-sandbox/sessions/*.log`, `~/.local/state/project-sandbox/sessions/*.json`
     from `observability.py`)? Neither of the latter two appear to be mounted
     into the container today, so confirming the intended target changes the
-    fix.
+    fix
+    -> the key is that the agent cannot see historical sessions.
   - Should credential/config mount narrowing key off `unsupervised` (prompt
     present) the same way the history mounts do, or off a broader "headless"
     concept that should also apply to, say, `--agent-proxy` sessions or CI
     invocations run interactively but non-attended?
+    -> let's keep unsupervised == prompt present.
