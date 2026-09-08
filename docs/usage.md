@@ -496,3 +496,5 @@ verification commands:
 uv run python -m compileall src tests scripts
 uv run pytest -q
 ```
+
+For session-time corporate proxy trust, use repeatable [`--ca-cert PATH`](internet-proxy.md#injecting-proxy-ca-certificates) with `--internet-proxy`. This also applies to generated devcontainers.

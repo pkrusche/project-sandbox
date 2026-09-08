@@ -1,4 +1,6 @@
+import hashlib
 import re
+import ssl
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -73,6 +75,30 @@ class _DockerfileFragments:
     after_dependencies: str
 
 
+def read_ca_certificates(paths: list[str]) -> tuple[bytes, ...]:
+    """Read public PEM certificates before any output or container side effects."""
+    certificates = []
+    for value in paths:
+        path = Path(value).expanduser()
+        try:
+            data = path.read_bytes()
+            text = data.decode("ascii").strip()
+            if (
+                text.count("-----BEGIN CERTIFICATE-----") != 1
+                or not text.startswith("-----BEGIN CERTIFICATE-----")
+                or not text.endswith("-----END CERTIFICATE-----")
+                or "PRIVATE KEY" in text
+            ):
+                raise ValueError("expected one PEM certificate per file")
+            ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT).load_verify_locations(cadata=text)
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise SystemExit(
+                f"--ca-cert: cannot load certificate {path}: {exc}"
+            ) from exc
+        certificates.append((text + "\n").encode("ascii"))
+    return tuple(certificates)
+
+
 def render(
     context_dir: Path,
     *,
@@ -81,6 +107,7 @@ def render(
     build_context: Path | None = None,
     install_agents: tuple[str, ...] = ("claude", "codex", "opencode", "pi"),
     warn: Callable[[str], None] | None = None,
+    ca_certificates: tuple[bytes, ...] = (),
 ) -> Path:
     if (base_image is None) == (base_dockerfile is None):
         raise ValueError("Provide exactly one of base_image or base_dockerfile")
@@ -107,12 +134,24 @@ def render(
             build_context=build_context,
         )
 
+    # Content-addressed names make certificate changes invalidate the image
+    # fingerprint through the Dockerfile, and avoid collisions in host filenames.
+    certificate_sources = []
+    for certificate in dict.fromkeys(ca_certificates):
+        name = f"project-sandbox-ca-{hashlib.sha256(certificate).hexdigest()}.crt"
+        (context_dir / name).write_bytes(certificate)
+        certificate_sources.append(copy_prefix + name)
+    for stale in context_dir.glob("project-sandbox-ca-*.crt"):
+        if copy_prefix + stale.name not in certificate_sources:
+            stale.unlink()
+
     tmpl = templating.get_template("Dockerfile.j2")
     shared = {
         "source_before_dependencies": source_before_dependencies,
         "dependency_from": dependency_from,
         "source_after_dependencies": source_after_dependencies,
         "sandbox_copy_prefix": copy_prefix,
+        "ca_certificate_sources": certificate_sources,
         "install_claude": "claude" in install_agents,
         "install_codex": "codex" in install_agents,
         "install_opencode": "opencode" in install_agents,

@@ -152,6 +152,13 @@ def build_parser() -> ArgumentParser:
     )
     p.add_argument("--no-firewall", action="store_true")
     p.add_argument(
+        "--ca-cert",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="Bake a PEM CA certificate into the image (repeatable; requires --internet-proxy).",
+    )
+    p.add_argument(
         "--internet-proxy",
         metavar="URL",
         help="Route Internet traffic through a credential-free host-loopback HTTP proxy.",
@@ -335,6 +342,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(raw_argv)
 
     internet_proxy_config = _validate_internet_proxy_args(args)
+    ca_certificates = dockerfile.read_ca_certificates(args.ca_cert)
 
     # Expand a leading "~" once, up front, so every later use of args.log (both
     # validation and session-command construction) agrees on the same absolute
@@ -498,6 +506,7 @@ def main(argv: list[str] | None = None) -> int:
                 base_dockerfile=base_dockerfile,
                 build_context=build_context,
                 install_agents=available_agents,
+                ca_certificates=ca_certificates,
                 warn=print,
             )
         # Trim the whole-project build context only for the python-uv/rust-cargo
@@ -1021,6 +1030,8 @@ def _validate_agent_proxy_args(args, run_agent: str | None) -> int | None:
 
 def _validate_internet_proxy_args(args) -> internet_proxy.InternetProxy | None:
     value = getattr(args, "internet_proxy", None)
+    if getattr(args, "ca_cert", []) and not value:
+        raise SystemExit("--ca-cert requires --internet-proxy")
     if not value:
         return None
     config = internet_proxy.parse(value)
@@ -1158,6 +1169,10 @@ def _dry_run(
                 print(f"Would mount jj git backend: {git_mount[0]} -> {git_mount[1]}")
         else:
             print(f"Would mount .git metadata: {(project / '.git').resolve()}")
+    for certificate in args.ca_cert:
+        print(
+            f"Would bake CA certificate into sandbox and devcontainer images: {certificate}"
+        )
     print(f"Would render sandbox assets under: {context_dir}")
     print(f"Would render devcontainer under: {project / '.devcontainer'}")
     preview_runtime = (
