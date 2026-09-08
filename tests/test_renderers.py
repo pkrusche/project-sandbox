@@ -475,8 +475,12 @@ class RendererTests(TestCase):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(content, encoding="utf-8")
             with _credentials_root(root):
-                interactive = config_agents.sync_credentials(context, home=home)["opencode"]
-                self.assertTrue((interactive / ".local/share/opencode/opencode.db").exists())
+                interactive = config_agents.sync_credentials(context, home=home)[
+                    "opencode"
+                ]
+                self.assertTrue(
+                    (interactive / ".local/share/opencode/opencode.db").exists()
+                )
                 staged = config_agents.credentials_dir(
                     context, "opencode", unsupervised=True
                 )
