@@ -112,7 +112,15 @@ def read_ca_certificates(paths: list[str]) -> tuple[bytes, ...]:
                 length = int.from_bytes(der[2:header_size], "big")
             if header_size + length != len(der):
                 raise ValueError("expected one certificate without trailing data")
-            ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT).load_verify_locations(cadata=text)
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            context.load_verify_locations(cadata=text)
+            # Loading a trust store also accepts end-entity certificates. Those
+            # cannot issue the proxy's destination certificates, so reject them
+            # here rather than letting the session fail later during TLS.
+            if context.cert_store_stats()["x509_ca"] != 1:
+                raise ValueError(
+                    "expected a CA certificate, not an end-entity certificate"
+                )
         except (OSError, UnicodeError, ValueError) as exc:
             raise SystemExit(
                 f"--ca-cert: cannot load certificate {path}: {exc}"

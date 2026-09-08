@@ -69,6 +69,22 @@ class CaCertificateTests(TestCase):
                 ssl.PEM_cert_to_DER_cert(CERTIFICATE.read_text()),
             )
 
+    def test_rejects_non_ca_before_writing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with self.assertRaisesRegex(SystemExit, "expected a CA certificate"):
+                cli.main(
+                    [
+                        "--internet-proxy",
+                        "http://127.0.0.1:18080",
+                        "--ca-cert",
+                        str(CERTIFICATE.with_name("test-leaf.pem")),
+                        str(root),
+                        "debian:bookworm",
+                    ]
+                )
+            self.assertEqual(list(root.iterdir()), [])
+
     def test_dry_run_does_not_stage_certificates(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -99,12 +115,25 @@ class CaCertificateTests(TestCase):
                 "FROM debian:bookworm AS prefix\nRUN echo prefix\nFROM prefix\nRUN echo project-build\n"
             )
             for custom in (False, True):
-                kwargs = (
-                    {"base_dockerfile": source, "build_context": root}
-                    if custom
-                    else {"base_image": "debian:bookworm"}
-                )
-                dockerfile.render(context, ca_certificates=certificates, **kwargs)
+
+                def render(
+                    ca_certificates: tuple[bytes, ...] = (), *, custom: bool = custom
+                ) -> None:
+                    if custom:
+                        dockerfile.render(
+                            context,
+                            ca_certificates=ca_certificates,
+                            base_dockerfile=source,
+                            build_context=root,
+                        )
+                    else:
+                        dockerfile.render(
+                            context,
+                            ca_certificates=ca_certificates,
+                            base_image="debian:bookworm",
+                        )
+
+                render(ca_certificates=certificates)
                 staged = list(context.glob("project-sandbox-ca-*.crt"))
                 self.assertEqual(len(staged), 1)
                 self.assertEqual(staged[0].read_bytes(), certificates[0])
@@ -137,14 +166,12 @@ class CaCertificateTests(TestCase):
                     )
                 before = build_cache.compute_fingerprint(context, extra={})
                 # A changed public PEM input must change the COPY source/cache key.
-                dockerfile.render(
-                    context, ca_certificates=(certificates[0] + b"\n",), **kwargs
-                )
+                render(ca_certificates=(certificates[0] + b"\n",))
                 self.assertNotEqual(
                     before, build_cache.compute_fingerprint(context, extra={})
                 )
                 self.assertEqual(len(list(context.glob("project-sandbox-ca-*.crt"))), 1)
-                dockerfile.render(context, **kwargs)
+                render()
                 self.assertEqual(list(context.glob("project-sandbox-ca-*.crt")), [])
                 self.assertNotIn(
                     "NODE_USE_SYSTEM_CA", (context / "Dockerfile").read_text()

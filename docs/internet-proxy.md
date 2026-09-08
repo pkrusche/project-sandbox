@@ -47,7 +47,8 @@ project-sandbox --internet-proxy http://127.0.0.1:18080 \
 ```
 
 Inputs must contain only a PEM certificate and optional surrounding whitespace;
-bundles, private keys, and unrelated trailing content are rejected.
+bundles, private keys, end-entity (non-CA) certificates, and unrelated trailing
+content are rejected.
 
 `--ca-cert` requires `--internet-proxy` and its enforced firewall. The proxy URL
 must still use host loopback; installing a CA does not encrypt the HTTP hop to
