@@ -83,11 +83,16 @@ def read_ca_certificates(paths: list[str]) -> tuple[bytes, ...]:
         try:
             data = path.read_bytes()
             text = data.decode("ascii").strip()
+            # OpenSSL accepts trailing content after a valid certificate. Match
+            # the entire PEM envelope so unrelated data cannot enter the image.
             if (
-                text.count("-----BEGIN CERTIFICATE-----") != 1
-                or not text.startswith("-----BEGIN CERTIFICATE-----")
-                or not text.endswith("-----END CERTIFICATE-----")
-                or "PRIVATE KEY" in text
+                re.fullmatch(
+                    r"-----BEGIN CERTIFICATE-----\s+[A-Za-z0-9+/=\s]+"
+                    r"-----END CERTIFICATE-----",
+                    text,
+                    flags=re.ASCII,
+                )
+                is None
             ):
                 raise ValueError("expected one PEM certificate per file")
             ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT).load_verify_locations(cadata=text)

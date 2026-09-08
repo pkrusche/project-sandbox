@@ -25,6 +25,11 @@ class CaCertificateTests(TestCase):
                 ),
                 ("bundle", CERTIFICATE.read_text() * 2),
                 ("key", CERTIFICATE.read_text() + "-----BEGIN PRIVATE KEY-----"),
+                (
+                    "trailing-content",
+                    CERTIFICATE.read_text()
+                    + "sensitive trailing text\n-----END CERTIFICATE-----",
+                ),
             ):
                 path = root / name
                 path.write_text(data)
@@ -79,6 +84,11 @@ class CaCertificateTests(TestCase):
                 for name in ("Dockerfile", "Dockerfile.devcontainer"):
                     text = (context / name).read_text()
                     self.assertIn("ENV NODE_USE_SYSTEM_CA=1", text)
+                    self.assertIn(
+                        "RUN chmod 0644 /usr/local/share/ca-certificates/"
+                        "project-sandbox-ca-*.crt\nRUN update-ca-certificates",
+                        text,
+                    )
                     self.assertIn(
                         'COPY ["'
                         + ("sandbox with spaces/" if custom else "")

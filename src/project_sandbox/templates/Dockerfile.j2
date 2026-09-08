@@ -136,6 +136,7 @@ RUN chmod 0755 /usr/local/bin/project-sandbox-init-firewall \
 {% for source in ca_certificate_sources %}
 COPY {{ [source, '/usr/local/share/ca-certificates/'] | tojson }}
 {% endfor %}
+RUN chmod 0644 /usr/local/share/ca-certificates/project-sandbox-ca-*.crt
 RUN update-ca-certificates
 ENV NODE_USE_SYSTEM_CA=1
 {% endif %}

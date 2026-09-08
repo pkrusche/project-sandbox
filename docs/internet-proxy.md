@@ -46,6 +46,9 @@ project-sandbox --internet-proxy http://127.0.0.1:18080 \
   --runtime docker --agent bash . python:3.12-slim
 ```
 
+Inputs must contain only a PEM certificate and optional surrounding whitespace;
+bundles, private keys, and unrelated trailing content are rejected.
+
 `--ca-cert` requires `--internet-proxy` and its enforced firewall. The proxy URL
 must still use host loopback; installing a CA does not encrypt the HTTP hop to
 the proxy or enable remote proxy hosts. The external proxy performs TLS
@@ -53,7 +56,9 @@ inspection and owns destination policy.
 
 Certificates are copied into the generated build context under content-based
 `.crt` names and baked into the image with `update-ca-certificates`, after all
-package installation and project build steps. This works with a base image,
+package installation and project build steps. The installed public certificates
+are readable by the unprivileged agent regardless of the host's file creation
+permissions. This works with a base image,
 `--dockerfile`, and the generated `.devcontainer/`. It configures session trust;
 it does not make build-time downloads trust the proxy. For build-time trust, use
 the custom Dockerfile `prefix` stage described in [usage](usage.md).
