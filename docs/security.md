@@ -22,6 +22,24 @@ the generated configuration directories or image build context. Explicit
 `--mount` values are user-authorized exposure and can still reveal any host path
 the user chooses, including a credential-bearing path.
 
+## Unsupervised session history
+
+A run with `--prompt` or `--prompt-text` is unsupervised. These runs retain the
+agent settings needed to execute the task, but omit persistent shell history
+and Claude conversation-history mounts. OpenCode staging keeps its
+`opencode.json` / `opencode.jsonc` configuration and only the provider credentials
+in `.local/share/opencode/auth.json`; it excludes session databases, logs,
+caches, and all `.local/state/opencode` files. This authentication file location
+is documented in [OpenCode's provider guide](https://opencode.ai/docs/providers/).
+Staging is cleared before each sync, including when an interactive run previously
+staged history. Interactive runs continue to forward OpenCode's data and state.
+Generated devcontainers use the credentials staged by the generating invocation.
+
+In every mode, `/workspace/.project-sandbox` is masked with an empty read-only
+mount, hiding generated host configuration and host session logs. Project files
+and explicitly requested extra mounts remain accessible; history stored there
+is outside this automatic isolation.
+
 ## OAuth Token Lifetime
 
 Agent OAuth access tokens are short-lived and the refresh tokens that renew them

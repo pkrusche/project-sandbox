@@ -182,8 +182,11 @@ def sync_credentials(
     project_sandbox_dir: Path,
     *,
     home: Path | None = None,
+    unsupervised: bool = False,
 ) -> dict[str, Path]:
     """Stage credentials for all agents present on this host.
+
+    Unsupervised sessions exclude OpenCode's host history and runtime state.
 
     Returns a dict keyed by agent name:
       "claude", "claude-devcontainer" — always present
@@ -210,6 +213,7 @@ def sync_credentials(
         result["opencode"] = _sync_opencode_credentials(
             project_sandbox_dir,
             home=_home,
+            unsupervised=unsupervised,
         )
     if host_paths["pi"].exists():
         result["pi"] = _sync_generic_credentials(
@@ -421,6 +425,7 @@ def _sync_opencode_credentials(
     project_sandbox_dir: Path,
     *,
     home: Path,
+    unsupervised: bool = False,
 ) -> Path:
     out_dir = credentials_dir(project_sandbox_dir, "opencode")
     _ensure_private_dir(out_dir)
@@ -430,6 +435,16 @@ def _sync_opencode_credentials(
     target_config = out_dir / ".config" / "opencode"
     for name in ("opencode.json", "opencode.jsonc"):
         _copy_path(source_config / name, target_config / name)
+    if unsupervised:
+        # Provider credentials share a directory with session databases and logs.
+        # Allow only auth.json; never copy the enclosing data or state trees.
+        source_auth = home / ".local" / "share" / "opencode" / "auth.json"
+        if source_auth.is_file():
+            _copy_path(
+                source_auth,
+                out_dir / ".local" / "share" / "opencode" / "auth.json",
+            )
+        return out_dir
     _copy_dir_contents(
         home / ".local" / "share" / "opencode",
         out_dir / ".local" / "share" / "opencode",

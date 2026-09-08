@@ -441,6 +441,59 @@ class RendererTests(TestCase):
             for staged in (codex_staged, opencode_staged, pi_staged):
                 self.assertEqual(staged.stat().st_mode & 0o777, 0o700)
 
+    def test_unsupervised_opencode_stages_auth_without_host_history(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            context = root / ".project-sandbox"
+            home = root / "home"
+            files = {
+                ".config/opencode/opencode.json": '{"model":"test"}',
+                ".config/opencode/opencode.jsonc": "{/* config */}",
+                ".local/share/opencode/auth.json": '{"provider":{"key":"secret"}}',
+                ".local/share/opencode/opencode.db": "historical sessions",
+                ".local/share/opencode/storage/session/old.json": "old session",
+                ".local/share/opencode/log/old.log": "old log",
+                ".local/state/opencode/model.json": "old state",
+            }
+            for name, content in files.items():
+                path = home / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, encoding="utf-8")
+            with _credentials_root(root):
+                # Reuse staging from an interactive run to catch stale history.
+                staged = config_agents.sync_credentials(context, home=home)["opencode"]
+                self.assertTrue((staged / ".local/share/opencode/opencode.db").exists())
+                for authenticated in (True, False):
+                    with self.subTest(authenticated=authenticated):
+                        if not authenticated:
+                            (home / ".local/share/opencode/auth.json").unlink()
+                        result = config_agents.sync_credentials(
+                            context, home=home, unsupervised=True
+                        )
+                        self.assertEqual(result["opencode"], staged)
+                        expected = {
+                            ".config/opencode/opencode.json",
+                            ".config/opencode/opencode.jsonc",
+                        }
+                        if authenticated:
+                            expected.add(".local/share/opencode/auth.json")
+                        actual = {
+                            str(path.relative_to(staged))
+                            for path in staged.rglob("*")
+                            if path.is_file()
+                        }
+                        self.assertEqual(actual, expected)
+                        self.assertFalse((staged / ".local/state").exists())
+                        for name in expected:
+                            self.assertEqual((staged / name).read_text(), files[name])
+                            self.assertEqual(
+                                (staged / name).stat().st_mode & 0o777, 0o600
+                            )
+                # Narrowing must never delete the host's history or state.
+                for name, content in files.items():
+                    if not name.endswith("auth.json"):
+                        self.assertEqual((home / name).read_text(), content)
+
     def test_staged_credentials_never_reach_rendered_dockerfile_or_image_context(
         self,
     ) -> None:

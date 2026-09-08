@@ -4882,6 +4882,55 @@ class HostTokenRefreshGatingTests(TestCase):
 
 
 class NoForwardCredentialsTests(TestCase):
+    def test_prompt_controls_unsupervised_credential_staging(self) -> None:
+        for mode in ("interactive", "text", "file"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as tmp:
+                project = Path(tmp)
+                paths = _agent_paths(project / "home")
+                paths["opencode"].mkdir(parents=True)
+                prompt = project / "prompt.txt"
+                prompt.write_text("do the task", encoding="utf-8")
+                options = {
+                    "interactive": [],
+                    "text": ["--prompt-text", "do the task"],
+                    "file": ["--prompt", str(prompt)],
+                }[mode]
+                with (
+                    patch.object(
+                        cli, "read_identity", return_value=GitIdentity(None, None)
+                    ),
+                    patch.object(
+                        cli.config_agents, "_agent_host_paths", return_value=paths
+                    ),
+                    patch.object(
+                        cli.config_agents, "sync_credentials", return_value={}
+                    ) as sync,
+                    patch.object(
+                        cli.container_cli,
+                        "select_runtime",
+                        return_value=cli.container_cli.DOCKER,
+                    ),
+                    patch.object(
+                        cli.container_cli, "ensure_system_started", return_value=0
+                    ),
+                    patch.object(cli.container_cli, "build_image", return_value=1),
+                    contextlib.redirect_stdout(io.StringIO()),
+                ):
+                    cli.main(
+                        [
+                            "--agent",
+                            "opencode",
+                            "--no-token-refresh",
+                            "--no-firewall",
+                            *options,
+                            str(project),
+                            "python:3.12-slim",
+                        ]
+                    )
+                sync.assert_called_once_with(
+                    project / ".project-sandbox", unsupervised=mode != "interactive"
+                )
+
     def test_skips_staging_and_purges_instead(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)

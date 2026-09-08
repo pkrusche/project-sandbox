@@ -555,7 +555,9 @@ def main(argv: list[str] | None = None) -> int:
                 verbose=args.verbose,
             )
         if forward_credentials:
-            credential_dirs = config_agents.sync_credentials(context_dir)
+            credential_dirs = config_agents.sync_credentials(
+                context_dir, unsupervised=bool(args.prompt or args.prompt_text)
+            )
         else:
             # Read/copy no host credentials, and remove any staged by a previous
             # forwarding run so nothing lingers on disk or can be mounted.
