@@ -1124,7 +1124,9 @@ def _dry_run(
     credential_dirs = {
         "claude": config_agents.credentials_dir(context_dir, "claude"),
         **{
-            agent: config_agents.credentials_dir(context_dir, agent)
+            agent: config_agents.credentials_dir(
+                context_dir, agent, unsupervised=bool(args.prompt or args.prompt_text)
+            )
             for agent in ("codex", "opencode", "pi")
             if agent in available_agents
         },

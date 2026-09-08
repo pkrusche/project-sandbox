@@ -460,9 +460,16 @@ class RendererTests(TestCase):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(content, encoding="utf-8")
             with _credentials_root(root):
-                # Reuse staging from an interactive run to catch stale history.
-                staged = config_agents.sync_credentials(context, home=home)["opencode"]
-                self.assertTrue((staged / ".local/share/opencode/opencode.db").exists())
+                interactive = config_agents.sync_credentials(context, home=home)["opencode"]
+                self.assertTrue((interactive / ".local/share/opencode/opencode.db").exists())
+                staged = config_agents.credentials_dir(
+                    context, "opencode", unsupervised=True
+                )
+                self.assertNotEqual(staged, interactive)
+                # Even interrupted or older staging must not leave extra files.
+                stale = staged / ".local/share/opencode/opencode.db"
+                stale.parent.mkdir(parents=True)
+                stale.write_text("stale history", encoding="utf-8")
                 for authenticated in (True, False):
                     with self.subTest(authenticated=authenticated):
                         if not authenticated:
@@ -471,6 +478,9 @@ class RendererTests(TestCase):
                             context, home=home, unsupervised=True
                         )
                         self.assertEqual(result["opencode"], staged)
+                        # An interactive invocation can run while the headless
+                        # credential directory is still mounted read-only.
+                        config_agents.sync_credentials(context, home=home)
                         expected = {
                             ".config/opencode/opencode.json",
                             ".config/opencode/opencode.jsonc",
@@ -493,6 +503,20 @@ class RendererTests(TestCase):
                 for name, content in files.items():
                     if not name.endswith("auth.json"):
                         self.assertEqual((home / name).read_text(), content)
+
+    def test_unsupervised_opencode_does_not_stage_directories_as_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            for name in ("opencode.json", "opencode.jsonc"):
+                history = home / ".config/opencode" / name / "history.log"
+                history.parent.mkdir(parents=True)
+                history.write_text("historical session", encoding="utf-8")
+            with _credentials_root(root):
+                staged = config_agents.sync_credentials(
+                    root / ".project-sandbox", home=home, unsupervised=True
+                )["opencode"]
+                self.assertEqual(list(staged.iterdir()), [])
 
     def test_staged_credentials_never_reach_rendered_dockerfile_or_image_context(
         self,

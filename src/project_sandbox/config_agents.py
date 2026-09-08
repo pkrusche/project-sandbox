@@ -225,7 +225,13 @@ def sync_credentials(
     return result
 
 
-def credentials_dir(project_sandbox_dir: Path, agent: str = "claude") -> Path:
+def credentials_dir(
+    project_sandbox_dir: Path, agent: str = "claude", *, unsupervised: bool = False
+) -> Path:
+    # An interactive sync must never repopulate a directory mounted by an
+    # unsupervised container with host history, even after provisioning finishes.
+    if agent == "opencode" and unsupervised:
+        agent = "opencode-headless"
     if not all(c.isalnum() or c in "._-" for c in agent):
         raise ValueError(f"Invalid credential agent name: {agent}")
     key = str(project_sandbox_dir.resolve(strict=False))
@@ -427,14 +433,17 @@ def _sync_opencode_credentials(
     home: Path,
     unsupervised: bool = False,
 ) -> Path:
-    out_dir = credentials_dir(project_sandbox_dir, "opencode")
+    out_dir = credentials_dir(
+        project_sandbox_dir, "opencode", unsupervised=unsupervised
+    )
     _ensure_private_dir(out_dir)
     _remove_stale_project_agent_credentials(project_sandbox_dir, "opencode", None)
     _clear_dir(out_dir)
     source_config = home / ".config" / "opencode"
     target_config = out_dir / ".config" / "opencode"
     for name in ("opencode.json", "opencode.jsonc"):
-        _copy_path(source_config / name, target_config / name)
+        if (source_config / name).is_file():
+            _copy_path(source_config / name, target_config / name)
     if unsupervised:
         # Provider credentials share a directory with session databases and logs.
         # Allow only auth.json; never copy the enclosing data or state trees.

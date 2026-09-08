@@ -31,8 +31,11 @@ and Claude conversation-history mounts. OpenCode staging keeps its
 in `.local/share/opencode/auth.json`; it excludes session databases, logs,
 caches, and all `.local/state/opencode` files. This authentication file location
 is documented in [OpenCode's provider guide](https://opencode.ai/docs/providers/).
-Staging is cleared before each sync, including when an interactive run previously
-staged history. Interactive runs continue to forward OpenCode's data and state.
+OpenCode configuration entries must be files; directories with those names are
+not recursively staged. Staging is cleared before each sync. Unsupervised
+OpenCode credentials use a separate host staging directory, so a later interactive
+run cannot add history to an unsupervised container's credential mount.
+Interactive runs continue to forward OpenCode's data and state.
 Generated devcontainers use the credentials staged by the generating invocation.
 
 In every mode, `/workspace/.project-sandbox` is masked with an empty read-only

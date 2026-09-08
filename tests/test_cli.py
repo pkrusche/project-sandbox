@@ -1238,6 +1238,13 @@ class CliTests(TestCase):
         self.assertEqual(rc, 0)
         output = out.getvalue()
         self.assertIn("opencode-headless", output)
+        staged = cli.config_agents.credentials_dir(
+            project / ".project-sandbox", "opencode", unsupervised=True
+        )
+        self.assertIn(
+            f"source={staged},target=/project-sandbox-secrets/opencode,readonly",
+            output,
+        )
         self.assertIn("OpenCode provider network access depends", output)
         self.assertIn("--allow-github", output)
 
