@@ -1439,7 +1439,7 @@ class CliTests(TestCase):
             "PROJECT_SANDBOX_PROMPT_FILE=/project-sandbox-prompt/prompt.txt",
             out,
         )
-        self.assertIn("target=/project-sandbox-prompt,readonly", out)
+        self.assertIn("target=/project-sandbox-prompt/prompt.txt,readonly", out)
         self.assertNotIn("PROJECT_SANDBOX_PROMPT=echo ok", out)
 
     def test_dry_run_masks_workspace_project_sandbox_after_user_mounts(self) -> None:
@@ -1887,8 +1887,8 @@ class CliTests(TestCase):
             self.assertIsNotNone(log_path)
             self.assertEqual(prompt_file.read_text(encoding="utf-8"), "echo ok")
             self.assertIn(
-                f"type=bind,source={prompt_file.parent.resolve()},"
-                "target=/project-sandbox-prompt,readonly",
+                f"type=bind,source={prompt_file.resolve()},"
+                "target=/project-sandbox-prompt/prompt.txt,readonly",
                 cmd,
             )
             self.assertIn(
@@ -1972,6 +1972,9 @@ class CliTests(TestCase):
             context_dir = project / ".project-sandbox"
             prompt_file = project / "prompt.txt"
             prompt_file.write_text("echo ok", encoding="utf-8")
+            old_prompt = context_dir / "prompt" / "previous-task.txt"
+            old_prompt.parent.mkdir(parents=True)
+            old_prompt.write_text("private historical task", encoding="utf-8")
             claude_cfg = context_dir / "claude" / "settings.json"
             codex_cfg = context_dir / "codex" / "config.toml"
             credential_dirs = {"claude": context_dir / "claude-secrets"}
@@ -2004,15 +2007,14 @@ class CliTests(TestCase):
             )
 
             self.assertTrue(unsupervised)
-            # The prompt is copied into a private staging dir and only that dir
-            # is mounted; the source parent (which could be $HOME) is not.
+            # Only the current staged file is mounted, excluding older prompts.
             staging_dir = context_dir / "prompt"
             staged_file = staging_dir / "prompt.txt"
             self.assertTrue(staged_file.is_file())
             self.assertEqual(staged_file.read_text(encoding="utf-8"), "echo ok")
             self.assertIn(
-                f"type=bind,source={staging_dir.resolve()},"
-                "target=/project-sandbox-prompt,readonly",
+                f"type=bind,source={staged_file.resolve()},"
+                "target=/project-sandbox-prompt/prompt.txt,readonly",
                 cmd,
             )
             self.assertNotIn(

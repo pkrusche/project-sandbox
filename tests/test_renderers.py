@@ -441,6 +441,21 @@ class RendererTests(TestCase):
             for staged in (codex_staged, opencode_staged, pi_staged):
                 self.assertEqual(staged.stat().st_mode & 0o777, 0o700)
 
+    def test_credential_file_allowlists_do_not_copy_history_directories(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            for directory in (home / ".codex", home / ".pi" / "agent"):
+                history = directory / "auth.json" / "history.log"
+                history.parent.mkdir(parents=True)
+                history.write_text("private historical session", encoding="utf-8")
+            with _credentials_root(root):
+                staged = config_agents.sync_credentials(
+                    root / ".project-sandbox", home=home, unsupervised=True
+                )
+                for agent in ("codex", "pi"):
+                    self.assertEqual(list(staged[agent].iterdir()), [])
+
     def test_unsupervised_opencode_stages_auth_without_host_history(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

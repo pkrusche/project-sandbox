@@ -35,6 +35,9 @@ OpenCode configuration entries must be files; directories with those names are
 not recursively staged. Staging is cleared before each sync. Unsupervised
 OpenCode credentials use a separate host staging directory, so a later interactive
 run cannot add history to an unsupervised container's credential mount.
+Codex and Pi also stage only credential files; a directory named `auth.json`
+is never copied recursively. Prompt mounts expose only the current staged file,
+so older files in the prompt staging directory remain hidden.
 Interactive runs continue to forward OpenCode's data and state.
 Generated devcontainers use the credentials staged by the generating invocation.
 

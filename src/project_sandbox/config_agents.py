@@ -423,7 +423,9 @@ def _sync_generic_credentials(
             _copy_path(child, out_dir / child.name)
         return out_dir
     for name in include_files:
-        _copy_path(source_dir / name, out_dir / name)
+        # Credential filenames are an allowlist of files, never directory trees.
+        if (source_dir / name).is_file():
+            _copy_path(source_dir / name, out_dir / name)
     return out_dir
 
 

@@ -2015,8 +2015,8 @@ def _build_session_command(
                 print(f"Would stage prompt to: {prompt_file}")
             prompt_target = f"{PROMPT_MOUNT_TARGET}/{source_prompt.name}"
             extra_mounts.append(
-                f"type=bind,source={prompt_staging.resolve()},"
-                f"target={PROMPT_MOUNT_TARGET},readonly"
+                f"type=bind,source={prompt_file.resolve()},"
+                f"target={prompt_target},readonly"
             )
             extra_env.append(f"PROJECT_SANDBOX_PROMPT_FILE={prompt_target}")
         elif args.prompt_text:
@@ -2028,8 +2028,8 @@ def _build_session_command(
             else:
                 print(f"Would write prompt to: {prompt_file}")
             extra_mounts.append(
-                f"type=bind,source={prompts_dir.resolve()},"
-                f"target={PROMPT_MOUNT_TARGET},readonly"
+                f"type=bind,source={prompt_file.resolve()},"
+                f"target={PROMPT_MOUNT_TARGET}/prompt.txt,readonly"
             )
             extra_env.append(
                 f"PROJECT_SANDBOX_PROMPT_FILE={PROMPT_MOUNT_TARGET}/prompt.txt"
