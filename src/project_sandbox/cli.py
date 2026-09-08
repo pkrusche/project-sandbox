@@ -2024,27 +2024,38 @@ def _build_session_command(
             prompt_staging = context_dir / "prompt"
             prompt_file = prompt_staging / source_prompt.name
             if create_prompt_files:
+                # apple/container can only bind-mount *directories* (see
+                # HISTORY_SHELL_TARGET in paths.py), so the staging dir itself is
+                # mounted below rather than the prompt file. Clear it first so a
+                # stale prompt file left by an earlier unsupervised run in this
+                # project is never exposed alongside the current one.
+                if prompt_staging.exists():
+                    shutil.rmtree(prompt_staging)
                 ensure_dir(prompt_staging)
                 shutil.copyfile(source_prompt, prompt_file)
             else:
                 print(f"Would stage prompt to: {prompt_file}")
             prompt_target = f"{PROMPT_MOUNT_TARGET}/{source_prompt.name}"
             extra_mounts.append(
-                f"type=bind,source={prompt_file.resolve()},"
-                f"target={prompt_target},readonly"
+                f"type=bind,source={prompt_staging.resolve()},"
+                f"target={PROMPT_MOUNT_TARGET},readonly"
             )
             extra_env.append(f"PROJECT_SANDBOX_PROMPT_FILE={prompt_target}")
         elif args.prompt_text:
             prompts_dir = context_dir / "prompts"
             prompt_file = prompts_dir / "prompt.txt"
             if create_prompt_files:
+                # Same apple/container constraint and stale-prompt concern as
+                # above: mount the directory, but clear it first.
+                if prompts_dir.exists():
+                    shutil.rmtree(prompts_dir)
                 ensure_dir(prompts_dir)
                 prompt_file.write_text(args.prompt_text, encoding="utf-8")
             else:
                 print(f"Would write prompt to: {prompt_file}")
             extra_mounts.append(
-                f"type=bind,source={prompt_file.resolve()},"
-                f"target={PROMPT_MOUNT_TARGET}/prompt.txt,readonly"
+                f"type=bind,source={prompts_dir.resolve()},"
+                f"target={PROMPT_MOUNT_TARGET},readonly"
             )
             extra_env.append(
                 f"PROJECT_SANDBOX_PROMPT_FILE={PROMPT_MOUNT_TARGET}/prompt.txt"
