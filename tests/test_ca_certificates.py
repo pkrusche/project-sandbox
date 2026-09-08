@@ -1,5 +1,6 @@
 import contextlib
 import io
+import ssl
 import tempfile
 from pathlib import Path
 from unittest import TestCase
@@ -24,6 +25,20 @@ class CaCertificateTests(TestCase):
                     "-----BEGIN CERTIFICATE-----\ninvalid\n-----END CERTIFICATE-----",
                 ),
                 ("bundle", CERTIFICATE.read_text() * 2),
+                (
+                    "trailing-der-content",
+                    ssl.DER_cert_to_PEM_cert(
+                        ssl.PEM_cert_to_DER_cert(CERTIFICATE.read_text())
+                        + b"sensitive trailing data"
+                    ),
+                ),
+                (
+                    "trailing-base64-content",
+                    CERTIFICATE.read_text().replace(
+                        "-----END CERTIFICATE-----",
+                        "c2Vuc2l0aXZl\n-----END CERTIFICATE-----",
+                    ),
+                ),
                 ("key", CERTIFICATE.read_text() + "-----BEGIN PRIVATE KEY-----"),
                 (
                     "trailing-content",
@@ -41,6 +56,18 @@ class CaCertificateTests(TestCase):
             for path in (root, root / "missing"):
                 with self.assertRaisesRegex(SystemExit, "--ca-cert"):
                     dockerfile.read_ca_certificates([str(path)])
+
+    def test_accepts_pem_whitespace_and_crlf(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "ca.pem"
+            pem = CERTIFICATE.read_text().replace("\n", "\r\n")
+            path.write_bytes((" \r\n" + pem + "\t \r\n").encode("ascii"))
+            certificates = dockerfile.read_ca_certificates([str(path)])
+            self.assertEqual(len(certificates), 1)
+            self.assertEqual(
+                ssl.PEM_cert_to_DER_cert(certificates[0].decode("ascii")),
+                ssl.PEM_cert_to_DER_cert(CERTIFICATE.read_text()),
+            )
 
     def test_dry_run_does_not_stage_certificates(self):
         with tempfile.TemporaryDirectory() as tmp:

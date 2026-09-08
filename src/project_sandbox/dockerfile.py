@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import re
 import ssl
@@ -95,6 +96,22 @@ def read_ca_certificates(paths: list[str]) -> tuple[bytes, ...]:
                 is None
             ):
                 raise ValueError("expected one PEM certificate per file")
+            payload = "".join(text.splitlines()[1:-1]).split()
+            der = base64.b64decode("".join(payload), validate=True)
+            # OpenSSL also ignores bytes after the DER certificate inside the
+            # PEM payload. Require one complete ASN.1 SEQUENCE, with no suffix.
+            if len(der) < 2 or der[0] != 0x30:
+                raise ValueError("expected a DER certificate sequence")
+            length = der[1]
+            header_size = 2
+            if length & 0x80:
+                length_size = length & 0x7F
+                if not length_size or len(der) < 2 + length_size:
+                    raise ValueError("invalid DER certificate length")
+                header_size += length_size
+                length = int.from_bytes(der[2:header_size], "big")
+            if header_size + length != len(der):
+                raise ValueError("expected one certificate without trailing data")
             ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT).load_verify_locations(cadata=text)
         except (OSError, UnicodeError, ValueError) as exc:
             raise SystemExit(
