@@ -3969,13 +3969,16 @@ class PythonUvFlagTests(TestCase):
             project = self._make_project(tmp)
             _make_git_repo(project)
             workspace = project / "planned-workspace"
-            with patch.object(
-                cli, "_plan_worktree", return_value=(None, workspace)
-            ):
+            with patch.object(cli, "_plan_worktree", return_value=(None, workspace)):
                 rc, output = self._dry_run_python_uv(
                     project,
-                    ["--agent", "bash", "--no-forward-credentials",
-                     "--branch", "feature"],
+                    [
+                        "--agent",
+                        "bash",
+                        "--no-forward-credentials",
+                        "--branch",
+                        "feature",
+                    ],
                 )
             self.assertEqual(rc, 0)
             self.assertIn(f"Would use build context: {workspace}", output)
