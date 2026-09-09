@@ -3756,6 +3756,39 @@ class BuildCacheReuseTests(TestCase):
         (project / "README.md").write_text("# demo\n", encoding="utf-8")
         return project
 
+    def test_python_uv_branch_builds_resolved_workspace(self) -> None:
+        for has_lock in (True, False):
+            with self.subTest(has_lock=has_lock), tempfile.TemporaryDirectory() as tmp:
+                project = Path(tmp) / "main"
+                workspace = Path(tmp) / "branch"
+                project.mkdir()
+                workspace.mkdir()
+                _make_git_repo(project)
+                # Main has no Python metadata; only the resolved branch does.
+                (workspace / "pyproject.toml").write_text(
+                    "[project]\nname = 'branch-demo'\n", encoding="utf-8"
+                )
+                if has_lock:
+                    (workspace / "uv.lock").write_text("version = 1\n")
+                with patch.object(
+                    cli, "_setup_worktree", return_value=(None, workspace)
+                ):
+                    rc, _, build = self._run(
+                        project,
+                        image_exists=True,
+                        extra_args=["--python-uv", "--branch", "feature"],
+                        base_image=None,
+                    )
+                self.assertEqual(rc, 0)
+                build.assert_called_once()
+                self.assertEqual(build.call_args.kwargs["build_context"], workspace)
+                context = workspace / ".project-sandbox"
+                self.assertEqual(build.call_args.kwargs["context_dir"], context)
+                generated = (context / "Dockerfile.python-uv").read_text()
+                self.assertEqual("RUN uv sync --frozen" in generated, has_lock)
+                self.assertTrue((context / "Dockerfile.dockerignore").is_file())
+                self.assertTrue((workspace / ".devcontainer/Dockerfile").is_file())
+
     def test_first_run_builds_and_records_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = self._make_project(tmp)
@@ -3930,6 +3963,28 @@ class PythonUvFlagTests(TestCase):
         self.assertIn("Would write synthesised Dockerfile:", output)
         self.assertIn("Dockerfile.python-uv", output)
         self.assertIn("Would use build context:", output)
+
+    def test_python_uv_branch_dry_run_uses_workspace_without_writes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self._make_project(tmp)
+            _make_git_repo(project)
+            workspace = project / "planned-workspace"
+            with patch.object(
+                cli, "_plan_worktree", return_value=(None, workspace)
+            ):
+                rc, output = self._dry_run_python_uv(
+                    project,
+                    ["--agent", "bash", "--no-forward-credentials",
+                     "--branch", "feature"],
+                )
+            self.assertEqual(rc, 0)
+            self.assertIn(f"Would use build context: {workspace}", output)
+            self.assertIn(
+                f"Would render sandbox assets under: {workspace / '.project-sandbox'}",
+                output,
+            )
+            self.assertFalse(workspace.exists())
+            self.assertFalse((project / ".project-sandbox").exists())
 
     def test_python_uv_dry_run_does_not_write_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

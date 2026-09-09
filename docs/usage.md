@@ -498,3 +498,10 @@ uv run pytest -q
 ```
 
 For session-time corporate proxy trust, use repeatable [`--ca-cert PATH`](internet-proxy.md#injecting-proxy-ca-certificates) with `--internet-proxy`. This also applies to generated devcontainers.
+
+With `--python-uv --branch`, the image is built from the resolved Git worktree
+or jj workspace, including its `pyproject.toml` and `uv.lock`. Generated sandbox
+and devcontainer files live in that workspace so the baked environment matches
+the sources mounted at `/workspace`. Builds use the runtime's layer cache;
+`--no-build` still skips rebuilding, so the existing image must already contain
+the branch's dependencies.

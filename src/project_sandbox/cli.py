@@ -499,6 +499,13 @@ def main(argv: list[str] | None = None) -> int:
     # not be recorded at all, which never blocks the run.
     record_path: Path | None = None
     try:
+        if not is_chroot and args.python_uv and args.branch:
+            # The venv must match the tree mounted at /workspace. Keep generated
+            # assets inside that build context so COPY paths remain valid.
+            context_dir = ensure_dir(workspace / ".project-sandbox")
+            base_image, base_dockerfile, build_context = _resolve_build_source(
+                args, project=workspace, context_dir=context_dir
+            )
         if not is_chroot:
             dockerfile.render(
                 context_dir,
@@ -574,14 +581,14 @@ def main(argv: list[str] | None = None) -> int:
             credential_dirs = {}
 
         _write_project_sandbox_gitignore(context_dir)
-        _update_project_gitignore(project)
+        _update_project_gitignore(context_dir.parent)
 
         # The devcontainer integration targets docker-style build/run tooling
         # (VS Code "Reopen in Container"); chroot renders no Dockerfile/firewall
         # for it to reference, so skip it rather than write dangling symlinks.
         if not is_chroot:
             devcontainer.render(
-                project,
+                context_dir.parent,
                 identity=identity,
                 firewall_enabled=not args.no_firewall,
                 memory=args.memory,
@@ -1125,7 +1132,8 @@ def _dry_run(
     identity,
     available_agents: tuple[str, ...],
 ) -> int:
-    context_dir = project / ".project-sandbox"
+    asset_project = workspace if args.python_uv and args.branch else project
+    context_dir = asset_project / ".project-sandbox"
     claude_cfg = context_dir / "claude" / "settings.json"
     codex_cfg = context_dir / "codex" / "config.toml"
     pi_cfg = context_dir / "pi" / "settings.json"
@@ -1174,7 +1182,7 @@ def _dry_run(
             f"Would bake CA certificate into sandbox and devcontainer images: {certificate}"
         )
     print(f"Would render sandbox assets under: {context_dir}")
-    print(f"Would render devcontainer under: {project / '.devcontainer'}")
+    print(f"Would render devcontainer under: {asset_project / '.devcontainer'}")
     preview_runtime = (
         container_cli.select_runtime(args.runtime, dry_run=True)
         if run_agent or args.build_only
@@ -1184,7 +1192,7 @@ def _dry_run(
         base_dockerfile, build_context = None, context_dir
     else:
         _, base_dockerfile, build_context = _resolve_build_source(
-            args, project=project, context_dir=context_dir, write_generated=False
+            args, project=asset_project, context_dir=context_dir, write_generated=False
         )
     if base_dockerfile is not None:
         if getattr(args, "python_uv", False) or getattr(args, "rust_cargo", False):
