@@ -2,6 +2,31 @@
 
 Notable changes to `project-sandbox` are documented here. 
 
+## [0.1.4]
+
+### Added
+
+- Host-loopback HTTP Internet proxy support with firewall enforcement that blocks
+  direct network fallback, including Docker and Apple `container` networking,
+  proxy preflight checks, and isolation end-to-end tests.
+- `--ca-cert` for installing trusted CA certificates into proxy sessions, with
+  strict PEM and CA validation and support for generated images and
+  devcontainers.
+- Python/uv environment setup from the resolved branch workspace, including
+  dependency caching and end-to-end coverage for `--python-uv`.
+- A GitHub security policy and expanded security documentation.
+
+### Changed
+
+- Unsupervised sessions now isolate staged credentials and expose only the
+  required configuration and authentication files; stale prompt mounts,
+  directories masquerading as files, and persistent session history are hidden.
+- Ollama and other local services share runtime-selected networking and
+  hostnames, while generated firewalls allow only their exact ports.
+- Branch workspaces wait for macOS shared-filesystem metadata to become visible,
+  and generated OCI image tags are valid for arbitrary project directory names.
+- Added type-checking and broader host and end-to-end test coverage.
+
 ## [0.1.3]
 
 ### Added
@@ -62,6 +87,7 @@ Initial public release.
 - Build caching, dry-run support, timeout teardown, end-to-end tests, and CI.
 - Ruff, pytest, and release preflight checks.
 
+[0.1.4]: https://github.com/pkrusche/project-sandbox/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/pkrusche/project-sandbox/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/pkrusche/project-sandbox/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/pkrusche/project-sandbox/compare/v0.1.0...v0.1.1
