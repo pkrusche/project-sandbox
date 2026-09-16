@@ -42,9 +42,7 @@ class PypiProgressTests(TestCase):
             return {
                 "info": {"version": "2.0.0"},
                 "releases": {
-                    "2.0.0": [
-                        {"upload_time_iso_8601": "2020-01-01T00:00:00Z"}
-                    ]
+                    "2.0.0": [{"upload_time_iso_8601": "2020-01-01T00:00:00Z"}]
                 },
             }
 
@@ -80,12 +78,8 @@ class ReleaseAgeTests(TestCase):
 
     def test_selects_latest_release_that_is_old_enough(self) -> None:
         releases = [
-            update_pins.UpstreamRelease(
-                "3.0.0", datetime.now(UTC) - timedelta(days=2)
-            ),
-            update_pins.UpstreamRelease(
-                "2.0.0", datetime.now(UTC) - timedelta(days=3)
-            ),
+            update_pins.UpstreamRelease("3.0.0", datetime.now(UTC) - timedelta(days=2)),
+            update_pins.UpstreamRelease("2.0.0", datetime.now(UTC) - timedelta(days=3)),
             update_pins.UpstreamRelease(
                 "5.0.0", datetime.now(UTC) - timedelta(hours=2)
             ),
@@ -114,9 +108,7 @@ class ReleaseAgeTests(TestCase):
 
     def test_returns_no_release_when_all_releases_are_too_new(self) -> None:
         releases = [
-            update_pins.UpstreamRelease(
-                "3.0.0", datetime.now(UTC) - timedelta(hours=2)
-            )
+            update_pins.UpstreamRelease("3.0.0", datetime.now(UTC) - timedelta(hours=2))
         ]
         output = io.StringIO()
         with redirect_stdout(output):

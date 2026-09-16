@@ -215,7 +215,9 @@ def latest_old_enough_release(
 ) -> UpstreamRelease | None:
     if not releases:
         raise RuntimeError(f"{source} did not include any releases")
-    stable = [release for release in releases if version_key(release.version) is not None]
+    stable = [
+        release for release in releases if version_key(release.version) is not None
+    ]
     if not stable:
         print(f"Skipping {source}: no stable releases were available.")
         return None
@@ -239,9 +241,7 @@ def latest_old_enough_release(
     return selected
 
 
-def pin_can_move_forward(
-    current: str, target: UpstreamRelease, *, source: str
-) -> bool:
+def pin_can_move_forward(current: str, target: UpstreamRelease, *, source: str) -> bool:
     current_key = comparable_version_key(current)
     target_key = comparable_version_key(target.version)
     if current_key is not None and target_key is not None and target_key <= current_key:
@@ -302,7 +302,9 @@ def latest_npm_releases(package: str) -> list[UpstreamRelease]:
     times = data.get("time")
     versions = data.get("versions")
     if not isinstance(times, dict) or not isinstance(versions, dict):
-        raise RuntimeError(f"npm response for {package} did not include release metadata")
+        raise RuntimeError(
+            f"npm response for {package} did not include release metadata"
+        )
     result = [
         UpstreamRelease(
             version,
@@ -402,12 +404,12 @@ def latest_github_releases(
                         ),
                     )
                 )
-        if len(data) < 100 or any(
-            release.released_at <= cutoff for release in result
-        ):
+        if len(data) < 100 or any(release.released_at <= cutoff for release in result):
             break
     if not result:
-        raise RuntimeError(f"GitHub release response for {owner}/{repo} had no releases")
+        raise RuntimeError(
+            f"GitHub release response for {owner}/{repo} had no releases"
+        )
     return result
 
 
