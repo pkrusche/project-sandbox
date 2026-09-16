@@ -78,6 +78,67 @@ class ReleaseAgeTests(TestCase):
             )
         )
 
+    def test_selects_latest_release_that_is_old_enough(self) -> None:
+        releases = [
+            update_pins.UpstreamRelease(
+                "3.0.0", datetime.now(UTC) - timedelta(days=2)
+            ),
+            update_pins.UpstreamRelease(
+                "2.0.0", datetime.now(UTC) - timedelta(days=3)
+            ),
+            update_pins.UpstreamRelease(
+                "5.0.0", datetime.now(UTC) - timedelta(hours=2)
+            ),
+            update_pins.UpstreamRelease(
+                "4.0.0-alpha.1", datetime.now(UTC) - timedelta(hours=1)
+            ),
+        ]
+        output = io.StringIO()
+        with redirect_stdout(output):
+            selected = update_pins.latest_old_enough_release(
+                releases, timedelta(hours=24), source="test"
+            )
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected.version, "3.0.0")
+        self.assertIn("5.0.0 is newer", output.getvalue())
+        self.assertNotIn("alpha", output.getvalue())
+
+    def test_prerelease_and_dev_versions_are_not_stable(self) -> None:
+        self.assertIsNone(update_pins.version_key("1.2.3-alpha.1"))
+        self.assertIsNone(update_pins.version_key("1.2.3-dev-202609161748"))
+        self.assertEqual(update_pins.version_key("1.2.3"), (0, (1, 2, 3), 0))
+        self.assertGreater(
+            update_pins.comparable_version_key("1.2.3-alpha.1"),
+            update_pins.comparable_version_key("1.2.2"),
+        )
+
+    def test_returns_no_release_when_all_releases_are_too_new(self) -> None:
+        releases = [
+            update_pins.UpstreamRelease(
+                "3.0.0", datetime.now(UTC) - timedelta(hours=2)
+            )
+        ]
+        output = io.StringIO()
+        with redirect_stdout(output):
+            selected = update_pins.latest_old_enough_release(
+                releases, timedelta(hours=24), source="test"
+            )
+        self.assertIsNone(selected)
+        self.assertIn("Skipping test", output.getvalue())
+
+    def test_does_not_move_a_pin_backward_to_an_eligible_release(self) -> None:
+        current = update_pins.UpstreamRelease(
+            "3.0.0", datetime.now(UTC) - timedelta(hours=2)
+        )
+        target = update_pins.UpstreamRelease(
+            "2.0.0", datetime.now(UTC) - timedelta(days=2)
+        )
+        with redirect_stdout(io.StringIO()):
+            can_move = update_pins.pin_can_move_forward(
+                current.version, target, source="test"
+            )
+        self.assertFalse(can_move)
+
 
 class UvImagePinTests(TestCase):
     def test_regex_matches_contiguous_form(self) -> None:
@@ -169,20 +230,24 @@ class NpmPinUpdateTests(TestCase):
             package = "@earendil-works/pi-coding-agent"
             latest = "999.0.0"
 
-            def fake_latest_npm_release(name: str) -> update_pins.UpstreamRelease:
+            def fake_latest_npm_releases(
+                name: str,
+            ) -> list[update_pins.UpstreamRelease]:
                 version = latest if name == package else current_versions[name]
-                return update_pins.UpstreamRelease(
-                    version,
-                    datetime.now(UTC) - timedelta(days=2),
-                )
+                return [
+                    update_pins.UpstreamRelease(
+                        version,
+                        datetime.now(UTC) - timedelta(days=2),
+                    )
+                ]
 
             with (
                 patch.object(update_pins, "DOCKERFILE_TEMPLATE", template),
                 patch.object(update_pins, "CONFIG_AGENTS", config_agents_path),
                 patch.object(
                     update_pins,
-                    "latest_npm_release",
-                    side_effect=fake_latest_npm_release,
+                    "latest_npm_releases",
+                    side_effect=fake_latest_npm_releases,
                 ),
             ):
                 updates = update_pins.collect_npm_updates()

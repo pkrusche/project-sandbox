@@ -479,6 +479,11 @@ uv run python scripts/update-pins.py
 By default, a release must have been published for at least 24 hours before
 it is considered for adoption. Change that safety window with
 `--min-age-hours`, for example `--min-age-hours 48`; use `0` to disable it.
+If the newest release is inside the safety window, the script considers the
+newest release that is old enough and prints a note about the newer release.
+Stable version ordering is used when choosing candidates; alpha, beta, release
+candidate, and development versions are ignored, and updates are only offered
+when the selected version is newer than the current pin.
 
 The script checks:
 

@@ -16,8 +16,8 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest==9.1.1",
-    "ruff==0.16.6",
-    "ty==0.0.79",
+    "ruff==0.16.7",
+    "ty==0.0.81",
 ]
 
 [project.scripts]

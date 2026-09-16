@@ -71,6 +71,16 @@ class UpstreamRelease:
 
 DEFAULT_MINIMUM_AGE = timedelta(hours=24)
 
+VERSION_RE = re.compile(
+    r"^[vV]?(?P<epoch>[0-9]+!)?(?P<numbers>[0-9]+(?:\.[0-9]+)*)(?P<suffix>.*)$"
+)
+POST_VERSION_RE = re.compile(r"(?:^|\.)post(?P<number>[0-9]*)", re.IGNORECASE)
+PRE_VERSION_RE = re.compile(
+    r"^[.-]?(?P<kind>dev|alpha|a|beta|b|rc|pre|preview)"
+    r"[.-]?(?P<number>[0-9]*)",
+    re.IGNORECASE,
+)
+
 
 def request_json(url: str) -> object:
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
@@ -127,10 +137,14 @@ def parse_timestamp(value: object, source: str) -> datetime:
     return timestamp.astimezone(UTC)
 
 
+def release_age(release: UpstreamRelease) -> timedelta:
+    return datetime.now(UTC) - release.released_at
+
+
 def release_is_old_enough(
     release: UpstreamRelease, minimum_age: timedelta, *, source: str
 ) -> bool:
-    age = datetime.now(UTC) - release.released_at
+    age = release_age(release)
     if age < minimum_age:
         minimum_hours = minimum_age.total_seconds() / 3600
         age_hours = age.total_seconds() / 3600
@@ -142,70 +156,197 @@ def release_is_old_enough(
     return True
 
 
-def latest_pypi_release(name: str) -> UpstreamRelease:
+def comparable_version_key(
+    version: str,
+) -> tuple[int, tuple[int, ...], int, int] | None:
+    match = VERSION_RE.fullmatch(version)
+    if not match:
+        return None
+    suffix = match.group("suffix").lower()
+    pre_match = PRE_VERSION_RE.match(suffix)
+    if pre_match:
+        rank = {
+            "dev": 0,
+            "a": 1,
+            "alpha": 1,
+            "b": 2,
+            "beta": 2,
+            "pre": 3,
+            "preview": 3,
+            "rc": 3,
+        }[pre_match.group("kind").lower()]
+        suffix_rank = rank
+        suffix_number = int(pre_match.group("number") or "0")
+    elif suffix.startswith(("+",)):
+        suffix_rank = 4
+        suffix_number = 0
+    elif suffix.startswith((".post", "post")):
+        post_match = POST_VERSION_RE.search(suffix)
+        suffix_rank = 5
+        suffix_number = int(post_match.group("number") or "0") if post_match else 0
+    elif not suffix:
+        suffix_rank = 4
+        suffix_number = 0
+    else:
+        return None
+    numbers = [int(part) for part in match.group("numbers").split(".")]
+    while len(numbers) > 1 and numbers[-1] == 0:
+        numbers.pop()
+    epoch = int((match.group("epoch") or "0").removesuffix("!"))
+    return epoch, tuple(numbers), suffix_rank, suffix_number
+
+
+def version_key(version: str) -> tuple[int, tuple[int, ...], int] | None:
+    comparable = comparable_version_key(version)
+    if comparable is None or comparable[2] < 4:
+        return None
+    return comparable[0], comparable[1], comparable[3]
+
+
+def stable_release_key(release: UpstreamRelease) -> tuple[int, tuple[int, ...], int]:
+    key = version_key(release.version)
+    if key is None:
+        raise ValueError(f"Not a stable version: {release.version}")
+    return key
+
+
+def latest_old_enough_release(
+    releases: list[UpstreamRelease], minimum_age: timedelta, *, source: str
+) -> UpstreamRelease | None:
+    if not releases:
+        raise RuntimeError(f"{source} did not include any releases")
+    stable = [release for release in releases if version_key(release.version) is not None]
+    if not stable:
+        print(f"Skipping {source}: no stable releases were available.")
+        return None
+    newest = max(stable, key=stable_release_key)
+    eligible = [release for release in stable if release_age(release) >= minimum_age]
+    selected = max(eligible, key=stable_release_key) if eligible else None
+    if selected is None:
+        age_hours = release_age(newest).total_seconds() / 3600
+        minimum_hours = minimum_age.total_seconds() / 3600
+        print(
+            f"Skipping {source}: newest stable version {newest.version} is only "
+            f"{age_hours:.1f} hours old (minimum {minimum_hours:g} hours)."
+        )
+    elif selected.version != newest.version:
+        age_hours = release_age(newest).total_seconds() / 3600
+        print(
+            f"Note: {source} {newest.version} is newer but only "
+            f"{age_hours:.1f} hours old; using the latest eligible version "
+            f"{selected.version}."
+        )
+    return selected
+
+
+def pin_can_move_forward(
+    current: str, target: UpstreamRelease, *, source: str
+) -> bool:
+    current_key = comparable_version_key(current)
+    target_key = comparable_version_key(target.version)
+    if current_key is not None and target_key is not None and target_key <= current_key:
+        print(
+            f"Current {source} pin {current} is not older than eligible "
+            f"version {target.version}; not moving backward."
+        )
+        return False
+    return True
+
+
+def latest_pypi_releases(name: str) -> list[UpstreamRelease]:
     # PyPI lookups are synchronous and can take long enough that the script
     # otherwise appears idle, especially while checking every uv.lock package.
     print(f"Checking PyPI for {name}...", flush=True)
     data = request_json(f"https://pypi.org/pypi/{urllib.parse.quote(name)}/json")
     if not isinstance(data, dict) or not isinstance(data.get("info"), dict):
         raise RuntimeError(f"Unexpected PyPI response for {name}")
-    version = data["info"].get("version")
     releases = data.get("releases")
-    if not isinstance(version, str) or not isinstance(releases, dict):
-        raise RuntimeError(f"PyPI response for {name} did not include a latest version")
-    files = releases.get(version)
-    if not isinstance(files, list):
-        raise RuntimeError(f"PyPI response for {name} did not include release files")
-    timestamps = [
-        parse_timestamp(
-            file.get("upload_time_iso_8601", file.get("upload_time")),
-            f"PyPI response for {name}",
-        )
-        for file in files
-        if isinstance(file, dict)
-    ]
-    if not timestamps:
+    if not isinstance(releases, dict):
+        raise RuntimeError(f"PyPI response for {name} did not include releases")
+
+    result: list[UpstreamRelease] = []
+    for version, files in releases.items():
+        if not isinstance(version, str) or not isinstance(files, list):
+            continue
+        timestamps = [
+            parse_timestamp(
+                file.get("upload_time_iso_8601", file.get("upload_time")),
+                f"PyPI response for {name}",
+            )
+            for file in files
+            if isinstance(file, dict)
+        ]
+        if timestamps:
+            # Use the last uploaded artifact so the whole release has had time
+            # to settle before its pin is adopted.
+            result.append(UpstreamRelease(version, max(timestamps)))
+    if not result:
         raise RuntimeError(f"PyPI response for {name} did not include upload times")
-    # Use the last uploaded artifact so the whole release has had time to
-    # settle before its pin is adopted.
-    return UpstreamRelease(version, max(timestamps))
+    return result
+
+
+def latest_pypi_release(name: str) -> UpstreamRelease:
+    return max(latest_pypi_releases(name), key=stable_release_key)
 
 
 def latest_pypi_version(name: str) -> str:
     return latest_pypi_release(name).version
 
 
-def latest_npm_release(package: str) -> UpstreamRelease:
+def latest_npm_releases(package: str) -> list[UpstreamRelease]:
     data = request_json(
         f"https://registry.npmjs.org/{urllib.parse.quote(package, safe='@/')}"
     )
     if not isinstance(data, dict) or not isinstance(data.get("dist-tags"), dict):
         raise RuntimeError(f"Unexpected npm response for {package}")
-    version = data["dist-tags"].get("latest")
     times = data.get("time")
-    if not isinstance(version, str) or not isinstance(times, dict):
-        raise RuntimeError(f"npm response for {package} did not include latest metadata")
-    return UpstreamRelease(
-        version,
-        parse_timestamp(times.get(version), f"npm response for {package}"),
-    )
+    versions = data.get("versions")
+    if not isinstance(times, dict) or not isinstance(versions, dict):
+        raise RuntimeError(f"npm response for {package} did not include release metadata")
+    result = [
+        UpstreamRelease(
+            version,
+            parse_timestamp(times.get(version), f"npm response for {package}"),
+        )
+        for version in versions
+        if isinstance(version, str) and version in times
+    ]
+    if not result:
+        raise RuntimeError(f"npm response for {package} did not include release times")
+    return result
+
+
+def latest_npm_release(package: str) -> UpstreamRelease:
+    return max(latest_npm_releases(package), key=stable_release_key)
 
 
 def latest_npm_version(package: str) -> str:
     return latest_npm_release(package).version
 
 
-def latest_node_release() -> UpstreamRelease:
+def latest_node_releases() -> list[UpstreamRelease]:
     data = request_json("https://nodejs.org/dist/index.json")
-    if not isinstance(data, list) or not data or not isinstance(data[0], dict):
+    if not isinstance(data, list) or not data:
         raise RuntimeError("Unexpected Node.js release index response")
-    version = data[0].get("version")
-    if not isinstance(version, str):
-        raise RuntimeError("Node.js release index did not include a version")
-    return UpstreamRelease(
-        version,
-        parse_timestamp(data[0].get("date"), "Node.js release index"),
-    )
+    result = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        version = item.get("version")
+        if isinstance(version, str):
+            result.append(
+                UpstreamRelease(
+                    version,
+                    parse_timestamp(item.get("date"), "Node.js release index"),
+                )
+            )
+    if not result:
+        raise RuntimeError("Node.js release index did not include releases")
+    return result
+
+
+def latest_node_release() -> UpstreamRelease:
+    return max(latest_node_releases(), key=stable_release_key)
 
 
 def latest_node_version() -> str:
@@ -231,22 +372,47 @@ def node_sha256s(version: str) -> dict[str, str]:
     return result
 
 
-def latest_github_release_info(owner: str, repo: str) -> UpstreamRelease:
-    data = request_json(f"https://api.github.com/repos/{owner}/{repo}/releases/latest")
-    if not isinstance(data, dict):
-        raise RuntimeError(f"Unexpected GitHub release response for {owner}/{repo}")
-    tag = data.get("tag_name")
-    if not isinstance(tag, str):
-        raise RuntimeError(
-            f"GitHub release response for {owner}/{repo} did not include tag_name"
+def latest_github_releases(
+    owner: str,
+    repo: str,
+    minimum_age: timedelta = DEFAULT_MINIMUM_AGE,
+) -> list[UpstreamRelease]:
+    result: list[UpstreamRelease] = []
+    cutoff = datetime.now(UTC) - minimum_age
+    for page in range(1, 101):
+        data = request_json(
+            f"https://api.github.com/repos/{owner}/{repo}/releases"
+            f"?per_page=100&page={page}"
         )
-    return UpstreamRelease(
-        tag,
-        parse_timestamp(
-            data.get("published_at"),
-            f"GitHub release response for {owner}/{repo}",
-        ),
-    )
+        if not isinstance(data, list):
+            raise RuntimeError(f"Unexpected GitHub release response for {owner}/{repo}")
+        for release in data:
+            if not isinstance(release, dict):
+                continue
+            if release.get("draft") or release.get("prerelease"):
+                continue
+            tag = release.get("tag_name")
+            if isinstance(tag, str):
+                result.append(
+                    UpstreamRelease(
+                        tag,
+                        parse_timestamp(
+                            release.get("published_at"),
+                            f"GitHub release response for {owner}/{repo}",
+                        ),
+                    )
+                )
+        if len(data) < 100 or any(
+            release.released_at <= cutoff for release in result
+        ):
+            break
+    if not result:
+        raise RuntimeError(f"GitHub release response for {owner}/{repo} had no releases")
+    return result
+
+
+def latest_github_release_info(owner: str, repo: str) -> UpstreamRelease:
+    return max(latest_github_releases(owner, repo), key=stable_release_key)
 
 
 def latest_github_release(owner: str, repo: str) -> str:
@@ -352,13 +518,18 @@ def collect_pypi_updates(
             continue
         seen.add(package)
         current = match.group("version")
-        release = latest_pypi_release(package)
+        releases = latest_pypi_releases(package)
+        release = latest_old_enough_release(
+            releases, minimum_age, source=f"PyPI {requirement_name}"
+        )
+        if release is None:
+            continue
         latest = release.version
         if current == latest:
             print(f"Current PyPI pin: {requirement_name}=={current}")
             continue
-        if not release_is_old_enough(
-            release, minimum_age, source=f"PyPI {requirement_name}"
+        if not pin_can_move_forward(
+            current, release, source=f"PyPI {requirement_name}"
         ):
             continue
 
@@ -424,12 +595,17 @@ def collect_uv_lock_updates(
         if normalized in seen or normalized in direct or normalized == project_name:
             continue
         seen.add(normalized)
-        release = latest_pypi_release(name)
+        releases = latest_pypi_releases(name)
+        release = latest_old_enough_release(
+            releases, minimum_age, source=f"uv.lock {name}"
+        )
+        if release is None:
+            continue
         latest = release.version
         if current == latest:
             print(f"Current uv.lock pin: {name}=={current}")
             continue
-        if not release_is_old_enough(release, minimum_age, source=f"uv.lock {name}"):
+        if not pin_can_move_forward(current, release, source=f"uv.lock {name}"):
             continue
 
         def apply(name: str = name) -> None:
@@ -453,12 +629,17 @@ def collect_npm_updates(
             continue
         seen.add(package)
         current = match.group("version")
-        release = latest_npm_release(package)
+        releases = latest_npm_releases(package)
+        release = latest_old_enough_release(
+            releases, minimum_age, source=f"npm {package}"
+        )
+        if release is None:
+            continue
         latest = release.version
         if current == latest:
             print(f"Current npm pin: {package}@{current}")
             continue
-        if not release_is_old_enough(release, minimum_age, source=f"npm {package}"):
+        if not pin_can_move_forward(current, release, source=f"npm {package}"):
             continue
 
         def apply(
@@ -495,12 +676,15 @@ def collect_node_update(
             "Could not find Node.js version and checksums in Dockerfile template"
         )
     current = version_match.group("version")
-    release = latest_node_release()
+    releases = latest_node_releases()
+    release = latest_old_enough_release(releases, minimum_age, source="Node.js")
+    if release is None:
+        return []
     latest = release.version
     if current == latest:
         print(f"Current Node.js pin: {current}")
         return []
-    if not release_is_old_enough(release, minimum_age, source="Node.js"):
+    if not pin_can_move_forward(current, release, source="Node.js"):
         return []
 
     def apply() -> None:
@@ -533,12 +717,15 @@ def collect_jj_update(
             "Could not find jj version and checksums in Dockerfile template"
         )
     current = version_match.group("version")
-    release = latest_github_release_info("jj-vcs", "jj")
+    releases = latest_github_releases("jj-vcs", "jj", minimum_age)
+    release = latest_old_enough_release(releases, minimum_age, source="jj")
+    if release is None:
+        return []
     latest = release.version
     if current == latest:
         print(f"Current jj pin: {current}")
         return []
-    if not release_is_old_enough(release, minimum_age, source="jj"):
+    if not pin_can_move_forward(current, release, source="jj"):
         return []
 
     def apply() -> None:
@@ -575,7 +762,10 @@ def collect_uv_image_update(
 
     current = next(iter(current_versions))
     current_digest = next(iter(current_digests))
-    release = latest_github_release_info("astral-sh", "uv")
+    releases = latest_github_releases("astral-sh", "uv", minimum_age)
+    release = latest_old_enough_release(releases, minimum_age, source="uv image")
+    if release is None:
+        return []
     latest = release.version.removeprefix("v")
     latest_digest = ghcr_manifest_digest("astral-sh/uv", latest)
     latest_value = f"{latest}@sha256:{latest_digest}"
@@ -583,7 +773,7 @@ def collect_uv_image_update(
     if current_value == latest_value:
         print(f"Current uv image pin: {current_value}")
         return []
-    if not release_is_old_enough(release, minimum_age, source="uv image"):
+    if not pin_can_move_forward(current, release, source="uv image"):
         return []
 
     def apply() -> None:
