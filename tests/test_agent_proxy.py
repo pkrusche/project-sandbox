@@ -143,6 +143,10 @@ class AgentProxyTests(unittest.TestCase):
             self.assertEqual(
                 config["providers"]["agent-proxy"]["api"], "openai-responses"
             )
+            self.assertEqual(
+                config["providers"]["agent-proxy"]["models"],
+                [{"id": "model", "contextWindow": 262_144}],
+            )
 
     def test_render_removes_stale_proxy_configs_and_only_stages_selected_agent(
         self,

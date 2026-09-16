@@ -87,6 +87,7 @@ DEFAULT_OLLAMA_MODELS: tuple[str, ...] = (
 
 # Keep in sync with the pi-coding-agent npm pin in templates/Dockerfile.j2.
 _PI_NPM_VERSION_PIN = "0.85.1"
+_PROXY_CONTEXT_WINDOW = 262_144
 
 
 def _agent_host_paths(home: Path) -> dict[str, Path]:
@@ -324,7 +325,10 @@ def _pi_proxy_models_json(base_url: str, models: list[str], key: str) -> str:
                         "baseUrl": base_url,
                         "api": "openai-responses",
                         "apiKey": key,
-                        "models": [{"id": model} for model in models],
+                        "models": [
+                            {"id": model, "contextWindow": _PROXY_CONTEXT_WINDOW}
+                            for model in models
+                        ],
                     }
                 }
             },
