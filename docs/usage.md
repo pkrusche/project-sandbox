@@ -476,6 +476,10 @@ Pinned package and tool versions are updated with the interactive helper:
 uv run python scripts/update-pins.py
 ```
 
+By default, a release must have been published for at least 24 hours before
+it is considered for adoption. Change that safety window with
+`--min-age-hours`, for example `--min-age-hours 48`; use `0` to disable it.
+
 The script checks:
 
 - exact PyPI pins in `pyproject.toml`, regenerating `uv.lock` after accepted

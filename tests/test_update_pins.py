@@ -3,6 +3,7 @@ import io
 import sys
 import tempfile
 from contextlib import redirect_stdout
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest import TestCase
 from unittest.mock import patch
@@ -38,7 +39,14 @@ class PypiProgressTests(TestCase):
             self.assertEqual(
                 output.getvalue(), "Checking PyPI for example-package...\n"
             )
-            return {"info": {"version": "2.0.0"}}
+            return {
+                "info": {"version": "2.0.0"},
+                "releases": {
+                    "2.0.0": [
+                        {"upload_time_iso_8601": "2020-01-01T00:00:00Z"}
+                    ]
+                },
+            }
 
         with (
             patch.object(update_pins, "request_json", side_effect=fake_request_json),
@@ -47,6 +55,28 @@ class PypiProgressTests(TestCase):
             version = update_pins.latest_pypi_version("example-package")
 
         self.assertEqual(version, "2.0.0")
+
+
+class ReleaseAgeTests(TestCase):
+    def test_release_younger_than_minimum_age_is_skipped(self) -> None:
+        release = update_pins.UpstreamRelease(
+            "2.0.0", datetime.now(UTC) - timedelta(hours=23)
+        )
+        with redirect_stdout(io.StringIO()):
+            eligible = update_pins.release_is_old_enough(
+                release, timedelta(hours=24), source="test"
+            )
+        self.assertFalse(eligible)
+
+    def test_release_at_least_minimum_age_is_eligible(self) -> None:
+        release = update_pins.UpstreamRelease(
+            "2.0.0", datetime.now(UTC) - timedelta(hours=25)
+        )
+        self.assertTrue(
+            update_pins.release_is_old_enough(
+                release, timedelta(hours=24), source="test"
+            )
+        )
 
 
 class UvImagePinTests(TestCase):
@@ -139,16 +169,20 @@ class NpmPinUpdateTests(TestCase):
             package = "@earendil-works/pi-coding-agent"
             latest = "999.0.0"
 
-            def fake_latest_npm_version(name: str) -> str:
-                return latest if name == package else current_versions[name]
+            def fake_latest_npm_release(name: str) -> update_pins.UpstreamRelease:
+                version = latest if name == package else current_versions[name]
+                return update_pins.UpstreamRelease(
+                    version,
+                    datetime.now(UTC) - timedelta(days=2),
+                )
 
             with (
                 patch.object(update_pins, "DOCKERFILE_TEMPLATE", template),
                 patch.object(update_pins, "CONFIG_AGENTS", config_agents_path),
                 patch.object(
                     update_pins,
-                    "latest_npm_version",
-                    side_effect=fake_latest_npm_version,
+                    "latest_npm_release",
+                    side_effect=fake_latest_npm_release,
                 ),
             ):
                 updates = update_pins.collect_npm_updates()

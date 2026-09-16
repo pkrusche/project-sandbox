@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import re
 import shutil
 import subprocess
@@ -20,6 +21,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -59,6 +61,15 @@ class Update:
     latest: str
     apply: Callable[[], None]
     changed: bool = True
+
+
+@dataclass(frozen=True)
+class UpstreamRelease:
+    version: str
+    released_at: datetime
+
+
+DEFAULT_MINIMUM_AGE = timedelta(hours=24)
 
 
 def request_json(url: str) -> object:
@@ -104,7 +115,34 @@ def normalize_package_name(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
-def latest_pypi_version(name: str) -> str:
+def parse_timestamp(value: object, source: str) -> datetime:
+    if not isinstance(value, str):
+        raise RuntimeError(f"{source} did not include a release timestamp")
+    try:
+        timestamp = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise RuntimeError(f"{source} included an invalid release timestamp") from exc
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=UTC)
+    return timestamp.astimezone(UTC)
+
+
+def release_is_old_enough(
+    release: UpstreamRelease, minimum_age: timedelta, *, source: str
+) -> bool:
+    age = datetime.now(UTC) - release.released_at
+    if age < minimum_age:
+        minimum_hours = minimum_age.total_seconds() / 3600
+        age_hours = age.total_seconds() / 3600
+        print(
+            f"Skipping {source} {release.version}: it is only "
+            f"{age_hours:.1f} hours old (minimum {minimum_hours:g} hours)."
+        )
+        return False
+    return True
+
+
+def latest_pypi_release(name: str) -> UpstreamRelease:
     # PyPI lookups are synchronous and can take long enough that the script
     # otherwise appears idle, especially while checking every uv.lock package.
     print(f"Checking PyPI for {name}...", flush=True)
@@ -112,33 +150,66 @@ def latest_pypi_version(name: str) -> str:
     if not isinstance(data, dict) or not isinstance(data.get("info"), dict):
         raise RuntimeError(f"Unexpected PyPI response for {name}")
     version = data["info"].get("version")
-    if not isinstance(version, str):
+    releases = data.get("releases")
+    if not isinstance(version, str) or not isinstance(releases, dict):
         raise RuntimeError(f"PyPI response for {name} did not include a latest version")
-    return version
+    files = releases.get(version)
+    if not isinstance(files, list):
+        raise RuntimeError(f"PyPI response for {name} did not include release files")
+    timestamps = [
+        parse_timestamp(
+            file.get("upload_time_iso_8601", file.get("upload_time")),
+            f"PyPI response for {name}",
+        )
+        for file in files
+        if isinstance(file, dict)
+    ]
+    if not timestamps:
+        raise RuntimeError(f"PyPI response for {name} did not include upload times")
+    # Use the last uploaded artifact so the whole release has had time to
+    # settle before its pin is adopted.
+    return UpstreamRelease(version, max(timestamps))
 
 
-def latest_npm_version(package: str) -> str:
+def latest_pypi_version(name: str) -> str:
+    return latest_pypi_release(name).version
+
+
+def latest_npm_release(package: str) -> UpstreamRelease:
     data = request_json(
         f"https://registry.npmjs.org/{urllib.parse.quote(package, safe='@/')}"
     )
     if not isinstance(data, dict) or not isinstance(data.get("dist-tags"), dict):
         raise RuntimeError(f"Unexpected npm response for {package}")
     version = data["dist-tags"].get("latest")
-    if not isinstance(version, str):
-        raise RuntimeError(
-            f"npm response for {package} did not include dist-tags.latest"
-        )
-    return version
+    times = data.get("time")
+    if not isinstance(version, str) or not isinstance(times, dict):
+        raise RuntimeError(f"npm response for {package} did not include latest metadata")
+    return UpstreamRelease(
+        version,
+        parse_timestamp(times.get(version), f"npm response for {package}"),
+    )
 
 
-def latest_node_version() -> str:
+def latest_npm_version(package: str) -> str:
+    return latest_npm_release(package).version
+
+
+def latest_node_release() -> UpstreamRelease:
     data = request_json("https://nodejs.org/dist/index.json")
-    if not isinstance(data, list) or not data:
+    if not isinstance(data, list) or not data or not isinstance(data[0], dict):
         raise RuntimeError("Unexpected Node.js release index response")
     version = data[0].get("version")
     if not isinstance(version, str):
         raise RuntimeError("Node.js release index did not include a version")
-    return version
+    return UpstreamRelease(
+        version,
+        parse_timestamp(data[0].get("date"), "Node.js release index"),
+    )
+
+
+def latest_node_version() -> str:
+    return latest_node_release().version
 
 
 def node_sha256s(version: str) -> dict[str, str]:
@@ -160,7 +231,7 @@ def node_sha256s(version: str) -> dict[str, str]:
     return result
 
 
-def latest_github_release(owner: str, repo: str) -> str:
+def latest_github_release_info(owner: str, repo: str) -> UpstreamRelease:
     data = request_json(f"https://api.github.com/repos/{owner}/{repo}/releases/latest")
     if not isinstance(data, dict):
         raise RuntimeError(f"Unexpected GitHub release response for {owner}/{repo}")
@@ -169,7 +240,17 @@ def latest_github_release(owner: str, repo: str) -> str:
         raise RuntimeError(
             f"GitHub release response for {owner}/{repo} did not include tag_name"
         )
-    return tag
+    return UpstreamRelease(
+        tag,
+        parse_timestamp(
+            data.get("published_at"),
+            f"GitHub release response for {owner}/{repo}",
+        ),
+    )
+
+
+def latest_github_release(owner: str, repo: str) -> str:
+    return latest_github_release_info(owner, repo).version
 
 
 def download_sha256(url: str) -> str:
@@ -258,7 +339,9 @@ def replace_regex(
     write(path, new_text)
 
 
-def collect_pypi_updates() -> list[Update]:
+def collect_pypi_updates(
+    minimum_age: timedelta = DEFAULT_MINIMUM_AGE,
+) -> list[Update]:
     text = read(PYPROJECT)
     updates: list[Update] = []
     seen: set[str] = set()
@@ -269,9 +352,14 @@ def collect_pypi_updates() -> list[Update]:
             continue
         seen.add(package)
         current = match.group("version")
-        latest = latest_pypi_version(package)
+        release = latest_pypi_release(package)
+        latest = release.version
         if current == latest:
             print(f"Current PyPI pin: {requirement_name}=={current}")
+            continue
+        if not release_is_old_enough(
+            release, minimum_age, source=f"PyPI {requirement_name}"
+        ):
             continue
 
         def apply(
@@ -298,7 +386,9 @@ def direct_pypi_pins() -> set[str]:
     }
 
 
-def collect_uv_lock_updates() -> list[Update]:
+def collect_uv_lock_updates(
+    minimum_age: timedelta = DEFAULT_MINIMUM_AGE,
+) -> list[Update]:
     if not UV_LOCK.is_file():
         return []
     if shutil.which("uv") is None:
@@ -334,9 +424,12 @@ def collect_uv_lock_updates() -> list[Update]:
         if normalized in seen or normalized in direct or normalized == project_name:
             continue
         seen.add(normalized)
-        latest = latest_pypi_version(name)
+        release = latest_pypi_release(name)
+        latest = release.version
         if current == latest:
             print(f"Current uv.lock pin: {name}=={current}")
+            continue
+        if not release_is_old_enough(release, minimum_age, source=f"uv.lock {name}"):
             continue
 
         def apply(name: str = name) -> None:
@@ -348,7 +441,9 @@ def collect_uv_lock_updates() -> list[Update]:
     return updates
 
 
-def collect_npm_updates() -> list[Update]:
+def collect_npm_updates(
+    minimum_age: timedelta = DEFAULT_MINIMUM_AGE,
+) -> list[Update]:
     text = read(DOCKERFILE_TEMPLATE)
     updates: list[Update] = []
     seen: set[str] = set()
@@ -358,9 +453,12 @@ def collect_npm_updates() -> list[Update]:
             continue
         seen.add(package)
         current = match.group("version")
-        latest = latest_npm_version(package)
+        release = latest_npm_release(package)
+        latest = release.version
         if current == latest:
             print(f"Current npm pin: {package}@{current}")
+            continue
+        if not release_is_old_enough(release, minimum_age, source=f"npm {package}"):
             continue
 
         def apply(
@@ -380,7 +478,9 @@ def collect_npm_updates() -> list[Update]:
     return updates
 
 
-def collect_node_update() -> list[Update]:
+def collect_node_update(
+    minimum_age: timedelta = DEFAULT_MINIMUM_AGE,
+) -> list[Update]:
     text = read(DOCKERFILE_TEMPLATE)
     version_match = re.search(r'NODE_VERSION="(?P<version>v[0-9][^"]+)"', text)
     x64_match = re.search(
@@ -395,9 +495,12 @@ def collect_node_update() -> list[Update]:
             "Could not find Node.js version and checksums in Dockerfile template"
         )
     current = version_match.group("version")
-    latest = latest_node_version()
+    release = latest_node_release()
+    latest = release.version
     if current == latest:
         print(f"Current Node.js pin: {current}")
+        return []
+    if not release_is_old_enough(release, minimum_age, source="Node.js"):
         return []
 
     def apply() -> None:
@@ -413,7 +516,9 @@ def collect_node_update() -> list[Update]:
     return [Update("Node.js binary and SHA256 pins", current, latest, apply)]
 
 
-def collect_jj_update() -> list[Update]:
+def collect_jj_update(
+    minimum_age: timedelta = DEFAULT_MINIMUM_AGE,
+) -> list[Update]:
     text = read(DOCKERFILE_TEMPLATE)
     version_match = re.search(r'JJ_VERSION="(?P<version>v[0-9][^"]+)"', text)
     arm64_match = re.search(
@@ -428,9 +533,12 @@ def collect_jj_update() -> list[Update]:
             "Could not find jj version and checksums in Dockerfile template"
         )
     current = version_match.group("version")
-    latest = latest_github_release("jj-vcs", "jj")
+    release = latest_github_release_info("jj-vcs", "jj")
+    latest = release.version
     if current == latest:
         print(f"Current jj pin: {current}")
+        return []
+    if not release_is_old_enough(release, minimum_age, source="jj"):
         return []
 
     def apply() -> None:
@@ -444,7 +552,9 @@ def collect_jj_update() -> list[Update]:
     return [Update("jj binary and SHA256 pins", current, latest, apply)]
 
 
-def collect_uv_image_update() -> list[Update]:
+def collect_uv_image_update(
+    minimum_age: timedelta = DEFAULT_MINIMUM_AGE,
+) -> list[Update]:
     candidates = [DOCKERFILE, DOCKERFILE_HELPER]
     matches: list[tuple[Path, str, str]] = []
     for path in candidates:
@@ -465,12 +575,15 @@ def collect_uv_image_update() -> list[Update]:
 
     current = next(iter(current_versions))
     current_digest = next(iter(current_digests))
-    latest = latest_github_release("astral-sh", "uv").removeprefix("v")
+    release = latest_github_release_info("astral-sh", "uv")
+    latest = release.version.removeprefix("v")
     latest_digest = ghcr_manifest_digest("astral-sh/uv", latest)
     latest_value = f"{latest}@sha256:{latest_digest}"
     current_value = f"{current}@sha256:{current_digest}"
     if current_value == latest_value:
         print(f"Current uv image pin: {current_value}")
+        return []
+    if not release_is_old_enough(release, minimum_age, source="uv image"):
         return []
 
     def apply() -> None:
@@ -496,6 +609,16 @@ def run_uv_lock() -> None:
     subprocess.run(["uv", "lock"], cwd=ROOT, check=True)
 
 
+def nonnegative_float(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a number") from exc
+    if not math.isfinite(parsed) or parsed < 0:
+        raise argparse.ArgumentTypeError("must be a finite, non-negative number")
+    return parsed
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -504,12 +627,20 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="apply every available update without prompting",
     )
+    parser.add_argument(
+        "--min-age-hours",
+        type=nonnegative_float,
+        default=24.0,
+        metavar="HOURS",
+        help="only update to releases at least this many hours old (default: 24)",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    collectors = [
+    minimum_age = timedelta(hours=args.min_age_hours)
+    collectors: list[Callable[[timedelta], list[Update]]] = [
         collect_pypi_updates,
         collect_uv_lock_updates,
         collect_npm_updates,
@@ -519,7 +650,7 @@ def main() -> int:
     ]
     updates: list[Update] = []
     for collector in collectors:
-        updates.extend(collector())
+        updates.extend(collector(minimum_age))
     if not updates:
         print("All known pins are already current.")
         return 0
