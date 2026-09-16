@@ -10,7 +10,9 @@ request-log guidance. This project does not access that checkout or invoke its
 `run.py`, and it does not reproduce the gateway YAML.
 
 The OpenAI-compatible LLM endpoint is loopback port 4000 under `/v1`. Port
-3000 is MCP, not an LLM endpoint. With the gateway running:
+3000 is MCP, not an LLM endpoint. Always include the `/v1` suffix in
+`--agent-proxy`; omitting it sends model discovery and provider requests to
+the wrong path and they will fail. With the gateway running:
 
 ```bash
 project-sandbox . python:3.14 --agent pi --agent-proxy http://127.0.0.1:4000/v1 \

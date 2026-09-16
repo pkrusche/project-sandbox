@@ -322,7 +322,7 @@ def _pi_proxy_models_json(base_url: str, models: list[str], key: str) -> str:
                 "providers": {
                     "agent-proxy": {
                         "baseUrl": base_url,
-                        "api": "openai-completions",
+                        "api": "openai-responses",
                         "apiKey": key,
                         "models": [{"id": model} for model in models],
                     }

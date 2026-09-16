@@ -126,6 +126,24 @@ class AgentProxyTests(unittest.TestCase):
                 self.assertLess(config.index('"b"'), config.index('"a"'))
                 self.assertEqual(paths[selected].parent, root / selected)
 
+    def test_pi_agent_proxy_uses_responses_api(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_agents.render(
+                root,
+                agent_proxy=(
+                    "http://proxy:4000/v1",
+                    ["model"],
+                    "gateway-key",
+                    "pi",
+                ),
+            )
+
+            config = json.loads((root / "pi" / "models.json").read_text())
+            self.assertEqual(
+                config["providers"]["agent-proxy"]["api"], "openai-responses"
+            )
+
     def test_render_removes_stale_proxy_configs_and_only_stages_selected_agent(
         self,
     ) -> None:
