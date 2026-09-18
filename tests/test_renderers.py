@@ -608,9 +608,8 @@ class RendererTests(TestCase):
                 self.assertTrue(state["hasSeenAutoDefaultNudge"])
                 self.assertTrue(state["hasSeenAutoDefaultNotice"])
                 # Settings keys do not belong in .claude.json; nothing reads
-                # them there.
-                self.assertNotIn("skipAutoPermissionPrompt", state)
-                self.assertNotIn("skipAutoPermissionPrompt", state["permissions"])
+                # them there, at the top level or under "permissions".
+                self.assertNotIn("skipAutoPermissionPrompt", json.dumps(state))
 
     def test_claude_config_state_is_created_to_accept_bypass_warning(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
