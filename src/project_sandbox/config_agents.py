@@ -26,16 +26,23 @@ _CLAUDE_CONFIG_BASE = {
 
 
 def _claude_config_state(permission_mode: str) -> dict[str, object]:
-    """Build the .claude.json config state for a profile's permission mode."""
+    """Build the .claude.json config state for a profile's permission mode.
+
+    Claude Code reads settings keys from settings.json, not from .claude.json;
+    the only prompt suppression that belongs here is the "has seen it" state
+    Claude Code itself persists in .claude.json. hasSeenAutoDefaultNudge is
+    what gates the "Make auto mode your default permission mode?" startup
+    dialog, and hasSeenAutoDefaultNotice the matching startup banner. Both are
+    set here so the dialog stays suppressed even for a profile where auto mode
+    is otherwise reachable; see _claude_settings_json for the settings side.
+    """
     state: dict[str, object] = dict(_CLAUDE_CONFIG_BASE)
+    state["hasSeenAutoDefaultNudge"] = True
+    state["hasSeenAutoDefaultNotice"] = True
+    permissions: dict[str, object] = {"defaultMode": permission_mode}
     if permission_mode == "bypassPermissions":
         state["bypassPermissionsModeAccepted"] = True
-        state["permissions"] = {
-            "defaultMode": "bypassPermissions",
-            "skipDangerousModePermissionPrompt": True,
-        }
-    else:
-        state["permissions"] = {"defaultMode": permission_mode}
+    state["permissions"] = permissions
     return state
 
 
@@ -242,14 +249,15 @@ def credentials_dir(
 
 
 def _claude_settings_json(permission_mode: str) -> str:
-    settings = {
+    permissions: dict[str, object] = {
+        "defaultMode": permission_mode,
+        "allow": [],
+        "deny": [],
+        "ask": [],
+    }
+    settings: dict[str, object] = {
         "$schema": "https://json.schemastore.org/claude-code-settings.json",
-        "permissions": {
-            "defaultMode": permission_mode,
-            "allow": [],
-            "deny": [],
-            "ask": [],
-        },
+        "permissions": permissions,
         "sandbox": {"enabled": False},
         "env": {
             "IS_SANDBOX": "1",
@@ -259,6 +267,17 @@ def _claude_settings_json(permission_mode: str) -> str:
         "autoUpdaterStatus": "disabled",
         "includeCoAuthoredBy": False,
     }
+    if permission_mode != "auto":
+        # The container is the security boundary, so a classifier deciding
+        # each tool call adds latency without adding containment. Turning auto
+        # mode off also makes it unreachable, which is what suppresses the
+        # "Make auto mode your default permission mode?" startup dialog.
+        permissions["disableAutoMode"] = "disable"
+    if permission_mode == "bypassPermissions":
+        # Pre-accept the bypass disclaimer. Claude Code reads this from
+        # settings.json; .claude.json's bypassPermissionsModeAccepted is the
+        # legacy spelling it migrates from.
+        settings["skipDangerousModePermissionPrompt"] = True
     return json.dumps(settings, indent=2) + "\n"
 
 

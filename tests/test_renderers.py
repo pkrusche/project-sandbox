@@ -297,11 +297,12 @@ class RendererTests(TestCase):
                     "autoUpdates": False,
                     "bypassPermissionsModeAccepted": True,
                     "hasCompletedOnboarding": True,
+                    "hasSeenAutoDefaultNotice": True,
+                    "hasSeenAutoDefaultNudge": True,
                     "installMethod": "npm",
                     "lastOnboardingVersion": "2.1.144",
                     "permissions": {
                         "defaultMode": "bypassPermissions",
-                        "skipDangerousModePermissionPrompt": True,
                     },
                     "projects": {"/workspace": {"hasTrustDialogAccepted": True}},
                     "token": "home",
@@ -339,11 +340,12 @@ class RendererTests(TestCase):
                     "autoUpdates": False,
                     "bypassPermissionsModeAccepted": True,
                     "hasCompletedOnboarding": True,
+                    "hasSeenAutoDefaultNotice": True,
+                    "hasSeenAutoDefaultNudge": True,
                     "installMethod": "npm",
                     "oauthAccount": {"accountUuid": "abc"},
                     "permissions": {
                         "defaultMode": "bypassPermissions",
-                        "skipDangerousModePermissionPrompt": True,
                     },
                     "projects": {"/workspace": {"hasTrustDialogAccepted": True}},
                 },
@@ -578,6 +580,38 @@ class RendererTests(TestCase):
             self.assertNotIn("claude-secret-token", docker_text)
             self.assertNotIn("codex-secret-token", docker_text)
 
+    def test_claude_settings_disable_auto_mode_outside_the_auto_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            paths = config_agents.render(context)
+
+            bypass = json.loads(paths["claude"].read_text(encoding="utf-8"))
+            self.assertEqual(bypass["permissions"]["defaultMode"], "bypassPermissions")
+            # Auto mode has to be unreachable in settings.json, not merely
+            # unselected: that is what stops Claude Code offering it at start.
+            self.assertEqual(bypass["permissions"]["disableAutoMode"], "disable")
+            self.assertTrue(bypass["skipDangerousModePermissionPrompt"])
+
+            devcontainer = json.loads(
+                paths["claude-devcontainer"].read_text(encoding="utf-8")
+            )
+            self.assertEqual(devcontainer["permissions"]["defaultMode"], "auto")
+            self.assertNotIn("disableAutoMode", devcontainer["permissions"])
+            self.assertNotIn("skipDangerousModePermissionPrompt", devcontainer)
+
+    def test_claude_config_state_marks_the_auto_mode_nudge_as_seen(self) -> None:
+        for profile in config_agents.CLAUDE_PROFILES:
+            with self.subTest(profile=profile):
+                state = config_agents._claude_config_state(
+                    config_agents.CLAUDE_PROFILES[profile]
+                )
+                self.assertTrue(state["hasSeenAutoDefaultNudge"])
+                self.assertTrue(state["hasSeenAutoDefaultNotice"])
+                # Settings keys do not belong in .claude.json; nothing reads
+                # them there.
+                self.assertNotIn("skipAutoPermissionPrompt", state)
+                self.assertNotIn("skipAutoPermissionPrompt", state["permissions"])
+
     def test_claude_config_state_is_created_to_accept_bypass_warning(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -598,10 +632,11 @@ class RendererTests(TestCase):
                     "autoUpdates": False,
                     "bypassPermissionsModeAccepted": True,
                     "hasCompletedOnboarding": True,
+                    "hasSeenAutoDefaultNotice": True,
+                    "hasSeenAutoDefaultNudge": True,
                     "installMethod": "npm",
                     "permissions": {
                         "defaultMode": "bypassPermissions",
-                        "skipDangerousModePermissionPrompt": True,
                     },
                     "projects": {"/workspace": {"hasTrustDialogAccepted": True}},
                 },
@@ -632,10 +667,11 @@ class RendererTests(TestCase):
                     "autoUpdates": False,
                     "bypassPermissionsModeAccepted": True,
                     "hasCompletedOnboarding": True,
+                    "hasSeenAutoDefaultNotice": True,
+                    "hasSeenAutoDefaultNudge": True,
                     "installMethod": "npm",
                     "permissions": {
                         "defaultMode": "bypassPermissions",
-                        "skipDangerousModePermissionPrompt": True,
                     },
                     "projects": {"/workspace": {"hasTrustDialogAccepted": True}},
                 },
