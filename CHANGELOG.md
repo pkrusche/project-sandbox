@@ -1,6 +1,25 @@
 # Changelog
 
-Notable changes to `project-sandbox` are documented here. 
+Notable changes to `project-sandbox` are documented here.
+
+## [Unreleased]
+
+### Added
+
+- Pi agent proxy configurations now use the OpenAI Responses API and advertise a
+  262,144-token context window for proxied models.
+
+### Changed
+
+- Claude Code sandbox profiles now disable Auto mode outside the Auto profile and
+  correctly suppress the related startup notices and bypass-permission prompt.
+- The pin updater now waits for stable releases to age past a configurable safety
+  window (24 hours by default), selects the newest eligible release, ignores
+  prereleases, and never moves a pin backward. The window can be changed with
+  `--min-age-hours`.
+- Refreshed pinned sandbox tooling and build inputs, including Node.js, uv,
+  OpenSpec, Claude Code, Codex CLI, OpenCode, Ruff, and ty, along with the lockfile.
+- Clarified that Pi agent proxy URLs must include the gateway's `/v1` suffix.
 
 ## [0.1.4]
 
@@ -87,6 +106,7 @@ Initial public release.
 - Build caching, dry-run support, timeout teardown, end-to-end tests, and CI.
 - Ruff, pytest, and release preflight checks.
 
+[Unreleased]: https://github.com/pkrusche/project-sandbox/compare/v0.1.4...HEAD
 [0.1.4]: https://github.com/pkrusche/project-sandbox/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/pkrusche/project-sandbox/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/pkrusche/project-sandbox/compare/v0.1.1...v0.1.2
