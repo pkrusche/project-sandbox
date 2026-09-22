@@ -19,7 +19,9 @@ container system stop && container system start
 
 The DNS/PF change can disrupt container Internet access before the restart and
 can disable Private Relay. The CLI verifies the final proxy TCP path from inside
-the sandbox, but it never invokes `sudo` or changes this host-wide configuration.
+the sandbox, but it never invokes `sudo` or changes this host-wide configuration. If the proxy path later times out instead of being refused, the
+alias has gone stale; delete and re-create it as described in
+[Apple container host alias](apple-container-dns.md).
 
 ## Security boundaries
 

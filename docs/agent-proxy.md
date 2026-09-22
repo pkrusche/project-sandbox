@@ -82,3 +82,8 @@ system after creating it:
 container system stop
 container system start
 ```
+
+If the gateway later becomes unreachable with a curl *timeout* rather than a
+refusal, the alias is registered but no longer redirecting. Re-running `dns
+create` does not fix that; delete and re-create the domain, then restart the
+container system. See [Apple container host alias](apple-container-dns.md).

@@ -401,7 +401,10 @@ uv run project-sandbox \
   This DNS/PF change can disrupt container Internet access until runtime
   networking is rebuilt and might disable Private Relay. Restart the container
   system after creating the mapping with `container system stop` followed by
-  `container system start`. Combining `--pi-ollama` with `--no-firewall` remains
+  `container system start`. A mapping that resolves but no longer redirects must
+  be deleted and re-created; see
+  [Apple container host alias](apple-container-dns.md). Combining `--pi-ollama`
+  with `--no-firewall` remains
   unsupported because the port-scoped allow rule and connectivity probe live in
   firewall initialization.
 - `--ollama-model MODEL_ID` overrides the built-in default Ollama model list

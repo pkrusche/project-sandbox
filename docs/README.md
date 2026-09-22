@@ -16,5 +16,8 @@ This directory contains the detailed project-sandbox documentation.
   threat model, troubleshooting, and limitations.
 - [Development guide](development.md) - local setup, verification commands, test
   coverage, and end-to-end smoke tests.
+- [Apple container host alias](apple-container-dns.md) - the shared
+  `host.docker.internal` localhost DNS domain used by agent-proxy, Internet-proxy,
+  and Ollama forwarding, including how to recover a stale alias.
 - [References and related projects](references.md) - similar projects and
   alternate sandboxing approaches.

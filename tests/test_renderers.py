@@ -128,6 +128,7 @@ class RendererTests(TestCase):
                 text.index("iptables -A OUTPUT -j REJECT"),
             )
             self.assertIn("sudo container system dns create host.docker.internal", text)
+            self.assertIn("sudo container system dns delete host.docker.internal", text)
 
     def test_agent_proxy_accepts_runtime_selected_hostname(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

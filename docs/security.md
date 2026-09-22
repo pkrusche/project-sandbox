@@ -195,6 +195,11 @@ The tool does not protect against:
   fingerprint recorded in `.project-sandbox/.build-state.json` (a non-sensitive
   tag + hash). If the image was modified outside project-sandbox, pass
   `--force-build` to rebuild.
+- **Host service times out on Apple `container`.** A curl timeout (rather than
+  a refusal) reaching the agent proxy, Internet proxy, or Ollama means the
+  `host.docker.internal` localhost DNS domain resolves but no longer redirects.
+  Delete the domain, re-create it, and restart the container system; see
+  [Apple container host alias](apple-container-dns.md).
 - **GitHub meta API timeout.** The firewall script falls back to an empty
   `{web,api,git,ipv6}` set and starts with a partial allowlist. Re-running the
   agent later will retry.

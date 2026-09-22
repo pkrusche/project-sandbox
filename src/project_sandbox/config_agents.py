@@ -93,7 +93,7 @@ DEFAULT_OLLAMA_MODELS: tuple[str, ...] = (
 )
 
 # Keep in sync with the pi-coding-agent npm pin in templates/Dockerfile.j2.
-_PI_NPM_VERSION_PIN = "0.85.1"
+_PI_NPM_VERSION_PIN = "0.87.0"
 _PROXY_CONTEXT_WINDOW = 262_144
 
 

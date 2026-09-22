@@ -21,6 +21,7 @@ if [ -z "${LOCAL_SERVICE_IP4_LIST[0]+x}" ]; then
 {% if local_destinations[0].hostname == "host.docker.internal" %}
   echo "Configure it with: sudo container system dns create host.docker.internal --localhost 203.0.113.113" >&2
   echo "For Apple container, restart afterward with: container system stop && container system start" >&2
+  echo "If it already exists but times out instead of refusing, delete and re-create it: sudo container system dns delete host.docker.internal" >&2
 {% endif %}
   exit 1
 fi
@@ -254,6 +255,7 @@ else
 {% if ollama_hostname == "host.docker.internal" %}
   echo "Configure it with: sudo container system dns create host.docker.internal --localhost 203.0.113.113" >&2
   echo "For Apple container, restart afterward with: container system stop && container system start" >&2
+  echo "If it already exists but times out instead of refusing, delete and re-create it: sudo container system dns delete host.docker.internal" >&2
 {% endif %}
   exit 1
 fi
@@ -316,6 +318,8 @@ if ! timeout 5 bash -c \
   echo "For Apple container, configure the localhost domain and then restart runtime networking:" >&2
   echo "  sudo container system dns create host.docker.internal --localhost 203.0.113.113" >&2
   echo "  container system stop && container system start" >&2
+  echo "  # if the alias already exists, delete it first:" >&2
+  echo "  sudo container system dns delete host.docker.internal" >&2
   exit 1
 fi
 {% endif %}

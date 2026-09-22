@@ -18,6 +18,7 @@ PORT = 11434
 APPLE_SETUP_COMMAND = (
     f"sudo container system dns create {HOSTNAME} --localhost 203.0.113.113"
 )
+APPLE_DELETE_COMMAND = f"sudo container system dns delete {HOSTNAME}"
 APPLE_RESTART_COMMAND = "container system stop && container system start"
 
 
@@ -240,7 +241,11 @@ def apple_setup_notice(label: str) -> str:
         f"    {APPLE_SETUP_COMMAND}\n"
         "This DNS/PF change can disrupt container Internet access until runtime "
         "networking is rebuilt. Restart the container system afterward with:\n"
-        f"    {APPLE_RESTART_COMMAND}"
+        f"    {APPLE_RESTART_COMMAND}\n"
+        "If the alias already exists but connections time out instead of being "
+        "refused, it resolves without redirecting; delete and re-create it, then "
+        "restart again:\n"
+        f"    {APPLE_DELETE_COMMAND}"
     )
 
 

@@ -123,6 +123,13 @@ class OllamaNetworkTests(TestCase):
         self.assertIn("can disrupt container Internet access", notice)
         self.assertIn("container system stop && container system start", notice)
 
+    def test_apple_setup_notice_includes_stale_alias_recovery(self) -> None:
+        # A registered alias can resolve without redirecting; re-running the
+        # create command is a no-op, so the notice must name the delete step.
+        notice = ollama_network.apple_setup_notice("Ollama")
+        self.assertIn("sudo container system dns delete host.docker.internal", notice)
+        self.assertIn("time out instead of being refused", notice)
+
     def test_rootless_podman_uses_native_alias(self) -> None:
         with patch.object(
             ollama_network,

@@ -2,12 +2,18 @@
 
 Notable changes to `project-sandbox` are documented here.
 
-## [Unreleased]
+## [0.1.5]
 
 ### Added
 
 - Pi agent proxy configurations now use the OpenAI Responses API and advertise a
   262,144-token context window for proxied models.
+- New [Apple container host alias](docs/apple-container-dns.md) documentation
+  covering the shared `host.docker.internal` localhost DNS domain, how to
+  recognize a stale alias (connections time out rather than being refused), and
+  how to recover one by deleting and re-creating the domain before restarting
+  the container system. The firewall hints and the Apple setup notice now name
+  the delete step, which re-running `dns create` alone does not cover.
 
 ### Changed
 
@@ -106,7 +112,7 @@ Initial public release.
 - Build caching, dry-run support, timeout teardown, end-to-end tests, and CI.
 - Ruff, pytest, and release preflight checks.
 
-[Unreleased]: https://github.com/pkrusche/project-sandbox/compare/v0.1.4...HEAD
+[0.1.5]: https://github.com/pkrusche/project-sandbox/compare/v0.1.4...HEAD
 [0.1.4]: https://github.com/pkrusche/project-sandbox/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/pkrusche/project-sandbox/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/pkrusche/project-sandbox/compare/v0.1.1...v0.1.2
