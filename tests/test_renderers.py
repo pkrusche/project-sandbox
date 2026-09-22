@@ -62,6 +62,7 @@ class RendererTests(TestCase):
             self.assertIn("npm install -g @anthropic-ai/claude-code", docker_text)
             self.assertIn("npm install -g @openai/codex", docker_text)
             self.assertIn("npm install -g opencode-ai", docker_text)
+            self.assertIn("npm install -g @ai-sdk/openai", docker_text)
             self.assertRegex(
                 docker_text,
                 r"npm install -g @earendil-works/pi-coding-agent@\d+\.\d+\.\d+",
@@ -206,6 +207,7 @@ class RendererTests(TestCase):
                 "@anthropic-ai/claude-code",
                 "@openai/codex",
                 "opencode-ai",
+                "@ai-sdk/openai",
                 "@earendil-works/pi-coding-agent",
             ):
                 self.assertRegex(
@@ -930,6 +932,7 @@ class RendererTests(TestCase):
             self.assertNotIn("@anthropic-ai/claude-code", text)
             self.assertIn("@openai/codex", text)
             self.assertNotIn("opencode-ai", text)
+            self.assertNotIn("@ai-sdk/openai", text)
             self.assertNotIn("@earendil-works/pi-coding-agent", text)
             self.assertIn("@fission-ai/openspec", text)
 

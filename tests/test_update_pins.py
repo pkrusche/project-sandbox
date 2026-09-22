@@ -201,6 +201,73 @@ class UvImagePinTests(TestCase):
 
 
 class NpmPinUpdateTests(TestCase):
+    def test_collect_npm_updates_requires_openai_sdk_pin(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            template = Path(tmp) / "Dockerfile.j2"
+            text = update_pins.DOCKERFILE_TEMPLATE.read_text(encoding="utf-8")
+            match = next(
+                match
+                for match in update_pins.NPM_PIN_RE.finditer(text)
+                if match.group("package") == "@ai-sdk/openai"
+            )
+            text = text.replace(match.group(0), "npm install -g @ai-sdk/openai")
+            template.write_text(text, encoding="utf-8")
+
+            with (
+                patch.object(update_pins, "DOCKERFILE_TEMPLATE", template),
+                self.assertRaisesRegex(RuntimeError, "@ai-sdk/openai"),
+            ):
+                update_pins.collect_npm_updates()
+
+    def test_collect_npm_updates_can_update_openai_sdk_pin(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            template = Path(tmp) / "Dockerfile.j2"
+            template.write_text(
+                update_pins.DOCKERFILE_TEMPLATE.read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            current_versions = {
+                match.group("package"): match.group("version")
+                for match in update_pins.NPM_PIN_RE.finditer(
+                    template.read_text(encoding="utf-8")
+                )
+            }
+            package = "@ai-sdk/openai"
+            latest = "999.0.0"
+
+            def fake_latest_npm_releases(
+                name: str,
+            ) -> list[update_pins.UpstreamRelease]:
+                version = latest if name == package else current_versions[name]
+                return [
+                    update_pins.UpstreamRelease(
+                        version,
+                        datetime.now(UTC) - timedelta(days=2),
+                    )
+                ]
+
+            with (
+                patch.object(update_pins, "DOCKERFILE_TEMPLATE", template),
+                patch.object(
+                    update_pins,
+                    "latest_npm_releases",
+                    side_effect=fake_latest_npm_releases,
+                ),
+            ):
+                updates = update_pins.collect_npm_updates()
+
+                self.assertEqual(len(updates), 1)
+                self.assertEqual(updates[0].label, f"npm {package}")
+                self.assertEqual(updates[0].current, current_versions[package])
+                self.assertEqual(updates[0].latest, latest)
+
+                updates[0].apply()
+
+            self.assertIn(
+                f"npm install -g {package}@{latest}",
+                template.read_text(encoding="utf-8"),
+            )
+
     def test_collect_npm_updates_can_update_pi_pin(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             template = Path(tmp) / "Dockerfile.j2"

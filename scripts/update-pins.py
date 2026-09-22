@@ -33,6 +33,7 @@ DOCKERFILE_HELPER = ROOT / "src/project_sandbox/dockerfile.py"
 CONFIG_AGENTS = ROOT / "src/project_sandbox/config_agents.py"
 
 PI_NPM_PACKAGE = "@earendil-works/pi-coding-agent"
+REQUIRED_NPM_PACKAGE_PINS = frozenset(("@ai-sdk/openai",))
 
 USER_AGENT = "project-sandbox-update-pins"
 
@@ -623,9 +624,18 @@ def collect_npm_updates(
     minimum_age: timedelta = DEFAULT_MINIMUM_AGE,
 ) -> list[Update]:
     text = read(DOCKERFILE_TEMPLATE)
+    matches = list(NPM_PIN_RE.finditer(text))
+    discovered = {match.group("package") for match in matches}
+    missing = REQUIRED_NPM_PACKAGE_PINS - discovered
+    if missing:
+        raise RuntimeError(
+            "Dockerfile template is missing required npm pin(s): "
+            + ", ".join(sorted(missing))
+        )
+
     updates: list[Update] = []
     seen: set[str] = set()
-    for match in NPM_PIN_RE.finditer(text):
+    for match in matches:
         package = match.group("package")
         if package in seen:
             continue

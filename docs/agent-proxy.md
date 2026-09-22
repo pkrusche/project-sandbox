@@ -33,7 +33,8 @@ both Pi and OpenCode with the forwarded URL, gateway key, discovered models,
 and selected default model, so either agent can be launched directly from the
 shell without additional provider setup. OpenCode's configured proxy models
 use the `@ai-sdk/openai` provider mapping so requests use the gateway's
-Responses API rather than chat completions.
+Responses API rather than chat completions. Images that include OpenCode also
+install an exact, OpenCode-compatible version of that provider package.
 
 Proxy mode is gateway-only by default. The firewall omits the normal OpenAI and
 Anthropic endpoint allowlist and the devcontainer's broad host-gateway rule;
