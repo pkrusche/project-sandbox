@@ -88,6 +88,13 @@ class InternetProxySmokeE2ETests(unittest.TestCase):
                 self.assertIn("--agent", command)
                 self.assertEqual(command[command.index("--agent") + 1], "bash")
                 self.assertIn("--internet-proxy", command)
+                ca_indices = [
+                    index for index, value in enumerate(command) if value == "--ca-cert"
+                ]
+                self.assertEqual(
+                    [command[index + 1] for index in ca_indices],
+                    ["/tmp/proxy-ca.pem", "/tmp/proxy-intermediate.pem"],
+                )
                 self.assertIn("--image-tag", command)
                 self.assertIn("--no-forward-credentials", command)
                 self.assertIn("--prompt-text", command)
@@ -104,7 +111,18 @@ class InternetProxySmokeE2ETests(unittest.TestCase):
                 patch.object(checker.tempfile, "mkdtemp", return_value=str(project)),
                 patch.object(checker.subprocess, "run", side_effect=run) as run_mock,
             ):
-                self.assertEqual(checker.main(["--no-build"]), 0)
+                self.assertEqual(
+                    checker.main(
+                        [
+                            "--no-build",
+                            "--ca-cert",
+                            "/tmp/proxy-ca.pem",
+                            "--ca-cert",
+                            "/tmp/proxy-intermediate.pem",
+                        ]
+                    ),
+                    0,
+                )
 
             preflight.assert_called_once()
             run_mock.assert_called_once()

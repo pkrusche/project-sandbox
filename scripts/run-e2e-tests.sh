@@ -24,6 +24,7 @@
 #                            [--base-image IMAGE] [--no-build] [--keep]
 #                            [--only SUITE] [--list]
 #                            [--with-agent-proxy] [--with-internet-proxy]
+#                            [--ca-cert PATH ...]
 #
 #   --runtime NAME   runtime forwarded to workflow scripts (default: chroot on Linux, auto otherwise)
 #   --base-image IMG base image forwarded to workflow scripts (default: python:3.12-slim)
@@ -41,6 +42,8 @@
 #                    run the destructive two-service Internet isolation audit;
 #                    also requires --blocked-url, --internet-proxy-dir, and
 #                    --agentgateway-dir
+#   --ca-cert PATH   bake a proxy CA certificate into Internet-proxy test images;
+#                    repeat for certificate chains
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -74,6 +77,7 @@ WITH_INTERNET_PROXY=0
 BLOCKED_URL=""
 INTERNET_PROXY_DIR=""
 AGENTGATEWAY_DIR=""
+CA_CERTS=()
 
 # Print the leading comment block (everything after the shebang up to the first
 # non-comment line) so the header stays the single source of usage truth.
@@ -92,6 +96,7 @@ while [ $# -gt 0 ]; do
     --blocked-url) BLOCKED_URL="${2:?--blocked-url needs a value}"; shift 2 ;;
     --internet-proxy-dir) INTERNET_PROXY_DIR="${2:?--internet-proxy-dir needs a value}"; shift 2 ;;
     --agentgateway-dir) AGENTGATEWAY_DIR="${2:?--agentgateway-dir needs a value}"; shift 2 ;;
+    --ca-cert)     CA_CERTS+=("${2:?--ca-cert needs a value}"); shift 2 ;;
     -h|--help)    usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage >&2; exit 64 ;;
   esac
@@ -292,6 +297,9 @@ if selected internet-proxy-smoke; then
     INTERNET_SMOKE_ARGS=(--runtime "$CONTAINER_RUNTIME" --base-image "$BASE_IMAGE")
     [ "$NO_BUILD" = 1 ] && INTERNET_SMOKE_ARGS+=(--no-build)
     [ "$KEEP" = 1 ] && INTERNET_SMOKE_ARGS+=(--keep)
+    for ca_cert in "${CA_CERTS[@]}"; do
+      INTERNET_SMOKE_ARGS+=(--ca-cert "$ca_cert")
+    done
     run_suite "internet-proxy-smoke" \
       uv run python "$ROOT/scripts/e2e-internet-proxy-smoke.py" "${INTERNET_SMOKE_ARGS[@]}"
   else
@@ -314,6 +322,9 @@ if selected internet-proxy-isolation; then
       )
       [ "$NO_BUILD" = 1 ] && INTERNET_AUDIT_ARGS+=(--no-build)
       [ "$KEEP" = 1 ] && INTERNET_AUDIT_ARGS+=(--keep)
+      for ca_cert in "${CA_CERTS[@]}"; do
+        INTERNET_AUDIT_ARGS+=(--ca-cert "$ca_cert")
+      done
       run_suite "internet-proxy-isolation" \
         uv run python "$ROOT/scripts/e2e-internet-proxy-isolation.py" "${INTERNET_AUDIT_ARGS[@]}"
     fi

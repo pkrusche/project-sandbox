@@ -14,6 +14,8 @@ Notable changes to `project-sandbox` are documented here.
   how to recover one by deleting and re-creating the domain before restarting
   the container system. The firewall hints and the Apple setup notice now name
   the delete step, which re-running `dns create` alone does not cover.
+- Internet-proxy smoke and isolation tests now accept repeatable `--ca-cert`
+  options for TLS-intercepting proxies.
 
 ### Changed
 

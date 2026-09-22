@@ -37,6 +37,8 @@ class InternetProxyEndToEndScriptTests(TestCase):
             "AI completion succeeds through Agentgateway",
             "proxy loss fails closed without direct fallback",
             "ordinary Internet still works while Agentgateway is stopped",
+            "for ca_cert in args.ca_cert",
+            '["--ca-cert", ca_cert]',
         ):
             with self.subTest(evidence=evidence):
                 self.assertIn(evidence, self.source)
@@ -70,9 +72,17 @@ class InternetProxyEndToEndScriptTests(TestCase):
                     "/tmp/internet-proxy-locally",
                     "--agentgateway-dir",
                     "/tmp/agentgateway-locally",
+                    "--ca-cert",
+                    "/tmp/proxy-ca.pem",
+                    "--ca-cert",
+                    "/tmp/proxy-intermediate.pem",
                 ]
             )
         )
 
         self.assertEqual(args.internet_proxy_control, "uv run ipl {action}")
         self.assertEqual(args.agentgateway_control, "./run.py {action}")
+        self.assertEqual(
+            args.ca_cert,
+            ["/tmp/proxy-ca.pem", "/tmp/proxy-intermediate.pem"],
+        )

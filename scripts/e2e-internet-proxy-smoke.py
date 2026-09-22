@@ -127,6 +127,13 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--base-image", default="python:3.12-slim")
     p.add_argument("--image-tag", default="project-sandbox-internet-proxy-smoke:latest")
     p.add_argument("--internet-proxy", default="http://127.0.0.1:18080")
+    p.add_argument(
+        "--ca-cert",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="Bake a PEM CA certificate into the test image (repeatable).",
+    )
     p.add_argument("--agent-proxy", default="http://127.0.0.1:4000/v1")
     p.add_argument("--agent-proxy-key-env", default=agent_proxy.DEFAULT_KEY_ENV)
     p.add_argument("--model")
@@ -213,6 +220,8 @@ def main(argv: list[str] | None = None) -> int:
             str(args.timeout),
         ]
         run_env = os.environ.copy()
+        for ca_cert in args.ca_cert:
+            command += ["--ca-cert", ca_cert]
         if gateway is not None:
             key, model = gateway
             run_env[args.agent_proxy_key_env] = key
