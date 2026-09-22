@@ -2,7 +2,14 @@
 
 Notable changes to `project-sandbox` are documented here.
 
-## [0.1.5]
+## [0.2.0]
+
+### Breaking
+
+- This release switches to expecting the agent proxy to use the Responses API instead
+  of chat completions. This means it is not backwards compatible with older versions
+  of the [agentgateway-locally](https://github.com/pkrusche/agentgateway-locally) config
+  (before commit [d50d25cd](https://github.com/pkrusche/agentgateway-locally/commit/d50d25cdce1a8704a846f3d6e5b3bda56ccc4ddc)).
 
 ### Added
 
@@ -29,6 +36,17 @@ Notable changes to `project-sandbox` are documented here.
 - Refreshed pinned sandbox tooling and build inputs, including Node.js, uv,
   OpenSpec, Claude Code, Codex CLI, OpenCode, Ruff, and ty, along with the lockfile.
 - Clarified that Pi agent proxy URLs must include the gateway's `/v1` suffix.
+
+### Fixed
+
+- The Internet-proxy isolation test now uses the Responses API, matching Pi and
+  OpenCode, instead of sending Chat Completions requests that can be rejected by
+  the gateway's current configuration. The probe bounds output and reasoning
+  tokens and accepts responses stopped by that token limit.
+- Failed gateway probes now report HTTP errors or connection/parse exceptions
+  in session logs, suite logs, and the retained `result.json`, with bounded error
+  details and the gateway key redacted.
+- Corrected the HTTP error test fixture's headers type so it passes `ty` checks.
 
 ## [0.1.4]
 
@@ -115,7 +133,7 @@ Initial public release.
 - Build caching, dry-run support, timeout teardown, end-to-end tests, and CI.
 - Ruff, pytest, and release preflight checks.
 
-[0.1.5]: https://github.com/pkrusche/project-sandbox/compare/v0.1.4...HEAD
+[0.2.0]: https://github.com/pkrusche/project-sandbox/compare/v0.1.4...HEAD
 [0.1.4]: https://github.com/pkrusche/project-sandbox/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/pkrusche/project-sandbox/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/pkrusche/project-sandbox/compare/v0.1.1...v0.1.2
