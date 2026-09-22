@@ -78,3 +78,19 @@ or removing inputs updates the generated files and invalidates the image cache.
 Rebuild the image (including a devcontainer rebuild) to apply changes; `--no-build`
 continues using the existing image. Dry-run validates certificates and previews
 injection without writing files or starting containers.
+
+## Troubleshooting the isolation test
+
+The `internet-proxy-isolation` E2E suite sends a small Chat Completions request
+through Agentgateway before and after stopping the Internet proxy. It defaults
+to `gpt-5-mini`; set `AGENT_PROXY_TEST_MODEL` to select another gateway model.
+The probe uses `max_completion_tokens` to bound output and reasoning tokens and
+checks for a successful response containing completion choices, not exact text.
+
+If Internet checks pass but all three AI checks fail, inspect the `DIAGNOSTIC:`
+lines in the suite or session log. They include HTTP status and a bounded error
+body, or the connection/parse exception. The gateway key is redacted. These
+details are also saved in `result.json` under `gateway_diagnostics` when the test
+project is retained with `--keep`. An API rejection can fail this probe even when
+an agent session succeeds; check the reported model, parameters, and HTTP error
+before changing host networking.

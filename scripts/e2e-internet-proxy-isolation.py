@@ -32,6 +32,7 @@ import urllib.request
 from pathlib import Path
 
 failures = []
+gateway_diagnostics = []
 
 def check(condition, message):
     print(("PASS: " if condition else "FAIL: ") + message, flush=True)
@@ -51,18 +52,36 @@ def gateway_request(expect_success=True):
     body = json.dumps({
         "model": __MODEL__,
         "messages": [{"role": "user", "content": "Reply with only OK"}],
-        "max_tokens": 8,
+        # Bound the billable probe, including reasoning tokens. A choice is
+        # sufficient to verify routing even if the token limit ends generation.
+        "max_completion_tokens": 8,
     }).encode()
     request = urllib.request.Request(
         __GATEWAY_URL__.rstrip("/") + "/chat/completions", data=body,
         headers={"Authorization": "Bearer " + os.environ["OPENAI_API_KEY"], "Content-Type": "application/json"},
     )
+    detail = ""
     try:
         with urllib.request.urlopen(request, timeout=20) as response:
             payload = json.loads(response.read())
             ok = 200 <= response.status < 300 and bool(payload.get("choices"))
-    except Exception:
+            if not ok:
+                detail = f"HTTP {response.status}: response has no completion choices"
+    except urllib.error.HTTPError as exc:
+        detail = f"HTTP {exc.code}: " + exc.read(4096).decode("utf-8", errors="replace")
         ok = False
+    except Exception as exc:
+        detail = f"{type(exc).__name__}: {exc}"
+        ok = False
+    if ok != expect_success:
+        detail = detail or "completion succeeded while Agentgateway should be stopped"
+        key = os.environ.get("OPENAI_API_KEY", "")
+        if key:
+            detail = detail.replace(key, "[REDACTED]")
+        detail = " ".join(detail.split())[:1000]
+        diagnostic = f"Agentgateway model={__MODEL__}: {detail}"
+        gateway_diagnostics.append(diagnostic)
+        print("DIAGNOSTIC: " + diagnostic, flush=True)
     return ok if expect_success else not ok
 
 def blocked_connection(address, socktype, port, payload=b""):
@@ -122,7 +141,9 @@ for marker in ("proxy-stopped.go", "proxy-restarted.go", "gateway-stopped.go"):
         check(gateway_request(False), "AI fails when Agentgateway is stopped")
         Path("gateway-stopped.done").write_text("done\n")
 
-Path("result.json").write_text(json.dumps({"ok": not failures, "failures": failures}, indent=2) + "\n")
+Path("result.json").write_text(json.dumps({
+    "ok": not failures, "failures": failures, "gateway_diagnostics": gateway_diagnostics,
+}, indent=2) + "\n")
 raise SystemExit(0 if not failures else 1)
 """
 
@@ -267,6 +288,8 @@ def main(argv: list[str] | None = None) -> int:
         result_path = project / "result.json"
         result = json.loads(result_path.read_text()) if result_path.exists() else {}
         if return_code or not result.get("ok"):
+            for diagnostic in result.get("gateway_diagnostics", []):
+                print(f"DIAGNOSTIC: {diagnostic}", file=sys.stderr)
             for failure in result.get("failures", ["sandbox audit did not complete"]):
                 print(f"FAIL: {failure}", file=sys.stderr)
             return 1

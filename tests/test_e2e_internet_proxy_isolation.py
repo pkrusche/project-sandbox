@@ -1,7 +1,13 @@
 import importlib.util
+import io
+import json
+import os
 import re
+import urllib.error
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import TestCase
+from unittest.mock import MagicMock, patch
 
 
 def _load_checker():
@@ -86,3 +92,105 @@ class InternetProxyEndToEndScriptTests(TestCase):
             args.ca_cert,
             ["/tmp/proxy-ca.pem", "/tmp/proxy-intermediate.pem"],
         )
+
+
+class GatewayCompletionProbeTests(TestCase):
+    def setUp(self) -> None:
+        checker = _load_checker()
+        args = checker.parser().parse_args(
+            [
+                "--runtime",
+                "docker",
+                "--blocked-url",
+                "https://blocked.example.test/",
+                "--internet-proxy-dir",
+                "/tmp/internet-proxy",
+                "--agentgateway-dir",
+                "/tmp/agentgateway",
+                "--model",
+                "gpt-5-mini",
+            ]
+        )
+        source = checker.render_audit(args, "http://gateway.test:4000/v1")
+        compile(source, "audit.py", "exec")
+        # Execute the actual generated helpers without starting the audit phases.
+        self.namespace = {}
+        exec(source.split("check(internet_works(),", 1)[0], self.namespace)  # noqa: S102
+        self.env = patch.dict(os.environ, {"OPENAI_API_KEY": "test-gateway-secret"})
+        self.env.start()
+        self.addCleanup(self.env.stop)
+        self.output = io.StringIO()
+
+    def probe(self, *, response=None, error=None, expect_success=True):
+        with patch("urllib.request.urlopen", side_effect=error) as urlopen:
+            if response is not None:
+                reply = MagicMock(status=200)
+                reply.read.return_value = json.dumps(response).encode()
+                urlopen.return_value.__enter__.return_value = reply
+            with redirect_stdout(self.output):
+                result = self.namespace["gateway_request"](expect_success)
+        return result, urlopen
+
+    def test_sends_reasoning_compatible_bounded_completion_request(self) -> None:
+        result, urlopen = self.probe(
+            response={"choices": [{"message": {"content": ""}}]}
+        )
+        self.assertTrue(result)
+        request = urlopen.call_args.args[0]
+        body = json.loads(request.data)
+        self.assertEqual(
+            request.full_url, "http://gateway.test:4000/v1/chat/completions"
+        )
+        self.assertEqual(
+            request.get_header("Authorization"), "Bearer test-gateway-secret"
+        )
+        self.assertEqual(body["model"], "gpt-5-mini")
+        self.assertEqual(body["max_completion_tokens"], 8)
+        self.assertNotIn("max_tokens", body)
+        self.assertEqual(self.output.getvalue(), "")
+
+    def test_http_rejection_reports_status_and_redacted_body(self) -> None:
+        error = urllib.error.HTTPError(
+            "http://gateway.test",
+            400,
+            "Bad Request",
+            {},
+            io.BytesIO(
+                b'{"error": "Unsupported parameter max_tokens test-gateway-secret"}'
+            ),
+        )
+        result, _ = self.probe(error=error)
+        self.assertFalse(result)
+        self.assertIn("HTTP 400", self.output.getvalue())
+        self.assertIn("Unsupported parameter max_tokens", self.output.getvalue())
+        self.assertIn("[REDACTED]", self.output.getvalue())
+        self.assertNotIn("test-gateway-secret", self.output.getvalue())
+        self.assertEqual(len(self.namespace["gateway_diagnostics"]), 1)
+        self.assertIn(self.namespace["gateway_diagnostics"][0], self.output.getvalue())
+
+    def test_network_failure_reports_reason(self) -> None:
+        result, _ = self.probe(error=urllib.error.URLError("Connection refused"))
+        self.assertFalse(result)
+        self.assertIn("URLError", self.output.getvalue())
+        self.assertIn("Connection refused", self.output.getvalue())
+
+    def test_invalid_json_reports_parse_failure(self) -> None:
+        result, _ = self.probe(error=json.JSONDecodeError("Invalid JSON", "", 0))
+        self.assertFalse(result)
+        self.assertIn("JSONDecodeError", self.output.getvalue())
+
+    def test_response_without_choices_fails_with_diagnostic(self) -> None:
+        result, _ = self.probe(response={"choices": []})
+        self.assertFalse(result)
+        self.assertIn("no completion choices", self.output.getvalue())
+
+    def test_expected_gateway_outage_passes_without_failure_diagnostic(self) -> None:
+        result, _ = self.probe(error=ConnectionRefusedError(), expect_success=False)
+        self.assertTrue(result)
+        self.assertEqual(self.namespace["gateway_diagnostics"], [])
+        self.assertEqual(self.output.getvalue(), "")
+
+    def test_live_gateway_during_outage_phase_fails_with_diagnostic(self) -> None:
+        result, _ = self.probe(response={"choices": [{}]}, expect_success=False)
+        self.assertFalse(result)
+        self.assertIn("should be stopped", self.output.getvalue())
