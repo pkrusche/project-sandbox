@@ -133,19 +133,20 @@ class GatewayCompletionProbeTests(TestCase):
 
     def test_sends_reasoning_compatible_bounded_completion_request(self) -> None:
         result, urlopen = self.probe(
-            response={"choices": [{"message": {"content": ""}}]}
+            response={"object": "response", "status": "completed", "output": []}
         )
         self.assertTrue(result)
         request = urlopen.call_args.args[0]
         body = json.loads(request.data)
-        self.assertEqual(
-            request.full_url, "http://gateway.test:4000/v1/chat/completions"
-        )
+        self.assertEqual(request.full_url, "http://gateway.test:4000/v1/responses")
         self.assertEqual(
             request.get_header("Authorization"), "Bearer test-gateway-secret"
         )
         self.assertEqual(body["model"], "gpt-5-mini")
-        self.assertEqual(body["max_completion_tokens"], 8)
+        self.assertEqual(body["max_output_tokens"], 16)
+        self.assertEqual(body["input"], "Reply with only OK")
+        self.assertNotIn("messages", body)
+        self.assertNotIn("max_completion_tokens", body)
         self.assertNotIn("max_tokens", body)
         self.assertEqual(self.output.getvalue(), "")
 
@@ -179,10 +180,10 @@ class GatewayCompletionProbeTests(TestCase):
         self.assertFalse(result)
         self.assertIn("JSONDecodeError", self.output.getvalue())
 
-    def test_response_without_choices_fails_with_diagnostic(self) -> None:
+    def test_chat_completions_payload_fails_with_diagnostic(self) -> None:
         result, _ = self.probe(response={"choices": []})
         self.assertFalse(result)
-        self.assertIn("no completion choices", self.output.getvalue())
+        self.assertIn("unsuccessful Responses payload", self.output.getvalue())
 
     def test_expected_gateway_outage_passes_without_failure_diagnostic(self) -> None:
         result, _ = self.probe(error=ConnectionRefusedError(), expect_success=False)
@@ -190,7 +191,41 @@ class GatewayCompletionProbeTests(TestCase):
         self.assertEqual(self.namespace["gateway_diagnostics"], [])
         self.assertEqual(self.output.getvalue(), "")
 
+    def test_token_budget_exhaustion_still_proves_routing(self) -> None:
+        result, _ = self.probe(
+            response={
+                "object": "response",
+                "status": "incomplete",
+                "output": [],
+                "incomplete_details": {"reason": "max_output_tokens"},
+            }
+        )
+        self.assertTrue(result)
+        self.assertEqual(self.output.getvalue(), "")
+
+    def test_unsuccessful_response_states_fail(self) -> None:
+        for fields in (
+            {"status": "failed", "error": {"message": "upstream error"}},
+            {"status": "queued"},
+            {"status": "in_progress"},
+            {
+                "status": "incomplete",
+                "incomplete_details": {"reason": "content_filter"},
+            },
+            {"status": "incomplete", "incomplete_details": None},
+            {"status": "completed", "error": {"message": "upstream error"}},
+            {"status": "completed", "output": None},
+        ):
+            with self.subTest(fields=fields):
+                result, _ = self.probe(
+                    response={"object": "response", "output": [], **fields}
+                )
+                self.assertFalse(result)
+
     def test_live_gateway_during_outage_phase_fails_with_diagnostic(self) -> None:
-        result, _ = self.probe(response={"choices": [{}]}, expect_success=False)
+        result, _ = self.probe(
+            response={"object": "response", "status": "completed", "output": []},
+            expect_success=False,
+        )
         self.assertFalse(result)
         self.assertIn("should be stopped", self.output.getvalue())

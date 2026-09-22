@@ -81,11 +81,14 @@ injection without writing files or starting containers.
 
 ## Troubleshooting the isolation test
 
-The `internet-proxy-isolation` E2E suite sends a small Chat Completions request
-through Agentgateway before and after stopping the Internet proxy. It defaults
-to `gpt-5-mini`; set `AGENT_PROXY_TEST_MODEL` to select another gateway model.
-The probe uses `max_completion_tokens` to bound output and reasoning tokens and
-checks for a successful response containing completion choices, not exact text.
+The `internet-proxy-isolation` E2E suite sends a small Responses API request
+through Agentgateway, matching Pi and OpenCode, before and after stopping the
+Internet proxy. It defaults to `gpt-5-mini`; set `AGENT_PROXY_TEST_MODEL` to select
+another gateway model.
+The probe uses `max_output_tokens` to bound output and reasoning tokens. It
+accepts a completed response or one marked incomplete solely because it reached
+that token limit, even if reasoning used the budget before producing text.
+Failed responses and other incomplete reasons fail the check.
 
 If Internet checks pass but all three AI checks fail, inspect the `DIAGNOSTIC:`
 lines in the suite or session log. They include HTTP status and a bounded error

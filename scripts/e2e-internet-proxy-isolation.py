@@ -51,22 +51,34 @@ def internet_works():
 def gateway_request(expect_success=True):
     body = json.dumps({
         "model": __MODEL__,
-        "messages": [{"role": "user", "content": "Reply with only OK"}],
-        # Bound the billable probe, including reasoning tokens. A choice is
-        # sufficient to verify routing even if the token limit ends generation.
-        "max_completion_tokens": 8,
+        "input": "Reply with only OK",
+        # Bound the billable routing probe, including reasoning tokens.
+        "max_output_tokens": 16,
     }).encode()
     request = urllib.request.Request(
-        __GATEWAY_URL__.rstrip("/") + "/chat/completions", data=body,
+        __GATEWAY_URL__.rstrip("/") + "/responses", data=body,
         headers={"Authorization": "Bearer " + os.environ["OPENAI_API_KEY"], "Content-Type": "application/json"},
     )
     detail = ""
     try:
         with urllib.request.urlopen(request, timeout=20) as response:
             payload = json.loads(response.read())
-            ok = 200 <= response.status < 300 and bool(payload.get("choices"))
+            # Reasoning may consume the small budget before producing text.
+            # Only token-budget exhaustion counts as a successful incomplete response.
+            status = payload.get("status")
+            incomplete = payload.get("incomplete_details") or {}
+            ok = (
+                200 <= response.status < 300
+                and payload.get("object") == "response"
+                and not payload.get("error")
+                and isinstance(payload.get("output"), list)
+                and (
+                    status == "completed"
+                    or (status == "incomplete" and incomplete.get("reason") == "max_output_tokens")
+                )
+            )
             if not ok:
-                detail = f"HTTP {response.status}: response has no completion choices"
+                detail = f"HTTP {response.status}: unsuccessful Responses payload: {json.dumps(payload)}"
     except urllib.error.HTTPError as exc:
         detail = f"HTTP {exc.code}: " + exc.read(4096).decode("utf-8", errors="replace")
         ok = False
