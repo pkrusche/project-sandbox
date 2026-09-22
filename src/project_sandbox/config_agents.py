@@ -383,7 +383,15 @@ def _opencode_proxy_json(
                 "npm": "@ai-sdk/openai-compatible",
                 "name": "Agent Proxy",
                 "options": {"baseURL": base_url, "apiKey": key},
-                "models": {model: {"name": model} for model in models},
+                "models": {
+                    model: {
+                        "name": model,
+                        # OpenAI's SDK uses the Responses API, while
+                        # @ai-sdk/openai-compatible defaults to chat completions.
+                        "provider": {"npm": "@ai-sdk/openai"},
+                    }
+                    for model in models
+                },
             },
         },
     }

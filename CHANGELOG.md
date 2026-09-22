@@ -6,8 +6,8 @@ Notable changes to `project-sandbox` are documented here.
 
 ### Added
 
-- Pi agent proxy configurations now use the OpenAI Responses API and advertise a
-  262,144-token context window for proxied models.
+- Pi and OpenCode agent proxy configurations now use the OpenAI Responses API;
+  Pi proxied models also advertise a 262,144-token context window.
 - New [Apple container host alias](docs/apple-container-dns.md) documentation
   covering the shared `host.docker.internal` localhost DNS domain, how to
   recognize a stale alias (connections time out rather than being refused), and

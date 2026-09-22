@@ -124,6 +124,12 @@ class AgentProxyTests(unittest.TestCase):
                 ).read_text()
                 self.assertIn("gateway-key", config)
                 self.assertLess(config.index('"b"'), config.index('"a"'))
+                if selected == "opencode":
+                    parsed = json.loads(config)
+                    self.assertEqual(
+                        parsed["provider"]["agent-proxy"]["models"]["b"]["provider"],
+                        {"npm": "@ai-sdk/openai"},
+                    )
                 self.assertEqual(paths[selected].parent, root / selected)
 
     def test_pi_agent_proxy_uses_responses_api(self) -> None:
@@ -147,6 +153,23 @@ class AgentProxyTests(unittest.TestCase):
                 config["providers"]["agent-proxy"]["models"],
                 [{"id": "model", "contextWindow": 262_144}],
             )
+
+    def test_opencode_agent_proxy_uses_responses_api_sdk(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_agents.render(
+                root,
+                agent_proxy=(
+                    "http://proxy:4000/v1",
+                    ["model"],
+                    "gateway-key",
+                    "opencode",
+                ),
+            )
+
+            config = json.loads((root / "opencode" / "opencode.json").read_text())
+            model = config["provider"]["agent-proxy"]["models"]["model"]
+            self.assertEqual(model["provider"], {"npm": "@ai-sdk/openai"})
 
     def test_render_removes_stale_proxy_configs_and_only_stages_selected_agent(
         self,
@@ -279,6 +302,12 @@ class AgentProxyTests(unittest.TestCase):
                         opencode["provider"]["agent-proxy"]["options"]["apiKey"],
                         "gateway-key",
                     )
+                    self.assertEqual(
+                        opencode["provider"]["agent-proxy"]["models"]["model"][
+                            "provider"
+                        ],
+                        {"npm": "@ai-sdk/openai"},
+                    )
                     self.assertEqual(opencode["model"], "agent-proxy/model")
                     return 0
 
@@ -384,6 +413,10 @@ class AgentProxyTests(unittest.TestCase):
             self.assertEqual(
                 opencode["provider"]["agent-proxy"]["options"]["apiKey"],
                 "gateway-key",
+            )
+            self.assertEqual(
+                opencode["provider"]["agent-proxy"]["models"]["selected"]["provider"],
+                {"npm": "@ai-sdk/openai"},
             )
             self.assertEqual(opencode["model"], "agent-proxy/selected")
 
