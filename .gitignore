@@ -20,3 +20,4 @@ dist/
 .devcontainer/
 # release state tracking
 .release-status/
+.DS_Store

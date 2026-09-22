@@ -5,6 +5,7 @@ import os
 import re
 import urllib.error
 from contextlib import redirect_stdout
+from email.message import Message
 from pathlib import Path
 from unittest import TestCase
 from unittest.mock import MagicMock, patch
@@ -155,7 +156,7 @@ class GatewayCompletionProbeTests(TestCase):
             "http://gateway.test",
             400,
             "Bad Request",
-            {},
+            Message(),
             io.BytesIO(
                 b'{"error": "Unsupported parameter max_tokens test-gateway-secret"}'
             ),
