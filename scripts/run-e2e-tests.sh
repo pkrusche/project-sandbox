@@ -297,7 +297,7 @@ if selected internet-proxy-smoke; then
     INTERNET_SMOKE_ARGS=(--runtime "$CONTAINER_RUNTIME" --base-image "$BASE_IMAGE")
     [ "$NO_BUILD" = 1 ] && INTERNET_SMOKE_ARGS+=(--no-build)
     [ "$KEEP" = 1 ] && INTERNET_SMOKE_ARGS+=(--keep)
-    for ca_cert in "${CA_CERTS[@]}"; do
+    for ca_cert in ${CA_CERTS[@]+"${CA_CERTS[@]}"}; do
       INTERNET_SMOKE_ARGS+=(--ca-cert "$ca_cert")
     done
     run_suite "internet-proxy-smoke" \
@@ -322,7 +322,7 @@ if selected internet-proxy-isolation; then
       )
       [ "$NO_BUILD" = 1 ] && INTERNET_AUDIT_ARGS+=(--no-build)
       [ "$KEEP" = 1 ] && INTERNET_AUDIT_ARGS+=(--keep)
-      for ca_cert in "${CA_CERTS[@]}"; do
+      for ca_cert in ${CA_CERTS[@]+"${CA_CERTS[@]}"}; do
         INTERNET_AUDIT_ARGS+=(--ca-cert "$ca_cert")
       done
       run_suite "internet-proxy-isolation" \
