@@ -6,6 +6,19 @@ EMAIL="${PROJECT_SANDBOX_USER_EMAIL:-}"
 
 {% include "_provision.sh.j2" %}
 
+# --node-npm: fill the sandbox-provided tmpfs at /workspace/node_modules from
+# the dependencies baked into the image. Copy only into an empty tmpfs mount so
+# this never writes into the host's node_modules through the /workspace bind.
+if [ -d /opt/node-project/node_modules ] \
+  && [ -d /workspace/node_modules ] \
+  && [ "$(stat -f -c %T /workspace/node_modules 2>/dev/null)" = "tmpfs" ] \
+  && [ -z "$(ls -A /workspace/node_modules)" ]; then
+  if ! cp -a /opt/node-project/node_modules/. /workspace/node_modules/; then
+    echo "ERROR: Could not populate /workspace/node_modules from the image." >&2
+    exit 1
+  fi
+fi
+
 if [ "${PROJECT_SANDBOX_NO_FIREWALL:-0}" != "1" ]; then
   if [ "${PROJECT_SANDBOX_QUIET:-0}" = "1" ]; then
     # Suppress the firewall banner, but capture output so a failure is still

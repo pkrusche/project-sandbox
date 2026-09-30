@@ -37,6 +37,48 @@ If the Internet proxy stops, ordinary Internet operations fail while a running A
 
 This feature intentionally provides no proxy lifecycle management, transparent interception, TLS interception itself, policy synchronization, or implicit AI/MCP rerouting. Docker and Apple `container` are the primary runtimes. Docker Compose is not part of the setup.
 
+## Web tests that need external hosts
+
+With `--node-npm`, dependencies and browsers are baked into the image, so
+ordinary builds and headless tests against a local dev server (`localhost`) need
+no network access. Tests that load external hosts (third-party APIs, CDNs, font
+or map tiles, staging environments) are blocked by the firewall. Prefer mocking
+them (for example Playwright's `page.route`) so tests stay hermetic. When a test
+really needs them, either allowlist the hosts directly:
+
+```bash
+project-sandbox --node-npm --extra-domain api.example.com --extra-domain cdn.example.com --agent bash /absolute/path/to/repo
+```
+
+or route through the Internet proxy, which then owns the destination policy:
+
+```bash
+project-sandbox --node-npm --internet-proxy http://127.0.0.1:18080 --runtime docker --agent bash /absolute/path/to/repo
+```
+
+`--extra-domain` pins IPs once at startup, which suits a few stable hosts; the
+proxy suits many or CDN-backed hosts. The sandbox sets `HTTP_PROXY`,
+`HTTPS_PROXY`, and `NO_PROXY`, which Node.js's built-in `fetch`/`http` honour
+only with `NODE_USE_ENV_PROXY=1` (other clients need a proxy agent). Browsers
+launched by Playwright do not read these variables; pass the proxy explicitly
+and keep the local dev server direct:
+
+```js
+// playwright.config.js
+export default {
+  use: {
+    proxy: process.env.HTTPS_PROXY
+      ? { server: process.env.HTTPS_PROXY, bypass: "localhost,127.0.0.1" }
+      : undefined,
+  },
+};
+```
+
+If the proxy intercepts TLS, add its CA with `--ca-cert` (below). Chromium on
+Linux reads extra trusted CAs from its NSS database (`~/.pki/nssdb`) rather than
+`/etc/ssl/certs`, so either import the CA there in the test setup or set
+`ignoreHTTPSErrors` on the browser context for proxied test runs.
+
 ## Injecting proxy CA certificates
 
 For a TLS-inspecting corporate proxy, supply its public CA certificate in PEM

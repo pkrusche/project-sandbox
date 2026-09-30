@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import json
 import re
 import ssl
 from collections.abc import Callable
@@ -212,6 +213,7 @@ _DOCKERIGNORE_PATTERNS = (
     ".venv",
     "venv",
     "node_modules",
+    "**/node_modules",
     "__pycache__",
     "*.pyc",
     ".pytest_cache",
@@ -225,11 +227,11 @@ _DOCKERIGNORE_PATTERNS = (
 def render_dockerignore(
     context_dir: Path, *, build_context: Path | None = None
 ) -> tuple[Path, ...]:
-    """Write build-ignore files scoped to the generated python-uv Dockerfile.
+    """Write build-ignore files scoped to a generated whole-project Dockerfile.
 
-    Call this *only* for the python-uv flow, where project-sandbox generates the
-    Dockerfile (`COPY . . && uv sync`) and therefore knows the excluded paths are
-    not build inputs. It is NOT used for user-supplied `--dockerfile` builds: that
+    Call this *only* for the python-uv/rust-cargo/node-npm flows, where
+    project-sandbox generates the Dockerfile and therefore knows the excluded
+    paths are not build inputs. It is NOT used for user-supplied `--dockerfile` builds: that
     Dockerfile may legitimately `COPY` a venv or `node_modules`, so imposing an
     ignore file the user did not write could silently break their build.
 
@@ -900,6 +902,82 @@ def render_rust_cargo_dockerfile(
             ),
         ]
     out = context_dir / "Dockerfile.rust-cargo"
+    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return out
+
+
+NODE_NPM_BASE_IMAGE = "debian:trixie-slim"
+NODE_NPM_PROJECT_DIR = "/opt/node-project"
+PLAYWRIGHT_BROWSERS_DIR = "/opt/ms-playwright"
+
+
+def render_node_npm_dockerfile(
+    context_dir: Path,
+    *,
+    lockfiles: list[str],
+    workspace_members: list[str] | None = None,
+    has_playwright: bool = False,
+) -> Path:
+    """Generate a Node.js/npm base Dockerfile with headless Chromium.
+
+    The stage body runs after the sandbox's own Node.js install (see
+    Dockerfile.j2), so npm/npx are available. Dependencies are installed with
+    ``npm ci`` from the manifests and lockfile only, into
+    /opt/node-project/node_modules: /workspace is a host bind mount at runtime,
+    and the entrypoint copies the tree into a tmpfs at /workspace/node_modules.
+    There is no ``COPY . .`` layer — npm has no "install the project itself"
+    step — so source edits never invalidate the dependency layer. A failing
+    ``npm ci`` fails the build.
+
+    lockfiles: the lockfile names present at the project root
+        (package-lock.json and/or npm-shrinkwrap.json).
+    workspace_members: relative paths of npm workspace members whose
+        package.json must be present for ``npm ci`` to resolve the workspace.
+    has_playwright: install Playwright's Chromium (with system deps) using the
+        project's own locked Playwright CLI.
+    """
+    lines = [
+        f"FROM {NODE_NPM_BASE_IMAGE}",
+        "",
+        "ARG AGENT_UID=1000",
+        "ARG AGENT_GID=1000",
+        "",
+        "# headless browser support: system Chromium and fonts",
+        (
+            "RUN apt-get update && apt-get install -y --no-install-recommends \\\n"
+            "    chromium fontconfig fonts-liberation fonts-noto-color-emoji \\\n"
+            "    && rm -rf /var/lib/apt/lists/*"
+        ),
+        "ENV CHROME_BIN=/usr/bin/chromium",
+        "ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium",
+        # Chrome for Testing has no linux/arm64 build, and Puppeteer's download
+        # would land under /root, which the agent cannot read.
+        "ENV PUPPETEER_SKIP_DOWNLOAD=true",
+        f"ENV PLAYWRIGHT_BROWSERS_PATH={PLAYWRIGHT_BROWSERS_DIR}",
+        "",
+        "# dependency layer: manifests and lockfile only (rebuilds only when they change)",
+        f"WORKDIR {NODE_NPM_PROJECT_DIR}",
+        "COPY " + " ".join(["package.json", *lockfiles]) + " ./",
+    ]
+    for member in workspace_members or []:
+        lines.append("COPY " + json.dumps([f"{member}/package.json", f"{member}/"]))
+    lines.append("RUN npm ci --no-audit --no-fund && du -sh node_modules")
+    if has_playwright:
+        lines += [
+            "",
+            "# Playwright's Chromium, matching the project's locked Playwright",
+            "RUN npx --no-install playwright install --with-deps chromium",
+        ]
+    lines += [
+        "",
+        (
+            f"RUN install -d {PLAYWRIGHT_BROWSERS_DIR}"
+            ' && chown -R "${AGENT_UID}:${AGENT_GID}" '
+            f"{NODE_NPM_PROJECT_DIR} {PLAYWRIGHT_BROWSERS_DIR}"
+        ),
+        "WORKDIR /workspace",
+    ]
+    out = context_dir / "Dockerfile.node-npm"
     out.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return out
 

@@ -2719,3 +2719,120 @@ class RendererTests(TestCase):
                 "NOPASSWD: /usr/local/bin/project-sandbox-init-firewall",
                 devcontainer_text,
             )
+
+
+class NodeNpmDockerfileTests(TestCase):
+    def _render(self, **kwargs) -> list[str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = dockerfile.render_node_npm_dockerfile(
+                Path(tmp), lockfiles=["package-lock.json"], **kwargs
+            )
+            self.assertEqual(out.name, "Dockerfile.node-npm")
+            return out.read_text(encoding="utf-8").splitlines()
+
+    def _index(self, lines: list[str], fragment: str) -> int:
+        return next(i for i, line in enumerate(lines) if fragment in line)
+
+    def test_plain_project_layers_and_ordering(self) -> None:
+        lines = self._render()
+        text = "\n".join(lines)
+        self.assertEqual(lines[0], "FROM debian:trixie-slim")
+        self.assertIn(
+            "chromium fontconfig fonts-liberation fonts-noto-color-emoji", text
+        )
+        for env in (
+            "ENV CHROME_BIN=/usr/bin/chromium",
+            "ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium",
+            "ENV PUPPETEER_SKIP_DOWNLOAD=true",
+            "ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright",
+        ):
+            self.assertIn(env, lines)
+        self.assertNotIn("ENV CI", text)
+        self.assertNotIn("playwright install", text)
+        # Manifests-only dependency layer; no whole-project copy.
+        self.assertNotIn("COPY . .", text)
+        order = [
+            self._index(lines, "apt-get install"),
+            lines.index("WORKDIR /opt/node-project"),
+            lines.index("COPY package.json package-lock.json ./"),
+            self._index(lines, "RUN npm ci"),
+            self._index(lines, "chown -R"),
+            lines.index("WORKDIR /workspace"),
+        ]
+        self.assertEqual(order, sorted(order))
+        self.assertEqual(lines[-1], "WORKDIR /workspace")
+        chown = lines[self._index(lines, "chown -R")]
+        self.assertIn('"${AGENT_UID}:${AGENT_GID}"', chown)
+        self.assertIn("/opt/node-project /opt/ms-playwright", chown)
+        # npm ci failure must fail the build (no "|| true").
+        self.assertNotIn("|| true", lines[self._index(lines, "RUN npm ci")])
+
+    def test_workspace_members_copied_before_npm_ci(self) -> None:
+        lines = self._render(workspace_members=["packages/a", "apps/my web"])
+        a = lines.index('COPY ["packages/a/package.json", "packages/a/"]')
+        web = lines.index('COPY ["apps/my web/package.json", "apps/my web/"]')
+        ci = self._index(lines, "RUN npm ci")
+        self.assertLess(lines.index("COPY package.json package-lock.json ./"), a)
+        self.assertLess(max(a, web), ci)
+
+    def test_playwright_install_after_npm_ci_before_chown(self) -> None:
+        lines = self._render(has_playwright=True)
+        install = lines.index(
+            "RUN npx --no-install playwright install --with-deps chromium"
+        )
+        self.assertLess(self._index(lines, "RUN npm ci"), install)
+        self.assertLess(install, self._index(lines, "chown -R"))
+
+    def test_both_lockfiles_copied(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            text = dockerfile.render_node_npm_dockerfile(
+                Path(tmp), lockfiles=["npm-shrinkwrap.json", "package-lock.json"]
+            ).read_text()
+        self.assertIn(
+            "COPY package.json npm-shrinkwrap.json package-lock.json ./", text
+        )
+
+    def test_entrypoint_populates_node_modules_only_into_empty_tmpfs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            text = dockerfile.render_entrypoint(Path(tmp)).read_text()
+        block = text[text.index("/opt/node-project/node_modules") - 200 :]
+        self.assertIn("stat -f -c %T /workspace/node_modules", block)
+        self.assertIn('= "tmpfs"', block)
+        self.assertIn('[ -z "$(ls -A /workspace/node_modules)" ]', block)
+        self.assertIn(
+            "cp -a /opt/node-project/node_modules/. /workspace/node_modules/", block
+        )
+        # Populated before the agent (and the firewall) start.
+        self.assertLess(
+            text.index("cp -a /opt/node-project"),
+            text.index("project-sandbox-init-firewall"),
+        )
+
+    def test_entrypoint_node_modules_guard_skips_non_tmpfs(self) -> None:
+        # Run just the guard against a plain (non-tmpfs) directory: it must not
+        # copy, so a host node_modules seen through the bind is never written.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            text = dockerfile.render_entrypoint(root).read_text()
+            start = text.index("if [ -d /opt/node-project/node_modules ]")
+            end = text.index("\nfi\n", start) + 4
+            src = root / "src"
+            dst = root / "dst"
+            (src / "pkg").mkdir(parents=True)
+            dst.mkdir()
+            script = (
+                text[start:end]
+                .replace("/opt/node-project/node_modules", str(src))
+                .replace("/workspace/node_modules", str(dst))
+            )
+            fs_type = subprocess.run(
+                ["stat", "-f", "-c", "%T", str(dst)],
+                capture_output=True,
+                text=True,
+                check=False,
+            ).stdout.strip()
+            if fs_type == "tmpfs":
+                self.skipTest("temporary directory is on tmpfs")
+            proc = subprocess.run(["sh", "-c", "set -eu\n" + script], check=False)
+            self.assertEqual(proc.returncode, 0)
+            self.assertEqual(list(dst.iterdir()), [])

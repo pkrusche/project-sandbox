@@ -72,6 +72,13 @@ Build on top of an existing project Dockerfile:
 project-sandbox /absolute/path/to/repo --dockerfile /absolute/path/to/repo/Dockerfile
 ```
 
+Web projects with npm and headless browser tests can use a generated image
+(see [Node.js + npm projects](docs/usage.md#nodejs--npm-projects)):
+
+```bash
+project-sandbox --node-npm --agent claude /absolute/path/to/repo
+```
+
 ## Documentation
 
 - [Usage guide](docs/usage.md)
