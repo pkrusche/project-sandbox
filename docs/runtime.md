@@ -32,6 +32,13 @@ Given `project-sandbox --agent claude /path/to/repo python:3.12-slim`, it also:
    credential policy. `--agent bash` is intentionally multi-agent and receives
    every detected forwarded credential.
 
+Interactive `--agent codex` launches with `--no-daemon` to bypass Codex's shared
+background app server, which can fail to start inside the sandbox. Model, effort,
+and forwarded arguments still apply. Headless runs continue to use `codex exec`.
+When launching Codex manually from a sandbox shell or devcontainer, use
+`codex --no-daemon` as well. Both generated Codex configs set
+`check_for_update_on_startup = false`; update Codex by rebuilding the image.
+
 With `--agent pi --pi-ollama`, a runtime networking adapter is selected before
 step 4. Native host-loopback forwarding is preferred; local Linux bridge modes
 start a short-lived `socat` proxy on the exact bridge address. Agent-proxy and

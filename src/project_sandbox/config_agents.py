@@ -285,7 +285,7 @@ def _codex_config_toml(approval_policy: str) -> str:
     return (
         f'approval_policy = "{approval_policy}"\n'
         'sandbox_mode = "danger-full-access"\n'
-        "disable_update_check = true\n"
+        "check_for_update_on_startup = false\n"
         "\n"
         "[sandbox_workspace_write]\n"
         "network_access = true\n"

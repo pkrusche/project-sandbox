@@ -2,6 +2,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import tomllib
 from pathlib import Path
 from unittest import TestCase
 from unittest.mock import patch
@@ -16,6 +17,53 @@ def _credentials_root(root: Path):
 
 
 class RendererTests(TestCase):
+    def test_codex_configs_disable_startup_update_check(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_agents.render(Path(tmp))
+            for agent in ("codex", "codex-devcontainer"):
+                config = tomllib.loads(
+                    (Path(tmp) / agent / "config.toml").read_text(encoding="utf-8")
+                )
+                self.assertIs(config["check_for_update_on_startup"], False)
+                self.assertNotIn("disable_update_check", config)
+
+    def test_codex_interactive_startup_bypasses_daemon(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            entrypoint = dockerfile.render_entrypoint(Path(tmp))
+            text = entrypoint.read_text(encoding="utf-8")
+            # Execute the rendered dispatch with a fake Codex, avoiding provisioning.
+            dispatch = text[text.index('case "${1:-bash}" in'):]
+            bindir = Path(tmp) / "bin"
+            bindir.mkdir()
+            fake_codex = bindir / "codex"
+            fake_codex.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
+            fake_codex.chmod(0o755)
+            script = Path(tmp) / "dispatch.sh"
+            script.write_text(
+                'set -eu\nlog_project_sandbox_agent_command() { :; }\n' + dispatch
+            )
+            result = subprocess.run(
+                [
+                    "/bin/sh", str(script), "project-sandbox-run", "codex",
+                    "resume", "--last",
+                ],
+                env={
+                    "PATH": f"{bindir}:/usr/bin:/bin",
+                    "PROJECT_SANDBOX_MODEL": "test-model",
+                    "PROJECT_SANDBOX_EFFORT": "high",
+                },
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            self.assertEqual(
+                result.stdout.splitlines(),
+                [
+                    "--model", "test-model", "-c", 'model_reasoning_effort="high"',
+                    "--no-daemon", "resume", "--last",
+                ],
+            )
+
     def test_chroot_script_renders_layout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = chroot.render(Path(tmp))

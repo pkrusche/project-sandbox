@@ -74,6 +74,8 @@ case "${1:-bash}" in
         ;;
       codex)
         shift
+        # Run in-process: the shared background server can fail inside the sandbox.
+        set -- --no-daemon "$@"
         if [ -n "${PROJECT_SANDBOX_EFFORT:-}" ]; then
           set -- -c "model_reasoning_effort=\"$PROJECT_SANDBOX_EFFORT\"" "$@"
         fi
