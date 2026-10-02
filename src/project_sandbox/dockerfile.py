@@ -961,7 +961,10 @@ def render_node_npm_dockerfile(
     ]
     for member in workspace_members or []:
         lines.append("COPY " + json.dumps([f"{member}/package.json", f"{member}/"]))
-    lines.append("RUN npm ci --no-audit --no-fund && du -sh node_modules")
+    # npm leaves node_modules absent when the project has no dependencies.
+    lines.append(
+        "RUN npm ci --no-audit --no-fund && mkdir -p node_modules && du -sh node_modules"
+    )
     if has_playwright:
         lines += [
             "",

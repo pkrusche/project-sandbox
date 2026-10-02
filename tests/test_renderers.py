@@ -2767,6 +2767,23 @@ class NodeNpmDockerfileTests(TestCase):
         # npm ci failure must fail the build (no "|| true").
         self.assertNotIn("|| true", lines[self._index(lines, "RUN npm ci")])
 
+    def test_dependency_layer_handles_missing_node_modules(self) -> None:
+        lines = self._render()
+        command = lines[self._index(lines, "RUN npm ci")].removeprefix("RUN ")
+        for npm_status in (0, 42):
+            with self.subTest(npm_status=npm_status), tempfile.TemporaryDirectory() as tmp:
+                # Simulate npm installing no packages, without requiring Node.
+                result = subprocess.run(
+                    ["bash", "-c", f"npm() {{ return {npm_status}; }}; {command}"],
+                    cwd=tmp,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.returncode, npm_status)
+                self.assertEqual((Path(tmp) / "node_modules").is_dir(), npm_status == 0)
+                if npm_status == 0:
+                    self.assertIn("node_modules", result.stdout)
+
     def test_workspace_members_copied_before_npm_ci(self) -> None:
         lines = self._render(workspace_members=["packages/a", "apps/my web"])
         a = lines.index('COPY ["packages/a/package.json", "packages/a/"]')
