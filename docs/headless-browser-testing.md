@@ -17,10 +17,14 @@ Keep `package.json` and `package-lock.json` in version control. If the project
 already uses Playwright, extend its existing configuration and tests instead of
 adding a second setup.
 
-At image build time, project-sandbox runs `npm ci` and detects Playwright in
-the lockfile. It installs the matching Chromium and system dependencies into
-the image. At runtime, `PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright` selects
-those browsers. Do not run `playwright install` inside a running sandbox.
+At image build time, project-sandbox runs `npm ci` and installs system Chromium
+at `/usr/bin/chromium`. It also installs Playwright's matching Chromium when
+Playwright is detected in the lockfile. This guide explicitly selects the
+system executable through `launchOptions.executablePath`.
+`CHROME_BIN` does not configure Playwright, and
+`PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright` controls its bundled browser lookup,
+not the system executable. Do not run `playwright install` inside a running
+sandbox.
 
 If you add or upgrade dependencies, exit the current sandbox and start a new
 session to rebuild from the updated manifests. Runtime `node_modules` is
@@ -44,6 +48,10 @@ export default defineConfig({
   use: {
     browserName: 'chromium',
     headless: true,
+    launchOptions: {
+      executablePath: '/usr/bin/chromium',
+      args: ['--no-sandbox'],
+    },
     baseURL: 'http://127.0.0.1:5173',
     screenshot: 'only-on-failure',
     trace: 'retain-on-failure',
@@ -65,9 +73,10 @@ and [configuration guide](https://playwright.dev/docs/test-configuration).
 
 Use Chromium only: the sandbox does not preinstall Playwright Firefox or
 WebKit. Avoid `channel: 'chrome'`, which selects a separate branded browser.
-Playwright disables Chromium's browser sandbox by default, as required inside
-this container; keep that default. For Puppeteer or another launcher using
-the system `/usr/bin/chromium`, pass `--no-sandbox` explicitly.
+The example explicitly launches `/usr/bin/chromium` with `--no-sandbox`, as
+required inside this container. See Playwright's
+[launch options](https://playwright.dev/docs/api/class-browsertype#browser-type-launch).
+This path is specific to the Linux sandbox; adapt it for host-side runs.
 
 Add an npm script to the existing `scripts` object in `package.json`:
 
@@ -112,10 +121,15 @@ Codex reads repository instructions automatically; see the
 - Run Chromium headlessly using playwright.config.ts. Its webServer starts
   the app at http://127.0.0.1:5173, waits for readiness, and stops it afterward.
   Do not start a second server or use a server on the host.
+- Set use.launchOptions.executablePath to /usr/bin/chromium and
+  use.launchOptions.args to ['--no-sandbox'] in playwright.config.ts.
+  For standalone Playwright scripts, pass executablePath: '/usr/bin/chromium',
+  headless: true, and args: ['--no-sandbox'] to chromium.launch().
 - Dependencies and Chromium are preinstalled by project-sandbox --node-npm.
   Use the existing npm script; do not download packages or browsers at runtime.
-  Keep PLAYWRIGHT_BROWSERS_PATH and Playwright's default Chromium sandbox
-  setting. Do not use headed mode, UI mode, Chrome channels, Firefox, or WebKit.
+  CHROME_BIN and PLAYWRIGHT_BROWSERS_PATH do not select the system executable
+  for Playwright; keep the explicit executablePath above. Do not use headed
+  mode, UI mode, Chrome channels, Firefox, or WebKit.
 - Test the changed user flow and relevant error states with observable
   assertions. Check unexpected browser console errors and uncaught page errors
   when relevant. Use mocked external APIs and local assets so tests work with
@@ -157,10 +171,11 @@ To verify the setup manually, start with `--agent bash` and run
 
 ## Troubleshooting
 
-- **Browser executable missing:** ensure `@playwright/test` is in the root npm
-  lockfile and restart the sandbox after dependency changes. Use `--force-build`
-  if you need to rebuild an existing image. Do not override
-  `PLAYWRIGHT_BROWSERS_PATH` or select a browser channel.
+- **Browser executable missing:** check that `/usr/bin/chromium` exists and
+  `use.launchOptions.executablePath` selects it. A missing executable under
+  `/opt/ms-playwright` indicates the explicit launch option is missing or
+  overridden. Ensure you started with `--node-npm`; use `--force-build` if you
+  need to rebuild an existing image. Restart after dependency changes.
 - **Server timeout or port conflict:** check the configured npm command, URL,
   and port. The example's Vite-specific flags do not apply to every framework.
 - **External resources fail:** mock third-party calls and serve assets locally.

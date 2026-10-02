@@ -33,7 +33,7 @@ class RendererTests(TestCase):
             entrypoint = dockerfile.render_entrypoint(Path(tmp))
             text = entrypoint.read_text(encoding="utf-8")
             # Execute the rendered dispatch with a fake Codex, avoiding provisioning.
-            dispatch = text[text.index('case "${1:-bash}" in'):]
+            dispatch = text[text.index('case "${1:-bash}" in') :]
             bindir = Path(tmp) / "bin"
             bindir.mkdir()
             fake_codex = bindir / "codex"
@@ -41,12 +41,16 @@ class RendererTests(TestCase):
             fake_codex.chmod(0o755)
             script = Path(tmp) / "dispatch.sh"
             script.write_text(
-                'set -eu\nlog_project_sandbox_agent_command() { :; }\n' + dispatch
+                "set -eu\nlog_project_sandbox_agent_command() { :; }\n" + dispatch
             )
             result = subprocess.run(
                 [
-                    "/bin/sh", str(script), "project-sandbox-run", "codex",
-                    "resume", "--last",
+                    "/bin/sh",
+                    str(script),
+                    "project-sandbox-run",
+                    "codex",
+                    "resume",
+                    "--last",
                 ],
                 env={
                     "PATH": f"{bindir}:/usr/bin:/bin",
@@ -60,8 +64,13 @@ class RendererTests(TestCase):
             self.assertEqual(
                 result.stdout.splitlines(),
                 [
-                    "--model", "test-model", "-c", 'model_reasoning_effort="high"',
-                    "--no-daemon", "resume", "--last",
+                    "--model",
+                    "test-model",
+                    "-c",
+                    'model_reasoning_effort="high"',
+                    "--no-daemon",
+                    "resume",
+                    "--last",
                 ],
             )
 
@@ -2772,7 +2781,10 @@ class NodeNpmDockerfileTests(TestCase):
         lines = self._render()
         command = lines[self._index(lines, "RUN npm ci")].removeprefix("RUN ")
         for npm_status in (0, 42):
-            with self.subTest(npm_status=npm_status), tempfile.TemporaryDirectory() as tmp:
+            with (
+                self.subTest(npm_status=npm_status),
+                tempfile.TemporaryDirectory() as tmp,
+            ):
                 # Simulate npm installing no packages, without requiring Node.
                 result = subprocess.run(
                     ["bash", "-c", f"npm() {{ return {npm_status}; }}; {command}"],
@@ -2817,9 +2829,7 @@ class NodeNpmDockerfileTests(TestCase):
         self.assertIn("stat -f -c %T /workspace/node_modules", block)
         self.assertIn('= "tmpfs"', block)
         self.assertIn('[ -z "$(ls -A /workspace/node_modules)" ]', block)
-        self.assertIn(
-            "-exec cp -a -t /workspace/node_modules/ -- {} +", block
-        )
+        self.assertIn("-exec cp -a -t /workspace/node_modules/ -- {} +", block)
         # Populated before the agent (and the firewall) start.
         self.assertLess(
             text.index("-exec cp -a"),
@@ -2873,7 +2883,8 @@ class NodeNpmDockerfileTests(TestCase):
                         self.assertEqual((dst / ".package-lock.json").read_text(), "{}")
                         self.assertTrue((dst / ".bin" / "cli").is_symlink())
                         self.assertEqual(
-                            (dst / "package with spaces" / "cli").stat().st_mode & 0o777,
+                            (dst / "package with spaces" / "cli").stat().st_mode
+                            & 0o777,
                             0o755,
                         )
                     else:
