@@ -22,7 +22,8 @@
 
 - [ ] 4.1 Emit the `node_modules` tmpfs mount (with the options chosen in 1.1) and `--shm-size` (default `2g` under `--node-npm`) in `container_cli.py` for Docker, Podman, and Apple container; create the host mount target only if 1.1 showed it is required; verify with argv-construction tests per runtime and a dry-run output test.
 - [ ] 4.2 Extend `entrypoint.sh.j2` to copy `/opt/node-project/node_modules` into `/workspace/node_modules` only when it is an empty mount point (plus the sudoers helper if 1.1 requires it); verify with a rendered-template test and a manual session showing the host `node_modules` is untouched.
-- [ ] 4.3 Run an end-to-end session on Docker and on Apple container: `npm run build` with Vite writes `.vite` caches, `npx playwright test` passes, and a second session sees fresh dependencies; verify by recording results in the change notes.
+- [x] 4.3 Validate the Node/npm sandbox with a real application repository, including startup and headless browser testing with Playwright explicitly launching `/usr/bin/chromium`; record the user-reported validation and resulting fixes in the change notes.
+- [ ] 4.4 Complete the runtime-specific end-to-end matrix on Docker and Apple container: `npm run build` with Vite writes `.vite` caches, `npx playwright test` passes with the firewall enabled, host `node_modules` stays untouched, and a second session sees fresh dependencies; record the runtime and results for each check in the change notes.
 
 ## 5. Documentation
 
@@ -38,5 +39,13 @@
 ## Implementation notes
 
 - 4.1 and 4.2 are implemented and unit-tested, but stay open until 1.1 is done. Docker/Podman use `--tmpfs /workspace/node_modules:rw,exec,mode=1777`; Apple container uses a bare `--tmpfs /workspace/node_modules` and `--shm-size`, neither verified yet. The CLI does not create a host `node_modules` mount target. The entrypoint copies only into an empty mount whose `stat -f` type is `tmpfs`, and fails the session if the copy fails (for example when the tmpfs is not agent-writable). There is no sudoers helper yet.
-- 1.1, 3.3, and 4.3 need macOS with Apple container and/or a Docker host with network access; the implementation environment had neither.
+- 1.1, 3.3, and 4.4 need macOS with Apple container and/or a Docker host with network access; the implementation environment had neither. The real-repository validation below does not specify the runtime, firewall configuration, shared-memory measurements, cache writes, or second-session checks, so those specific validations remain open.
 - Base image chosen for the design's open question: `debian:trixie-slim`. Confirm during 3.3 that Playwright's `install --with-deps` supports it on arm64.
+
+## Real-repository validation (2026-10-02)
+
+- The user confirmed that the sandbox starts after the dependency-copy fix and subsequently reported testing it with a real repository.
+- Fresh projects with no dependencies needed the image build to create an empty `node_modules` after successful `npm ci`.
+- Copying the source directory itself with `cp -a` failed when preserving timestamps on the root-owned tmpfs. The entrypoint now copies only its immediate contents with `find` and `cp -a`, retaining package metadata and symlinks without modifying the mount root's metadata.
+- The user's end-to-end test showed the documented default Playwright configuration did not select system Chromium. The setup guide and copyable application `AGENTS.md` now explicitly require `executablePath: '/usr/bin/chromium'` and `args: ['--no-sandbox']`.
+- Setup, repeatable tests, prompts, and application instructions are documented in `docs/headless-browser-testing.md`.
