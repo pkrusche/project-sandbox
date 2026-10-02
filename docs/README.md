@@ -9,6 +9,8 @@ This directory contains the detailed project-sandbox documentation.
 - [Usage guide](usage.md) - installation, quick start, custom Dockerfiles,
   devcontainer setup, unsupervised sessions, runtime selection, and dependency
   pin updates.
+- [Headless browser testing](headless-browser-testing.md) - Playwright setup,
+  Codex prompts, and copyable application `AGENTS.md` instructions.
 - [Generated files and runtime behavior](runtime.md) - end-to-end flow, file
   layout, generated image tags, OpenSpec, credential staging, and workspace
   masking.

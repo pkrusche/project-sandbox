@@ -217,6 +217,9 @@ uv run project-sandbox --node-npm --agent claude /absolute/path/to/repo
 The image bakes in the project's dependencies and a headless browser so the
 agent can build and run browser tests with the runtime firewall enabled:
 
+For a complete Playwright setup and copyable Codex `AGENTS.md` instructions,
+see [Headless browser testing](headless-browser-testing.md).
+
 - **Dependencies:** `npm ci` runs at image build time from `package.json`, the
   lockfile, and npm workspace member `package.json` files only, into
   `/opt/node-project/node_modules`. Source edits do not invalidate this layer;
