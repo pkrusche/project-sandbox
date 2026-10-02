@@ -2791,6 +2791,7 @@ class NodeNpmDockerfileTests(TestCase):
                     cwd=tmp,
                     capture_output=True,
                     text=True,
+                    check=False,
                 )
                 self.assertEqual(result.returncode, npm_status)
                 self.assertEqual((Path(tmp) / "node_modules").is_dir(), npm_status == 0)
