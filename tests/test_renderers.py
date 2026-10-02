@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -2817,13 +2818,66 @@ class NodeNpmDockerfileTests(TestCase):
         self.assertIn('= "tmpfs"', block)
         self.assertIn('[ -z "$(ls -A /workspace/node_modules)" ]', block)
         self.assertIn(
-            "cp -a /opt/node-project/node_modules/. /workspace/node_modules/", block
+            "-exec cp -a -t /workspace/node_modules/ -- {} +", block
         )
         # Populated before the agent (and the firewall) start.
         self.assertLess(
-            text.index("cp -a /opt/node-project"),
+            text.index("-exec cp -a"),
             text.index("project-sandbox-init-firewall"),
         )
+
+    def test_entrypoint_populates_root_owned_node_modules(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            root.chmod(0o755)
+            text = dockerfile.render_entrypoint(root).read_text()
+            start = text.index("if [ -d /opt/node-project/node_modules ]")
+            end = text.index("\nfi\n", start) + 4
+            src = root / "src"
+            dst = root / "dst"
+            src.mkdir()
+            dst.mkdir()
+            dst.chmod(0o1777)
+            script = (
+                text[start:end]
+                .replace("/opt/node-project/node_modules", str(src))
+                .replace("/workspace/node_modules", str(dst))
+                .replace(f"stat -f -c %T {dst} 2>/dev/null", "printf tmpfs")
+            )
+            # Root-run tests reproduce the container's unprivileged user and
+            # root-owned writable mount; otherwise exercise the same copy.
+            user = 65534 if os.geteuid() == 0 else os.geteuid()
+            for populated in (False, True):
+                with self.subTest(populated=populated):
+                    if populated:
+                        (src / "package with spaces").mkdir()
+                        binary = src / "package with spaces" / "cli"
+                        binary.write_text("#!/bin/sh\nexit 0\n")
+                        binary.chmod(0o755)
+                        (src / ".bin").mkdir()
+                        (src / ".bin" / "cli").symlink_to("../package with spaces/cli")
+                        (src / ".package-lock.json").write_text("{}")
+                        if os.geteuid() == 0:
+                            for path in (src, *src.rglob("*")):
+                                os.chown(path, user, user, follow_symlinks=False)
+                    result = subprocess.run(
+                        ["sh", "-c", "set -eu\n" + script],
+                        user=user,
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(dst.stat().st_mode & 0o7777, 0o1777)
+                    if populated:
+                        self.assertEqual((dst / ".package-lock.json").read_text(), "{}")
+                        self.assertTrue((dst / ".bin" / "cli").is_symlink())
+                        self.assertEqual(
+                            (dst / "package with spaces" / "cli").stat().st_mode & 0o777,
+                            0o755,
+                        )
+                    else:
+                        self.assertEqual(list(dst.iterdir()), [])
 
     def test_entrypoint_node_modules_guard_skips_non_tmpfs(self) -> None:
         # Run just the guard against a plain (non-tmpfs) directory: it must not

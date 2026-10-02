@@ -13,7 +13,10 @@ if [ -d /opt/node-project/node_modules ] \
   && [ -d /workspace/node_modules ] \
   && [ "$(stat -f -c %T /workspace/node_modules 2>/dev/null)" = "tmpfs" ] \
   && [ -z "$(ls -A /workspace/node_modules)" ]; then
-  if ! cp -a /opt/node-project/node_modules/. /workspace/node_modules/; then
+  # The mount root belongs to root: copying the source directory itself would
+  # try to preserve its metadata there and fail for the sandbox user.
+  if ! find /opt/node-project/node_modules -mindepth 1 -maxdepth 1 \
+    -exec cp -a -t /workspace/node_modules/ -- {} +; then
     echo "ERROR: Could not populate /workspace/node_modules from the image." >&2
     exit 1
   fi
