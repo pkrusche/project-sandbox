@@ -14,6 +14,7 @@
 #  10. internet-proxy-isolation — routing/bypass/failure audit (explicit opt-in)
 #  11. agent-proxy-isolation    — gateway-only network/credential audit (explicit opt-in)
 #  12. agent-proxy              — real Pi/OpenCode gateway calls (explicit opt-in)
+#  13. node-npm                 — headless Playwright and ephemeral npm dependencies
 #
 # The console shows one progress line per suite. Each suite's output is captured
 # in its own temp log file; a failing suite's log is kept and its path reported,
@@ -56,6 +57,7 @@ SUITES=(
   dockerfile-tamper
   timeout-teardown
   python-uv
+  node-npm
   pi-ollama
   internet-proxy-smoke
   internet-proxy-isolation
@@ -272,6 +274,17 @@ if selected python-uv; then
     run_suite "python-uv" "$ROOT/scripts/e2e-python-uv.sh" "${PYTHON_UV_ARGS[@]}"
   else
     skip_suite "python-uv" "select a container runtime without --no-build"
+  fi
+fi
+
+# Node/npm builds its own image and requires a real runtime and host npm.
+if selected node-npm; then
+  if [ -n "$CONTAINER_RUNTIME" ] && [ "$NO_BUILD" = 0 ] && command -v npm >/dev/null 2>&1; then
+    NODE_NPM_ARGS=(--runtime "$CONTAINER_RUNTIME")
+    [ "$KEEP" = 1 ] && NODE_NPM_ARGS+=(--keep)
+    run_suite "node-npm" "$ROOT/scripts/e2e-node-npm.sh" "${NODE_NPM_ARGS[@]}"
+  else
+    skip_suite "node-npm" "requires host npm and a container runtime without --no-build"
   fi
 fi
 

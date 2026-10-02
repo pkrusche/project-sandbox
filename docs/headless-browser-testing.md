@@ -169,6 +169,12 @@ From a project-sandbox source checkout, prefix the command with `uv run`.
 To verify the setup manually, start with `--agent bash` and run
 `npm run test:e2e` inside the container.
 
+For a self-contained smoke test from a project-sandbox source checkout, run
+`./scripts/e2e-node-npm.sh --runtime docker --keep` (or use
+`--runtime apple-container`). It creates the npm workdir and Playwright tests,
+then runs two sandbox sessions. See the [development guide](development.md)
+for prerequisites and the checks performed.
+
 ## Troubleshooting
 
 - **Browser executable missing:** check that `/usr/bin/chromium` exists and

@@ -82,6 +82,23 @@ teardown when a real runtime is selected, and availability-gated Ollama checks. 
 to run the gateway-only network/credential isolation audit followed by two
 billable Pi/OpenCode LLM requests.
 
+The Node/npm smoke script creates a minimal npm workdir, resolves and locks
+`@playwright/test` on the host, builds the sandbox, and runs headless tests with
+system Chromium and the firewall enabled. It checks page rendering and clicks,
+writable/executable `node_modules`, host-directory isolation, and fresh
+dependencies in a second session. It uses a Bash agent without AI credentials.
+Requires host npm, uv, build-time Internet access, and a running image-based
+runtime:
+
+```bash
+./scripts/e2e-node-npm.sh --runtime apple-container --keep
+./scripts/e2e-node-npm.sh --runtime docker
+./scripts/run-e2e-tests.sh --only node-npm --runtime docker --keep
+```
+
+Workdirs live under `.project-sandbox/e2e/`. Failures retain the workdir for
+debugging; `--keep` also retains successful runs and Playwright screenshots.
+
 By default every suite that is available on the host runs. To iterate on a
 single one, pass `--only SUITE`; `--list` prints the accepted suite names:
 
