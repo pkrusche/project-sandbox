@@ -3,6 +3,7 @@ import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -5707,10 +5708,21 @@ def _make_npm_project(
     package_json: dict | None = None,
     lockfile: str | None = "package-lock.json",
     lock_packages: dict | None = None,
+    workspace_members: tuple[str, ...] = (),
 ) -> Path:
     root.mkdir(parents=True, exist_ok=True)
+    manifest = package_json or {"name": "demo", "version": "1.0.0"}
+    packages = dict(lock_packages or {})
+    for member in workspace_members:
+        member_path = root / member
+        member_path.mkdir(parents=True)
+        name = member.replace("/", "-")
+        member_manifest = {"name": name, "version": "1.0.0"}
+        (member_path / "package.json").write_text(json.dumps(member_manifest))
+        packages[member] = member_manifest
+        packages[f"node_modules/{name}"] = {"resolved": member, "link": True}
     (root / "package.json").write_text(
-        json.dumps(package_json or {"name": "demo", "version": "1.0.0"}),
+        json.dumps(manifest),
         encoding="utf-8",
     )
     if lockfile is not None:
@@ -5719,7 +5731,7 @@ def _make_npm_project(
                 {
                     "name": "demo",
                     "lockfileVersion": 3,
-                    "packages": {"": {"name": "demo"}, **(lock_packages or {})},
+                    "packages": {"": manifest, **packages},
                 }
             ),
             encoding="utf-8",
@@ -5860,49 +5872,239 @@ class NodeNpmFlagTests(TestCase):
 
     # --- workspace detection ---
 
-    def test_detect_npm_workspaces_array_form_with_globs_and_negation(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            project = _make_npm_project(
-                Path(tmp),
-                package_json={
-                    "name": "root",
-                    "workspaces": ["packages/*", "apps/web", "!packages/skip"],
+    def test_workspaces_use_locked_paths_for_npm_patterns(self) -> None:
+        declarations = (
+            ["packages/{a,b}"],
+            ["packages/@(a|b)"],
+            ["packages/*", "!packages/a", "packages/a"],
+            {"packages": ["packages/**"]},
+        )
+        for declaration in declarations:
+            with (
+                self.subTest(declaration=declaration),
+                tempfile.TemporaryDirectory() as tmp,
+            ):
+                project = _make_npm_project(
+                    Path(tmp),
+                    package_json={"name": "root", "workspaces": declaration},
+                    workspace_members=("packages/a", "packages/b"),
+                )
+                # Unlocked directories and installed dependencies are not members.
+                (project / "packages/unlocked").mkdir()
+                (project / "packages/unlocked/package.json").write_text("{}")
+                self.assertEqual(
+                    cli._detect_npm_workspaces(project, project / "package-lock.json"),
+                    ["packages/a", "packages/b"],
+                )
+
+    def test_workspace_lockfile_validation(self) -> None:
+        cases = (
+            ({"lockfileVersion": 1}, "version 2 or 3"),
+            ({"lockfileVersion": 3, "packages": {}}, "missing root package metadata"),
+            (
+                {"lockfileVersion": 3, "packages": {"": {"workspaces": ["old/*"]}}},
+                "stale root workspace declarations",
+            ),
+            (
+                {
+                    "lockfileVersion": 3,
+                    "packages": {
+                        "": {"workspaces": ["packages/*"]},
+                        "packages/missing": {},
+                    },
                 },
-            )
-            for member in ("packages/a", "packages/b", "packages/skip", "apps/web"):
-                (project / member).mkdir(parents=True)
-                (project / member / "package.json").write_text("{}", encoding="utf-8")
-            # A matching directory without package.json is not a member.
-            (project / "packages" / "no-manifest").mkdir()
-            # A matching file is not a member.
-            (project / "packages" / "README.md").write_text("", encoding="utf-8")
-            members = cli._detect_npm_workspaces(project)
-        self.assertEqual(members, ["apps/web", "packages/a", "packages/b"])
+                "missing local package manifest",
+            ),
+            (
+                {
+                    "lockfileVersion": 3,
+                    "packages": {
+                        "": {"workspaces": ["packages/*"]},
+                        "node_modules/missing": {
+                            "link": True,
+                            "resolved": "packages/missing",
+                        },
+                    },
+                },
+                "missing local package metadata",
+            ),
+        )
+        for locked, error in cases:
+            with self.subTest(error=error), tempfile.TemporaryDirectory() as tmp:
+                project = _make_npm_project(
+                    Path(tmp),
+                    package_json={"workspaces": ["packages/*"]},
+                )
+                lockfile = project / "package-lock.json"
+                lockfile.write_text(json.dumps(locked))
+                for dry_run in ([], ["--dry-run"]):
+                    self._assert_rejected(
+                        [*dry_run, "--node-npm", str(project)],
+                        project,
+                        error,
+                        "npm install",
+                    )
+                    self.assertFalse(
+                        (project / ".project-sandbox/Dockerfile.node-npm").exists()
+                    )
 
-    def test_detect_npm_workspaces_object_form(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            project = _make_npm_project(
-                Path(tmp),
-                package_json={"workspaces": {"packages": ["libs/**/pkg"]}},
-            )
-            (project / "libs" / "x" / "pkg").mkdir(parents=True)
-            (project / "libs" / "x" / "pkg" / "package.json").write_text("{}")
-            members = cli._detect_npm_workspaces(project)
-        self.assertEqual(members, ["libs/x/pkg"])
-
-    def test_detect_npm_workspaces_ignores_non_workspace_and_escaping(self) -> None:
+    def test_workspaces_reject_escaping_paths_and_manifests(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / "outside").mkdir()
-            (root / "outside" / "package.json").write_text("{}")
+            outside = root / "outside"
+            outside.mkdir()
+            (outside / "package.json").write_text("{}")
+            for member in (
+                "../outside",
+                str(outside),
+                "packages/escape",
+                "packages/symlink-manifest",
+            ):
+                with self.subTest(member=member):
+                    project = _make_npm_project(
+                        root / "proj",
+                        package_json={"workspaces": ["packages/*"]},
+                        lock_packages={member: {}},
+                    )
+                    if member == "packages/escape":
+                        (project / "packages").mkdir()
+                        (project / member).symlink_to(outside, target_is_directory=True)
+                    elif member == "packages/symlink-manifest":
+                        (project / member).mkdir()
+                        (project / member / "package.json").symlink_to(
+                            outside / "package.json"
+                        )
+                    with self.assertRaises(SystemExit) as raised:
+                        cli._detect_npm_workspaces(
+                            project, project / "package-lock.json"
+                        )
+                    self.assertIn("--node-npm", str(raised.exception))
+                    self.assertIn("npm install", str(raised.exception))
+
+    def test_workspaces_preserve_internal_symlink_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
             project = _make_npm_project(
-                root / "proj", package_json={"workspaces": ["../outside", "", 3]}
+                Path(tmp),
+                package_json={"workspaces": ["packages/*"]},
+                lock_packages={"packages/alias": {}},
             )
-            self.assertEqual(cli._detect_npm_workspaces(project), [])
-            (project / "package.json").write_text("{not json", encoding="utf-8")
-            self.assertEqual(cli._detect_npm_workspaces(project), [])
-            (project / "package.json").write_text('{"name": "x"}', encoding="utf-8")
-            self.assertEqual(cli._detect_npm_workspaces(project), [])
+            (project / "actual").mkdir()
+            (project / "actual/package.json").write_text("{}")
+            (project / "packages").mkdir()
+            (project / "packages/alias").symlink_to(
+                project / "actual", target_is_directory=True
+            )
+            self.assertEqual(
+                cli._detect_npm_workspaces(project, project / "package-lock.json"),
+                ["packages/alias"],
+            )
+
+    def test_workspace_shrinkwrap_takes_precedence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = _make_npm_project(
+                Path(tmp),
+                package_json={"workspaces": ["packages/{a,b}"]},
+                lockfile="npm-shrinkwrap.json",
+                workspace_members=("packages/a", "packages/b"),
+            )
+            (project / "package-lock.json").write_text("{}")
+            rc, _ = self._main(["--node-npm", str(project)], project)
+            self.assertEqual(rc, 0)
+            text = (project / ".project-sandbox/Dockerfile.node-npm").read_text()
+            for member in ("packages/a", "packages/b"):
+                self.assertIn(
+                    json.dumps([f"{member}/package.json", f"{member}/"]), text
+                )
+
+    def test_workspaces_accept_version_two_lockfile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = _make_npm_project(
+                Path(tmp),
+                package_json={"workspaces": ["packages/*"]},
+                workspace_members=("packages/a",),
+            )
+            lock = project / "package-lock.json"
+            data = json.loads(lock.read_text())
+            data["lockfileVersion"] = 2
+            lock.write_text(json.dumps(data))
+            self.assertEqual(cli._detect_npm_workspaces(project, lock), ["packages/a"])
+
+    def test_plain_projects_keep_v1_lockfile_support(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = _make_npm_project(Path(tmp))
+            lock = project / "package-lock.json"
+            lock.write_text('{"lockfileVersion": 1}')
+            self.assertEqual(cli._detect_npm_workspaces(project, lock), [])
+
+    def test_workspace_metadata_and_manifest_errors_are_clear(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = _make_npm_project(
+                Path(tmp), package_json={"workspaces": ["packages/*"]}
+            )
+            lock = project / "package-lock.json"
+            lock.write_text("{bad json")
+            with self.assertRaisesRegex(SystemExit, "cannot read package-lock.json"):
+                cli._detect_npm_workspaces(project, lock)
+            (project / "package.json").write_text("{bad json")
+            with self.assertRaisesRegex(SystemExit, "cannot read package.json"):
+                cli._detect_npm_workspaces(project, lock)
+            (project / "package.json").write_text('{"workspaces": [3]}')
+            with self.assertRaisesRegex(SystemExit, "array of strings"):
+                cli._detect_npm_workspaces(project, lock)
+
+    @unittest.skipUnless(
+        shutil.which("npm"), "requires host npm for offline compatibility check"
+    )
+    def test_locked_workspace_manifests_install_the_same_links_as_npm(self) -> None:
+        # Use real npm resolution and ci, without registry access or lifecycle scripts.
+        for declaration in (
+            ["packages/{a,b}"],
+            ["packages/@(a|b)"],
+            ["packages/*", "!packages/a", "packages/a"],
+            {"packages": ["packages/*"]},
+        ):
+            with (
+                self.subTest(declaration=declaration),
+                tempfile.TemporaryDirectory() as tmp,
+            ):
+                project = _make_npm_project(
+                    Path(tmp) / "host",
+                    package_json={
+                        "name": "root",
+                        "version": "1.0.0",
+                        "workspaces": declaration,
+                    },
+                    lockfile=None,
+                    workspace_members=("packages/a", "packages/b"),
+                )
+                common = ["--offline", "--ignore-scripts", "--no-audit", "--no-fund"]
+                subprocess.run(
+                    ["npm", "install", "--package-lock-only", *common],
+                    cwd=project,
+                    check=True,
+                    capture_output=True,
+                )
+                build = Path(tmp) / "build"
+                build.mkdir()
+                for filename in ("package.json", "package-lock.json"):
+                    shutil.copy2(project / filename, build / filename)
+                members = cli._detect_npm_workspaces(
+                    project, project / "package-lock.json"
+                )
+                self.assertEqual(members, ["packages/a", "packages/b"])
+                for member in members:
+                    (build / member).mkdir(parents=True)
+                    shutil.copy2(
+                        project / member / "package.json",
+                        build / member / "package.json",
+                    )
+                subprocess.run(
+                    ["npm", "ci", *common], cwd=build, check=True, capture_output=True
+                )
+                for member in members:
+                    link = build / "node_modules" / member.replace("/", "-")
+                    self.assertTrue(link.is_symlink())
+                    self.assertEqual(link.resolve(), build / member)
 
     # --- Playwright detection ---
 
@@ -5945,9 +6147,8 @@ class NodeNpmFlagTests(TestCase):
                 Path(tmp),
                 package_json={"workspaces": ["packages/*"]},
                 lock_packages={"node_modules/@playwright/test": {}},
+                workspace_members=("packages/ui",),
             )
-            (project / "packages" / "ui").mkdir(parents=True)
-            (project / "packages" / "ui" / "package.json").write_text("{}")
             rc, _ = self._main(["--node-npm", str(project)], project)
             self.assertEqual(rc, 0)
             context = project / ".project-sandbox"

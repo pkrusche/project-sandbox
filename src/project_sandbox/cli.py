@@ -9,6 +9,7 @@ import time
 from argparse import ArgumentParser
 from datetime import datetime
 from pathlib import Path
+from typing import NoReturn
 
 from . import (
     __version__,
@@ -1626,12 +1627,13 @@ def _resolve_build_source(
                 "run `npm install` on the host and commit the lockfile first"
             )
 
+        workspace_members = _detect_npm_workspaces(project, project / lockfiles[0])
         generated = context_dir / "Dockerfile.node-npm"
         if write_generated:
             generated = dockerfile.render_node_npm_dockerfile(
                 context_dir,
                 lockfiles=lockfiles,
-                workspace_members=_detect_npm_workspaces(project),
+                workspace_members=workspace_members,
                 has_playwright=_lockfile_has_playwright(project / lockfiles[0]),
             )
         return None, generated, project
@@ -1696,58 +1698,78 @@ def _detect_cargo_workspace(project: Path) -> tuple[bool, list[str], bool]:
     return True, members, root_is_package
 
 
-def _detect_npm_workspaces(project: Path) -> list[str]:
-    """Return sorted relative paths of npm workspace members with a package.json.
+def _detect_npm_workspaces(project: Path, lockfile: Path) -> list[str]:
+    """Use npm's locked local package paths rather than reimplementing its globs.
 
-    Reads the root package.json ``workspaces`` field in either its array form or
-    the ``{"packages": [...]}`` object form. Patterns are globs relative to the
-    project root; ``!``-prefixed patterns remove earlier matches. Matches
-    outside the project or without a package.json are skipped.
+    Workspace-capable lockfiles contain both local package metadata and links
+    to those packages. Preserve lexical paths for COPY and npm's relative
+    links, while checking resolved paths stay inside the build context.
     """
+
+    def fail(reason: str) -> NoReturn:
+        raise SystemExit(
+            f"--node-npm: {reason}; run `npm install` on the host and commit "
+            "the updated manifests and lockfile"
+        )
+
     try:
         data = json.loads((project / "package.json").read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        fail(f"cannot read package.json: {exc}")
+    if not isinstance(data, dict):
+        fail("package.json must contain an object")
+
+    def patterns(declaration) -> list[str]:
+        if isinstance(declaration, dict):
+            declaration = declaration.get("packages")
+        if not isinstance(declaration, list) or not all(
+            isinstance(pattern, str) for pattern in declaration
+        ):
+            fail("workspaces must be an array of strings or a packages array")
+        return declaration
+
+    workspaces = patterns(data.get("workspaces", []))
+    if not workspaces:
         return []
-    workspaces = data.get("workspaces") if isinstance(data, dict) else None
-    if isinstance(workspaces, dict):
-        workspaces = workspaces.get("packages")
-    if not isinstance(workspaces, list):
-        return []
+
+    try:
+        locked = json.loads(lockfile.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        fail(f"cannot read {lockfile.name}: {exc}")
+    if not isinstance(locked, dict) or locked.get("lockfileVersion") not in (2, 3):
+        fail("npm workspaces require a version 2 or 3 lockfile")
+    packages = locked.get("packages")
+    if not isinstance(packages, dict) or not isinstance(packages.get(""), dict):
+        fail(f"{lockfile.name} is missing root package metadata")
+    if patterns(packages[""].get("workspaces", [])) != workspaces:
+        fail(f"{lockfile.name} has stale root workspace declarations")
 
     root = project.resolve()
 
-    def expand(pattern: str) -> set[str]:
-        pattern = pattern.strip().rstrip("/")
-        if not pattern or Path(pattern).is_absolute():
-            return set()
+    def local_path(value: str) -> str:
+        path = Path(value)
+        if path.is_absolute() or ".." in path.parts or "node_modules" in path.parts:
+            fail(f"invalid local package path {value!r} in {lockfile.name}")
         try:
-            matches = list(project.glob(pattern))
-        except (ValueError, NotImplementedError):
-            return set()
-        found: set[str] = set()
-        for match in matches:
-            try:
-                rel = match.resolve().relative_to(root).as_posix()
-            except ValueError:
-                continue
-            if rel != "." and match.is_dir():
-                found.add(rel)
-        return found
+            (project / path / "package.json").resolve().relative_to(root)
+        except (OSError, RuntimeError, ValueError):
+            fail(f"local package path {value!r} escapes the project")
+        if path == Path(".") or not (project / path / "package.json").is_file():
+            fail(f"missing local package manifest {value!r}/package.json")
+        return path.as_posix()
 
-    included: set[str] = set()
-    excluded: set[str] = set()
-    for pattern in workspaces:
-        if not isinstance(pattern, str):
-            continue
-        if pattern.startswith("!"):
-            excluded |= expand(pattern[1:])
-        else:
-            included |= expand(pattern)
-    return sorted(
-        member
-        for member in included - excluded
-        if (project / member / "package.json").is_file()
-    )
+    members: set[str] = set()
+    for key, package in packages.items():
+        if not isinstance(package, dict):
+            fail(f"invalid package metadata for {key!r} in {lockfile.name}")
+        if key and "node_modules" not in Path(key).parts:
+            members.add(local_path(key))
+        if package.get("link"):
+            target = package.get("resolved")
+            if not isinstance(target, str) or target not in packages:
+                fail(f"missing local package metadata for link {key!r}")
+            members.add(local_path(target))
+    return sorted(members)
 
 
 _PLAYWRIGHT_PACKAGES = ("playwright", "@playwright/test")

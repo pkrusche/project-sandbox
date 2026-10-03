@@ -182,7 +182,11 @@ Customize:
 - **Runtime `node_modules`.** `/workspace/node_modules` is a tmpfs populated from
   the image, so host-platform binaries in the host's `node_modules` are never
   executed, and changes the agent makes there never reach the host. The
-  entrypoint only copies into an empty tmpfs mount, never into a host directory.
+  entrypoint requires a separate tmpfs mount at that exact path and rejects
+  symlinks, then copies only when the mount is empty. A plain directory on a
+  tmpfs-backed host filesystem does not qualify. If the mount is absent or has
+  the wrong filesystem type, the session fails before copying or starting the
+  agent.
 - **Memory.** The tmpfs and the default `2g` `/dev/shm` count against the
   container's `--memory` limit.
 

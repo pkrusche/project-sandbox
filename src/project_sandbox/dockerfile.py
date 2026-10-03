@@ -945,7 +945,7 @@ def render_node_npm_dockerfile(
         "# headless browser support: system Chromium and fonts",
         (
             "RUN apt-get update && apt-get install -y --no-install-recommends \\\n"
-            "    chromium fontconfig fonts-liberation fonts-noto-color-emoji \\\n"
+            "    chromium fontconfig fonts-liberation fonts-noto-color-emoji util-linux \\\n"
             "    && rm -rf /var/lib/apt/lists/*"
         ),
         "ENV CHROME_BIN=/usr/bin/chromium",

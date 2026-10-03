@@ -44,8 +44,12 @@ The generated image SHALL install project dependencies with `npm ci` from the pr
 - **THEN** the image build fails and the error is surfaced to the user
 
 #### Scenario: npm workspaces
-- **WHEN** the root `package.json` declares `workspaces`
-- **THEN** every matching member `package.json` is available to `npm ci`, and member links in `node_modules` resolve to the member directories under `/workspace` at runtime
+- **WHEN** the root `package.json` declares `workspaces` and the version 2 or 3 effective lockfile records npm's current resolution
+- **THEN** the resolved local package manifests are available to `npm ci`, including members selected through braces, extglobs, and exclusion/re-inclusion, and member links in `node_modules` resolve to the member directories under `/workspace` at runtime
+
+#### Scenario: Invalid workspace metadata
+- **WHEN** the effective lockfile has stale root workspace declarations, lacks workspace-capable metadata, references a missing manifest, or contains a local package path escaping the project
+- **THEN** the command fails before generating the Dockerfile, including during dry-run, with instructions to update and commit the manifests and lockfile
 
 #### Scenario: Host node_modules not used as build input
 - **WHEN** the host project contains a `node_modules` directory
@@ -86,8 +90,8 @@ For `--node-npm` sessions on Docker, Podman, and Apple container, the system SHA
 - **THEN** the second session sees the image's original dependencies
 
 #### Scenario: No mount, no copy
-- **WHEN** the entrypoint runs and `/workspace/node_modules` is not a sandbox-provided mount
-- **THEN** the entrypoint does not copy dependencies, so it never writes into a host directory
+- **WHEN** a Node/npm image's entrypoint runs and `/workspace/node_modules` is not a separate tmpfs mount, or is a symlink
+- **THEN** the entrypoint fails before copying dependencies or starting the agent, including when an ordinary host directory resides on tmpfs
 
 ### Requirement: Configurable shared memory size
 The system SHALL accept a `--shm-size SIZE` flag and pass it to Docker, Podman, and Apple container as the container's `/dev/shm` size. For `--node-npm` sessions the default SHALL be `2g`; for other sessions the runtime's default applies unless `--shm-size` is given. `--shm-size` MUST be rejected with `--runtime chroot`.

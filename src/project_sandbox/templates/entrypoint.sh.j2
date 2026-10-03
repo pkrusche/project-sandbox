@@ -9,16 +9,21 @@ EMAIL="${PROJECT_SANDBOX_USER_EMAIL:-}"
 # --node-npm: fill the sandbox-provided tmpfs at /workspace/node_modules from
 # the dependencies baked into the image. Copy only into an empty tmpfs mount so
 # this never writes into the host's node_modules through the /workspace bind.
-if [ -d /opt/node-project/node_modules ] \
-  && [ -d /workspace/node_modules ] \
-  && [ "$(stat -f -c %T /workspace/node_modules 2>/dev/null)" = "tmpfs" ] \
-  && [ -z "$(ls -A /workspace/node_modules)" ]; then
-  # The mount root belongs to root: copying the source directory itself would
-  # try to preserve its metadata there and fail for the sandbox user.
-  if ! find /opt/node-project/node_modules -mindepth 1 -maxdepth 1 \
-    -exec cp -a -t /workspace/node_modules/ -- {} +; then
-    echo "ERROR: Could not populate /workspace/node_modules from the image." >&2
+if [ -d /opt/node-project/node_modules ]; then
+  if [ -L /workspace/node_modules ] \
+    || ! mountpoint -q /workspace/node_modules \
+    || [ "$(stat -f -c %T /workspace/node_modules 2>/dev/null)" != "tmpfs" ]; then
+    echo "ERROR: Node/npm images require a separate tmpfs mount at /workspace/node_modules; refusing to write host dependencies." >&2
     exit 1
+  fi
+  if [ -z "$(ls -A /workspace/node_modules)" ]; then
+    # The mount root belongs to root: copying the source directory itself would
+    # try to preserve its metadata there and fail for the sandbox user.
+    if ! find /opt/node-project/node_modules -mindepth 1 -maxdepth 1 \
+      -exec cp -a -t /workspace/node_modules/ -- {} +; then
+      echo "ERROR: Could not populate /workspace/node_modules from the image." >&2
+      exit 1
+    fi
   fi
 fi
 

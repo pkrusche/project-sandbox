@@ -236,8 +236,8 @@ def node_modules_tmpfs_arg(runtime: Runtime) -> str:
     Docker and Podman mount --tmpfs noexec and root-owned by default, which
     would break node_modules/.bin scripts and native addons and keep the
     entrypoint (running as the agent) from populating it. Apple container
-    takes a bare path; its mode/exec defaults are pending verification
-    (openspec change add-node-npm-flavor, task 1.1).
+    uses a bare path; Docker and Apple container end-to-end checks were
+    confirmed passing by the user (see add-node-npm-flavor change notes).
     """
     if runtime.name == APPLE_CONTAINER.name:
         return WORKSPACE_NODE_MODULES_TARGET

@@ -239,19 +239,35 @@ Supported repo shapes:
 - npm only, with `package.json` and a committed `package-lock.json` or
   `npm-shrinkwrap.json` at the project root. The CLI fails if either is missing.
 - A single root `node_modules`, including npm workspaces (`workspaces` as an
-  array or `{"packages": [...]}`, with globs and `!` negations). Layouts that
-  need per-package `node_modules` directories, pnpm, yarn, and bun are not
-  supported.
+  array or `{"packages": [...]}`). Workspace manifests are selected from npm's
+  resolved local package paths in a version 2 or 3 lockfile, so npm's brace
+  patterns, extglobs, and exclusion/re-inclusion rules work without host npm
+  being required by project-sandbox. Regenerate and commit the lockfile when
+  adding, removing, or changing workspaces, including changes to directories
+  matched by existing globs. Stale root declarations, missing manifests, and
+  local package paths outside the project are rejected before building, also
+  during dry-run. `npm-shrinkwrap.json` takes precedence when both lockfiles
+  exist. Plain projects without workspaces can still use a version 1 lockfile.
+  Layouts that need per-package `node_modules` directories, pnpm, yarn, and bun
+  are not supported.
 - Only the manifests and lockfile enter the dependency layer, so a root
   `prepare`/`postinstall` lifecycle script that needs source files fails the
   build; move such steps into a separate npm script. `.npmrc` is not copied, so
-  private registries and registry auth are not available at build time.
+  private registry configuration and registry auth are not available at build
+  time. This also excludes public-registry install settings such as
+  `legacy-peer-deps` and `install-links`: npm requires the same tree-shaping
+  options used to create the lockfile for `npm ci`. Projects requiring those
+  options should use a custom Dockerfile; do not copy registry credentials into
+  the image. See [npm ci](https://docs.npmjs.com/cli/commands/npm-ci/).
 
 At runtime `/workspace/node_modules` is an in-memory tmpfs that the entrypoint
 fills from the image before the agent starts:
 
 - It hides the host's `node_modules` (whose native binaries target the host
   platform) and writes never reach the host.
+- The entrypoint requires the destination to be a separate tmpfs mount, not a
+  symlink or an ordinary directory on a tmpfs-backed host filesystem. Without
+  that mount it fails before copying dependencies or starting the agent.
 - It is writable and executable, so `node_modules/.bin` tools, native addons,
   and tool caches such as `.vite` and `.cache` work.
 - It is ephemeral: every session starts from the image's dependencies. To add a
@@ -278,6 +294,10 @@ external hosts, see [Internet proxy](internet-proxy.md#web-tests-that-need-exter
 
 With `--node-npm --branch`, the image is built from the resolved worktree or jj
 workspace, like `--python-uv --branch`.
+
+Generated Node/npm devcontainers are not supported yet: their config lacks the
+`node_modules` tmpfs and `--shm-size`. Starting a Node image through the sandbox
+entrypoint without the required tmpfs fails; use a direct CLI session instead.
 
 ## Session observability and image warm-up
 

@@ -31,7 +31,7 @@ The generated stage sets `WORKDIR /opt/node-project`, copies `package.json`, the
 Alternatives: `NODE_PATH` (CJS only, ignored by ESM and bundlers) — rejected.
 
 ### D2. tmpfs + entrypoint copy for runtime `node_modules`
-The runtime command adds a tmpfs at `/workspace/node_modules` with exec permission and agent-writable mode. The entrypoint, running as the agent user, copies `/opt/node-project/node_modules/.` into it with `cp -a` (preserving relative `.bin` and workspace symlinks), guarded by a check that the target is a mount point and empty.
+The runtime command adds a tmpfs at `/workspace/node_modules` with exec permission and agent-writable mode. The entrypoint, running as the agent user, copies the immediate contents of `/opt/node-project/node_modules` into it with `find` and `cp -a` (preserving relative `.bin` and workspace symlinks without modifying mount-root metadata). Before copying, it rejects symlink destinations and requires both `mountpoint -q` and a `tmpfs` filesystem type. An invalid mount fails startup; a populated valid mount is left intact. Node images explicitly install `util-linux` for the mount-point check.
 
 Why tmpfs over alternatives:
 - Named volume with image copy-up: fast after first run, but stale when the lockfile changes unless the volume name tracks a lockfile/image hash, and copy-up semantics on Apple container are unverified.
@@ -42,15 +42,15 @@ tmpfs needs no lifecycle management and always matches the image. Its cost is me
 
 Mount options per runtime:
 - Docker/Podman: `--tmpfs /workspace/node_modules:rw,exec,mode=1777`. `exec` is required because Docker's `--tmpfs` defaults to `noexec`, which would break `.bin` scripts and native addons.
-- Apple container: `--tmpfs /workspace/node_modules`. Mode and exec defaults are unverified (task 1.1). Fallback if the mount is not agent-writable: a fixed root-owned helper script, allowed via a dedicated sudoers entry like the firewall helper, that chowns the mount point; the helper takes no arguments.
+- Apple container: `--tmpfs /workspace/node_modules`. The user confirmed Docker and Apple container end-to-end checks passed on 2026-10-02. Keep the existing bare-path mount and shared-memory arguments; no sudoers helper is needed by the validated flow. Runtime versions and raw permission/shared-memory measurements were not supplied.
 
-When the host has no `node_modules`, the CLI creates an empty `node_modules` directory in the project only if the runtime requires an existing mount target (verified in task 1.1). It is conventionally gitignored; the CLI prints a note when creating it.
+The CLI does not create a host `node_modules` mount target. Runtime mount arguments remain unchanged following the user-reported Docker and Apple container validation.
 
 ### D3. Manifests-only dependency layer, hard failure
 Only manifests and the lockfile are copied before `npm ci`, and no `COPY . .` follows. Unlike `--python-uv`, npm has no "install the project itself" step, so a second whole-project layer adds rebuild cost without benefit. `npm ci` runs lifecycle scripts; a root `prepare`/`postinstall` that needs source files fails the build, which is documented. Supply-chain risk from install scripts is the user's to manage via lockfile pinning.
 
 ### D4. npm workspace detection
-The CLI reads the root `package.json` `workspaces` field (array or `{ "packages": [...] }`), expands globs relative to the project root with `Path.glob`, keeps directories that contain a `package.json`, and emits one `COPY <member>/package.json <member>/` per member — mirroring `_detect_cargo_workspace`. Negated patterns are honoured by removing matches. Relative workspace symlinks created by npm under `/opt/node-project/node_modules` resolve to `/workspace/<member>` after the copy.
+The CLI reads the root `package.json` `workspaces` field (array or `{ "packages": [...] }`) and uses npm's resolved local package entries and links in the effective version 2 or 3 lockfile. `npm-shrinkwrap.json` takes precedence over `package-lock.json`. This supports npm braces, extglobs, and exclusion/re-inclusion without reproducing JavaScript glob semantics or requiring host npm. Root workspace declarations must match the lockfile, every recorded local package must have a manifest, and resolved manifest paths must remain inside the project. Lexical paths are preserved for JSON-form COPY instructions and npm links. These validations also run during dry-run. Users must update the lockfile when workspace membership changes; plain non-workspace projects retain version 1 lockfile support. Relative workspace symlinks created under `/opt/node-project/node_modules` resolve to `/workspace/<member>` after copying dependencies.
 
 ### D5. Browser layers
 - Always: `apt-get install chromium fontconfig fonts-liberation fonts-noto-color-emoji`.
@@ -70,9 +70,9 @@ Accepted for any image-based runtime; default `2g` only under `--node-npm` so ex
 
 - [tmpfs memory: `node_modules` plus `/dev/shm` count against `--memory` (default 8g)] → Document it; print the baked `node_modules` size after a build; users can raise `--memory`.
 - [Session start cost: copying a large `node_modules` takes seconds] → Acceptable for v1; a volume-based cache keyed by lockfile hash is a possible follow-up.
-- [Apple container tmpfs may be root-owned or `noexec`] → Spike first (task 1.1); sudoers-guarded fixed helper as fallback (D2).
+- [Missing or incorrect dependency mount] → Fail before copying or starting the agent. Docker and Apple container e2e checks are user-confirmed; Podman has argv-construction coverage without a reported e2e run.
 - [Chromium needs `--no-sandbox` as a non-root user without user namespaces] → Document in `docs/security.md`, including that the container boundary is the isolation layer.
-- [Playwright `install --with-deps` may not support the base image's Debian release] → Base on the same Debian release Playwright supports; the build fails loudly if not.
+- [Playwright compatibility changes] → Keep the selected `debian:trixie-slim` base and locked project CLI; installation failures fail the build. Docker and Apple container e2e checks are user-confirmed.
 - [Image size grows by several hundred MB] → Documented; only Playwright's Chromium is conditional.
 - [Root lifecycle scripts needing source fail the build] → Documented supported-repo shapes; users can move such scripts out of `prepare`.
 
@@ -80,6 +80,6 @@ Accepted for any image-based runtime; default `2g` only under `--node-npm` so ex
 
 Additive flag; no migration. Rollback is removing the flag.
 
-## Open Questions
+## Validation
 
-- Exact Debian release for the generated base (`debian:bookworm-slim` vs `trixie-slim`) — pick whichever current Playwright `install-deps` supports on arm64 at implementation time.
+The user confirmed Docker and Apple container e2e checks passed on 2026-10-02. The generated base remains `debian:trixie-slim`. Completion records distinguish this user-reported validation from locally run unit tests; runtime versions and raw measurements are not recorded. Further smoke-script assertions and other finishing improvements remain in `TODO.md`.

@@ -2750,6 +2750,7 @@ class NodeNpmDockerfileTests(TestCase):
         self.assertIn(
             "chromium fontconfig fonts-liberation fonts-noto-color-emoji", text
         )
+        self.assertIn("util-linux", text)
         for env in (
             "ENV CHROME_BIN=/usr/bin/chromium",
             "ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium",
@@ -2828,7 +2829,9 @@ class NodeNpmDockerfileTests(TestCase):
             text = dockerfile.render_entrypoint(Path(tmp)).read_text()
         block = text[text.index("/opt/node-project/node_modules") - 200 :]
         self.assertIn("stat -f -c %T /workspace/node_modules", block)
-        self.assertIn('= "tmpfs"', block)
+        self.assertIn("mountpoint -q /workspace/node_modules", block)
+        self.assertIn("[ -L /workspace/node_modules ]", block)
+        self.assertIn('!= "tmpfs"', block)
         self.assertIn('[ -z "$(ls -A /workspace/node_modules)" ]', block)
         self.assertIn("-exec cp -a -t /workspace/node_modules/ -- {} +", block)
         # Populated before the agent (and the firewall) start.
@@ -2853,6 +2856,7 @@ class NodeNpmDockerfileTests(TestCase):
                 text[start:end]
                 .replace("/opt/node-project/node_modules", str(src))
                 .replace("/workspace/node_modules", str(dst))
+                .replace(f"mountpoint -q {dst}", "true")
                 .replace(f"stat -f -c %T {dst} 2>/dev/null", "printf tmpfs")
             )
             # Root-run tests reproduce the container's unprivileged user and
@@ -2891,9 +2895,9 @@ class NodeNpmDockerfileTests(TestCase):
                     else:
                         self.assertEqual(list(dst.iterdir()), [])
 
-    def test_entrypoint_node_modules_guard_skips_non_tmpfs(self) -> None:
-        # Run just the guard against a plain (non-tmpfs) directory: it must not
-        # copy, so a host node_modules seen through the bind is never written.
+    def test_entrypoint_node_modules_guard_rejects_unsafe_destinations(self) -> None:
+        # Simulate a tmpfs parent without a separate mount, a non-tmpfs mount,
+        # an absent destination, and a symlink even if mountpoint follows it.
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             text = dockerfile.render_entrypoint(root).read_text()
@@ -2903,19 +2907,107 @@ class NodeNpmDockerfileTests(TestCase):
             dst = root / "dst"
             (src / "pkg").mkdir(parents=True)
             dst.mkdir()
+            base_script = (
+                text[start:end]
+                .replace("/opt/node-project/node_modules", str(src))
+                .replace("/workspace/node_modules", str(dst))
+            )
+            for mounted, fs_type in ((False, "tmpfs"), (True, "ext4")):
+                with self.subTest(mounted=mounted, fs_type=fs_type):
+                    script = base_script.replace(
+                        f"mountpoint -q {dst}", "true" if mounted else "false"
+                    ).replace(f"stat -f -c %T {dst} 2>/dev/null", f"printf {fs_type}")
+                    proc = subprocess.run(
+                        ["sh", "-c", "set -eu\n" + script],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    self.assertEqual(proc.returncode, 1)
+                    self.assertIn("require a separate tmpfs mount", proc.stderr)
+                    self.assertEqual(list(dst.iterdir()), [])
+            dst.rmdir()
+            proc = subprocess.run(
+                ["sh", "-c", "set -eu\n" + base_script],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 1)
+            self.assertFalse(dst.exists())
+            host = root / "host"
+            host.mkdir()
+            dst.symlink_to(host, target_is_directory=True)
+            script = base_script.replace(f"mountpoint -q {dst}", "true").replace(
+                f"stat -f -c %T {dst} 2>/dev/null", "printf tmpfs"
+            )
+            proc = subprocess.run(
+                ["sh", "-c", "set -eu\n" + script],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 1)
+            self.assertEqual(list(host.iterdir()), [])
+
+    def test_entrypoint_rejects_plain_directory_on_real_tmpfs(self) -> None:
+        shm = Path("/dev/shm")
+        if not shm.is_dir() or not os.access(shm, os.W_OK):
+            self.skipTest("requires a writable /dev/shm")
+        with tempfile.TemporaryDirectory(dir=shm) as tmp:
+            root = Path(tmp)
+            text = dockerfile.render_entrypoint(root).read_text()
+            start = text.index("if [ -d /opt/node-project/node_modules ]")
+            end = text.index("\nfi\n", start) + 4
+            src, dst = root / "src", root / "dst"
+            (src / "pkg").mkdir(parents=True)
+            dst.mkdir()
+            fs_type = subprocess.run(
+                ["stat", "-f", "-c", "%T", str(dst)],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+            if fs_type != "tmpfs":
+                self.skipTest("/dev/shm is not tmpfs")
             script = (
                 text[start:end]
                 .replace("/opt/node-project/node_modules", str(src))
                 .replace("/workspace/node_modules", str(dst))
             )
-            fs_type = subprocess.run(
-                ["stat", "-f", "-c", "%T", str(dst)],
+            proc = subprocess.run(
+                ["sh", "-c", "set -eu\n" + script],
                 capture_output=True,
                 text=True,
                 check=False,
-            ).stdout.strip()
-            if fs_type == "tmpfs":
-                self.skipTest("temporary directory is on tmpfs")
-            proc = subprocess.run(["sh", "-c", "set -eu\n" + script], check=False)
-            self.assertEqual(proc.returncode, 0)
+            )
+            self.assertEqual(proc.returncode, 1)
+            self.assertIn("refusing to write host dependencies", proc.stderr)
             self.assertEqual(list(dst.iterdir()), [])
+
+    def test_entrypoint_preserves_populated_valid_tmpfs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            text = dockerfile.render_entrypoint(root).read_text()
+            start = text.index("if [ -d /opt/node-project/node_modules ]")
+            end = text.index("\nfi\n", start) + 4
+            src, dst = root / "src", root / "dst"
+            src.mkdir()
+            dst.mkdir()
+            (src / "package").write_text("image")
+            (dst / "package").write_text("session")
+            script = (
+                text[start:end]
+                .replace("/opt/node-project/node_modules", str(src))
+                .replace("/workspace/node_modules", str(dst))
+                .replace(f"mountpoint -q {dst}", "true")
+                .replace(f"stat -f -c %T {dst} 2>/dev/null", "printf tmpfs")
+            )
+            proc = subprocess.run(
+                ["sh", "-c", "set -eu\n" + script],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual((dst / "package").read_text(), "session")
