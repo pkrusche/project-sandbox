@@ -2,6 +2,32 @@
 
 Notable changes to `project-sandbox` are documented here.
 
+## [0.2.2]
+
+### Added
+
+- `--node-npm` for npm projects and workspaces, with dependencies installed at
+  image build time, Chromium and matching Playwright browser support, and an
+  ephemeral `node_modules` tmpfs that hides host dependencies. Branch sessions
+  build from the resolved Git worktree or jj workspace.
+- `--shm-size` for configuring container shared memory, defaulting to `2g` for
+  Node/npm sessions to support Chromium.
+- [Headless browser testing](docs/headless-browser-testing.md) documentation,
+  including Playwright setup, agent instructions, and Internet-proxy guidance,
+  plus Node/npm end-to-end coverage.
+
+### Changed
+
+- Refreshed pinned sandbox tooling and build inputs, including uv, OpenSpec,
+  Claude Code, Codex CLI, OpenCode, its OpenAI provider package, Pi, and Ruff,
+  along with the lockfile.
+
+### Fixed
+
+- Interactive Codex sessions now launch with `--no-daemon` to avoid background
+  app-server startup failures inside the sandbox. Generated Codex configurations
+  use `check_for_update_on_startup = false` to disable startup update checks.
+
 ## [0.2.1]
 
 - Bump dependency versions.
@@ -137,7 +163,8 @@ Initial public release.
 - Build caching, dry-run support, timeout teardown, end-to-end tests, and CI.
 - Ruff, pytest, and release preflight checks.
 
-[0.2.1]: https://github.com/pkrusche/project-sandbox/compare/v0.2.0...HEAD
+[0.2.2]: https://github.com/pkrusche/project-sandbox/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/pkrusche/project-sandbox/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/pkrusche/project-sandbox/compare/v0.1.4...v0.2.0
 [0.1.4]: https://github.com/pkrusche/project-sandbox/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/pkrusche/project-sandbox/compare/v0.1.2...v0.1.3
