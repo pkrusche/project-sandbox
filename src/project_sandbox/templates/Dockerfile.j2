@@ -70,20 +70,20 @@ RUN set -euxo pipefail; \
 # Global npm tooling is pinned to exact versions (never a floating tag) so a
 # compromised or broken upstream release cannot silently land in an image that
 # later receives workspace and agent credentials. Bump these deliberately.
-RUN npm install -g @fission-ai/openspec@1.13.2
+RUN npm install -g @fission-ai/openspec@1.14.0
 
 {% if install_claude %}
-RUN npm install -g @anthropic-ai/claude-code@2.1.284
+RUN npm install -g @anthropic-ai/claude-code@2.1.287
 {% endif %}
 {% if install_codex %}
-RUN npm install -g @openai/codex@0.159.0
+RUN npm install -g @openai/codex@0.160.0
 {% endif %}
 {% if install_opencode %}
-RUN npm install -g opencode-ai@1.18.33
-RUN npm install -g @ai-sdk/openai@4.0.80
+RUN npm install -g opencode-ai@1.18.34
+RUN npm install -g @ai-sdk/openai@4.0.83
 {% endif %}
 {% if install_pi %}
-RUN npm install -g @earendil-works/pi-coding-agent@0.87.1
+RUN npm install -g @earendil-works/pi-coding-agent@1.0.0
 {% endif %}
 
 {% if source_after_dependencies -%}
