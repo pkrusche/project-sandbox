@@ -24,6 +24,7 @@ HISTORY_CLAUDE_PROJECTS_TARGET = "/home/agent/.claude/projects"
 WORKSPACE_SANDBOX_TARGET = "/workspace/.project-sandbox"
 WORKSPACE_DEVCONTAINER_TARGET = "/workspace/.devcontainer"
 WORKSPACE_CARGO_TARGET = "/workspace/target"
+WORKSPACE_NODE_MODULES_TARGET = "/workspace/node_modules"
 
 
 def ensure_history_paths(project: Path, *, create: bool = True) -> tuple[Path, Path]:

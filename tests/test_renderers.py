@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -32,7 +33,7 @@ class RendererTests(TestCase):
             entrypoint = dockerfile.render_entrypoint(Path(tmp))
             text = entrypoint.read_text(encoding="utf-8")
             # Execute the rendered dispatch with a fake Codex, avoiding provisioning.
-            dispatch = text[text.index('case "${1:-bash}" in'):]
+            dispatch = text[text.index('case "${1:-bash}" in') :]
             bindir = Path(tmp) / "bin"
             bindir.mkdir()
             fake_codex = bindir / "codex"
@@ -40,12 +41,16 @@ class RendererTests(TestCase):
             fake_codex.chmod(0o755)
             script = Path(tmp) / "dispatch.sh"
             script.write_text(
-                'set -eu\nlog_project_sandbox_agent_command() { :; }\n' + dispatch
+                "set -eu\nlog_project_sandbox_agent_command() { :; }\n" + dispatch
             )
             result = subprocess.run(
                 [
-                    "/bin/sh", str(script), "project-sandbox-run", "codex",
-                    "resume", "--last",
+                    "/bin/sh",
+                    str(script),
+                    "project-sandbox-run",
+                    "codex",
+                    "resume",
+                    "--last",
                 ],
                 env={
                     "PATH": f"{bindir}:/usr/bin:/bin",
@@ -59,8 +64,13 @@ class RendererTests(TestCase):
             self.assertEqual(
                 result.stdout.splitlines(),
                 [
-                    "--model", "test-model", "-c", 'model_reasoning_effort="high"',
-                    "--no-daemon", "resume", "--last",
+                    "--model",
+                    "test-model",
+                    "-c",
+                    'model_reasoning_effort="high"',
+                    "--no-daemon",
+                    "resume",
+                    "--last",
                 ],
             )
 
@@ -2719,3 +2729,285 @@ class RendererTests(TestCase):
                 "NOPASSWD: /usr/local/bin/project-sandbox-init-firewall",
                 devcontainer_text,
             )
+
+
+class NodeNpmDockerfileTests(TestCase):
+    def _render(self, **kwargs) -> list[str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = dockerfile.render_node_npm_dockerfile(
+                Path(tmp), lockfiles=["package-lock.json"], **kwargs
+            )
+            self.assertEqual(out.name, "Dockerfile.node-npm")
+            return out.read_text(encoding="utf-8").splitlines()
+
+    def _index(self, lines: list[str], fragment: str) -> int:
+        return next(i for i, line in enumerate(lines) if fragment in line)
+
+    def test_plain_project_layers_and_ordering(self) -> None:
+        lines = self._render()
+        text = "\n".join(lines)
+        self.assertEqual(lines[0], "FROM debian:trixie-slim")
+        self.assertIn(
+            "chromium fontconfig fonts-liberation fonts-noto-color-emoji", text
+        )
+        self.assertIn("util-linux", text)
+        for env in (
+            "ENV CHROME_BIN=/usr/bin/chromium",
+            "ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium",
+            "ENV PUPPETEER_SKIP_DOWNLOAD=true",
+            "ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright",
+        ):
+            self.assertIn(env, lines)
+        self.assertNotIn("ENV CI", text)
+        self.assertNotIn("playwright install", text)
+        # Manifests-only dependency layer; no whole-project copy.
+        self.assertNotIn("COPY . .", text)
+        order = [
+            self._index(lines, "apt-get install"),
+            lines.index("WORKDIR /opt/node-project"),
+            lines.index("COPY package.json package-lock.json ./"),
+            self._index(lines, "RUN npm ci"),
+            self._index(lines, "chown -R"),
+            lines.index("WORKDIR /workspace"),
+        ]
+        self.assertEqual(order, sorted(order))
+        self.assertEqual(lines[-1], "WORKDIR /workspace")
+        chown = lines[self._index(lines, "chown -R")]
+        self.assertIn('"${AGENT_UID}:${AGENT_GID}"', chown)
+        self.assertIn("/opt/node-project /opt/ms-playwright", chown)
+        # npm ci failure must fail the build (no "|| true").
+        self.assertNotIn("|| true", lines[self._index(lines, "RUN npm ci")])
+
+    def test_dependency_layer_handles_missing_node_modules(self) -> None:
+        lines = self._render()
+        command = lines[self._index(lines, "RUN npm ci")].removeprefix("RUN ")
+        for npm_status in (0, 42):
+            with (
+                self.subTest(npm_status=npm_status),
+                tempfile.TemporaryDirectory() as tmp,
+            ):
+                # Simulate npm installing no packages, without requiring Node.
+                result = subprocess.run(
+                    ["bash", "-c", f"npm() {{ return {npm_status}; }}; {command}"],
+                    cwd=tmp,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, npm_status)
+                self.assertEqual((Path(tmp) / "node_modules").is_dir(), npm_status == 0)
+                if npm_status == 0:
+                    self.assertIn("node_modules", result.stdout)
+
+    def test_workspace_members_copied_before_npm_ci(self) -> None:
+        lines = self._render(workspace_members=["packages/a", "apps/my web"])
+        a = lines.index('COPY ["packages/a/package.json", "packages/a/"]')
+        web = lines.index('COPY ["apps/my web/package.json", "apps/my web/"]')
+        ci = self._index(lines, "RUN npm ci")
+        self.assertLess(lines.index("COPY package.json package-lock.json ./"), a)
+        self.assertLess(max(a, web), ci)
+
+    def test_playwright_install_after_npm_ci_before_chown(self) -> None:
+        lines = self._render(has_playwright=True)
+        install = lines.index(
+            "RUN npx --no-install playwright install --with-deps chromium"
+        )
+        self.assertLess(self._index(lines, "RUN npm ci"), install)
+        self.assertLess(install, self._index(lines, "chown -R"))
+
+    def test_both_lockfiles_copied(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            text = dockerfile.render_node_npm_dockerfile(
+                Path(tmp), lockfiles=["npm-shrinkwrap.json", "package-lock.json"]
+            ).read_text()
+        self.assertIn(
+            "COPY package.json npm-shrinkwrap.json package-lock.json ./", text
+        )
+
+    def test_entrypoint_populates_node_modules_only_into_empty_tmpfs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            text = dockerfile.render_entrypoint(Path(tmp)).read_text()
+        block = text[text.index("/opt/node-project/node_modules") - 200 :]
+        self.assertIn("stat -f -c %T /workspace/node_modules", block)
+        self.assertIn("mountpoint -q /workspace/node_modules", block)
+        self.assertIn("[ -L /workspace/node_modules ]", block)
+        self.assertIn('!= "tmpfs"', block)
+        self.assertIn('[ -z "$(ls -A /workspace/node_modules)" ]', block)
+        self.assertIn("-exec cp -a -t /workspace/node_modules/ -- {} +", block)
+        # Populated before the agent (and the firewall) start.
+        self.assertLess(
+            text.index("-exec cp -a"),
+            text.index("project-sandbox-init-firewall"),
+        )
+
+    def test_entrypoint_populates_root_owned_node_modules(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            root.chmod(0o755)
+            text = dockerfile.render_entrypoint(root).read_text()
+            start = text.index("if [ -d /opt/node-project/node_modules ]")
+            end = text.index("\nfi\n", start) + 4
+            src = root / "src"
+            dst = root / "dst"
+            src.mkdir()
+            dst.mkdir()
+            dst.chmod(0o1777)
+            script = (
+                text[start:end]
+                .replace("/opt/node-project/node_modules", str(src))
+                .replace("/workspace/node_modules", str(dst))
+                .replace(f"mountpoint -q {dst}", "true")
+                .replace(f"stat -f -c %T {dst} 2>/dev/null", "printf tmpfs")
+            )
+            # Root-run tests reproduce the container's unprivileged user and
+            # root-owned writable mount; otherwise exercise the same copy.
+            user = 65534 if os.geteuid() == 0 else os.geteuid()
+            for populated in (False, True):
+                with self.subTest(populated=populated):
+                    if populated:
+                        (src / "package with spaces").mkdir()
+                        binary = src / "package with spaces" / "cli"
+                        binary.write_text("#!/bin/sh\nexit 0\n")
+                        binary.chmod(0o755)
+                        (src / ".bin").mkdir()
+                        (src / ".bin" / "cli").symlink_to("../package with spaces/cli")
+                        (src / ".package-lock.json").write_text("{}")
+                        if os.geteuid() == 0:
+                            for path in (src, *src.rglob("*")):
+                                os.chown(path, user, user, follow_symlinks=False)
+                    result = subprocess.run(
+                        ["sh", "-c", "set -eu\n" + script],
+                        user=user,
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(dst.stat().st_mode & 0o7777, 0o1777)
+                    if populated:
+                        self.assertEqual((dst / ".package-lock.json").read_text(), "{}")
+                        self.assertTrue((dst / ".bin" / "cli").is_symlink())
+                        self.assertEqual(
+                            (dst / "package with spaces" / "cli").stat().st_mode
+                            & 0o777,
+                            0o755,
+                        )
+                    else:
+                        self.assertEqual(list(dst.iterdir()), [])
+
+    def test_entrypoint_node_modules_guard_rejects_unsafe_destinations(self) -> None:
+        # Simulate a tmpfs parent without a separate mount, a non-tmpfs mount,
+        # an absent destination, and a symlink even if mountpoint follows it.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            text = dockerfile.render_entrypoint(root).read_text()
+            start = text.index("if [ -d /opt/node-project/node_modules ]")
+            end = text.index("\nfi\n", start) + 4
+            src = root / "src"
+            dst = root / "dst"
+            (src / "pkg").mkdir(parents=True)
+            dst.mkdir()
+            base_script = (
+                text[start:end]
+                .replace("/opt/node-project/node_modules", str(src))
+                .replace("/workspace/node_modules", str(dst))
+            )
+            for mounted, fs_type in ((False, "tmpfs"), (True, "ext4")):
+                with self.subTest(mounted=mounted, fs_type=fs_type):
+                    script = base_script.replace(
+                        f"mountpoint -q {dst}", "true" if mounted else "false"
+                    ).replace(f"stat -f -c %T {dst} 2>/dev/null", f"printf {fs_type}")
+                    proc = subprocess.run(
+                        ["sh", "-c", "set -eu\n" + script],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    self.assertEqual(proc.returncode, 1)
+                    self.assertIn("require a separate tmpfs mount", proc.stderr)
+                    self.assertEqual(list(dst.iterdir()), [])
+            dst.rmdir()
+            proc = subprocess.run(
+                ["sh", "-c", "set -eu\n" + base_script],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 1)
+            self.assertFalse(dst.exists())
+            host = root / "host"
+            host.mkdir()
+            dst.symlink_to(host, target_is_directory=True)
+            script = base_script.replace(f"mountpoint -q {dst}", "true").replace(
+                f"stat -f -c %T {dst} 2>/dev/null", "printf tmpfs"
+            )
+            proc = subprocess.run(
+                ["sh", "-c", "set -eu\n" + script],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 1)
+            self.assertEqual(list(host.iterdir()), [])
+
+    def test_entrypoint_rejects_plain_directory_on_real_tmpfs(self) -> None:
+        shm = Path("/dev/shm")
+        if not shm.is_dir() or not os.access(shm, os.W_OK):
+            self.skipTest("requires a writable /dev/shm")
+        with tempfile.TemporaryDirectory(dir=shm) as tmp:
+            root = Path(tmp)
+            text = dockerfile.render_entrypoint(root).read_text()
+            start = text.index("if [ -d /opt/node-project/node_modules ]")
+            end = text.index("\nfi\n", start) + 4
+            src, dst = root / "src", root / "dst"
+            (src / "pkg").mkdir(parents=True)
+            dst.mkdir()
+            fs_type = subprocess.run(
+                ["stat", "-f", "-c", "%T", str(dst)],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+            if fs_type != "tmpfs":
+                self.skipTest("/dev/shm is not tmpfs")
+            script = (
+                text[start:end]
+                .replace("/opt/node-project/node_modules", str(src))
+                .replace("/workspace/node_modules", str(dst))
+            )
+            proc = subprocess.run(
+                ["sh", "-c", "set -eu\n" + script],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 1)
+            self.assertIn("refusing to write host dependencies", proc.stderr)
+            self.assertEqual(list(dst.iterdir()), [])
+
+    def test_entrypoint_preserves_populated_valid_tmpfs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            text = dockerfile.render_entrypoint(root).read_text()
+            start = text.index("if [ -d /opt/node-project/node_modules ]")
+            end = text.index("\nfi\n", start) + 4
+            src, dst = root / "src", root / "dst"
+            src.mkdir()
+            dst.mkdir()
+            (src / "package").write_text("image")
+            (dst / "package").write_text("session")
+            script = (
+                text[start:end]
+                .replace("/opt/node-project/node_modules", str(src))
+                .replace("/workspace/node_modules", str(dst))
+                .replace(f"mountpoint -q {dst}", "true")
+                .replace(f"stat -f -c %T {dst} 2>/dev/null", "printf tmpfs")
+            )
+            proc = subprocess.run(
+                ["sh", "-c", "set -eu\n" + script],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual((dst / "package").read_text(), "session")

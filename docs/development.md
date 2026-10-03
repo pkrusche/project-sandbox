@@ -82,6 +82,29 @@ teardown when a real runtime is selected, and availability-gated Ollama checks. 
 to run the gateway-only network/credential isolation audit followed by two
 billable Pi/OpenCode LLM requests.
 
+The Node/npm smoke script creates a small Vite app, resolves and locks
+`@playwright/test`, Vite, and `lodash-es` on the host, and builds the sandbox.
+Each of two sessions runs a production build, checks its output, and runs the
+page-rendering/click test against both system Chromium and Playwright's bundled
+Chromium with the firewall enabled. Importing `lodash-es` exercises dependency
+pre-bundling; the script asserts that Vite emitted `.vite` cache metadata and
+JavaScript inside the writable/executable `node_modules` tmpfs. It also checks
+host-directory isolation and fresh dependencies/cache state in the second
+session. The first session asserts the default 2 GiB `/dev/shm`; the second
+asserts an explicit `--shm-size 1g` override. It uses a Bash agent without AI
+credentials.
+Requires host npm, uv, build-time Internet access, and a running image-based
+runtime:
+
+```bash
+./scripts/e2e-node-npm.sh --runtime apple-container --keep
+./scripts/e2e-node-npm.sh --runtime docker
+./scripts/run-e2e-tests.sh --only node-npm --runtime docker --keep
+```
+
+Workdirs live under `.project-sandbox/e2e/`. Failures retain the workdir for
+debugging; `--keep` also retains successful runs and Playwright screenshots.
+
 By default every suite that is available on the host runs. To iterate on a
 single one, pass `--only SUITE`; `--list` prints the accepted suite names:
 

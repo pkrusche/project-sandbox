@@ -9,6 +9,7 @@ import time
 from argparse import ArgumentParser
 from datetime import datetime
 from pathlib import Path
+from typing import NoReturn
 
 from . import (
     __version__,
@@ -51,6 +52,9 @@ from .paths import (
 
 SUPPORTED_AGENTS = ("claude", "codex", "opencode", "pi", "bash")
 PROMPT_MOUNT_TARGET = "/project-sandbox-prompt"
+# Headless Chromium uses /dev/shm heavily; Docker's 64m default makes it crash.
+NODE_NPM_DEFAULT_SHM_SIZE = "2g"
+_SHM_SIZE_RE = re.compile(r"[1-9][0-9]*[bkmg]", re.IGNORECASE)
 
 
 def _default_image_tag(project: Path) -> str:
@@ -114,6 +118,15 @@ def build_parser() -> ArgumentParser:
             "with --rust-cargo."
         ),
     )
+    p.add_argument(
+        "--node-npm",
+        action="store_true",
+        help=(
+            "Synthesise a Node.js/npm base Dockerfile with headless Chromium "
+            "instead of supplying one. Requires package.json and a committed "
+            "npm lockfile. Mutually exclusive with base_image and --dockerfile."
+        ),
+    )
     p.add_argument("--image-tag", default=None)
     p.add_argument(
         "--runtime",
@@ -139,6 +152,16 @@ def build_parser() -> ArgumentParser:
     )
     p.add_argument("--memory", default="8g")
     p.add_argument("--cpus", type=int, default=4)
+    p.add_argument(
+        "--shm-size",
+        default=None,
+        metavar="SIZE",
+        help=(
+            "Shared memory (/dev/shm) size for the container, e.g. 2g "
+            f"(default: {NODE_NPM_DEFAULT_SHM_SIZE} with --node-npm, otherwise "
+            "the runtime's default)."
+        ),
+    )
     p.add_argument("--mount", dest="extra_mounts", action="append", default=[])
     p.add_argument("--extra-domain", action="append", default=[])
     p.add_argument(
@@ -362,8 +385,10 @@ def main(argv: list[str] | None = None) -> int:
     proxy_port = _validate_agent_proxy_args(args, run_agent)
     _validate_api_key_injection_args(args, run_agent)
     _validate_ollama_models(args.ollama_model)
+    _validate_shm_size(args.shm_size)
     is_chroot = args.runtime == container_cli.CHROOT.name
     if is_chroot:
+        _reject_image_only_flags_for_chroot(args)
         _validate_chroot_session(run_agent)
     if args.branch and run_agent is None:
         raise SystemExit("--branch requires --agent, --prompt, or --prompt-text")
@@ -499,8 +524,9 @@ def main(argv: list[str] | None = None) -> int:
     # not be recorded at all, which never blocks the run.
     record_path: Path | None = None
     try:
-        if not is_chroot and args.python_uv and args.branch:
-            # The venv must match the tree mounted at /workspace. Keep generated
+        if not is_chroot and (args.python_uv or args.node_npm) and args.branch:
+            # The venv / npm workspace manifests must match the tree mounted at
+            # /workspace. Keep generated
             # assets inside that build context so COPY paths remain valid.
             context_dir = ensure_dir(workspace / ".project-sandbox")
             base_image, base_dockerfile, build_context = _resolve_build_source(
@@ -516,13 +542,11 @@ def main(argv: list[str] | None = None) -> int:
                 ca_certificates=ca_certificates,
                 warn=print,
             )
-        # Trim the whole-project build context only for the python-uv/rust-cargo
-        # flows, whose Dockerfile we generate and whose excluded paths we know
-        # are not build inputs. User-supplied --dockerfile builds are left
+        # Trim the whole-project build context only for the generated
+        # python-uv/rust-cargo/node-npm flows, whose excluded paths we know are
+        # not build inputs. User-supplied --dockerfile builds are left
         # untouched so an injected ignore file can't break a COPY they rely on.
-        if not is_chroot and (
-            getattr(args, "python_uv", False) or getattr(args, "rust_cargo", False)
-        ):
+        if not is_chroot and _synthesises_dockerfile(args):
             dockerfile.render_dockerignore(context_dir, build_context=build_context)
         if not is_chroot:
             dockerfile.render_entrypoint(context_dir)
@@ -1132,7 +1156,9 @@ def _dry_run(
     identity,
     available_agents: tuple[str, ...],
 ) -> int:
-    asset_project = workspace if args.python_uv and args.branch else project
+    asset_project = (
+        workspace if (args.python_uv or args.node_npm) and args.branch else project
+    )
     context_dir = asset_project / ".project-sandbox"
     claude_cfg = context_dir / "claude" / "settings.json"
     codex_cfg = context_dir / "codex" / "config.toml"
@@ -1195,7 +1221,7 @@ def _dry_run(
             args, project=asset_project, context_dir=context_dir, write_generated=False
         )
     if base_dockerfile is not None:
-        if getattr(args, "python_uv", False) or getattr(args, "rust_cargo", False):
+        if _synthesises_dockerfile(args):
             print(f"Would write synthesised Dockerfile: {base_dockerfile}")
         else:
             print(f"Would append sandbox layers to Dockerfile: {base_dockerfile}")
@@ -1316,6 +1342,39 @@ def _dry_run(
 def _validate_chroot_session(run_agent: str | None) -> None:
     if run_agent != "bash":
         raise SystemExit("--runtime chroot requires --agent bash")
+
+
+def _synthesises_dockerfile(args) -> bool:
+    return any(
+        getattr(args, flag, False) for flag in ("python_uv", "rust_cargo", "node_npm")
+    )
+
+
+def _reject_image_only_flags_for_chroot(args) -> None:
+    if getattr(args, "node_npm", False):
+        raise SystemExit(
+            "--node-npm requires an image-based runtime "
+            "(apple-container, docker, or podman), not --runtime chroot"
+        )
+    if getattr(args, "shm_size", None) is not None:
+        raise SystemExit(
+            "--shm-size requires an image-based runtime "
+            "(apple-container, docker, or podman), not --runtime chroot"
+        )
+
+
+def _validate_shm_size(value: str | None) -> None:
+    if value is not None and _SHM_SIZE_RE.fullmatch(value) is None:
+        raise SystemExit(
+            f"Invalid --shm-size {value!r}: expected a positive number with a "
+            "b, k, m, or g suffix, e.g. 2g"
+        )
+
+
+def _effective_shm_size(args) -> str | None:
+    if getattr(args, "shm_size", None) is not None:
+        return args.shm_size
+    return NODE_NPM_DEFAULT_SHM_SIZE if getattr(args, "node_npm", False) else None
 
 
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -1473,6 +1532,11 @@ def _resolve_build_source(
         raise SystemExit("--rust is only valid with --rust-cargo")
     if python_uv and rust_cargo:
         raise SystemExit("--python-uv and --rust-cargo are mutually exclusive")
+    node_npm = getattr(args, "node_npm", False)
+    if node_npm and python_uv:
+        raise SystemExit("--node-npm and --python-uv are mutually exclusive")
+    if node_npm and rust_cargo:
+        raise SystemExit("--node-npm and --rust-cargo are mutually exclusive")
 
     if python_uv:
         if args.dockerfile:
@@ -1541,6 +1605,39 @@ def _resolve_build_source(
             )
         return None, generated, project
 
+    if node_npm:
+        if args.dockerfile:
+            raise SystemExit("--node-npm and --dockerfile are mutually exclusive")
+        if args.base_image:
+            raise SystemExit("--node-npm and base_image are mutually exclusive")
+
+        if not (project / "package.json").is_file():
+            raise SystemExit(
+                f"--node-npm requires package.json at the project root: {project}"
+            )
+        lockfiles = [
+            name
+            for name in ("npm-shrinkwrap.json", "package-lock.json")
+            if (project / name).is_file()
+        ]
+        if not lockfiles:
+            raise SystemExit(
+                "--node-npm requires a committed npm lockfile "
+                "(package-lock.json or npm-shrinkwrap.json) at the project root; "
+                "run `npm install` on the host and commit the lockfile first"
+            )
+
+        workspace_members = _detect_npm_workspaces(project, project / lockfiles[0])
+        generated = context_dir / "Dockerfile.node-npm"
+        if write_generated:
+            generated = dockerfile.render_node_npm_dockerfile(
+                context_dir,
+                lockfiles=lockfiles,
+                workspace_members=workspace_members,
+                has_playwright=_lockfile_has_playwright(project / lockfiles[0]),
+            )
+        return None, generated, project
+
     if args.dockerfile:
         if args.base_image:
             raise SystemExit("Use either base_image or --dockerfile, not both")
@@ -1599,6 +1696,106 @@ def _detect_cargo_workspace(project: Path) -> tuple[bool, list[str], bool]:
             if (member_path / "Cargo.toml").exists():
                 members.append(rel)
     return True, members, root_is_package
+
+
+def _detect_npm_workspaces(project: Path, lockfile: Path) -> list[str]:
+    """Use npm's locked local package paths rather than reimplementing its globs.
+
+    Workspace-capable lockfiles contain both local package metadata and links
+    to those packages. Preserve lexical paths for COPY and npm's relative
+    links, while checking resolved paths stay inside the build context.
+    """
+
+    def fail(reason: str) -> NoReturn:
+        raise SystemExit(
+            f"--node-npm: {reason}; run `npm install` on the host and commit "
+            "the updated manifests and lockfile"
+        )
+
+    try:
+        data = json.loads((project / "package.json").read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        fail(f"cannot read package.json: {exc}")
+    if not isinstance(data, dict):
+        fail("package.json must contain an object")
+
+    def patterns(declaration) -> list[str]:
+        if isinstance(declaration, dict):
+            declaration = declaration.get("packages")
+        if not isinstance(declaration, list) or not all(
+            isinstance(pattern, str) for pattern in declaration
+        ):
+            fail("workspaces must be an array of strings or a packages array")
+        return declaration
+
+    workspaces = patterns(data.get("workspaces", []))
+    if not workspaces:
+        return []
+
+    try:
+        locked = json.loads(lockfile.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        fail(f"cannot read {lockfile.name}: {exc}")
+    if not isinstance(locked, dict) or locked.get("lockfileVersion") not in (2, 3):
+        fail("npm workspaces require a version 2 or 3 lockfile")
+    packages = locked.get("packages")
+    if not isinstance(packages, dict) or not isinstance(packages.get(""), dict):
+        fail(f"{lockfile.name} is missing root package metadata")
+    if patterns(packages[""].get("workspaces", [])) != workspaces:
+        fail(f"{lockfile.name} has stale root workspace declarations")
+
+    root = project.resolve()
+
+    def local_path(value: str) -> str:
+        path = Path(value)
+        if path.is_absolute() or ".." in path.parts or "node_modules" in path.parts:
+            fail(f"invalid local package path {value!r} in {lockfile.name}")
+        try:
+            (project / path / "package.json").resolve().relative_to(root)
+        except (OSError, RuntimeError, ValueError):
+            fail(f"local package path {value!r} escapes the project")
+        if path == Path(".") or not (project / path / "package.json").is_file():
+            fail(f"missing local package manifest {value!r}/package.json")
+        return path.as_posix()
+
+    members: set[str] = set()
+    for key, package in packages.items():
+        if not isinstance(package, dict):
+            fail(f"invalid package metadata for {key!r} in {lockfile.name}")
+        if key and "node_modules" not in Path(key).parts:
+            members.add(local_path(key))
+        if package.get("link"):
+            target = package.get("resolved")
+            if not isinstance(target, str) or target not in packages:
+                fail(f"missing local package metadata for link {key!r}")
+            members.add(local_path(target))
+    return sorted(members)
+
+
+_PLAYWRIGHT_PACKAGES = ("playwright", "@playwright/test")
+
+
+def _lockfile_has_playwright(lockfile: Path) -> bool:
+    """Return True when the lockfile installs Playwright at the root node_modules.
+
+    Only top-level installs count: a Playwright nested under another package's
+    node_modules does not expose the ``playwright`` CLI the image build runs.
+    """
+    try:
+        data = json.loads(lockfile.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    packages = data.get("packages")
+    if isinstance(packages, dict):
+        return any(f"node_modules/{name}" in packages for name in _PLAYWRIGHT_PACKAGES)
+    # lockfileVersion 1 has no "packages" map; its top-level "dependencies"
+    # keys are the root node_modules entries.
+    dependencies = data.get("dependencies")
+    return isinstance(dependencies, dict) and any(
+        name in dependencies for name in _PLAYWRIGHT_PACKAGES
+    )
 
 
 def _tracked_project_dockerfiles(
@@ -2152,6 +2349,8 @@ def _build_session_command(
             add_hosts=(
                 ollama_add_hosts or ([ollama_add_host] if ollama_add_host else [])
             ),
+            shm_size=_effective_shm_size(args),
+            node_modules_tmpfs=getattr(args, "node_npm", False),
         )
     else:
         mounts = container_cli.build_mount_specs(

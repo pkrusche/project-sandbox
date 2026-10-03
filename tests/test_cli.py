@@ -3,6 +3,7 @@ import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -5699,3 +5700,549 @@ class WorktreeMetadataWaitTests(TestCase):
 
         self.assertEqual(waited, 0.0)
         wait.assert_not_called()
+
+
+def _make_npm_project(
+    root: Path,
+    *,
+    package_json: dict | None = None,
+    lockfile: str | None = "package-lock.json",
+    lock_packages: dict | None = None,
+    workspace_members: tuple[str, ...] = (),
+) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    manifest = package_json or {"name": "demo", "version": "1.0.0"}
+    packages = dict(lock_packages or {})
+    for member in workspace_members:
+        member_path = root / member
+        member_path.mkdir(parents=True)
+        name = member.replace("/", "-")
+        member_manifest = {"name": name, "version": "1.0.0"}
+        (member_path / "package.json").write_text(json.dumps(member_manifest))
+        packages[member] = member_manifest
+        packages[f"node_modules/{name}"] = {"resolved": member, "link": True}
+    (root / "package.json").write_text(
+        json.dumps(manifest),
+        encoding="utf-8",
+    )
+    if lockfile is not None:
+        (root / lockfile).write_text(
+            json.dumps(
+                {
+                    "name": "demo",
+                    "lockfileVersion": 3,
+                    "packages": {"": manifest, **packages},
+                }
+            ),
+            encoding="utf-8",
+        )
+    return root
+
+
+class NodeNpmFlagTests(TestCase):
+    """Tests for --node-npm and --shm-size."""
+
+    def _main(self, argv: list[str], project: Path) -> tuple[int, str]:
+        out = io.StringIO()
+        with (
+            patch.object(
+                cli, "read_identity", return_value=GitIdentity("A", "a@b.com")
+            ),
+            patch.object(
+                cli.config_agents,
+                "_agent_host_paths",
+                return_value=_agent_paths(project / "home"),
+            ),
+            contextlib.redirect_stdout(out),
+        ):
+            rc = cli.main(argv)
+        return rc, out.getvalue()
+
+    def _assert_rejected(self, argv: list[str], project: Path, *fragments: str) -> None:
+        with self.assertRaises(SystemExit) as raised:
+            self._main(argv, project)
+        for fragment in fragments:
+            self.assertIn(fragment, str(raised.exception))
+
+    # --- mutual exclusion ---
+
+    def test_node_npm_conflicts_with_other_build_sources(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = _make_npm_project(Path(tmp))
+            source = project / "Dockerfile"
+            source.write_text("FROM debian\n", encoding="utf-8")
+            cases = {
+                "base_image": ([str(project), "debian:trixie-slim"], "base_image"),
+                "--dockerfile": (
+                    ["--dockerfile", str(source), str(project)],
+                    "--dockerfile",
+                ),
+                "--python-uv": (["--python-uv", str(project)], "--python-uv"),
+                "--rust-cargo": (["--rust-cargo", str(project)], "--rust-cargo"),
+            }
+            for name, (extra, other) in cases.items():
+                with self.subTest(conflict=name):
+                    self._assert_rejected(
+                        ["--dry-run", "--node-npm", *extra],
+                        project,
+                        "--node-npm",
+                        other,
+                        "mutually exclusive",
+                    )
+            self.assertFalse((project / ".project-sandbox").exists())
+
+    # --- chroot and --shm-size validation ---
+
+    def test_node_npm_rejected_with_chroot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = _make_npm_project(Path(tmp))
+            for dry_run in ([], ["--dry-run"]):
+                with self.subTest(dry_run=bool(dry_run)):
+                    self._assert_rejected(
+                        [*dry_run, "--runtime", "chroot", "--node-npm", str(project)],
+                        project,
+                        "--node-npm requires an image-based runtime",
+                    )
+
+    def test_shm_size_rejected_with_chroot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            self._assert_rejected(
+                ["--runtime", "chroot", "--shm-size", "1g", str(project)],
+                project,
+                "--shm-size requires an image-based runtime",
+            )
+
+    def test_shm_size_format_validation(self) -> None:
+        for value in ("2g", "512m", "64M", "1024k", "4096b", "1G"):
+            with self.subTest(valid=value):
+                cli._validate_shm_size(value)
+        for value in ("", "2", "0g", "-1g", "2gb", "1.5g", "2t", "g", " 2g"):
+            with self.subTest(invalid=value), self.assertRaises(SystemExit) as raised:
+                cli._validate_shm_size(value)
+            self.assertIn("Invalid --shm-size", str(raised.exception))
+
+    def test_invalid_shm_size_fails_cli(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = _make_npm_project(Path(tmp))
+            self._assert_rejected(
+                ["--dry-run", "--node-npm", "--shm-size", "lots", str(project)],
+                project,
+                "Invalid --shm-size",
+            )
+
+    # --- manifests and lockfile ---
+
+    def test_missing_lockfile_fails_without_writing_dockerfile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = _make_npm_project(Path(tmp), lockfile=None)
+            for dry_run in (["--dry-run"], []):
+                with self.subTest(dry_run=bool(dry_run)):
+                    self._assert_rejected(
+                        [*dry_run, "--node-npm", str(project)],
+                        project,
+                        "--node-npm requires a committed npm lockfile",
+                    )
+                    self.assertFalse(
+                        (project / ".project-sandbox" / "Dockerfile").exists()
+                    )
+                    self.assertFalse(
+                        (project / ".project-sandbox" / "Dockerfile.node-npm").exists()
+                    )
+
+    def test_missing_package_json_fails_without_writing_dockerfile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "package-lock.json").write_text("{}", encoding="utf-8")
+            self._assert_rejected(
+                ["--node-npm", str(project)], project, "requires package.json"
+            )
+            self.assertFalse((project / ".project-sandbox" / "Dockerfile").exists())
+
+    def test_shrinkwrap_is_accepted_as_lockfile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = _make_npm_project(Path(tmp), lockfile="npm-shrinkwrap.json")
+            rc, _ = self._main(["--node-npm", str(project)], project)
+            self.assertEqual(rc, 0)
+            generated = (
+                project / ".project-sandbox" / "Dockerfile.node-npm"
+            ).read_text(encoding="utf-8")
+        self.assertIn("COPY package.json npm-shrinkwrap.json ./", generated)
+        self.assertNotIn("package-lock.json", generated)
+
+    # --- workspace detection ---
+
+    def test_workspaces_use_locked_paths_for_npm_patterns(self) -> None:
+        declarations = (
+            ["packages/{a,b}"],
+            ["packages/@(a|b)"],
+            ["packages/*", "!packages/a", "packages/a"],
+            {"packages": ["packages/**"]},
+        )
+        for declaration in declarations:
+            with (
+                self.subTest(declaration=declaration),
+                tempfile.TemporaryDirectory() as tmp,
+            ):
+                project = _make_npm_project(
+                    Path(tmp),
+                    package_json={"name": "root", "workspaces": declaration},
+                    workspace_members=("packages/a", "packages/b"),
+                )
+                # Unlocked directories and installed dependencies are not members.
+                (project / "packages/unlocked").mkdir()
+                (project / "packages/unlocked/package.json").write_text("{}")
+                self.assertEqual(
+                    cli._detect_npm_workspaces(project, project / "package-lock.json"),
+                    ["packages/a", "packages/b"],
+                )
+
+    def test_workspace_lockfile_validation(self) -> None:
+        cases = (
+            ({"lockfileVersion": 1}, "version 2 or 3"),
+            ({"lockfileVersion": 3, "packages": {}}, "missing root package metadata"),
+            (
+                {"lockfileVersion": 3, "packages": {"": {"workspaces": ["old/*"]}}},
+                "stale root workspace declarations",
+            ),
+            (
+                {
+                    "lockfileVersion": 3,
+                    "packages": {
+                        "": {"workspaces": ["packages/*"]},
+                        "packages/missing": {},
+                    },
+                },
+                "missing local package manifest",
+            ),
+            (
+                {
+                    "lockfileVersion": 3,
+                    "packages": {
+                        "": {"workspaces": ["packages/*"]},
+                        "node_modules/missing": {
+                            "link": True,
+                            "resolved": "packages/missing",
+                        },
+                    },
+                },
+                "missing local package metadata",
+            ),
+        )
+        for locked, error in cases:
+            with self.subTest(error=error), tempfile.TemporaryDirectory() as tmp:
+                project = _make_npm_project(
+                    Path(tmp),
+                    package_json={"workspaces": ["packages/*"]},
+                )
+                lockfile = project / "package-lock.json"
+                lockfile.write_text(json.dumps(locked))
+                for dry_run in ([], ["--dry-run"]):
+                    self._assert_rejected(
+                        [*dry_run, "--node-npm", str(project)],
+                        project,
+                        error,
+                        "npm install",
+                    )
+                    self.assertFalse(
+                        (project / ".project-sandbox/Dockerfile.node-npm").exists()
+                    )
+
+    def test_workspaces_reject_escaping_paths_and_manifests(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            outside = root / "outside"
+            outside.mkdir()
+            (outside / "package.json").write_text("{}")
+            for member in (
+                "../outside",
+                str(outside),
+                "packages/escape",
+                "packages/symlink-manifest",
+            ):
+                with self.subTest(member=member):
+                    project = _make_npm_project(
+                        root / "proj",
+                        package_json={"workspaces": ["packages/*"]},
+                        lock_packages={member: {}},
+                    )
+                    if member == "packages/escape":
+                        (project / "packages").mkdir()
+                        (project / member).symlink_to(outside, target_is_directory=True)
+                    elif member == "packages/symlink-manifest":
+                        (project / member).mkdir()
+                        (project / member / "package.json").symlink_to(
+                            outside / "package.json"
+                        )
+                    with self.assertRaises(SystemExit) as raised:
+                        cli._detect_npm_workspaces(
+                            project, project / "package-lock.json"
+                        )
+                    self.assertIn("--node-npm", str(raised.exception))
+                    self.assertIn("npm install", str(raised.exception))
+
+    def test_workspaces_preserve_internal_symlink_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = _make_npm_project(
+                Path(tmp),
+                package_json={"workspaces": ["packages/*"]},
+                lock_packages={"packages/alias": {}},
+            )
+            (project / "actual").mkdir()
+            (project / "actual/package.json").write_text("{}")
+            (project / "packages").mkdir()
+            (project / "packages/alias").symlink_to(
+                project / "actual", target_is_directory=True
+            )
+            self.assertEqual(
+                cli._detect_npm_workspaces(project, project / "package-lock.json"),
+                ["packages/alias"],
+            )
+
+    def test_workspace_shrinkwrap_takes_precedence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = _make_npm_project(
+                Path(tmp),
+                package_json={"workspaces": ["packages/{a,b}"]},
+                lockfile="npm-shrinkwrap.json",
+                workspace_members=("packages/a", "packages/b"),
+            )
+            (project / "package-lock.json").write_text("{}")
+            rc, _ = self._main(["--node-npm", str(project)], project)
+            self.assertEqual(rc, 0)
+            text = (project / ".project-sandbox/Dockerfile.node-npm").read_text()
+            for member in ("packages/a", "packages/b"):
+                self.assertIn(
+                    json.dumps([f"{member}/package.json", f"{member}/"]), text
+                )
+
+    def test_workspaces_accept_version_two_lockfile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = _make_npm_project(
+                Path(tmp),
+                package_json={"workspaces": ["packages/*"]},
+                workspace_members=("packages/a",),
+            )
+            lock = project / "package-lock.json"
+            data = json.loads(lock.read_text())
+            data["lockfileVersion"] = 2
+            lock.write_text(json.dumps(data))
+            self.assertEqual(cli._detect_npm_workspaces(project, lock), ["packages/a"])
+
+    def test_plain_projects_keep_v1_lockfile_support(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = _make_npm_project(Path(tmp))
+            lock = project / "package-lock.json"
+            lock.write_text('{"lockfileVersion": 1}')
+            self.assertEqual(cli._detect_npm_workspaces(project, lock), [])
+
+    def test_workspace_metadata_and_manifest_errors_are_clear(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = _make_npm_project(
+                Path(tmp), package_json={"workspaces": ["packages/*"]}
+            )
+            lock = project / "package-lock.json"
+            lock.write_text("{bad json")
+            with self.assertRaisesRegex(SystemExit, "cannot read package-lock.json"):
+                cli._detect_npm_workspaces(project, lock)
+            (project / "package.json").write_text("{bad json")
+            with self.assertRaisesRegex(SystemExit, "cannot read package.json"):
+                cli._detect_npm_workspaces(project, lock)
+            (project / "package.json").write_text('{"workspaces": [3]}')
+            with self.assertRaisesRegex(SystemExit, "array of strings"):
+                cli._detect_npm_workspaces(project, lock)
+
+    @unittest.skipUnless(
+        shutil.which("npm"), "requires host npm for offline compatibility check"
+    )
+    def test_locked_workspace_manifests_install_the_same_links_as_npm(self) -> None:
+        # Use real npm resolution and ci, without registry access or lifecycle scripts.
+        for declaration in (
+            ["packages/{a,b}"],
+            ["packages/@(a|b)"],
+            ["packages/*", "!packages/a", "packages/a"],
+            {"packages": ["packages/*"]},
+        ):
+            with (
+                self.subTest(declaration=declaration),
+                tempfile.TemporaryDirectory() as tmp,
+            ):
+                project = _make_npm_project(
+                    Path(tmp) / "host",
+                    package_json={
+                        "name": "root",
+                        "version": "1.0.0",
+                        "workspaces": declaration,
+                    },
+                    lockfile=None,
+                    workspace_members=("packages/a", "packages/b"),
+                )
+                common = ["--offline", "--ignore-scripts", "--no-audit", "--no-fund"]
+                subprocess.run(
+                    ["npm", "install", "--package-lock-only", *common],
+                    cwd=project,
+                    check=True,
+                    capture_output=True,
+                )
+                build = Path(tmp) / "build"
+                build.mkdir()
+                for filename in ("package.json", "package-lock.json"):
+                    shutil.copy2(project / filename, build / filename)
+                members = cli._detect_npm_workspaces(
+                    project, project / "package-lock.json"
+                )
+                self.assertEqual(members, ["packages/a", "packages/b"])
+                for member in members:
+                    (build / member).mkdir(parents=True)
+                    shutil.copy2(
+                        project / member / "package.json",
+                        build / member / "package.json",
+                    )
+                subprocess.run(
+                    ["npm", "ci", *common], cwd=build, check=True, capture_output=True
+                )
+                for member in members:
+                    link = build / "node_modules" / member.replace("/", "-")
+                    self.assertTrue(link.is_symlink())
+                    self.assertEqual(link.resolve(), build / member)
+
+    # --- Playwright detection ---
+
+    def test_lockfile_playwright_detection(self) -> None:
+        cases = {
+            "playwright": ({"node_modules/playwright": {}}, True),
+            "@playwright/test": ({"node_modules/@playwright/test": {}}, True),
+            "absent": ({"node_modules/vite": {}}, False),
+            "nested-only": (
+                {"node_modules/some-tool/node_modules/playwright": {}},
+                False,
+            ),
+            "similar-name": ({"node_modules/playwright-core": {}}, False),
+        }
+        for name, (packages, expected) in cases.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as tmp:
+                project = _make_npm_project(Path(tmp), lock_packages=packages)
+                self.assertEqual(
+                    cli._lockfile_has_playwright(project / "package-lock.json"),
+                    expected,
+                )
+
+    def test_lockfile_v1_playwright_detection_and_bad_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            lock = Path(tmp) / "package-lock.json"
+            lock.write_text(
+                json.dumps(
+                    {"lockfileVersion": 1, "dependencies": {"@playwright/test": {}}}
+                )
+            )
+            self.assertTrue(cli._lockfile_has_playwright(lock))
+            lock.write_text("not json")
+            self.assertFalse(cli._lockfile_has_playwright(lock))
+
+    # --- generated files and dry-run ---
+
+    def test_node_npm_run_writes_dockerfile_and_dockerignore(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = _make_npm_project(
+                Path(tmp),
+                package_json={"workspaces": ["packages/*"]},
+                lock_packages={"node_modules/@playwright/test": {}},
+                workspace_members=("packages/ui",),
+            )
+            rc, _ = self._main(["--node-npm", str(project)], project)
+            self.assertEqual(rc, 0)
+            context = project / ".project-sandbox"
+            generated = (context / "Dockerfile.node-npm").read_text()
+            final = (context / "Dockerfile").read_text()
+            self.assertTrue((context / "Dockerfile.dockerignore").is_file())
+            self.assertIn(
+                "**/node_modules", (context / "Dockerfile.dockerignore").read_text()
+            )
+        self.assertIn('COPY ["packages/ui/package.json", "packages/ui/"]', generated)
+        self.assertIn("playwright install --with-deps chromium", generated)
+        # The generated stage body runs after the sandbox Node.js install.
+        self.assertLess(final.index('NODE_VERSION="v26'), final.index("RUN npm ci"))
+
+    def test_node_npm_dry_run_writes_nothing_and_shows_runtime_flags(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = _make_npm_project(Path(tmp))
+            rc, output = self._main(
+                [
+                    "--dry-run",
+                    "--node-npm",
+                    "--runtime",
+                    "docker",
+                    "--agent",
+                    "bash",
+                    str(project),
+                ],
+                project,
+            )
+            self.assertEqual(rc, 0)
+            self.assertFalse((project / ".project-sandbox").exists())
+            self.assertFalse((project / "node_modules").exists())
+        self.assertIn("Would write synthesised Dockerfile:", output)
+        self.assertIn("Dockerfile.node-npm", output)
+        self.assertIn("--shm-size 2g", output)
+        self.assertIn("--tmpfs /workspace/node_modules:rw,exec,mode=1777", output)
+
+    def test_session_command_shm_size_and_tmpfs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = _make_npm_project(Path(tmp))
+            cases = [
+                (["--node-npm"], "2g", True),
+                (["--node-npm", "--shm-size", "4g"], "4g", True),
+                (["--shm-size", "1g"], "1g", False),
+                ([], None, False),
+            ]
+            for extra, shm, tmpfs in cases:
+                with self.subTest(extra=extra):
+                    base = [] if extra and extra[0] == "--node-npm" else ["img"]
+                    _, output = self._main(
+                        [
+                            "--dry-run",
+                            "--runtime",
+                            "docker",
+                            "--agent",
+                            "bash",
+                            *extra,
+                            str(project),
+                            *base,
+                        ],
+                        project,
+                    )
+                    if shm is None:
+                        self.assertNotIn("--shm-size", output)
+                    else:
+                        self.assertIn(f"--shm-size {shm}", output)
+                    self.assertEqual("--tmpfs" in output, tmpfs)
+
+    def test_node_npm_branch_uses_workspace_as_asset_project(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "main"
+            project.mkdir()
+            _make_git_repo(project)
+            workspace = _make_npm_project(Path(tmp) / "branch")
+            with (
+                patch.object(cli, "_plan_worktree", return_value=(None, workspace)),
+            ):
+                rc, output = self._main(
+                    [
+                        "--dry-run",
+                        "--node-npm",
+                        "--runtime",
+                        "docker",
+                        "--agent",
+                        "bash",
+                        "--branch",
+                        "feature",
+                        str(project),
+                    ],
+                    project,
+                )
+            self.assertEqual(rc, 0)
+        self.assertIn(
+            f"Would write synthesised Dockerfile: "
+            f"{workspace / '.project-sandbox' / 'Dockerfile.node-npm'}",
+            output,
+        )

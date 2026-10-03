@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from unittest.mock import patch
 
 from project_sandbox.container_cli import (
+    APPLE_CONTAINER,
     CHROOT,
     DOCKER,
     PODMAN,
@@ -743,3 +744,51 @@ class ContainerCliTests(TestCase):
         self.assertEqual(merged_env["MY_SECRET"], "top-secret-value")
         # The rest of the parent environment must still be present.
         self.assertEqual(merged_env.get("PATH"), os.environ.get("PATH"))
+
+
+class NodeNpmRunArgvTests(TestCase):
+    def _argv(self, runtime, **kwargs) -> list[str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            return build_run_argv(
+                runtime=runtime,
+                image="project-sandbox:test",
+                project_abs=root / "workspace",
+                claude_cfg=root / "claude/settings.json",
+                codex_cfg=root / "codex/config.toml",
+                codex_credentials_dir=None,
+                identity=GitIdentity(None, None),
+                memory="8g",
+                cpus=4,
+                extra_mounts=[],
+                agent="bash",
+                firewall_enabled=True,
+                interactive=False,
+                **kwargs,
+            )
+
+    def test_tmpfs_and_shm_size_per_runtime(self) -> None:
+        expected = {
+            DOCKER: "/workspace/node_modules:rw,exec,mode=1777",
+            PODMAN: "/workspace/node_modules:rw,exec,mode=1777",
+            APPLE_CONTAINER: "/workspace/node_modules",
+        }
+        for runtime, tmpfs in expected.items():
+            with self.subTest(runtime=runtime.name):
+                cmd = self._argv(runtime, shm_size="2g", node_modules_tmpfs=True)
+                self.assertEqual(cmd[cmd.index("--tmpfs") + 1], tmpfs)
+                self.assertEqual(cmd[cmd.index("--shm-size") + 1], "2g")
+                # The tmpfs must come after the /workspace bind so it shadows
+                # the host's node_modules.
+                workspace_bind = next(
+                    i for i, arg in enumerate(cmd) if arg.endswith("target=/workspace")
+                )
+                self.assertLess(workspace_bind, cmd.index("--tmpfs"))
+                self.assertLess(cmd.index("--tmpfs"), cmd.index("project-sandbox:test"))
+
+    def test_no_tmpfs_or_shm_size_by_default(self) -> None:
+        for runtime in (DOCKER, PODMAN, APPLE_CONTAINER):
+            with self.subTest(runtime=runtime.name):
+                cmd = self._argv(runtime)
+                self.assertNotIn("--tmpfs", cmd)
+                self.assertNotIn("--shm-size", cmd)

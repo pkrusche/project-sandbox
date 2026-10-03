@@ -153,6 +153,43 @@ Customize:
   see `docs/usage.md` for the runtime matrix and Apple setup. `--ollama-model` overrides the
   default model list.
 
+## Node.js + npm images (`--node-npm`)
+
+`--node-npm` generates an image with more third-party code than the other flows:
+
+- **Image contents:** a `debian:trixie-slim` base with the usual sandbox
+  tooling, Debian `chromium`, fontconfig, `fonts-liberation`,
+  `fonts-noto-color-emoji`, the project's npm dependencies in
+  `/opt/node-project/node_modules`, and, when the lockfile contains Playwright,
+  Playwright's Chromium in `/opt/ms-playwright` plus the Debian packages its
+  `install --with-deps` pulls in. Both `/opt` trees are owned by the agent user.
+  This adds several hundred MB to the image.
+- **Install scripts run at build time.** `npm ci` executes dependency lifecycle
+  scripts (`preinstall`, `install`, `postinstall`) as root during the image
+  build, with unrestricted network access; Playwright's browser download runs
+  there too. The build has no access to agent credentials or the workspace
+  beyond the copied manifests, but a malicious package can tamper with the
+  image, and the agent then runs inside that image with the workspace and any
+  forwarded credentials mounted. Supply-chain risk is managed through the
+  committed lockfile: review lockfile changes and pin versions. The sandbox never runs
+  `npm install` for you at runtime (the firewall blocks the registry anyway).
+- **Chromium `--no-sandbox`.** Chromium's own sandbox needs user namespaces or a
+  setuid helper, which are unavailable to the non-root agent user in the
+  container, so browsers must be launched with `--no-sandbox` (Playwright does
+  this by default). The container (and, on Apple `container`, the VM) is the
+  isolation layer for pages the browser loads; do not point the browser at
+  untrusted sites you would not let the agent itself fetch.
+- **Runtime `node_modules`.** `/workspace/node_modules` is a tmpfs populated from
+  the image, so host-platform binaries in the host's `node_modules` are never
+  executed, and changes the agent makes there never reach the host. The
+  entrypoint requires a separate tmpfs mount at that exact path and rejects
+  symlinks, then copies only when the mount is empty. A plain directory on a
+  tmpfs-backed host filesystem does not qualify. If the mount is absent or has
+  the wrong filesystem type, the session fails before copying or starting the
+  agent.
+- **Memory.** The tmpfs and the default `2g` `/dev/shm` count against the
+  container's `--memory` limit.
+
 ## Threat Model
 
 | Threat | Mitigation |

@@ -205,6 +205,100 @@ Then run:
 uv run project-sandbox /absolute/path/to/repo --dockerfile /absolute/path/to/repo/Dockerfile
 ```
 
+## Node.js + npm Projects
+
+For npm-based web projects, `--node-npm` synthesises the base Dockerfile
+(`.project-sandbox/Dockerfile.node-npm`) instead of you writing one:
+
+```bash
+uv run project-sandbox --node-npm --agent claude /absolute/path/to/repo
+```
+
+The image bakes in the project's dependencies and a headless browser so the
+agent can build and run browser tests with the runtime firewall enabled:
+
+For a complete Playwright setup and copyable Codex `AGENTS.md` instructions,
+see [Headless browser testing](headless-browser-testing.md).
+
+- **Dependencies:** `npm ci` runs at image build time from `package.json`, the
+  lockfile, and npm workspace member `package.json` files only, into
+  `/opt/node-project/node_modules`. Source edits do not invalidate this layer;
+  manifest or lockfile changes do. A failing `npm ci` fails the build.
+- **Browsers:** Debian `chromium`, fontconfig, `fonts-liberation`, and
+  `fonts-noto-color-emoji` are always installed. When the lockfile contains
+  `playwright` or `@playwright/test`, the project's own Playwright CLI installs
+  its matching Chromium (with system dependencies) into `/opt/ms-playwright`.
+- **Environment:** `CHROME_BIN` and `PUPPETEER_EXECUTABLE_PATH` point at
+  `/usr/bin/chromium`, `PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright`, and
+  `PUPPETEER_SKIP_DOWNLOAD=true`. `CI` is not set.
+- **Node.js:** the sandbox's pinned Node.js (v26) and its bundled npm. There is
+  no per-project Node version selection and no corepack.
+
+Supported repo shapes:
+
+- npm only, with `package.json` and a committed `package-lock.json` or
+  `npm-shrinkwrap.json` at the project root. The CLI fails if either is missing.
+- A single root `node_modules`, including npm workspaces (`workspaces` as an
+  array or `{"packages": [...]}`). Workspace manifests are selected from npm's
+  resolved local package paths in a version 2 or 3 lockfile, so npm's brace
+  patterns, extglobs, and exclusion/re-inclusion rules work without host npm
+  being required by project-sandbox. Regenerate and commit the lockfile when
+  adding, removing, or changing workspaces, including changes to directories
+  matched by existing globs. Stale root declarations, missing manifests, and
+  local package paths outside the project are rejected before building, also
+  during dry-run. `npm-shrinkwrap.json` takes precedence when both lockfiles
+  exist. Plain projects without workspaces can still use a version 1 lockfile.
+  Layouts that need per-package `node_modules` directories, pnpm, yarn, and bun
+  are not supported.
+- Only the manifests and lockfile enter the dependency layer, so a root
+  `prepare`/`postinstall` lifecycle script that needs source files fails the
+  build; move such steps into a separate npm script. `.npmrc` is not copied, so
+  private registry configuration and registry auth are not available at build
+  time. This also excludes public-registry install settings such as
+  `legacy-peer-deps` and `install-links`: npm requires the same tree-shaping
+  options used to create the lockfile for `npm ci`. Projects requiring those
+  options should use a custom Dockerfile; do not copy registry credentials into
+  the image. See [npm ci](https://docs.npmjs.com/cli/commands/npm-ci/).
+
+At runtime `/workspace/node_modules` is an in-memory tmpfs that the entrypoint
+fills from the image before the agent starts:
+
+- It hides the host's `node_modules` (whose native binaries target the host
+  platform) and writes never reach the host.
+- The entrypoint requires the destination to be a separate tmpfs mount, not a
+  symlink or an ordinary directory on a tmpfs-backed host filesystem. Without
+  that mount it fails before copying dependencies or starting the agent.
+- It is writable and executable, so `node_modules/.bin` tools, native addons,
+  and tool caches such as `.vite` and `.cache` work.
+- It is ephemeral: every session starts from the image's dependencies. To add a
+  dependency, update `package.json` and the lockfile on the host (or let the
+  agent edit them and rebuild), then start a new session; the image rebuilds the
+  dependency layer.
+- It costs memory. `node_modules` and `/dev/shm` both count against `--memory`
+  (default `8g`). The build prints the baked `node_modules` size (`du -sh`);
+  raise `--memory` for large dependency trees.
+
+`--shm-size SIZE` sets the container's `/dev/shm` size (`<number>` with a `b`,
+`k`, `m`, or `g` suffix). It defaults to `2g` under `--node-npm`, because
+Chromium crashes with the runtime's small default, and otherwise leaves the
+runtime default alone. Both flags are rejected with `--runtime chroot`.
+
+```bash
+uv run project-sandbox --node-npm --shm-size 4g --memory 12g --agent bash /absolute/path/to/repo
+```
+
+Chromium needs `--no-sandbox` inside the container (Playwright passes it by
+default; configure Puppeteer or Karma launchers to do the same); see
+[security](security.md#nodejs--npm-images---node-npm). For web tests that need
+external hosts, see [Internet proxy](internet-proxy.md#web-tests-that-need-external-hosts).
+
+With `--node-npm --branch`, the image is built from the resolved worktree or jj
+workspace, like `--python-uv --branch`.
+
+Generated Node/npm devcontainers are not supported yet: their config lacks the
+`node_modules` tmpfs and `--shm-size`. Starting a Node image through the sandbox
+entrypoint without the required tmpfs fails; use a direct CLI session instead.
+
 ## Session observability and image warm-up
 
 Every direct container run reports a session ID and a container name derived
@@ -274,10 +368,12 @@ matches and the runtime confirms the image exists, the build is skipped and
 `Reusing cached image (inputs unchanged)` is printed; otherwise the image is
 rebuilt and the build duration is reported (`Built image in 12.3s`).
 
-- Auto-skip applies to the default base-image flow. `--python-uv` and
-  `--dockerfile` builds use the whole project as the build context, so they
-  always invoke the build and rely on the runtime's layer cache instead.
-- For `--python-uv` only, a generated `.project-sandbox/Dockerfile.dockerignore`
+- Auto-skip applies to the default base-image flow. `--python-uv`,
+  `--rust-cargo`, `--node-npm`, and `--dockerfile` builds use the whole project
+  as the build context, so they always invoke the build and rely on the
+  runtime's layer cache instead.
+- For the generated `--python-uv`, `--rust-cargo`, and `--node-npm` flows only,
+  a generated `.project-sandbox/Dockerfile.dockerignore`
   trims virtualenvs, `node_modules`, and tool caches from the context (it does
   not exclude `.git` — git version backends read it during the in-image install
   — nor `.project-sandbox/`, whose scripts are copied into the image). It is not

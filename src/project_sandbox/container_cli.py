@@ -9,6 +9,7 @@ from pathlib import Path
 
 from . import config_agents, session
 from .git_identity import GitIdentity
+from .paths import WORKSPACE_NODE_MODULES_TARGET
 
 RUNTIME_CHOICES = ("auto", "apple-container", "docker", "podman", "chroot")
 
@@ -229,6 +230,20 @@ def _mount_arg(mount: MountSpec) -> str:
     return value + (",readonly" if mount.readonly else "")
 
 
+def node_modules_tmpfs_arg(runtime: Runtime) -> str:
+    """Return the --tmpfs value that backs /workspace/node_modules at runtime.
+
+    Docker and Podman mount --tmpfs noexec and root-owned by default, which
+    would break node_modules/.bin scripts and native addons and keep the
+    entrypoint (running as the agent) from populating it. Apple container
+    uses a bare path; Docker and Apple container end-to-end checks were
+    confirmed passing by the user (see add-node-npm-flavor change notes).
+    """
+    if runtime.name == APPLE_CONTAINER.name:
+        return WORKSPACE_NODE_MODULES_TARGET
+    return f"{WORKSPACE_NODE_MODULES_TARGET}:rw,exec,mode=1777"
+
+
 def identity_env(identity: GitIdentity) -> list[str]:
     env: list[str] = []
     if identity.name:
@@ -301,6 +316,8 @@ def build_run_argv(
     container_name: str | None = None,
     forward_credentials: bool = True,
     add_hosts: Sequence[str] = (),
+    shm_size: str | None = None,
+    node_modules_tmpfs: bool = False,
 ) -> list[str]:
     argv = [
         runtime.binary,
@@ -313,6 +330,8 @@ def build_run_argv(
         "--workdir",
         "/workspace",
     ]
+    if shm_size is not None:
+        argv += ["--shm-size", shm_size]
     if container_name:
         argv += ["--name", container_name]
     if interactive:
@@ -340,6 +359,10 @@ def build_run_argv(
     )
     for mount in mounts:
         argv += ["--mount", _mount_arg(mount)]
+    # After the /workspace bind mount so the tmpfs shadows the host's
+    # node_modules; the entrypoint fills it from the image.
+    if node_modules_tmpfs:
+        argv += ["--tmpfs", node_modules_tmpfs_arg(runtime)]
     for env in identity_env(identity):
         argv += ["--env", env]
     argv += [
