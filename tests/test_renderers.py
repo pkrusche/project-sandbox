@@ -5,7 +5,7 @@ import sys
 import tempfile
 import tomllib
 from pathlib import Path
-from unittest import TestCase
+from unittest import TestCase, skipUnless
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -2840,6 +2840,9 @@ class NodeNpmDockerfileTests(TestCase):
             text.index("project-sandbox-init-firewall"),
         )
 
+    @skipUnless(
+        sys.platform == "linux", "executes Linux container shell code using GNU cp"
+    )
     def test_entrypoint_populates_root_owned_node_modules(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

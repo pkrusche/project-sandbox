@@ -6067,8 +6067,14 @@ class NodeNpmFlagTests(TestCase):
                 self.subTest(declaration=declaration),
                 tempfile.TemporaryDirectory() as tmp,
             ):
+                # macOS temporary paths may use /var -> /private/var. Exercise
+                # an aliased parent on every host so comparisons stay canonical.
+                actual_root = Path(tmp) / "actual"
+                actual_root.mkdir()
+                root = Path(tmp) / "alias"
+                root.symlink_to(actual_root, target_is_directory=True)
                 project = _make_npm_project(
-                    Path(tmp) / "host",
+                    root / "host",
                     package_json={
                         "name": "root",
                         "version": "1.0.0",
@@ -6084,7 +6090,7 @@ class NodeNpmFlagTests(TestCase):
                     check=True,
                     capture_output=True,
                 )
-                build = Path(tmp) / "build"
+                build = root / "build"
                 build.mkdir()
                 for filename in ("package.json", "package-lock.json"):
                     shutil.copy2(project / filename, build / filename)
@@ -6104,7 +6110,7 @@ class NodeNpmFlagTests(TestCase):
                 for member in members:
                     link = build / "node_modules" / member.replace("/", "-")
                     self.assertTrue(link.is_symlink())
-                    self.assertEqual(link.resolve(), build / member)
+                    self.assertEqual(link.resolve(), (build / member).resolve())
 
     # --- Playwright detection ---
 
