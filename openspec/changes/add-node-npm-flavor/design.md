@@ -82,4 +82,4 @@ Additive flag; no migration. Rollback is removing the flag.
 
 ## Validation
 
-The user confirmed Docker and Apple container e2e checks passed on 2026-10-02. The generated base remains `debian:trixie-slim`. Completion records distinguish this user-reported validation from locally run unit tests; runtime versions and raw measurements are not recorded. Further smoke-script assertions and other finishing improvements remain in `TODO.md`.
+The user confirmed Docker and Apple container e2e checks passed on 2026-10-02. The generated base remains `debian:trixie-slim`. Completion records distinguish this user-reported validation from locally run unit tests; runtime versions and raw measurements are not recorded. The smoke script now checks default/overridden shared memory, Vite build output and dependency-cache writes, and both system and bundled Playwright Chromium in two fresh sessions. This expanded script has not yet been run against a container runtime in the implementation environment.

@@ -40,7 +40,7 @@
 
 - The user confirmed on 2026-10-02 that Docker and Apple container e2e checks passed and requested that these checks be marked complete. Tasks 1.1, 3.3, 4.1, 4.2, and 4.4 are recorded complete on that basis. These are user-reported results; raw logs, runtime versions, mount permission measurements, and `/dev/shm` measurements were not supplied.
 - Docker/Podman keep `--tmpfs /workspace/node_modules:rw,exec,mode=1777`; Apple container keeps `--tmpfs /workspace/node_modules`. The CLI does not create a host mount target or add a sudoers helper. Podman has argv-construction coverage but no reported e2e result.
-- The base image is `debian:trixie-slim`; the earlier base-image choice is resolved. The smoke script still needs stronger shared-memory assertions, Vite build/cache coverage, and bundled-browser coverage; these follow-ups are tracked in `TODO.md`.
+- The base image is `debian:trixie-slim`; the earlier base-image choice is resolved. The smoke script now asserts the default and overridden shared-memory sizes, checks a Vite build and real dependency-cache writes, and tests both system and bundled Playwright Chromium in each session.
 - Review fixes (2026-10-03): use npm's locked local package resolution instead of Python glob expansion, validate workspace metadata during dry-run, and require a separate tmpfs mount before dependency copying. Regression tests cover npm pattern compatibility, manifest/path validation, and host directories on tmpfs. The earlier e2e confirmation applies to the feature before these review fixes; verification of the fixes is recorded separately.
 
 ## Review-fix verification (2026-10-03)
@@ -49,6 +49,11 @@
 - Python compilation, Ruff checks on the changed Python files, rendered entrypoint shell syntax, and smoke-script shell syntax passed.
 - A direct CLI dry-run against a real npm-generated workspace lockfile succeeded and left the project filesystem unchanged.
 - Docker and Apple container e2e checks were not rerun in this environment after the review fixes; their previously confirmed results remain recorded above.
+
+## Expanded smoke-script verification (2026-10-03)
+
+- Shell syntax and generated JavaScript syntax passed. Mocked tool checks verified both session arguments and failure on incorrect shared memory, missing build assets, or missing Vite cache; these checks do not replace a real browser/container run.
+- The full pytest suite still passes: 694 passed, 4 skipped, 183 subtests passed. No image-based runtime is available here, so the expanded smoke script has not been run end to end.
 
 ## Real-repository validation (2026-10-02)
 

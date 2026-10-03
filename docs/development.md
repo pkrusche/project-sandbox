@@ -82,11 +82,17 @@ teardown when a real runtime is selected, and availability-gated Ollama checks. 
 to run the gateway-only network/credential isolation audit followed by two
 billable Pi/OpenCode LLM requests.
 
-The Node/npm smoke script creates a minimal npm workdir, resolves and locks
-`@playwright/test` on the host, builds the sandbox, and runs headless tests with
-system Chromium and the firewall enabled. It checks page rendering and clicks,
-writable/executable `node_modules`, host-directory isolation, and fresh
-dependencies in a second session. It uses a Bash agent without AI credentials.
+The Node/npm smoke script creates a small Vite app, resolves and locks
+`@playwright/test`, Vite, and `lodash-es` on the host, and builds the sandbox.
+Each of two sessions runs a production build, checks its output, and runs the
+page-rendering/click test against both system Chromium and Playwright's bundled
+Chromium with the firewall enabled. Importing `lodash-es` exercises dependency
+pre-bundling; the script asserts that Vite emitted `.vite` cache metadata and
+JavaScript inside the writable/executable `node_modules` tmpfs. It also checks
+host-directory isolation and fresh dependencies/cache state in the second
+session. The first session asserts the default 2 GiB `/dev/shm`; the second
+asserts an explicit `--shm-size 1g` override. It uses a Bash agent without AI
+credentials.
 Requires host npm, uv, build-time Internet access, and a running image-based
 runtime:
 
