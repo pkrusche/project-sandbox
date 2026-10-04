@@ -1,9 +1,10 @@
-# Headless browser testing with Codex
+# Headless browser testing
 
-Use `--node-npm` to give Codex an npm environment with Chromium, then keep
-repeatable browser tests and their execution instructions in the application
-repository. Browser tests can run from an interactive Codex session or an
-unsupervised session started with a prompt.
+`--node-npm` provides Node.js, npm dependencies, and Chromium for any supported
+agent or a Bash shell. Keep repeatable browser tests in the application
+repository so they can run in interactive sessions, prompt-driven sessions,
+and manual checks. This guide uses Playwright Test; the image setup does not
+depend on which agent runs it.
 
 ## Install the test dependency on the host
 
@@ -101,59 +102,48 @@ Add `/test-results/` and `/playwright-report/` to the application's `.gitignore`
 Replace the sample assertion with a real application expectation, and add tests
 for its main interactions and error states.
 
-## Give Codex persistent instructions
+## Give the agent reusable instructions
 
-Add the following section to the application repository's root `AGENTS.md`.
-This is for the application being tested, not project-sandbox's own contributor
-instructions. Update the command and URL if you changed the example above.
-Codex reads repository instructions automatically; see the
-[official OpenAI documentation](https://learn.chatgpt.com/docs/agent-configuration/agents-md).
+Put browser-testing instructions in the application repository's instructions
+file, using the filename and location your agent reads (for example, `AGENTS.md`
+or `CLAUDE.md`). You can also include them directly in a task prompt. These
+instructions belong to the application being tested, not project-sandbox's
+contributor guide. Adapt the paths, command, and URL to your application.
 
 ```markdown
 ## Browser testing
 
-- For changes to user-visible behavior, add or update relevant Playwright tests
-  in tests/e2e and run npm run test:e2e. For a focused rerun, use
+- For changes to user-visible behavior, add or update tests in tests/e2e and
+  run npm run test:e2e. Rerun a single file with
   npm run test:e2e -- tests/e2e/<file>.spec.ts.
-- These tests use disposable local fixtures and have no production access.
-  You may run them, fix failures caused by the requested change, and rerun
-  affected tests without asking for approval at each step.
-- Run Chromium headlessly using playwright.config.ts. Its webServer starts
-  the app at http://127.0.0.1:5173, waits for readiness, and stops it afterward.
-  Do not start a second server or use a server on the host.
-- Set use.launchOptions.executablePath to /usr/bin/chromium and
-  use.launchOptions.args to ['--no-sandbox'] in playwright.config.ts.
-  For standalone Playwright scripts, pass executablePath: '/usr/bin/chromium',
-  headless: true, and args: ['--no-sandbox'] to chromium.launch().
+- Use playwright.config.ts to launch headless Chromium at /usr/bin/chromium
+  with --no-sandbox. Let its webServer manage the app at http://127.0.0.1:5173;
+  do not start a second server.
 - Dependencies and Chromium are preinstalled by project-sandbox --node-npm.
-  Use the existing npm script; do not download packages or browsers at runtime.
-  CHROME_BIN and PLAYWRIGHT_BROWSERS_PATH do not select the system executable
-  for Playwright; keep the explicit executablePath above. Do not use headed
-  mode, UI mode, Chrome channels, Firefox, or WebKit.
-- Test the changed user flow and relevant error states with observable
-  assertions. Check unexpected browser console errors and uncaught page errors
-  when relevant. Use mocked external APIs and local assets so tests work with
-  the runtime firewall enabled.
-- Failure screenshots and traces go under test-results/. Keep generated
-  artifacts out of version control. Capture extra screenshots there when
-  visual inspection helps validate the change.
-- Report the commands run, pass/fail results, and any remaining blockers.
-  If a dependency or browser is missing, report the required host-side change
-  and sandbox rebuild rather than silently skipping browser validation.
+  Do not install packages or browsers during the session. If dependencies are
+  missing, report the host-side manifest update and sandbox rebuild needed.
+- Cover the changed flow and relevant error states with observable assertions.
+  Use disposable local fixtures, mocked external APIs, and local assets so
+  tests work with the runtime firewall enabled.
+- Keep screenshots and traces in test-results/ and out of version control.
+  Report the commands run, results, and any remaining blockers.
 ```
 
 ## Start the sandbox and run a task
 
-Start an interactive Codex session:
+Choose an agent with `--agent`: `claude`, `codex`, `opencode`, or `pi`.
+The examples use Claude; substitute your preferred agent.
+
+Start an interactive session:
 
 ```bash
-project-sandbox --node-npm --agent codex /absolute/path/to/app
+project-sandbox --node-npm --agent claude /absolute/path/to/app
 ```
 
-Then ask Codex to validate a concrete flow, for example:
+Then ask the agent to validate a concrete flow, for example:
 
 ```text
-Test the sign-up form in headless Chromium using the AGENTS.md browser-testing
+Test the sign-up form in headless Chromium using the repository browser-testing
 instructions. Cover successful submission and invalid email input with mocked
 API responses. Add repeatable tests, run them, and report the results.
 ```
@@ -161,8 +151,8 @@ API responses. Add repeatable tests, run them, and report the results.
 To run the same task without an interactive session:
 
 ```bash
-project-sandbox --node-npm --agent codex /absolute/path/to/app \
-  --prompt-text 'Validate the sign-up form using the AGENTS.md browser-testing instructions. Cover successful submission and invalid email input with mocked API responses. Add repeatable tests, run them, and report the results.'
+project-sandbox --node-npm --agent claude /absolute/path/to/app \
+  --prompt-text 'Validate the sign-up form using the repository browser-testing instructions. Cover successful submission and invalid email input with mocked API responses. Add repeatable tests, run them, and report the results.'
 ```
 
 From a project-sandbox source checkout, prefix the command with `uv run`.
