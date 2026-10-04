@@ -1,5 +1,6 @@
 import contextlib
 import io
+import os
 import shutil
 import subprocess
 import sys
@@ -33,7 +34,6 @@ def _find_docker() -> str | None:
     return None
 
 
-DOCKER = _find_docker()
 DOCKER_IMAGE = "ubuntu:22.04"
 
 
@@ -683,9 +683,20 @@ class JjWorkspaceTeardownTests(unittest.TestCase):
         self.assertIn("feat/undescribed — 2026-07-01T09:10", log_out)
 
 
-@unittest.skipUnless(JJ and DOCKER, "jj and docker/podman both required")
+@unittest.skipUnless(
+    os.environ.get("PROJECT_SANDBOX_CONTAINER_TESTS") == "1",
+    "set PROJECT_SANDBOX_CONTAINER_TESTS=1 to run real-container tests",
+)
 class JjWorkspaceDockerEndToEndTests(unittest.TestCase):
     """Container writes a file; host describes+verifies revision; teardown cleans up."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        if not JJ:
+            raise unittest.SkipTest("jj is required")
+        cls.docker = _find_docker()
+        if cls.docker is None:
+            raise unittest.SkipTest("docker/podman not available")
 
     def setUp(self) -> None:
         self._td = tempfile.TemporaryDirectory()
@@ -698,11 +709,11 @@ class JjWorkspaceDockerEndToEndTests(unittest.TestCase):
         self._td.cleanup()
 
     def _docker(self, ws_path: Path, bash_cmd: str) -> None:
-        assert DOCKER is not None
+        assert self.docker is not None
         jj_dir = str((self.repo / ".jj").resolve())
         subprocess.run(
             [
-                DOCKER,
+                self.docker,
                 "run",
                 "--rm",
                 "--mount",

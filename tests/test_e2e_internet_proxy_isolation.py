@@ -2,13 +2,14 @@ import importlib.util
 import io
 import json
 import os
-import re
+import socket
+import tempfile
 import urllib.error
-from contextlib import redirect_stdout
+from contextlib import chdir, redirect_stderr, redirect_stdout
 from email.message import Message
 from pathlib import Path
 from unittest import TestCase
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 
 def _load_checker():
@@ -21,49 +22,251 @@ def _load_checker():
 
 
 class InternetProxyEndToEndScriptTests(TestCase):
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.source = (
-            Path(__file__).parents[1] / "scripts/e2e-internet-proxy-isolation.py"
-        ).read_text(encoding="utf-8")
-
-    def test_covers_every_bypass_path(self) -> None:
-        for evidence in (
-            '"--noproxy", "*"',
-            '"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"',
-            "socket.SOCK_STREAM, 443",
-            "socket.SOCK_DGRAM, 53",
-            '"direct DNS is blocked"',
-        ):
-            with self.subTest(evidence=evidence):
-                self.assertIn(evidence, self.source)
-
-    def test_covers_policy_separation_and_failure_phases(self) -> None:
-        for evidence in (
-            "recognizable proxy-policy denial",
-            "AI completion succeeds through Agentgateway",
-            "proxy loss fails closed without direct fallback",
-            "ordinary Internet still works while Agentgateway is stopped",
-            "for ca_cert in args.ca_cert",
-            '["--ca-cert", ca_cert]',
-        ):
-            with self.subTest(evidence=evidence):
-                self.assertIn(evidence, self.source)
-
-    def test_service_control_actions_match_the_service_clis(self) -> None:
-        # Both controlled services take up/down/restart and neither has a
-        # "stop": `ipl` (internet-proxy-locally) and agentgateway-locally's
-        # run.py. Comparing the full set also fails if a retired verb returns.
-        actions = set(re.findall(r'control\(\s*args\.(\w+),\s*"(\w+)"', self.source))
-        self.assertEqual(
-            actions,
-            {
-                ("internet_proxy_control", "down"),
-                ("internet_proxy_control", "restart"),
-                ("agentgateway_control", "down"),
-                ("agentgateway_control", "restart"),
-            },
+    def test_every_audit_failure_changes_the_result(self) -> None:
+        checker = _load_checker()
+        args = checker.parser().parse_args(
+            [
+                "--runtime",
+                "docker",
+                "--blocked-url",
+                "https://blocked.example.test/",
+                "--internet-proxy-dir",
+                "/unused",
+                "--agentgateway-dir",
+                "/unused",
+                "--timeout",
+                "0",
+            ]
         )
+        source = checker.render_audit(args, "http://gateway.test:4000/v1")
+        # Independent low-level probe outcomes, in their expected call order.
+        curl_names = [
+            "allow",
+            "denial",
+            "noproxy",
+            "unset",
+            "proxy_down",
+            "proxy_restart",
+            "gateway_down_internet",
+        ]
+        socket_names = ["tcp", "udp", "dns"]
+        gateway_names = [
+            "gateway",
+            "proxy_down_ai",
+            "proxy_restart_ai",
+            "gateway_down_ai",
+        ]
+        markers = ["proxy-stopped.go", "proxy-restarted.go", "gateway-stopped.go"]
+        failures = {
+            "allow": "allowlisted HTTPS succeeds through the Internet proxy",
+            "denial": "blocked destination returns a recognizable proxy-policy denial",
+            "denial_unrecognized": "blocked destination returns a recognizable proxy-policy denial",
+            "noproxy": "curl --noproxy cannot bypass the sandbox firewall",
+            "unset": "Internet fails with every proxy variable unset",
+            "tcp": "raw public TCP/443 is blocked",
+            "udp": "raw public UDP is blocked",
+            "dns": "direct DNS is blocked",
+            "gateway": "AI completion succeeds through Agentgateway",
+            "proxy_down": "proxy loss fails closed without direct fallback",
+            "proxy_down_ai": "AI still works while the Internet proxy is stopped",
+            "proxy_restart": "proxy restart restores service at the stable endpoint",
+            "proxy_restart_ai": "Agentgateway remains independent after proxy restart",
+            "gateway_down_internet": "ordinary Internet still works while Agentgateway is stopped",
+            "gateway_down_ai": "AI fails when Agentgateway is stopped",
+            **{marker: "host signalled " + marker for marker in markers},
+        }
+        for failed in (None, *failures):
+            with self.subTest(failed=failed), tempfile.TemporaryDirectory() as tmp:
+                project = Path(tmp)
+                for marker in markers:
+                    if marker != failed:
+                        (project / marker).touch()
+                curl_results = []
+                for name in curl_names:
+                    rc = (
+                        22
+                        if name in ("denial", "noproxy", "unset", "proxy_down")
+                        else 0
+                    )
+                    if name == failed:
+                        rc = 0 if rc else 1
+                    body = "Forbidden by policy" if name == "denial" else ""
+                    if failed == "denial_unrecognized" and name == "denial":
+                        body = "Connection refused"
+                    curl_results.append(
+                        MagicMock(returncode=rc, stdout=body, stderr="")
+                    )
+                sockets = []
+                for name in socket_names:
+                    sock = MagicMock()
+                    sock.connect.side_effect = (
+                        None if name == failed else OSError("blocked")
+                    )
+                    sockets.append(sock)
+                gateways = []
+                for name in gateway_names:
+                    success = name != "gateway_down_ai"
+                    if name == failed:
+                        success = not success
+                    response = MagicMock()
+                    response.__enter__.return_value.status = 200
+                    response.__enter__.return_value.read.return_value = json.dumps(
+                        {
+                            "object": "response",
+                            "status": "completed",
+                            "output": [],
+                        }
+                    ).encode()
+                    gateways.append(response if success else ConnectionRefusedError())
+                proxy_env = {
+                    name: "http://proxy:18080"
+                    for name in (
+                        "HTTP_PROXY",
+                        "HTTPS_PROXY",
+                        "http_proxy",
+                        "https_proxy",
+                        "ALL_PROXY",
+                        "all_proxy",
+                    )
+                }
+                with (
+                    chdir(project),
+                    patch.dict(
+                        os.environ, {**proxy_env, "OPENAI_API_KEY": "test-secret"}
+                    ),
+                    patch("subprocess.run", side_effect=curl_results) as run,
+                    patch("socket.socket", side_effect=sockets) as socket_factory,
+                    patch("urllib.request.urlopen", side_effect=gateways) as urlopen,
+                    redirect_stdout(io.StringIO()),
+                    self.assertRaises(SystemExit) as raised,
+                ):
+                    exec(compile(source, "audit.py", "exec"), {})  # noqa: S102
+                result = json.loads((project / "result.json").read_text())
+                self.assertEqual(raised.exception.code, 0 if failed is None else 1)
+                self.assertEqual(result["ok"], failed is None)
+                self.assertEqual(
+                    result["failures"], [] if failed is None else [failures[failed]]
+                )
+                self.assertEqual(run.call_count, len(curl_names))
+                self.assertEqual(urlopen.call_count, len(gateway_names))
+                self.assertEqual(
+                    run.call_args_list[2].args[0][-3:],
+                    ["--noproxy", "*", args.allowed_url],
+                )
+                unset_env = run.call_args_list[3].kwargs["env"]
+                self.assertTrue(all(name not in unset_env for name in proxy_env))
+                self.assertEqual(
+                    socket_factory.call_args_list,
+                    [
+                        call(socket.AF_INET, socket.SOCK_STREAM),
+                        call(socket.AF_INET, socket.SOCK_DGRAM),
+                        call(socket.AF_INET, socket.SOCK_STREAM),
+                    ],
+                )
+                for sock, address in zip(
+                    sockets,
+                    [(args.public_ip, 443), (args.dns_ip, 53), (args.dns_ip, 53)],
+                ):
+                    sock.connect.assert_called_once_with(address)
+                    sock.close.assert_called_once()
+                for marker in (
+                    "baseline.ready",
+                    "proxy-stopped.done",
+                    "proxy-restarted.done",
+                    "gateway-stopped.done",
+                ):
+                    self.assertTrue((project / marker).exists())
+
+    def test_host_orchestration_controls_services_and_propagates_results(self) -> None:
+        for returncode, result in (
+            (0, {"ok": True}),
+            (1, {"ok": True}),
+            (0, {"ok": False, "failures": ["probe failed"]}),
+            (0, None),
+        ):
+            with (
+                self.subTest(returncode=returncode, result=result),
+                tempfile.TemporaryDirectory() as tmp,
+            ):
+                checker = _load_checker()
+                root = Path(tmp)
+                project = root / "project"
+                project.mkdir()
+                if result is not None:
+                    (project / "result.json").write_text(json.dumps(result))
+                process = MagicMock()
+                process.wait.return_value = returncode
+                process.poll.return_value = returncode
+                with (
+                    patch.object(
+                        checker, "__file__", str(root / "scripts" / "checker.py")
+                    ),
+                    patch.object(
+                        checker.tempfile, "mkdtemp", return_value=str(project)
+                    ),
+                    patch.object(checker.internet_proxy, "preflight"),
+                    patch.object(
+                        checker.agent_proxy,
+                        "resolve_key",
+                        return_value=("test-key", "test"),
+                    ),
+                    patch.object(
+                        checker.subprocess, "Popen", return_value=process
+                    ) as popen,
+                    patch.object(checker.subprocess, "run") as run,
+                    patch.object(checker, "wait_for") as wait_for,
+                    redirect_stdout(io.StringIO()),
+                    redirect_stderr(io.StringIO()),
+                ):
+                    rc = checker.main(
+                        [
+                            "--runtime",
+                            "docker",
+                            "--blocked-url",
+                            "https://blocked.example.test/",
+                            "--internet-proxy-dir",
+                            str(root),
+                            "--agentgateway-dir",
+                            str(root),
+                            "--ca-cert",
+                            "/test/root.pem",
+                            "--ca-cert",
+                            "/test/intermediate.pem",
+                        ]
+                    )
+                self.assertEqual(
+                    rc, 0 if returncode == 0 and result and result["ok"] else 1
+                )
+                self.assertEqual(
+                    run.call_args_list,
+                    [
+                        call(["uv", "run", "ipl", "down"], cwd=root, check=True),
+                        call(["uv", "run", "ipl", "restart"], cwd=root, check=True),
+                        call(["./run.py", "down"], cwd=root, check=True),
+                        call(["./run.py", "restart"], cwd=root, check=True),
+                    ],
+                )
+                self.assertEqual(
+                    [c.args[0].name for c in wait_for.call_args_list],
+                    [
+                        "baseline.ready",
+                        "proxy-stopped.done",
+                        "proxy-restarted.done",
+                        "gateway-stopped.done",
+                    ],
+                )
+                command = popen.call_args.args[0]
+                ca_index = command.index("--ca-cert")
+                self.assertEqual(
+                    command[ca_index : ca_index + 4],
+                    [
+                        "--ca-cert",
+                        "/test/root.pem",
+                        "--ca-cert",
+                        "/test/intermediate.pem",
+                    ],
+                )
+                self.assertFalse(project.exists())
 
     def test_uses_current_service_control_commands(self) -> None:
         args = (

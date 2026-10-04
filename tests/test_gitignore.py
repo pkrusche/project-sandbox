@@ -1,3 +1,4 @@
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -117,17 +118,37 @@ class WriteProjectSandboxGitignoreTests(TestCase):
             ):
                 self.assertIn(keep, content)
 
-    def test_has_no_redundant_history_entry(self) -> None:
-        """history/ is already excluded by the leading "*" glob (nothing
-        negates it back in), so an explicit entry for it would be dead
-        weight."""
+    def test_history_is_ignored(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            context = Path(tmp)
-
+            project = Path(tmp)
+            subprocess.run(
+                ["git", "init", str(project)], check=True, capture_output=True
+            )
+            context = project / ".project-sandbox"
+            context.mkdir()
             cli._write_project_sandbox_gitignore(context)
-            content = (context / ".gitignore").read_text(encoding="utf-8")
-
-            self.assertNotIn("history/", content)
+            history = context / "history" / "session.json"
+            history.parent.mkdir()
+            history.write_text("{}")
+            result = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(project),
+                    "-c",
+                    "core.excludesFile=/dev/null",
+                    "check-ignore",
+                    "--no-index",
+                    ".project-sandbox/history/session.json",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                result.stdout.strip(), ".project-sandbox/history/session.json"
+            )
 
 
 class GitignoreMechanismInteractionTests(TestCase):
@@ -143,20 +164,16 @@ class GitignoreMechanismInteractionTests(TestCase):
 
     def test_nested_gitignore_documents_dependency_on_root_rule(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            context = Path(tmp)
+            project = Path(tmp)
+            context = project / ".project-sandbox"
+            context.mkdir()
             cli._write_project_sandbox_gitignore(context)
             nested_content = (context / ".gitignore").read_text(encoding="utf-8")
+            cli._update_project_gitignore(project)
+            root_content = (project / ".gitignore").read_text(encoding="utf-8")
 
-        project = context.parent
-        cli._update_project_gitignore(project)
-        root_content = (project / ".gitignore").read_text(encoding="utf-8")
-
-        # The root rule that makes the nested negations inert in the normal
-        # case.
-        self.assertIn(".project-sandbox/", root_content)
-        # The nested file must explain, in the file itself, that its
-        # negations only take effect if that root rule is removed/edited.
-        self.assertIn(
-            "only have an effect if you have manually removed", nested_content
-        )
-        self.assertIn("!Dockerfile", nested_content)
+            self.assertIn(".project-sandbox/", root_content)
+            self.assertIn(
+                "only have an effect if you have manually removed", nested_content
+            )
+            self.assertIn("!Dockerfile", nested_content)

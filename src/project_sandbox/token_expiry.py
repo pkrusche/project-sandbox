@@ -67,7 +67,7 @@ def _claude_expiry(cred_dir: Path) -> dt.datetime | None:
     expires_at_ms = oauth.get("expiresAt")
     if not isinstance(expires_at_ms, (int, float)) or isinstance(expires_at_ms, bool):
         return None
-    return _to_datetime(expires_at_ms / 1000)
+    return _to_datetime(expires_at_ms, milliseconds=True)
 
 
 # Codex stores a JWT access token; its expiry is the `exp` claim.
@@ -105,13 +105,13 @@ def _opencode_expiry(cred_dir: Path) -> dt.datetime | None:
             continue
         if expires_ms <= 0:
             continue
-        expiry = _to_datetime(expires_ms / 1000)
+        expiry = _to_datetime(expires_ms, milliseconds=True)
         if expiry is not None and (soonest is None or expiry < soonest):
             soonest = expiry
     return soonest
 
 
-def _jwt_exp(token: str) -> float | None:
+def _jwt_exp(token: str) -> int | float | None:
     parts = token.split(".")
     if len(parts) != 3:
         return None
@@ -123,13 +123,17 @@ def _jwt_exp(token: str) -> float | None:
         return None
     exp = claims.get("exp") if isinstance(claims, dict) else None
     if isinstance(exp, (int, float)) and not isinstance(exp, bool):
-        return float(exp)
+        return exp
     return None
 
 
-def _to_datetime(epoch_seconds: float) -> dt.datetime | None:
+def _to_datetime(
+    epoch_seconds: float, *, milliseconds: bool = False
+) -> dt.datetime | None:
     # A garbage expiry (absurd or out-of-range value) must not crash the launch.
     try:
+        if milliseconds:
+            epoch_seconds /= 1000
         return dt.datetime.fromtimestamp(epoch_seconds, tz=dt.UTC)
     except (OverflowError, OSError, ValueError):
         return None

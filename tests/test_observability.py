@@ -89,37 +89,46 @@ class ObservabilityTests(TestCase):
     def test_failure_without_log_is_not_rate_limited(self) -> None:
         self.assertFalse(observability.is_rate_limited_failure(1, None))
 
-    def test_pi_json_stream_failure_is_detected(self) -> None:
-        # Pi exits 0 in --mode json even when the turn errored out, so the
-        # stream itself is the only evidence the run failed.
-        with tempfile.TemporaryDirectory() as tmp:
-            log = Path(tmp) / "pi.log"
-            log.write_text(
-                'firewall ready\n{"type": "session", "id": "pi-1"}\n'
-                '{"type": "message_end", "message": {"role": "assistant", '
-                '"stopReason": "error", "errorMessage": "boom"}}\n',
-                encoding="utf-8",
+    def test_pi_stream_outcomes(self) -> None:
+        def message(reason, role="assistant"):
+            return (
+                json.dumps(
+                    {
+                        "type": "message_end",
+                        "message": {
+                            "role": role,
+                            "stopReason": reason,
+                        },
+                    }
+                )
+                + "\n"
             )
-            self.assertTrue(observability.pi_json_stream_failed(log))
 
-    def test_pi_json_stream_success_is_not_a_failure(self) -> None:
+        error = message("error")
+        success = message("stop")
+        cases = {
+            "terminal error": ("firewall ready\n" + error, True),
+            "aborted": (message("aborted"), True),
+            "successful retry": (error + success, False),
+            "explicit retry event": (
+                error + '{"type":"auto_retry_start","attempt":1}\n' + success,
+                False,
+            ),
+            "later failure": (success + error, True),
+            "non-assistant event after error": (error + message("stop", "user"), True),
+            "unrelated log": ("plain output\nnot json\n", False),
+            "malformed event": ('{"type":"message_end", broken\n', False),
+            "empty log": ("", False),
+            "missing file": (None, False),
+        }
         with tempfile.TemporaryDirectory() as tmp:
-            log = Path(tmp) / "pi.log"
-            log.write_text(
-                '{"type": "message_end", "message": {"role": "assistant", '
-                '"stopReason": "error"}}\n'
-                '{"type": "message_end", "message": {"role": "assistant", '
-                '"stopReason": "stop"}}\n',
-                encoding="utf-8",
-            )
-            # Pi retries through errored turns; only the last one decides.
-            self.assertFalse(observability.pi_json_stream_failed(log))
-
-    def test_pi_json_stream_without_events_is_not_a_failure(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            log = Path(tmp) / "pi.log"
-            log.write_text("firewall ready\n", encoding="utf-8")
-            self.assertFalse(observability.pi_json_stream_failed(log))
+            for name, (content, expected) in cases.items():
+                with self.subTest(name=name):
+                    log = Path(tmp) / "pi.log"
+                    log.unlink(missing_ok=True)
+                    if content is not None:
+                        log.write_text(content, encoding="utf-8")
+                    self.assertEqual(observability.pi_json_stream_failed(log), expected)
         self.assertFalse(observability.pi_json_stream_failed(None))
 
     def test_recovered_early_429_does_not_reclassify_a_later_failure(self) -> None:
@@ -139,69 +148,6 @@ class ObservabilityTests(TestCase):
             filler = "x" * (observability._RATE_LIMIT_TAIL_BYTES + 1024)
             log.write_text(f"{filler}\nrate_limit_error\n")
             self.assertTrue(observability.is_rate_limited_failure(1, log))
-
-    def test_pi_json_run_failure_is_detected_despite_exit_zero(self) -> None:
-        # `pi --mode json` returns 0 even when the last turn ended in an error,
-        # so the log is the only signal that the run actually failed.
-        with tempfile.TemporaryDirectory() as tmp:
-            log = Path(tmp) / "session.log"
-            log.write_text(
-                "starting container\n"
-                + json.dumps({"type": "session", "id": "pi-1", "cwd": "/workspace"})
-                + "\n"
-                + json.dumps(
-                    {
-                        "type": "message_end",
-                        "message": {
-                            "role": "assistant",
-                            "content": [],
-                            "stopReason": "error",
-                            "errorMessage": "Connection error.",
-                        },
-                    }
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-
-            self.assertTrue(observability.pi_json_stream_failed(log))
-
-    def test_pi_failure_before_a_successful_retry_is_not_a_failure(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            log = Path(tmp) / "session.log"
-            log.write_text(
-                json.dumps(
-                    {
-                        "type": "message_end",
-                        "message": {"role": "assistant", "stopReason": "error"},
-                    }
-                )
-                + "\n"
-                + json.dumps({"type": "auto_retry_start", "attempt": 1})
-                + "\n"
-                + json.dumps(
-                    {
-                        "type": "message_end",
-                        "message": {
-                            "role": "assistant",
-                            "content": [{"type": "text", "text": "done"}],
-                            "stopReason": "stop",
-                        },
-                    }
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-
-            self.assertFalse(observability.pi_json_stream_failed(log))
-
-    def test_pi_failure_detection_ignores_other_logs(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            log = Path(tmp) / "session.log"
-            log.write_text("plain agent output\nnot json\n", encoding="utf-8")
-
-            self.assertFalse(observability.pi_json_stream_failed(log))
-        self.assertFalse(observability.pi_json_stream_failed(None))
 
     def test_interrupted_session_is_not_left_running(self) -> None:
         with (

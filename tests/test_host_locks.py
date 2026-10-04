@@ -1,5 +1,6 @@
 import contextlib
 import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -45,16 +46,42 @@ class HostLockTests(TestCase):
             )
 
     def test_lock_is_taken_and_released(self) -> None:
+        # A fresh interpreter has an independent file description and cannot
+        # accidentally inherit the holder's flock.
+        probe = """
+import fcntl
+import sys
+with open(sys.argv[1], "r") as lock:
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        sys.exit(10)
+"""
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp)
             path = host_locks.lock_path("build", target)
+            self.addCleanup(path.unlink, missing_ok=True)
+
+            def assert_probe(expected):
+                result = subprocess.run(
+                    [sys.executable, "-c", probe, str(path)],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, expected, result.stderr)
+
             with host_locks.path_lock("build", target):
                 self.assertTrue(path.is_file())
-            # Re-entering must not block once the first holder is done.
-            with host_locks.path_lock("build", target):
-                pass
+                assert_probe(10)
+            assert_probe(0)
+            with self.assertRaisesRegex(RuntimeError, "holder failed"):
+                with host_locks.path_lock("build", target):
+                    assert_probe(10)
+                    raise RuntimeError("holder failed")
+            assert_probe(0)
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
-            path.unlink()
 
     def test_symlinked_lock_name_is_refused_instead_of_truncated(self) -> None:
         """The lock name is guessable and lives in the shared temp dir, so a

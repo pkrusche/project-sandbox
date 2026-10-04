@@ -3,7 +3,10 @@ import importlib.util
 import io
 import json
 import os
+import subprocess
 import unittest
+import urllib.error
+from email.message import Message
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import cast
@@ -90,6 +93,135 @@ class AgentProxyTests(unittest.TestCase):
         self.assertIsInstance(
             build_opener.call_args.args[0], agent_proxy._NoRedirectHandler
         )
+
+    def test_discovery_failures_have_safe_actionable_diagnostics(self) -> None:
+        key = "private-bearer-key"
+        cases = [
+            (
+                "unauthorized",
+                urllib.error.HTTPError(
+                    "http://localhost", 401, key, Message(), io.BytesIO(key.encode())
+                ),
+                None,
+                "rejected the gateway key",
+            ),
+            (
+                "forbidden",
+                urllib.error.HTTPError(
+                    "http://localhost", 403, key, Message(), io.BytesIO(key.encode())
+                ),
+                None,
+                "rejected the gateway key",
+            ),
+            (
+                "server error",
+                urllib.error.HTTPError(
+                    "http://localhost", 503, key, Message(), io.BytesIO(key.encode())
+                ),
+                None,
+                "HTTP 503",
+            ),
+            (
+                "listener unavailable",
+                urllib.error.URLError(key),
+                None,
+                "start or troubleshoot agentgateway-locally",
+            ),
+            (
+                "connection refused",
+                ConnectionRefusedError(key),
+                None,
+                "start or troubleshoot agentgateway-locally",
+            ),
+            (
+                "timeout",
+                TimeoutError(key),
+                None,
+                "start or troubleshoot agentgateway-locally",
+            ),
+            ("invalid JSON", None, "{" + key, "malformed model catalog"),
+            ("invalid encoding", None, b"\xff", "malformed model catalog"),
+        ]
+        for payload in ({}, [], {"data": []}, {"data": None}, {"data": {}}):
+            cases.append(
+                (
+                    repr(payload),
+                    None,
+                    json.dumps(payload),
+                    "empty or malformed model catalog",
+                )
+            )
+        for item in ({}, {"id": ""}, {"id": "  "}, {"id": None}, {"id": 1}, [], key):
+            cases.append(
+                (repr(item), None, json.dumps({"data": [item]}), "malformed model ID")
+            )
+        for name, error, body, diagnostic in cases:
+            with self.subTest(name=name):
+                response = (
+                    io.BytesIO(body)
+                    if isinstance(body, bytes)
+                    else io.StringIO(body or "")
+                )
+                out, err = io.StringIO(), io.StringIO()
+                with (
+                    patch.object(agent_proxy.urllib.request, "build_opener") as build,
+                    contextlib.redirect_stdout(out),
+                    contextlib.redirect_stderr(err),
+                ):
+                    build.return_value.open.side_effect = error
+                    build.return_value.open.return_value = response
+                    with self.assertRaises(SystemExit) as raised:
+                        agent_proxy.discover_models(
+                            "http://127.0.0.1:4000/v1", key, timeout=0.5
+                        )
+                self.assertIn(diagnostic, str(raised.exception))
+                self.assertNotIn(
+                    key, str(raised.exception) + out.getvalue() + err.getvalue()
+                )
+                self.assertEqual(
+                    build.return_value.open.call_args.kwargs["timeout"], 0.5
+                )
+
+    def test_key_resolution_handles_missing_pass_timeout_and_missing_credentials(
+        self,
+    ) -> None:
+        for error in (
+            FileNotFoundError("pass"),
+            subprocess.TimeoutExpired(["pass"], 10),
+        ):
+            for env, raw, expected in (
+                (
+                    {"TEST_GATEWAY_KEY": " env-key "},
+                    "raw-key",
+                    ("env-key", "environment"),
+                ),
+                ({}, " raw-key ", ("raw-key", "command line")),
+                ({}, None, None),
+            ):
+                with (
+                    self.subTest(error=type(error).__name__, expected=expected),
+                    patch.dict(os.environ, env, clear=True),
+                    patch.object(agent_proxy.subprocess, "run", side_effect=error),
+                ):
+                    if expected is None:
+                        with self.assertRaisesRegex(
+                            SystemExit, "No gateway key found.*--agent-proxy-key"
+                        ):
+                            agent_proxy.resolve_key("TEST_GATEWAY_KEY", raw)
+                    else:
+                        self.assertEqual(
+                            agent_proxy.resolve_key("TEST_GATEWAY_KEY", raw), expected
+                        )
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch.object(
+                agent_proxy.subprocess,
+                "run",
+                return_value=Mock(returncode=1, stdout=""),
+            ),
+            self.assertRaisesRegex(SystemExit, "No gateway key found"),
+        ):
+            agent_proxy.resolve_key("TEST_GATEWAY_KEY", None)
 
     def test_discovery_does_not_forward_credentials_across_redirects(self) -> None:
         handler = agent_proxy._NoRedirectHandler()

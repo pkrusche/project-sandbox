@@ -1,4 +1,5 @@
 import contextlib
+import datetime as dt
 import io
 import json
 import shlex
@@ -225,7 +226,15 @@ class SessionTests(TestCase):
         terminate.assert_called_once_with(proc, container_stop_argv=stop_argv)
 
     def test_default_log_path_is_unique_within_the_same_second(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        timestamps = [
+            dt.datetime(2030, 1, 2, 3, 4, 5, 100, tzinfo=dt.UTC),
+            dt.datetime(2030, 1, 2, 3, 4, 5, 200, tzinfo=dt.UTC),
+        ]
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch("project_sandbox.session.dt.datetime") as clock,
+        ):
+            clock.now.side_effect = timestamps
             project = Path(tmp)
             first = session.default_log_path(
                 project, "agent/demo", "claude", create=False
@@ -244,19 +253,22 @@ class SessionTests(TestCase):
         proc.wait.return_value = 0
 
         stop_argv = ["docker", "stop", "--time", "5", "project-sandbox-abc123"]
-        calls: list[list[str]] = []
+        calls = []
 
         def fake_run(argv, **_kwargs):
-            calls.append(argv)
+            calls.append(("stop", argv))
             result = Mock()
             result.returncode = 0
             return result
 
         with (
             patch("project_sandbox.session.os.getpgid", return_value=5678),
-            patch("project_sandbox.session.os.killpg"),
+            patch(
+                "project_sandbox.session.os.killpg",
+                side_effect=lambda pgid, sig: calls.append(("signal", pgid, sig)),
+            ),
             patch("project_sandbox.session.subprocess.run", side_effect=fake_run),
         ):
             session._terminate_process_group(proc, container_stop_argv=stop_argv)
 
-        self.assertEqual(calls, [stop_argv])
+        self.assertEqual(calls, [("stop", stop_argv), ("signal", 5678, signal.SIGTERM)])

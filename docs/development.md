@@ -13,7 +13,14 @@ uv run pytest -q
 ```
 
 `uv sync` installs dependencies from `pyproject.toml` / `uv.lock`. The compile
-command catches syntax errors. `pytest -q` runs the full test suite.
+command catches syntax errors. `pytest -q` runs the unit tests without probing
+Docker/Podman or launching containers. The Git and jj container integration
+classes require an explicit opt-in (and may download their test images):
+
+```bash
+PROJECT_SANDBOX_CONTAINER_TESTS=1 uv run pytest -q tests/test_worktree.py tests/test_jj_workspace.py
+```
+
 `scripts/check-ruff.sh` verifies that Python files have Ruff formatting applied
 and contain no Ruff lint violations. For behavior previews, use
 `uv run project-sandbox --dry-run ...`; dry-run must not write files or start

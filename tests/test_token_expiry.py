@@ -20,7 +20,7 @@ def _write(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
-def _jwt(exp: int) -> str:
+def _jwt(exp: object) -> str:
     def part(obj: dict) -> str:
         raw = json.dumps(obj).encode("utf-8")
         return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
@@ -135,6 +135,66 @@ class TokenExpiryTests(TestCase):
                 token_expiry.staged_token_expiry({"claude": bad}, "claude")
             )
 
-    def test_non_path_credential_dir_does_not_raise(self) -> None:
-        # Defends the launch path against partial fixtures / mocked dirs.
+    def test_missing_credential_mapping_returns_none(self) -> None:
         self.assertIsNone(token_expiry.staged_token_expiry({}, "claude"))
+
+    def test_malformed_jwt_returns_unknown_expiry(self) -> None:
+        tokens = [
+            "",
+            "no-dots",
+            "a.b",
+            "a.b.c.d",
+            "a.!.c",
+            "a.a.c",
+            "a._w.c",
+            "a.bm90IGpzb24.c",
+            "a.W10.c",
+            "a.e30.c",
+            None,
+            42,
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for token in tokens:
+                with self.subTest(token=token):
+                    _write(root / "auth.json", {"tokens": {"access_token": token}})
+                    self.assertIsNone(
+                        token_expiry.staged_token_expiry({"codex": root}, "codex")
+                    )
+
+    def test_invalid_expiry_values_are_unknown_for_every_reader(self) -> None:
+        values = (
+            None,
+            True,
+            False,
+            "",
+            "123",
+            [],
+            {},
+            float("nan"),
+            float("inf"),
+            -float("inf"),
+            1e100,
+            10**1000,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for value in values:
+                for agent, filename, payload in (
+                    (
+                        "claude",
+                        ".credentials.json",
+                        {"claudeAiOauth": {"expiresAt": value}},
+                    ),
+                    ("codex", "auth.json", {"tokens": {"access_token": _jwt(value)}}),
+                    (
+                        "opencode",
+                        ".local/share/opencode/auth.json",
+                        {"openai": {"type": "oauth", "expires": value}},
+                    ),
+                ):
+                    with self.subTest(agent=agent, value=value):
+                        _write(root / filename, payload)
+                        self.assertIsNone(
+                            token_expiry.staged_token_expiry({agent: root}, agent)
+                        )

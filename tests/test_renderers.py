@@ -1793,37 +1793,82 @@ class RendererTests(TestCase):
     def test_entrypoint_headless_supports_model_selection(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             context = Path(tmp)
-            dockerfile.render_entrypoint(context)
-            text = (context / "entrypoint.sh").read_text(encoding="utf-8")
-            # Claude headless builds args with set -- and conditionally prepends flags.
-            self.assertIn("PROJECT_SANDBOX_MODEL", text)
-            self.assertIn(
-                'set -- -p "$PROMPT" --output-format stream-json --verbose --dangerously-skip-permissions',
-                text,
+            text = dockerfile.render_entrypoint(context).read_text()
+            dispatch = text[text.index('case "${1:-bash}" in') :]
+            bindir = context / "bin"
+            bindir.mkdir()
+            script = context / "dispatch.sh"
+            script.write_text(
+                "set -eu\n"
+                "log_project_sandbox_agent_command() { :; }\n"
+                "load_project_sandbox_prompt() { PROMPT='prompt with spaces'; }\n"
+                + dispatch
             )
-            self.assertIn('set -- --model "$PROJECT_SANDBOX_MODEL" "$@"', text)
-            self.assertIn('exec claude "$@"', text)
-            # Codex builds args with set -- so model and config overrides compose.
-            self.assertIn(
-                'set -- --model "$PROJECT_SANDBOX_MODEL" "$@"',
-                text,
-            )
-            self.assertIn('exec codex exec "$@"', text)
-            self.assertIn(
-                'set -- --model "$PROJECT_SANDBOX_MODEL" "$@"',
-                text,
-            )
-            self.assertIn(
-                'set -- --skip-git-repo-check --json --color never "$PROMPT"',
-                text,
-            )
-            self.assertIn('exec opencode run "$@"', text)
-            self.assertIn('set -- --format json "$PROMPT"', text)
-            self.assertIn('set -- --thinking "$PROJECT_SANDBOX_EFFORT" "$@"', text)
-            self.assertIn(
-                'set -- --model "${PROJECT_SANDBOX_MODEL}" "$@"',
-                text,
-            )
+            for agent in ("claude", "codex", "opencode", "pi"):
+                stub = bindir / agent
+                stub.write_text('#!/bin/sh\nprintf "%s\n" "$@"\n')
+                stub.chmod(0o755)
+            tails = {
+                "claude": [
+                    "--effort",
+                    "high",
+                    "-p",
+                    "prompt with spaces",
+                    "--output-format",
+                    "stream-json",
+                    "--verbose",
+                    "--dangerously-skip-permissions",
+                ],
+                "codex": [
+                    "-c",
+                    'model_reasoning_effort="high"',
+                    "--skip-git-repo-check",
+                    "--json",
+                    "--color",
+                    "never",
+                    "prompt with spaces",
+                ],
+                "opencode": [
+                    "--variant",
+                    "high",
+                    "--format",
+                    "json",
+                    "prompt with spaces",
+                ],
+                "pi": [
+                    "--thinking",
+                    "high",
+                    "-p",
+                    "prompt with spaces",
+                    "--approve",
+                    "--mode",
+                    "json",
+                ],
+            }
+            for agent, tail in tails.items():
+                for model in ("test model with spaces", ""):
+                    with self.subTest(agent=agent, model=model):
+                        result = subprocess.run(
+                            [
+                                "/bin/sh",
+                                str(script),
+                                "project-sandbox-run",
+                                agent + "-headless",
+                            ],
+                            env={
+                                "PATH": f"{bindir}:/usr/bin:/bin",
+                                "PROJECT_SANDBOX_MODEL": model,
+                                "PROJECT_SANDBOX_EFFORT": "high",
+                            },
+                            capture_output=True,
+                            text=True,
+                            check=True,
+                        )
+                        prefix = {"codex": ["exec"], "opencode": ["run"]}.get(agent, [])
+                        flags = ["--model", model] if model else []
+                        self.assertEqual(
+                            result.stdout.splitlines(), prefix + flags + tail
+                        )
 
     def test_entrypoint_pi_never_emits_separate_effort_flag(self) -> None:
         import re
@@ -2093,19 +2138,43 @@ class RendererTests(TestCase):
             firewall.render(context, extra_domains=[])
             for name in ("init-firewall.sh", "init-firewall-devcontainer.sh"):
                 text = (context / name).read_text(encoding="utf-8")
-                # No blanket ipv6-icmp accept on INPUT or OUTPUT.
-                self.assertNotIn("-p ipv6-icmp -j ACCEPT", text)
-                # Per-type matching is used instead.
-                self.assertIn("--icmpv6-type", text)
-                # Error / PMTU types are present.
-                for icmp6_type in ("1", "2", "3", "4"):
-                    self.assertIn(icmp6_type, text)
-                # Neighbor / router discovery types are present...
-                for icmp6_type in ("133", "134", "135", "136", "137"):
-                    self.assertIn(icmp6_type, text)
-                # ...and confined to link-local scope.
-                self.assertIn("fe80::/10", text)
-                self.assertIn("ff02::/16", text)
+                # Execute the rendered control-rule loops with an argv recorder.
+                # Inspect all ICMPv6 commands too, so a blanket rule outside
+                # the extracted block cannot escape the assertion.
+                start = text.index("  for icmp6_type")
+                end = text.index("  # Outbound DNS over IPv6", start)
+                block = text[start:end]
+                self.assertEqual(
+                    [
+                        line.strip()
+                        for line in text.splitlines()
+                        if "ip6tables " in line and "-p ipv6-icmp" in line
+                    ],
+                    [
+                        line.strip()
+                        for line in block.splitlines()
+                        if "ip6tables " in line
+                    ],
+                )
+                result = subprocess.run(
+                    ["/bin/sh", "-c", 'ip6tables() { echo "$*"; }\n' + block],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+                expected = []
+                for kind in (1, 2, 3, 4):
+                    for chain in ("INPUT", "OUTPUT"):
+                        expected.append(
+                            f"-A {chain} -p ipv6-icmp --icmpv6-type {kind} -j ACCEPT"
+                        )
+                for kind in (133, 134, 135, 136, 137):
+                    for scope in ("fe80::/10", "ff02::/16"):
+                        for chain, flag in (("INPUT", "-s"), ("OUTPUT", "-d")):
+                            expected.append(
+                                f"-A {chain} -p ipv6-icmp --icmpv6-type {kind} {flag} {scope} -j ACCEPT"
+                            )
+                self.assertCountEqual(result.stdout.splitlines(), expected)
 
     def test_firewall_blocks_general_dns_after_preresolution(self) -> None:
         # The resolver must no longer be reachable for arbitrary names (which

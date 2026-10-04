@@ -1185,7 +1185,8 @@ class CliTests(TestCase):
                     cli.container_cli, "ensure_system_started", return_value=0
                 ),
                 patch.object(cli.container_cli, "image_exists", return_value=True),
-                patch.object(cli.session, "run", side_effect=fake_run),
+                patch.object(cli.session, "run", side_effect=fake_run) as run_session,
+                patch.dict(os.environ, {"XDG_STATE_HOME": str(project / "state")}),
                 contextlib.redirect_stdout(out),
             ):
                 rc = cli.main(
@@ -1199,7 +1200,13 @@ class CliTests(TestCase):
                         "python:3.12-slim",
                     ]
                 )
+                records = cli.observability.list_records()
 
+            run_session.assert_called_once()
+            self.assertEqual(run_session.call_args.kwargs["markdown_agent"], "pi")
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["exit_code"], 1)
+            self.assertIsNotNone(records[0]["ended_at"])
             self.assertEqual(rc, 1)
             self.assertIn("failed turn", out.getvalue())
 

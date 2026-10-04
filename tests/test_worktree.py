@@ -32,7 +32,6 @@ def _find_docker() -> str | None:
     return None
 
 
-DOCKER = _find_docker()
 DOCKER_IMAGE = "alpine/git:v2.45.2"
 
 
@@ -368,9 +367,18 @@ class WorktreeSetupStaleDirectoryTests(TestCase):
         self.assertTrue(wt_path.is_dir())
 
 
-@unittest.skipUnless(DOCKER, "docker/podman not available")
+@unittest.skipUnless(
+    os.environ.get("PROJECT_SANDBOX_CONTAINER_TESTS") == "1",
+    "set PROJECT_SANDBOX_CONTAINER_TESTS=1 to run real-container tests",
+)
 class GitWorktreeDockerEndToEndTests(TestCase):
     """Container writes a file+commit via bash; host verifies tree and revision, then teardown."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.docker = _find_docker()
+        if cls.docker is None:
+            raise unittest.SkipTest("docker/podman not available")
 
     def setUp(self) -> None:
         import tempfile
@@ -385,12 +393,12 @@ class GitWorktreeDockerEndToEndTests(TestCase):
         self._td.cleanup()
 
     def _docker(self, wt_path: Path, bash_cmd: str) -> None:
-        assert DOCKER is not None
+        assert self.docker is not None
         git_dir = str((self.repo / ".git").resolve())
         uid = os.getuid()
         subprocess.run(
             [
-                DOCKER,
+                self.docker,
                 "run",
                 "--rm",
                 "-u",
