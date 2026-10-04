@@ -3,7 +3,7 @@
 #
 # Steps:
 #   1. Verify the working copy is clean.
-#   2. Run Ruff and pytest checks.
+#   2. Run Ruff, ty, and pytest checks (including container tests).
 #   3. Confirm the end-to-end tests were run.
 #   4. Confirm / bump the version and record the bump in version control.
 #   5. Create a GitHub release and tag via the gh CLI.
@@ -31,7 +31,7 @@ while [[ $# -gt 0 ]]; do
             echo
             echo "Steps:"
             echo "  1. Verify the working copy is clean."
-            echo "  2. Run Ruff and pytest checks."
+            echo "  2. Run Ruff, ty, and pytest checks (including container tests)."
             echo "  3. Confirm the end-to-end tests were run."
             echo "  4. Confirm / bump the version and record the bump in version control."
             echo "  5. Create a GitHub release and tag via the gh CLI."
@@ -145,9 +145,10 @@ fi
 # ── step 2: run checks ────────────────────────────────────────────────────────
 
 if ! step_done "02-checks-${COMMIT_ID}"; then
-    echo "==> [2/8] Running Ruff and pytest …"
+    echo "==> [2/8] Running Ruff, ty, and pytest (including container tests) …"
     "$ROOT/scripts/check-ruff.sh"
-    uv run pytest -q
+    uv run ty check
+    PROJECT_SANDBOX_CONTAINER_TESTS=1 uv run pytest -q
     mark_done "02-checks-${COMMIT_ID}"
     echo "    OK"
 fi

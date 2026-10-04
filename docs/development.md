@@ -224,7 +224,9 @@ request verification summary.
 `scripts/make-release.sh` drives the full release workflow interactively:
 
 1. Verifies the working copy is clean (jj-aware).
-2. Runs Ruff and pytest checks.
+2. Runs Ruff, `ty check`, and pytest with `PROJECT_SANDBOX_CONTAINER_TESTS=1`
+   to include the Git and jj sandbox container tests when their runtimes are
+   available.
 3. Prompts to confirm or bump the version in `pyproject.toml`. If changed, the
    script describes the jj change and opens a new empty change, or creates a Git
    commit, then exits so you can push the bump and re-run.
