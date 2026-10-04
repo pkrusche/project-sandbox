@@ -2,6 +2,26 @@
 
 Notable changes to `project-sandbox` are documented here.
 
+## [Unreleased]
+
+### Changed
+
+- Git and jj sandbox container tests now require
+  `PROJECT_SANDBOX_CONTAINER_TESTS=1`; default unit-test collection and execution
+  do not probe Docker/Podman or start containers. The release checks enable
+  these tests and run `ty check` alongside Ruff and pytest.
+- Strengthened behavioral coverage for ICMPv6 firewall rules, per-agent model
+  arguments, cross-process locking, shutdown order, proxy failure diagnostics
+  and isolation, Pi failure reporting, credential expiry, and gitignore rules.
+  Consolidated overlapping Pi parser cases and made timestamp tests deterministic.
+
+### Fixed
+
+- Oversized numeric credential expiry values now return unknown expiry instead
+  of crashing Claude, Codex, or OpenCode credential parsing.
+- The nested gitignore test now keeps all writes inside its temporary project,
+  avoiding a stray `.gitignore` in the system temporary directory.
+
 ## [0.2.2]
 
 ### Added
