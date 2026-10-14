@@ -13,7 +13,7 @@ When local Ollama and Internet proxy modes are enabled together, the system SHAL
 
 ## MODIFIED Requirements
 
-### Requirement: A runtime-selected hostname resolves to the Ollama endpoint
+### Requirement: One host-loopback alias resolves to the Ollama endpoint
 The system SHALL use the shared internal hostname `host.docker.internal` for Apple `container`, Docker, Podman, supported Linux bridge modes, and chroot when `--pi-ollama` is set. Across supported combinations, Ollama, Agentgateway, and the Internet proxy SHALL share this one hostname and SHALL remain distinguishable by port. Chroot SHALL support Ollama only when Internet-proxy mode is absent. The system SHALL pin the verified runtime-selected address for the container lifetime where the runtime permits it.
 
 #### Scenario: Container startup with Pi-Ollama enabled
@@ -23,6 +23,10 @@ The system SHALL use the shared internal hostname `host.docker.internal` for App
 #### Scenario: Multiple local services are enabled
 - **WHEN** Ollama is enabled with Agentgateway or the Internet proxy
 - **THEN** the runtime creates or requires only one `host.docker.internal` mapping or Apple localhost DNS entry and applies separate port-scoped rules to each service
+
+#### Scenario: Alias already mapped by the runtime
+- **WHEN** the runtime has already mapped the alias into `/etc/hosts` (for example a Docker `--add-host` entry)
+- **THEN** the firewall's DNS pin recognizes the existing entry for that same alias and does not append a duplicate
 
 #### Scenario: No dynamic address exposed to the agent process
 - **WHEN** the container starts with `--pi-ollama` set

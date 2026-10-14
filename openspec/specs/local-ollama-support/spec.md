@@ -79,11 +79,15 @@ When `--pi-ollama` is set and the firewall is enabled, the system SHALL determin
 - **THEN** the gateway-discovery and port-scoped allow rule are applied even though the broader devcontainer-only `allow_host_network` all-ports gateway rule is not active
 
 ### Requirement: One host-loopback alias resolves to the Ollama endpoint
-The system SHALL use the single host-loopback alias `host.docker.internal` for every adapter when `--pi-ollama` is set, and SHALL pin the verified address for the container lifetime where the runtime permits it.
+The system SHALL use the shared internal hostname `host.docker.internal` for Apple `container`, Docker, Podman, supported Linux bridge modes, and chroot when `--pi-ollama` is set. Across supported combinations, Ollama, Agentgateway, and the Internet proxy SHALL share this one hostname and SHALL remain distinguishable by port. Chroot SHALL support Ollama only when Internet-proxy mode is absent. The system SHALL pin the verified runtime-selected address for the container lifetime where the runtime permits it.
 
 #### Scenario: Container startup with Pi-Ollama enabled
 - **WHEN** the container starts with `--pi-ollama` set and the firewall enabled
-- **THEN** `host.docker.internal` resolves to the verified native or bridge-proxy endpoint
+- **THEN** `host.docker.internal` resolves to the verified native or bridge-proxy endpoint and Ollama is allowed only on port 11434
+
+#### Scenario: Multiple local services are enabled
+- **WHEN** Ollama is enabled with Agentgateway or the Internet proxy
+- **THEN** the runtime creates or requires only one `host.docker.internal` mapping or Apple localhost DNS entry and applies separate port-scoped rules to each service
 
 #### Scenario: Alias already mapped by the runtime
 - **WHEN** the runtime has already mapped the alias into `/etc/hosts` (for example a Docker `--add-host` entry)
@@ -91,7 +95,7 @@ The system SHALL use the single host-loopback alias `host.docker.internal` for e
 
 #### Scenario: No dynamic address exposed to the agent process
 - **WHEN** the container starts with `--pi-ollama` set
-- **THEN** no `OLLAMA_HOST` (or equivalent) environment variable is set, and Pi's provider configuration references the alias rather than a dynamically exposed address
+- **THEN** no `OLLAMA_HOST` (or equivalent) environment variable is set, and Pi's provider configuration references `host.docker.internal` rather than a dynamically exposed address
 
 ### Requirement: Pi's Ollama provider and default model are pre-configured
 When `--pi-ollama` is set, the system SHALL bake `~/.pi/agent/models.json` with an `ollama` provider entry pointing at the host-loopback alias on port 11434 using the `openai-completions` API shape, and SHALL bake `~/.pi/settings.json` setting `defaultProvider` to `ollama` and `defaultModel` to a configured model ID. Every adapter SHALL use `http://host.docker.internal:11434/v1`.
@@ -114,3 +118,14 @@ The system SHALL mount the baked `models.json` to `~/.pi/agent/models.json` and 
 #### Scenario: Both files present after container start
 - **WHEN** the container starts with `--pi-ollama` set
 - **THEN** both `~/.pi/agent/models.json` and `~/.pi/settings.json` exist inside the container with the baked content, without disturbing the separately-synced `~/.pi/agent/auth.json` credential file
+
+### Requirement: Local Ollama remains independent from Internet proxy routing
+When local Ollama and Internet proxy modes are enabled together, the system SHALL forward Ollama through the shared `host.docker.internal` hostname, include that hostname once in both `NO_PROXY` and `no_proxy`, and retain its independent TCP rule scoped to port 11434. Ollama traffic SHALL not be routed through the general Internet proxy.
+
+#### Scenario: Ollama and Internet proxy are enabled
+- **WHEN** Pi starts with `--pi-ollama` and `--internet-proxy`
+- **THEN** Ollama bypasses the Internet proxy and both services share one hostname while Ollama remains restricted to its port-scoped firewall rule
+
+#### Scenario: Internet proxy option is absent
+- **WHEN** Pi starts with `--pi-ollama` without `--internet-proxy`
+- **THEN** Ollama uses the shared hostname while its existing configuration, lifecycle, and port-scoped firewall behavior remain unchanged
