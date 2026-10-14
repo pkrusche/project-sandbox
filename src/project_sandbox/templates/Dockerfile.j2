@@ -24,13 +24,13 @@ RUN set -eux; \
 # and replace both per-architecture checksums with the values published in
 # https://nodejs.org/dist/${NODE_VERSION}/SHASUMS256.txt.
 RUN set -euxo pipefail; \
-    NODE_VERSION="v26.10.0"; \
+    NODE_VERSION="v26.11.1"; \
     NODE_ARCH="$(uname -m)"; \
     case "$NODE_ARCH" in \
         x86_64) NODE_ARCH="x64"; \
-            NODE_SHA256="ca70e9e349de048b9522abb3adc05b3bd6f43c5ffd3ec57916c7da292f59f022" ;; \
+            NODE_SHA256="3883bfc73f9a680ca4eab04b196068aaaab1373ffa77d8fc1a4408222495b651" ;; \
         aarch64|arm64) NODE_ARCH="arm64"; \
-            NODE_SHA256="7a6353f63eb3d04765004b4adf172616243e4522434635cb1d26288658b04ab5" ;; \
+            NODE_SHA256="0945e2cde6aa0f54d980f03874dfe5cf3a549ce714c7fb9019e591ce0accf282" ;; \
         *) echo "Unsupported architecture for Node.js: $NODE_ARCH" >&2; exit 1 ;; \
     esac; \
     node_tmp="$(mktemp -d)"; \
@@ -49,13 +49,13 @@ RUN set -euxo pipefail; \
 # bump JJ_VERSION and replace both per-architecture checksums with the values
 # from the matching release on https://github.com/jj-vcs/jj/releases.
 RUN set -euxo pipefail; \
-    JJ_VERSION="v0.45.1"; \
+    JJ_VERSION="v0.46.0"; \
     JJ_ARCH="$(uname -m)"; \
     case "$JJ_ARCH" in \
         arm64|aarch64) JJ_ARCH="aarch64"; \
-            JJ_SHA256="7349a43dd5a20dbc998b10114daa0ee63d2ab863fb822c7eb6b0ebca5903cc69" ;; \
+            JJ_SHA256="80e28f7501c11e50e0ca06cd6a1fa1d982cff9cc59bfe4411a9d36aa501d867e" ;; \
         x86_64) JJ_ARCH="x86_64"; \
-            JJ_SHA256="f35438350b5d61963aac5dd74ede510b31d6b9690769d1a6268cf058cc825f72" ;; \
+            JJ_SHA256="fce0271158e665ceb82dc66c5eb95b1728649094e9133074f3b5baece345fc08" ;; \
         *) echo "Unsupported architecture for jj: $JJ_ARCH" >&2; exit 1 ;; \
     esac; \
     jj_tmp="$(mktemp -d)"; \
@@ -73,17 +73,17 @@ RUN set -euxo pipefail; \
 RUN npm install -g @fission-ai/openspec@1.14.1
 
 {% if install_claude %}
-RUN npm install -g @anthropic-ai/claude-code@2.1.292
+RUN npm install -g @anthropic-ai/claude-code@2.1.296
 {% endif %}
 {% if install_codex %}
-RUN npm install -g @openai/codex@0.160.1
+RUN npm install -g @openai/codex@0.162.1
 {% endif %}
 {% if install_opencode %}
-RUN npm install -g opencode-ai@1.18.34
-RUN npm install -g @ai-sdk/openai@4.0.84
+RUN npm install -g opencode-ai@1.19.0
+RUN npm install -g @ai-sdk/openai@4.0.93
 {% endif %}
 {% if install_pi %}
-RUN npm install -g @earendil-works/pi-coding-agent@1.0.4
+RUN npm install -g @earendil-works/pi-coding-agent@1.2.0
 {% endif %}
 
 {% if source_after_dependencies -%}
