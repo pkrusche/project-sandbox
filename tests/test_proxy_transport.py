@@ -329,6 +329,7 @@ class ProxyTransportTests(unittest.TestCase):
                     self.assertTrue(
                         any(
                             path.startswith("http://")
+                            or path == f"localhost:{plain_port}"
                             for path, _ in ForwardProxy.requests
                         )
                     )
@@ -380,8 +381,11 @@ class ProxyTransportTests(unittest.TestCase):
             ["node", "--help"], text=True
         ):
             self.skipTest("Node environment proxy support is unavailable")
-        with self.server() as origin_port:
-            ForwardProxy.allowed_ports = {origin_port}
+        with (
+            self.server() as origin_port,
+            self.server(tls=False) as plain_port,
+        ):
+            ForwardProxy.allowed_ports = {origin_port, plain_port}
             for tls in (False, True):
                 with (
                     self.subTest(tls=tls),
@@ -401,9 +405,11 @@ class ProxyTransportTests(unittest.TestCase):
                         HTTP_PROXY=f"{'https' if tls else 'http'}://localhost:{proxy_port}",
                     )
                     for scheme in ("http", "https"):
-                        # The HTTP target is answered by the proxy; HTTPS tunnels
-                        # to the controlled TLS origin, matching SDK fetch paths.
-                        target = f"{scheme}://localhost:{origin_port}/fixture"
+                        # Depending on the Node version, the HTTP target is either
+                        # answered by the proxy or tunnelled to the plain origin;
+                        # HTTPS always tunnels to the controlled TLS origin.
+                        port = origin_port if scheme == "https" else plain_port
+                        target = f"{scheme}://localhost:{port}/fixture"
                         result = subprocess.run(
                             [
                                 "node",
@@ -422,6 +428,7 @@ class ProxyTransportTests(unittest.TestCase):
                     self.assertTrue(
                         any(
                             path.startswith("http://")
+                            or path == f"localhost:{plain_port}"
                             for path, _ in ForwardProxy.requests
                         )
                     )
