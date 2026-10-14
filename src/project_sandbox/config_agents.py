@@ -294,7 +294,11 @@ def _codex_config_toml(approval_policy: str) -> str:
         'trust_level = "trusted"\n'
         "\n"
         "[shell_environment_policy]\n"
-        'inherit = "core"\n'
+        # Includes filter inherited values; they cannot extend "core".
+        'inherit = "all"\n'
+        'include_only = ["HOME", "PATH", "SHELL", "USER", "LOGNAME", '
+        '"TMPDIR", "TEMP", "TMP", "SystemRoot", "COMSPEC", "PATHEXT", '
+        '"WINDIR", "UV_CACHE_DIR", "UV_OFFLINE"]\n'
         "\n"
         "[analytics]\n"
         "enabled = false\n"

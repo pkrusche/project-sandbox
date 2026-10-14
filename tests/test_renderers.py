@@ -18,6 +18,38 @@ def _credentials_root(root: Path):
 
 
 class RendererTests(TestCase):
+    def test_codex_configs_forward_uv_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_agents.render(Path(tmp))
+            for agent in ("codex", "codex-devcontainer"):
+                config = tomllib.loads(
+                    (Path(tmp) / agent / "config.toml").read_text(encoding="utf-8")
+                )
+                policy = config["shell_environment_policy"]
+                self.assertEqual(policy["inherit"], "all")
+                # Model inheritance followed by the exact-name allowlist.
+                environment = {
+                    "HOME": "/home/agent",
+                    "PATH": "/usr/bin",
+                    "UV_CACHE_DIR": "/custom/uv-cache",
+                    "UV_OFFLINE": "0",
+                    "UNRELATED_VARIABLE": "private",
+                }
+                forwarded = {
+                    key: value
+                    for key, value in environment.items()
+                    if key in policy["include_only"]
+                }
+                self.assertEqual(
+                    forwarded,
+                    {
+                        key: value
+                        for key, value in environment.items()
+                        if key != "UNRELATED_VARIABLE"
+                    },
+                )
+                self.assertNotIn("set", policy)
+
     def test_codex_configs_disable_startup_update_check(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config_agents.render(Path(tmp))

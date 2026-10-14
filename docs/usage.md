@@ -199,6 +199,11 @@ Key points:
 - `ENV UV_CACHE_DIR=/opt/uv-cache` persists into the running container so the
   agent's `uv sync` reads from the cache instead of PyPI.
 
+Generated Codex configurations allow `UV_CACHE_DIR` and `UV_OFFLINE` through
+to tool shells alongside core shell environment variables. Their values come
+from the running container; unrelated environment variables are filtered out.
+Restart with regenerated configuration to apply this policy to existing sessions.
+
 Then run:
 
 ```bash
