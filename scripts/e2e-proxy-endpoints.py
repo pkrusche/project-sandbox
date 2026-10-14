@@ -54,6 +54,8 @@ class Fixture(http.server.BaseHTTPRequestHandler):
             )
         )
 
+    tunnelled = False
+
     def do_GET(self):
         self.record()
         role = self.server.role
@@ -64,7 +66,9 @@ class Fixture(http.server.BaseHTTPRequestHandler):
             elif unquote(self.path) != API_PATH + "/models":
                 status = 404
         elif role == "proxy":
-            if self.path != "http://origin.test/fixture":
+            if self.path != (
+                "/fixture" if self.tunnelled else "http://origin.test/fixture"
+            ):
                 status = 403
         elif self.path != "/fixture":
             status = 404
@@ -76,6 +80,13 @@ class Fixture(http.server.BaseHTTPRequestHandler):
 
     def do_CONNECT(self):
         self.record()
+        if self.server.role == "proxy" and self.path == "origin.test:80":
+            # Newer Node versions tunnel plain HTTP targets through CONNECT.
+            self.send_response(200)
+            self.end_headers()
+            self.tunnelled = True
+            self.handle_one_request()
+            return
         if self.server.role != "proxy" or self.path != "origin.test:443":
             self.send_error(403)
             return
