@@ -5,7 +5,7 @@ import os
 import posixpath
 import shutil
 import subprocess
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -96,7 +96,7 @@ def _setup_locked(
 
 
 @contextmanager
-def _workspace_lock(repo: Path) -> Iterator[None]:
+def _workspace_lock(repo: Path) -> Generator[None, None, None]:
     """Serialize all host-side workspace mutations for one jj repository.
 
     Creation, finalization, and build-failure cleanup all update the shared jj

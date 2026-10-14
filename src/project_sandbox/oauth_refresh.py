@@ -15,7 +15,7 @@ concurrent project-sandbox launches do not race on the single-use refresh token.
 import contextlib
 import shutil
 import subprocess
-from collections.abc import Iterator
+from collections.abc import Generator
 from pathlib import Path
 
 # Per-agent: the host config dir and the command that makes the tool validate and
@@ -98,7 +98,7 @@ def refresh_host_token(
 
 
 @contextlib.contextmanager
-def _host_lock(config_dir: Path) -> Iterator[None]:
+def _host_lock(config_dir: Path) -> Generator[None, None, None]:
     """Serialize host refreshes across concurrent project-sandbox launches."""
     try:
         import fcntl

@@ -18,7 +18,7 @@ import fcntl
 import hashlib
 import os
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -35,7 +35,7 @@ def lock_path(kind: str, target: Path) -> Path:
 
 
 @contextmanager
-def path_lock(kind: str, target: Path) -> Iterator[None]:
+def path_lock(kind: str, target: Path) -> Generator[None, None, None]:
     """Hold an exclusive lock on ``target`` for the duration of the block."""
     path = lock_path(kind, target)
     try:

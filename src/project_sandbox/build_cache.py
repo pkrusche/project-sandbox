@@ -14,7 +14,7 @@ and any read/parse problem degrades to "not cached" so the build runs.
 
 import hashlib
 import json
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -34,7 +34,7 @@ _STATE_FILENAME = ".build-state.json"
 
 
 @contextmanager
-def build_lock(context_dir: Path) -> Iterator[None]:
+def build_lock(context_dir: Path) -> Generator[None, None, None]:
     """Serialize cache checks and image builds for one generated context.
 
     The lock lives outside the project so it is neither included in build

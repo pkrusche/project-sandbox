@@ -1,7 +1,7 @@
 import hashlib
 import subprocess
 import time
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -118,7 +118,7 @@ def path_for(repo: Path, branch: str, worktree_dir: Path | None = None) -> Path:
 
 
 @contextmanager
-def _teardown_lock(repo: Path) -> Iterator[None]:
+def _teardown_lock(repo: Path) -> Generator[None, None, None]:
     """Serialize teardown across concurrent host project-sandbox processes.
 
     Several agents can share one repo through separate worktrees, and each
