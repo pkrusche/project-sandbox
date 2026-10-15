@@ -121,9 +121,9 @@ single one, pass `--only SUITE`; `--list` prints the accepted suite names:
 ```
 
 Naming an opt-in suite with `--only` is itself the opt-in, so `--only
-agent-proxy`, `--only agent-proxy-isolation`, and `--only
-internet-proxy-isolation` run without `--with-agent-proxy` /
-`--with-internet-proxy` (the destructive Internet audit still requires its
+proxy-endpoints`, `--only agent-proxy`, `--only agent-proxy-isolation`, and `--only
+internet-proxy-isolation` run without their corresponding `--with-*` flags
+(the destructive Internet audit still requires its
 `--blocked-url`, `--internet-proxy-dir`, and `--agentgateway-dir` arguments).
 Availability gates still apply: a selected suite that needs a container
 runtime, `jj`, or Ollama reports a skip when that dependency is missing.
@@ -240,3 +240,103 @@ request verification summary.
 Progress is tracked in `.release-status/` (git-ignored).  Re-running the script
 after a failure resumes from the last incomplete step.  Delete `.release-status/`
 to start a fresh release cycle.
+
+## Proxy endpoint verification
+
+An optional end-to-end suite creates temporary HTTP/HTTPS gateway, proxy, and
+origin fixtures, then launches normal headless Bash sessions through the CLI.
+It uses a dummy gateway key and makes no billable requests. Existing services
+are left running. Enable it explicitly:
+
+```bash
+# Replace this with a local non-loopback address reachable from the sandbox.
+./scripts/run-e2e-tests.sh --only proxy-endpoints --runtime docker \
+  --proxy-fixture-host 192.168.1.10
+# Add to the full matrix with --with-proxy-endpoints --proxy-fixture-host IP.
+```
+
+Docker, Podman, and Apple container are accepted. The host needs OpenSSL and an
+address the selected runtime can reach, including access to temporary listener
+ports. The test binds only that address; the proxy accepts only its own fixture
+origin and cannot relay arbitrary destinations. Images are built normally, so
+build-time Internet access is required; `--no-build` is unsupported because each
+run selects fresh ports and generates a temporary CA.
+
+The suite checks remote HTTP and HTTPS, private CA installation, literal API
+paths containing braces/brackets, authenticated direct gateway access from
+Python/curl/Node, HTTP requests and HTTPS CONNECT through the Internet proxy,
+and absence of gateway keys at that proxy. A separate live listener must receive
+an administrative firewall denial, preventing closed-port false passes. An IPv4
+fixture address also exercises an IPv4-mapped IPv6 gateway URL. To add native
+IPv6 routing, pass `--proxy-fixture-ipv6-host` with a local unscoped IPv6 address
+reachable from the runtime, or run the script directly:
+
+```bash
+uv run python scripts/e2e-proxy-endpoints.py --runtime docker \
+  --fixture-host 192.168.1.10 --ipv6-host fd12:3456:789a::10 --keep
+```
+
+Temporary listeners always stop at exit. Successful runs remove their workdir
+and test image; failures retain artifacts under `.project-sandbox/e2e/`, and
+`--keep` retains successful artifacts too. This tests the generated image and
+firewall with representative clients; real Pi/OpenCode requests, DNS-name
+pinning, and IPv6-disabled fallback remain separate acceptance checks.
+
+The controlled fixtures run without a container runtime or public Internet:
+
+```bash
+uv run pytest -q tests/test_proxy_endpoint.py tests/test_remote_proxy_cli.py tests/test_proxy_firewall.py tests/test_proxy_transport.py tests/test_e2e_proxy_endpoints.py
+```
+
+They cover parsing and dry-run combinations, executable sandbox resolution and
+address/port rule selection, generated final TCP/TLS probes, private CA discovery,
+redirect rejection, HTTP 407, expiry/name mismatch, and gateway key isolation.
+The fixtures use temporary local servers and a temporary CA; synthetic DNS maps
+remote fixture names to the server only within host-side transport tests. They
+do not change host trust or install host firewall rules.
+
+On 2026-10-14 the client transport checks passed with Python 3.11, curl 8.14.1
+(OpenSSL 3.5.6), and Node v26.10.0 on Linux ARM64:
+
+| Client path | HTTP proxy | HTTPS proxy | Trust/bypass tested |
+| --- | --- | --- | --- |
+| curl HTTP requests and CONNECT | Pass | Pass | Separate proxy CA and destination CA |
+| Node built-in fetch | Pass | Pass | `NODE_USE_ENV_PROXY=1`, private CA, direct gateway via `NO_PROXY` |
+| Python gateway discovery | Direct | Direct TLS | Ambient proxies ignored, private CA, no redirects |
+
+Node's test uses `NODE_EXTRA_CA_CERTS` for an isolated fixture trust file; images
+install the CA into OS trust and use `NODE_USE_SYSTEM_CA=1`. Proxy-aware Node
+fetch requires `NODE_USE_ENV_PROXY=1` (or a client-specific proxy dispatcher).
+This does not certify every bundled SDK: the image pins Node v26.11.1, and actual
+Pi/OpenCode client execution still needs the runtime matrix below. Public-CA
+live service checks were not run; normal system trust remains enabled and the
+fixture tests confirm that an unknown private CA is rejected.
+
+The generated isolation audit checks direct IP/TCP and UDP/DNS, unset proxy
+variables, curl `--noproxy '*'`, cross-endpoint port attempts for distinct
+admitted pairs, and either service stop order. Shared IPs necessarily share
+already-authorized ports and are excluded from cross-port denial assertions.
+Cross-port checks require an administrative rejection; a refused connection or
+timeout is inconclusive and fails the audit rather than proving firewall isolation.
+Run the existing checker twice on a host with controlled external services:
+
+```bash
+uv run python scripts/e2e-internet-proxy-isolation.py --runtime docker \
+  --internet-proxy https://proxy.test:8443 --gateway https://models.test/v1 \
+  --ca-cert /path/to/test-ca.pem --blocked-url https://denied.test/ \
+  --internet-proxy-dir /path/to/proxy --agentgateway-dir /path/to/gateway \
+  --stop-order proxy-first
+# Repeat with --stop-order gateway-first, then with podman and apple-container.
+```
+
+This checker stops/restarts the named external services, so use dedicated test
+instances and provide their control-command overrides where appropriate. The
+normal CLI never manages external services. Check local Ollama separately with
+the existing Ollama runtime acceptance suite, including a remote Internet proxy.
+
+Docker, Podman, and Apple container were unavailable in the implementation
+environment, which also lacked network-administration capabilities. Actual
+firewall enforcement against bypassing/unsupported clients, IPv6 routing,
+runtime forwarding, full Pi/OpenCode requests, and live service-stop independence
+remain runtime acceptance checks. Unit tests execute the generated audit with
+controlled successes/failures and ensure each failed probe makes it fail.

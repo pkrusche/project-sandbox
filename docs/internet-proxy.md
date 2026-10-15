@@ -1,8 +1,8 @@
 # Internet proxy
 
-`--internet-proxy` sends proxy-aware Internet traffic through a separately managed, host-loopback HTTP proxy while the sandbox firewall prevents direct fallback. Install, start, and configure the proxy separately; Project Sandbox does not manage its lifecycle or Internet destination policy.
+`--internet-proxy` sends proxy-aware Internet traffic through a separately managed HTTP loopback or remote HTTP/HTTPS proxy while the sandbox firewall prevents direct fallback. Install, start, and configure the proxy separately; Project Sandbox does not manage its lifecycle or Internet destination policy.
 
-[internet-proxy-locally](https://github.com/pkrusche/internet-proxy-locally) is one example setup, but any HTTP proxy will do.
+[internet-proxy-locally](https://github.com/pkrusche/internet-proxy-locally) is one example setup, with a local HTTP listener. See the [endpoint contract](proxy-endpoints.md) for remote endpoints and client compatibility.
 
 Start the external proxy on loopback with an explicit port, then run a Docker sandbox, for example:
 
@@ -10,7 +10,7 @@ Start the external proxy on loopback with an explicit port, then run a Docker sa
 project-sandbox --internet-proxy http://127.0.0.1:18080 --runtime docker --agent bash . python:3.12-slim
 ```
 
-Apple `container` uses the same command with `--runtime apple-container`. Configure its administrator-managed localhost DNS entry once, then restart the container system so it rebuilds networking with both the localhost redirect and ordinary container Internet access:
+For a local proxy, Apple `container` uses the same command with `--runtime apple-container`. Configure its administrator-managed localhost DNS entry once, then restart the container system so it rebuilds networking with both the localhost redirect and ordinary container Internet access:
 
 ```bash
 sudo container system dns create host.docker.internal --localhost 203.0.113.113
@@ -31,7 +31,7 @@ Three independent layers have separate jobs:
 - The external proxy owns allowed and denied Internet destinations and related security policy.
 - `agentgateway-locally` owns AI/MCP routing and provider-credential isolation. Agentgateway is not rerouted through the Internet proxy.
 
-The firewall permits only exact forwarded local-service ports and blocks ordinary public IPv4, public IPv6, and DNS paths. Applications that ignore HTTP proxy variables fail; there is no transparent interception. Publishing a proxy on loopback is useful containment but is not itself the sandbox security boundary.
+The firewall permits only each configured endpoint’s exact address/port pairs and blocks ordinary public IPv4, public IPv6, and DNS paths. Applications that ignore HTTP proxy variables fail; there is no transparent interception. Publishing a proxy on loopback is useful containment but is not itself the sandbox security boundary.
 
 If the Internet proxy stops, ordinary Internet operations fail while a running Agentgateway or Ollama remains independently reachable. If Agentgateway stops, its AI/MCP operations fail while permitted Internet requests continue through a running Internet proxy. Project Sandbox never restarts either service.
 
@@ -94,10 +94,10 @@ Inputs must contain only a PEM certificate and optional surrounding whitespace;
 bundles, private keys, end-entity (non-CA) certificates, and unrelated trailing
 content are rejected.
 
-`--ca-cert` requires `--internet-proxy` and its enforced firewall. The proxy URL
-must still use host loopback; installing a CA does not encrypt the HTTP hop to
-the proxy or enable remote proxy hosts. The external proxy performs TLS
-inspection and owns destination policy.
+`--ca-cert` works with either proxy option, including agent-only private-CA
+HTTPS gateways. Remote HTTPS verifies the proxy's certificate and name on the
+host and in the sandbox. HTTP remains unencrypted to the proxy. TLS to a proxy
+and TLS to a destination are separate connections; see [TLS and trust](proxy-endpoints.md#tls-and-trust).
 
 Certificates are copied into the generated build context under content-based
 `.crt` names and baked into the image with `update-ca-certificates`, after all
@@ -139,3 +139,25 @@ details are also saved in `result.json` under `gateway_diagnostics` when the tes
 project is retained with `--keep`. An API rejection can fail this probe even when
 an agent session succeeds; check the reported model, parameters, and HTTP error
 before changing host networking.
+
+## Independent remote and mixed endpoints
+
+```bash
+# Internet-only: no gateway key or model catalog needed.
+project-sandbox --internet-proxy https://proxy.corp.example --runtime docker --agent bash . python:3.12-slim
+# Both remote endpoints, independently using the default HTTPS port.
+project-sandbox --internet-proxy https://proxy.corp.example --agent-proxy https://models.corp.example/v1 --model example-model --runtime docker --agent bash . python:3.12-slim
+# Local gateway and remote Internet proxy.
+project-sandbox --internet-proxy https://proxy.corp.example --agent-proxy http://127.0.0.1:4000/v1 --model example-model --runtime docker --agent bash . python:3.12-slim
+```
+
+Add `--dry-run` to preview effective URLs, routing, bypass entries, and deferred
+DNS/TLS checks without secrets, network requests, or generated files. Supply a
+model actually exposed by your gateway for a real run. Local Ollama can also
+coexist with a remote Internet proxy using `--agent pi --pi-ollama`.
+
+Endpoints are resolved and pinned **inside the sandbox** for the session;
+restart after DNS changes. Reachability from the host alone is insufficient.
+Permissions cover IP/port pairs, including other virtual hosts sharing that pair.
+No provider, GitHub, broad gateway, or general DNS exceptions are added. See the
+[accepted URL matrix, TLS scope, and client limitations](proxy-endpoints.md).
