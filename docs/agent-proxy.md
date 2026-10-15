@@ -1,8 +1,7 @@
 # Agent proxy
 
 `project-sandbox` can route Pi, OpenCode, and interactive or headless Bash
-through the authenticated local
-gateway maintained by [`pkrusche/agentgateway-locally`](https://github.com/pkrusche/agentgateway-locally).
+through an authenticated local or remote HTTP/HTTPS gateway. One local option is [`pkrusche/agentgateway-locally`](https://github.com/pkrusche/agentgateway-locally).
 Install, configure, secure, start, rotate, and stop that gateway by following
 its [setup](https://github.com/pkrusche/agentgateway-locally#readme),
 [backend](https://github.com/pkrusche/agentgateway-locally), and security and
@@ -29,7 +28,7 @@ Bash receives `OPENAI_BASE_URL`, `OPENAI_API_KEY`, and `OPENAI_MODEL`. The same
 environment is available interactively and to commands executed by headless
 `--prompt` / `--prompt-text` sessions. The API-key value is the narrower gateway
 bearer key, not an OpenAI provider key. Bash proxy sessions also pre-configure
-both Pi and OpenCode with the forwarded URL, gateway key, discovered models,
+both Pi and OpenCode with the effective sandbox URL, gateway key, discovered models,
 and selected default model, so either agent can be launched directly from the
 shell without additional provider setup. OpenCode's configured proxy models
 use the `@ai-sdk/openai` provider mapping so requests use the gateway's
@@ -38,7 +37,7 @@ install an exact, OpenCode-compatible version of that provider package.
 
 Proxy mode is gateway-only by default. The firewall omits the normal OpenAI and
 Anthropic endpoint allowlist and the devcontainer's broad host-gateway rule;
-only the forwarded gateway address and selected TCP port are reachable. Add
+only the gateway’s admitted addresses and selected TCP port are reachable. Add
 other destinations deliberately with `--extra-domain DOMAIN` or
 `--allow-github`. No provider endpoint is added automatically, including when a
 headless Bash command invokes another CLI.
@@ -70,7 +69,7 @@ credential files or extra mounted secret files are absent. For a real,
 billable two-agent check run `scripts/check-agent-proxy.py`; it makes one
 minimal LLM request with each supported agent.
 
-On Apple `container`, both agent-proxy and Ollama forwarding use
+For local HTTP services on Apple `container`, agent-proxy and Ollama forwarding use
 `host.docker.internal`. Configure that name once before using either feature:
 
 ```bash
@@ -90,3 +89,22 @@ If the gateway later becomes unreachable with a curl *timeout* rather than a
 refusal, the alias is registered but no longer redirecting. Re-running `dns
 create` does not fix that; delete and re-create the domain, then restart the
 container system. See [Apple container host alias](apple-container-dns.md).
+
+## Remote gateways
+
+```bash
+project-sandbox --agent bash --agent-proxy https://models.corp.example/v1 --model example-model --runtime docker . python:3.12-slim
+project-sandbox --agent bash --agent-proxy https://models.corp.example/api/v1 --model example-model --ca-cert /path/to/corporate-ca.pem --runtime docker . python:3.12-slim
+```
+
+Remote hosts retain their scheme, hostname, effective port (443 here), and API
+path. Only local HTTP endpoints use forwarding; HTTPS loopback is rejected.
+Gateway discovery ignores ambient host proxies and rejects redirects. Both host
+and sandbox TLS checks verify trust and endpoint identity before agent startup.
+
+The Internet proxy is optional. When both are set, gateway requests bypass it,
+and stopping either service leaves the other independently reachable. Remote
+names are pinned by the sandbox for the session; restart after DNS changes. The
+firewall grants IP/port access, which also covers other virtual hosts on that
+same pair. Agent-only `--no-firewall` has ordinary DNS and no pinning guarantees.
+See the [URL matrix, CA scope, and client compatibility](proxy-endpoints.md).

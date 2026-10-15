@@ -317,3 +317,27 @@ Loopback publishing is not a confinement boundary, particularly with Apple
 and never expose an unauthenticated listener. The external gateway's SQLite
 request log can contain complete prompts and responses; follow its retention,
 inspection, and pruning guidance before using sensitive material.
+
+## Remote proxy endpoints
+
+Agent and Internet proxies can independently use HTTP loopback forwarding or
+direct remote HTTP/HTTPS. Internet mode retains default-deny IPv4/IPv6 and
+blocks general DNS, direct provider access, and broad gateway exceptions. Each
+endpoint is resolved with sandbox-visible DNS before closure, validated, and
+pinned for the session with exact TCP address/port permissions. Restart after
+DNS rotation. A hostname resolving to loopback, multicast, or an unspecified
+address aborts startup. IPv6 enforcement failures abort Internet mode.
+
+An IP/port exception also permits another virtual host on that pair; it is not
+an HTTP hostname policy. Verified TLS authenticates names for compliant clients.
+Proxy environment variables supply routing hints; removing them does not widen
+the firewall. Gateway and Ollama requests bypass the Internet proxy and keep
+independent permissions. Agent-only `--no-firewall` provides neither pinning nor
+egress enforcement. Operators must provide sandbox reachability to endpoints.
+
+Supplied public CAs extend per-connection host trust and rebuilt image-wide
+trust. They never change the host trust store. HTTPS gateway discovery ignores
+ambient proxies and follows no redirects, keeping the bearer key on the configured
+origin. Internet proxy authentication and client certificates are unsupported;
+HTTP 407 does not trigger credential acquisition or direct fallback. See
+[proxy endpoints](proxy-endpoints.md) for TLS scope and client limitations.
