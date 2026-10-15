@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import os
+import socket
+import ssl
 import subprocess
 import urllib.error
 import urllib.request
-from urllib.parse import urlsplit, urlunsplit
 
+from . import proxy_endpoint
 from .local_service_network import HOSTNAME
 
 DEFAULT_KEY_ENV = "AGENTGATEWAY_API_KEY"
@@ -16,44 +18,28 @@ REDACTED = "[REDACTED]"
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """Keep the gateway bearer key on the validated loopback origin."""
+    """Keep the gateway bearer key on the configured origin."""
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
 
 
+def parse(value: str) -> proxy_endpoint.ProxyEndpoint:
+    return proxy_endpoint.parse(value, option="--agent-proxy", api_path=True)
+
+
 def validate_url(value: str) -> tuple[str, int]:
-    parsed = urlsplit(value)
-    if parsed.scheme != "http" or parsed.hostname not in (
-        "127.0.0.1",
-        "localhost",
-        "::1",
-    ):
-        raise SystemExit("--agent-proxy must be an HTTP loopback URL")
-    try:
-        port = parsed.port
-    except ValueError as exc:
-        raise SystemExit("--agent-proxy must contain a valid explicit port") from exc
-    if port is None or not 1 <= port <= 65535:
-        raise SystemExit("--agent-proxy must contain a valid explicit port")
-    if parsed.username or parsed.password or parsed.query or parsed.fragment:
-        raise SystemExit(
-            "--agent-proxy must not contain credentials, query, or fragment"
-        )
-    return parsed.path.rstrip("/") or "", port
+    endpoint = parse(value)
+    return endpoint.path, endpoint.port
 
 
 def forwarded_url(value: str, *, hostname: str = HOSTNAME) -> str:
-    path, port = validate_url(value)
-    return urlunsplit(("http", f"{hostname}:{port}", path, "", ""))
+    return parse(value).url(sandbox=True, hostname=hostname)
 
 
-def loopback_host(value: str) -> str:
-    """Return the validated host-side listener address."""
-    validate_url(value)
-    host = urlsplit(value).hostname
-    assert host is not None
-    return host
+def loopback_host(value: str) -> str | None:
+    endpoint = parse(value)
+    return endpoint.host if endpoint.local else None
 
 
 def resolve_key(env_name: str, raw_key: str | None) -> tuple[str, str]:
@@ -84,13 +70,25 @@ def resolve_key(env_name: str, raw_key: str | None) -> tuple[str, str]:
     )
 
 
-def discover_models(base_url: str, key: str, *, timeout: float = 10) -> list[str]:
+def discover_models(
+    base_url: str,
+    key: str,
+    *,
+    timeout: float = 10,
+    ca_certificates: tuple[bytes, ...] = (),
+) -> list[str]:
     request = urllib.request.Request(
         base_url.rstrip("/") + "/models",
         headers={"Authorization": f"Bearer {key}", "Accept": "application/json"},
     )
     try:
-        opener = urllib.request.build_opener(_NoRedirectHandler())
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({}),
+            urllib.request.HTTPSHandler(
+                context=proxy_endpoint.tls_context(ca_certificates)
+            ),
+            _NoRedirectHandler(),
+        )
         with opener.open(request, timeout=timeout) as response:
             payload = json.load(response)
     except urllib.error.HTTPError as exc:
@@ -102,8 +100,15 @@ def discover_models(base_url: str, key: str, *, timeout: float = 10) -> list[str
             f"Agent proxy model discovery failed (HTTP {exc.code})"
         ) from None
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+        if isinstance(reason, ssl.SSLCertVerificationError):
+            raise SystemExit(
+                "Agent proxy TLS certificate verification failed"
+            ) from None
+        if isinstance(reason, socket.gaierror):
+            raise SystemExit("Agent proxy DNS resolution failed") from None
         raise SystemExit(
-            "Agent proxy is unavailable; start or troubleshoot agentgateway-locally"
+            "Agent proxy is unavailable; check gateway connectivity and TLS certificate trust/name"
         ) from exc
     except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
         raise SystemExit("Agent proxy returned a malformed model catalog") from exc
