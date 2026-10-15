@@ -15,6 +15,7 @@
 #  11. agent-proxy-isolation    — gateway-only network/credential audit (explicit opt-in)
 #  12. agent-proxy              — real Pi/OpenCode gateway calls (explicit opt-in)
 #  13. node-npm                 — headless Playwright and ephemeral npm dependencies
+#  14. proxy-endpoints          — controlled remote HTTP/TLS fixtures (explicit opt-in)
 #
 # The console shows one progress line per suite. Each suite's output is captured
 # in its own temp log file; a failing suite's log is kept and its path reported,
@@ -25,6 +26,8 @@
 #                            [--base-image IMAGE] [--no-build] [--keep]
 #                            [--only SUITE] [--list]
 #                            [--with-agent-proxy] [--with-internet-proxy]
+#                            [--with-proxy-endpoints --proxy-fixture-host IP]
+#                            [--proxy-fixture-ipv6-host IP]
 #                            [--ca-cert PATH ...]
 #
 #   --runtime NAME   runtime forwarded to workflow scripts (default: chroot on Linux, auto otherwise)
@@ -34,8 +37,8 @@
 #                    keep the captured log of every suite, not just failures
 #   --only SUITE     run just one suite by name (default: run every available suite).
 #                    Naming an opt-in suite is itself the opt-in, so --only agent-proxy,
-#                    --only agent-proxy-isolation, and --only internet-proxy-isolation
-#                    do not additionally need --with-agent-proxy/--with-internet-proxy.
+#                    --only agent-proxy-isolation, --only internet-proxy-isolation,
+#                    and --only proxy-endpoints need no additional --with-* flag.
 #   --list           print the suite names accepted by --only and exit
 #   --with-agent-proxy
 #                    run proxy isolation plus the billable agent checker
@@ -45,6 +48,13 @@
 #                    --agentgateway-dir
 #   --ca-cert PATH   bake a proxy CA certificate into Internet-proxy test images;
 #                    repeat for certificate chains
+#   --with-proxy-endpoints
+#                    run temporary, non-billable remote HTTP/TLS proxy fixtures;
+#                    requires a real runtime, builds, and --proxy-fixture-host IP
+#   --proxy-fixture-host IP
+#                    local non-loopback IP reachable from the selected runtime
+#   --proxy-fixture-ipv6-host IP
+#                    optional local IPv6 IP for an additional HTTPS gateway check
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -63,6 +73,7 @@ SUITES=(
   internet-proxy-isolation
   agent-proxy-isolation
   agent-proxy
+  proxy-endpoints
 )
 
 if [ "$(uname -s)" = Linux ]; then
@@ -76,6 +87,9 @@ KEEP=0
 ONLY=""
 WITH_AGENT_PROXY=0
 WITH_INTERNET_PROXY=0
+WITH_PROXY_ENDPOINTS=0
+PROXY_FIXTURE_HOST=""
+PROXY_FIXTURE_IPV6_HOST=""
 BLOCKED_URL=""
 INTERNET_PROXY_DIR=""
 AGENTGATEWAY_DIR=""
@@ -95,6 +109,9 @@ while [ $# -gt 0 ]; do
     --list)       printf '%s\n' "${SUITES[@]}"; exit 0 ;;
     --with-agent-proxy) WITH_AGENT_PROXY=1; shift ;;
     --with-internet-proxy) WITH_INTERNET_PROXY=1; shift ;;
+    --with-proxy-endpoints) WITH_PROXY_ENDPOINTS=1; shift ;;
+    --proxy-fixture-host) PROXY_FIXTURE_HOST="${2:?--proxy-fixture-host needs a value}"; shift 2 ;;
+    --proxy-fixture-ipv6-host) PROXY_FIXTURE_IPV6_HOST="${2:?--proxy-fixture-ipv6-host needs a value}"; shift 2 ;;
     --blocked-url) BLOCKED_URL="${2:?--blocked-url needs a value}"; shift 2 ;;
     --internet-proxy-dir) INTERNET_PROXY_DIR="${2:?--internet-proxy-dir needs a value}"; shift 2 ;;
     --agentgateway-dir) AGENTGATEWAY_DIR="${2:?--agentgateway-dir needs a value}"; shift 2 ;;
@@ -118,6 +135,7 @@ if [ -n "$ONLY" ]; then
   case "$ONLY" in
     agent-proxy|agent-proxy-isolation) WITH_AGENT_PROXY=1 ;;
     internet-proxy-isolation) WITH_INTERNET_PROXY=1 ;;
+    proxy-endpoints) WITH_PROXY_ENDPOINTS=1 ;;
   esac
 fi
 
@@ -371,6 +389,22 @@ else
   fi
   if selected agent-proxy; then
     skip_suite "agent-proxy" "pass --with-agent-proxy; makes two billable requests"
+  fi
+fi
+
+# Controlled remote endpoints are opt-in even when a runtime is available.
+if selected proxy-endpoints; then
+  if [ "$WITH_PROXY_ENDPOINTS" = 1 ]; then
+    if [ -z "$CONTAINER_RUNTIME" ] || [ -z "$PROXY_FIXTURE_HOST" ] || [ "$NO_BUILD" = 1 ]; then
+      fail_suite "proxy-endpoints" "requires a real runtime, --proxy-fixture-host, and builds enabled"
+    else
+      ENDPOINT_ARGS=(--runtime "$CONTAINER_RUNTIME" --base-image "$BASE_IMAGE" --fixture-host "$PROXY_FIXTURE_HOST")
+      [ -n "$PROXY_FIXTURE_IPV6_HOST" ] && ENDPOINT_ARGS+=(--ipv6-host "$PROXY_FIXTURE_IPV6_HOST")
+      [ "$KEEP" = 1 ] && ENDPOINT_ARGS+=(--keep)
+      run_suite "proxy-endpoints" uv run python "$ROOT/scripts/e2e-proxy-endpoints.py" "${ENDPOINT_ARGS[@]}"
+    fi
+  else
+    skip_suite "proxy-endpoints" "pass --with-proxy-endpoints and --proxy-fixture-host"
   fi
 fi
 
