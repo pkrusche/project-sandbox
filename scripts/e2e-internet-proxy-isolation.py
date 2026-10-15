@@ -19,9 +19,10 @@ import textwrap
 import time
 from pathlib import Path
 
-from project_sandbox import agent_proxy, internet_proxy
+from project_sandbox import agent_proxy, dockerfile, internet_proxy
 
 AUDIT_SOURCE = r"""#!/usr/bin/env python3
+import errno
 import json
 import os
 import socket
@@ -132,10 +133,31 @@ check(blocked_connection(__PUBLIC_IP__, socket.SOCK_STREAM, 443), "raw public TC
 dns_query = bytes.fromhex("123401000001000000000000076578616d706c6503636f6d0000010001")
 check(blocked_connection(__DNS_IP__, socket.SOCK_DGRAM, 53, dns_query), "raw public UDP is blocked")
 check(blocked_connection(__DNS_IP__, socket.SOCK_STREAM, 53), "direct DNS is blocked")
+endpoint_pairs = set()
+if __CROSS_ENDPOINTS__:
+    for host, port in __ENDPOINTS__:
+        endpoint_pairs.update((item[4][0], port) for item in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM))
+for host, port in __CROSS_ENDPOINTS__:
+    # Resolve pinned names inside the sandbox and test every admitted address.
+    for family, socktype, protocol, _, address in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM):
+        if (address[0], port) in endpoint_pairs:
+            # Shared endpoint IPs necessarily share their authorized ports.
+            continue
+        with socket.socket(family, socktype, protocol) as connection:
+            connection.settimeout(3)
+            try:
+                connection.connect(address)
+            except OSError as exc:
+                # A closed port (ECONNREFUSED) or timeout does not prove the
+                # sandbox's administrative REJECT rule was applied.
+                blocked = exc.errno in (errno.EACCES, errno.EPERM, errno.EHOSTUNREACH)
+            else:
+                blocked = False
+            check(blocked, f"cross-endpoint port {host}:{port} is blocked")
 check(gateway_request(), "AI completion succeeds through Agentgateway")
 
 Path("baseline.ready").write_text("ready\n")
-for marker in ("proxy-stopped.go", "proxy-restarted.go", "gateway-stopped.go"):
+for marker in __PHASES__:
     deadline = time.monotonic() + __PHASE_TIMEOUT__
     while not Path(marker).exists() and time.monotonic() < deadline:
         time.sleep(0.2)
@@ -148,6 +170,10 @@ for marker in ("proxy-stopped.go", "proxy-restarted.go", "gateway-stopped.go"):
         check(internet_works(), "proxy restart restores service at the stable endpoint")
         check(gateway_request(), "Agentgateway remains independent after proxy restart")
         Path("proxy-restarted.done").write_text("done\n")
+    elif marker == "gateway-restarted.go":
+        check(internet_works(), "Internet remains independent after gateway restart")
+        check(gateway_request(), "gateway restart restores its independent endpoint")
+        Path("gateway-restarted.done").write_text("done\n")
     else:
         check(internet_works(), "ordinary Internet still works while Agentgateway is stopped")
         check(gateway_request(False), "AI fails when Agentgateway is stopped")
@@ -188,6 +214,9 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--agentgateway-dir", required=True, type=Path)
     p.add_argument("--internet-proxy-control", default="uv run ipl {action}")
     p.add_argument("--agentgateway-control", default="./run.py {action}")
+    p.add_argument(
+        "--stop-order", choices=("proxy-first", "gateway-first"), default="proxy-first"
+    )
     p.add_argument("--timeout", type=int, default=300)
     p.add_argument("--no-build", action="store_true")
     p.add_argument("--keep", action="store_true")
@@ -213,8 +242,24 @@ def wait_for(path: Path, process: subprocess.Popen[str], timeout: int) -> None:
     raise TimeoutError(f"timed out waiting for {path.name}")
 
 
+def phases(args: argparse.Namespace) -> tuple[str, ...]:
+    if args.stop_order == "gateway-first":
+        return ("gateway-stopped", "gateway-restarted", "proxy-stopped")
+    return ("proxy-stopped", "proxy-restarted", "gateway-stopped")
+
+
 def render_audit(args: argparse.Namespace, gateway_url: str) -> str:
+    proxy = internet_proxy.parse(args.internet_proxy).endpoint
+    gateway = agent_proxy.parse(args.gateway)
+    cross = []
+    if proxy.sandbox_host != gateway.sandbox_host and proxy.port != gateway.port:
+        cross = [(proxy.sandbox_host, gateway.port), (gateway.sandbox_host, proxy.port)]
     replacements = {
+        "__CROSS_ENDPOINTS__": repr(cross),
+        "__ENDPOINTS__": repr(
+            [(proxy.sandbox_host, proxy.port), (gateway.sandbox_host, gateway.port)]
+        ),
+        "__PHASES__": repr(tuple(phase + ".go" for phase in phases(args))),
         "__ALLOWED_URL__": repr(args.allowed_url),
         "__BLOCKED_URL__": repr(args.blocked_url),
         "__DENIAL_WORDS__": repr(
@@ -235,7 +280,8 @@ def render_audit(args: argparse.Namespace, gateway_url: str) -> str:
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     proxy = internet_proxy.parse(args.internet_proxy)
-    internet_proxy.preflight(proxy)
+    certificates = dockerfile.read_ca_certificates(args.ca_cert)
+    internet_proxy.preflight(proxy, ca_certificates=certificates)
     agent_proxy.validate_url(args.gateway)
     key, _ = agent_proxy.resolve_key(args.key_env, None)
     for directory in (args.internet_proxy_dir, args.agentgateway_dir):
@@ -283,19 +329,23 @@ def main(argv: list[str] | None = None) -> int:
     try:
         process = subprocess.Popen(command, cwd=root, env=env, text=True)
         wait_for(project / "baseline.ready", process, args.timeout)
-        control(args.internet_proxy_control, "down", args.internet_proxy_dir)
-        stopped.add("proxy")
-        (project / "proxy-stopped.go").write_text("go\n")
-        wait_for(project / "proxy-stopped.done", process, args.timeout)
-        control(args.internet_proxy_control, "restart", args.internet_proxy_dir)
-        stopped.discard("proxy")
-        internet_proxy.preflight(proxy)
-        (project / "proxy-restarted.go").write_text("go\n")
-        wait_for(project / "proxy-restarted.done", process, args.timeout)
-        control(args.agentgateway_control, "down", args.agentgateway_dir)
-        stopped.add("gateway")
-        (project / "gateway-stopped.go").write_text("go\n")
-        wait_for(project / "gateway-stopped.done", process, args.timeout)
+        for phase in phases(args):
+            service, state = phase.split("-", 1)
+            template, directory = (
+                (args.internet_proxy_control, args.internet_proxy_dir)
+                if service == "proxy"
+                else (args.agentgateway_control, args.agentgateway_dir)
+            )
+            action = "down" if state == "stopped" else "restart"
+            control(template, action, directory)
+            if state == "stopped":
+                stopped.add(service)
+            else:
+                stopped.discard(service)
+                if service == "proxy":
+                    internet_proxy.preflight(proxy, ca_certificates=certificates)
+            (project / (phase + ".go")).write_text("go\n")
+            wait_for(project / (phase + ".done"), process, args.timeout)
         return_code = process.wait(timeout=args.timeout)
         result_path = project / "result.json"
         result = json.loads(result_path.read_text()) if result_path.exists() else {}
