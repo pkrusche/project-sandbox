@@ -14,6 +14,8 @@ This directory contains the detailed project-sandbox documentation.
 - [Generated files and runtime behavior](runtime.md) - end-to-end flow, file
   layout, generated image tags, OpenSpec, credential staging, and workspace
   masking.
+- [Proxy endpoints](proxy-endpoints.md) - accepted local/remote URLs, DNS pinning,
+  verified TLS, and independent gateway and Internet routing.
 - [Security model](security.md) - firewall behavior, OAuth token lifetime,
   threat model, troubleshooting, and limitations.
 - [Development guide](development.md) - local setup, verification commands, test

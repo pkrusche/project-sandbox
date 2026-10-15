@@ -1,3 +1,4 @@
+import errno
 import importlib.util
 import io
 import json
@@ -140,7 +141,7 @@ class InternetProxyEndToEndScriptTests(TestCase):
                     redirect_stdout(io.StringIO()),
                     self.assertRaises(SystemExit) as raised,
                 ):
-                    exec(compile(source, "audit.py", "exec"), {})  # noqa: S102
+                    exec(compile(source, "audit.py", "exec"), {})  # noqa: S102 — execute generated fixture  # noqa: S102
                 result = json.loads((project / "result.json").read_text())
                 self.assertEqual(raised.exception.code, 0 if failed is None else 1)
                 self.assertEqual(result["ok"], failed is None)
@@ -205,6 +206,9 @@ class InternetProxyEndToEndScriptTests(TestCase):
                         checker.tempfile, "mkdtemp", return_value=str(project)
                     ),
                     patch.object(checker.internet_proxy, "preflight"),
+                    patch.object(
+                        checker.dockerfile, "read_ca_certificates", return_value=()
+                    ),
                     patch.object(
                         checker.agent_proxy,
                         "resolve_key",
@@ -433,3 +437,105 @@ class GatewayCompletionProbeTests(TestCase):
         )
         self.assertFalse(result)
         self.assertIn("should be stopped", self.output.getvalue())
+
+
+class RemoteIsolationAuditTests(TestCase):
+    def test_both_stop_orders_and_cross_endpoint_failures(self):
+        for order in ("proxy-first", "gateway-first"):
+            for cross_error in (
+                errno.EHOSTUNREACH,
+                errno.ECONNREFUSED,
+                errno.ETIMEDOUT,
+                None,
+            ):
+                with (
+                    self.subTest(order=order, cross_error=cross_error),
+                    tempfile.TemporaryDirectory() as tmp,
+                ):
+                    checker = _load_checker()
+                    args = checker.parser().parse_args(
+                        [
+                            "--runtime",
+                            "docker",
+                            "--blocked-url",
+                            "https://blocked.test",
+                            "--internet-proxy-dir",
+                            "/unused",
+                            "--agentgateway-dir",
+                            "/unused",
+                            "--internet-proxy",
+                            "https://proxy.test:8443",
+                            "--gateway",
+                            "https://gateway.test/v1",
+                            "--stop-order",
+                            order,
+                        ]
+                    )
+                    source = checker.render_audit(args, "https://gateway.test:443/v1")
+                    root = Path(tmp)
+                    for phase in checker.phases(args):
+                        (root / (phase + ".go")).touch()
+                    curl_codes = [0, 22, 1, 1] + (
+                        [1, 0, 0] if order == "proxy-first" else [0, 0, 1]
+                    )
+                    curl_replies = [
+                        MagicMock(returncode=code, stdout="denied", stderr="")
+                        for code in curl_codes
+                    ]
+                    successes = (
+                        [True, True, True, False]
+                        if order == "proxy-first"
+                        else [True, False, True, True]
+                    )
+                    replies = []
+                    for success in successes:
+                        response = MagicMock()
+                        response.__enter__.return_value.status = 200
+                        response.__enter__.return_value.read.return_value = json.dumps(
+                            {"object": "response", "status": "completed", "output": []}
+                        ).encode()
+                        replies.append(
+                            response if success else ConnectionRefusedError()
+                        )
+                    sockets = []
+                    for index in range(5):
+                        sock = MagicMock()
+                        sock.__enter__.return_value = sock
+                        error = cross_error if index >= 3 else errno.EHOSTUNREACH
+                        sock.connect.side_effect = (
+                            OSError(error, "fixture") if error else None
+                        )
+                        sockets.append(sock)
+
+                    def lookup(host, port, **kwargs):
+                        return [
+                            (
+                                socket.AF_INET,
+                                socket.SOCK_STREAM,
+                                0,
+                                "",
+                                (
+                                    "10.0.0.1" if host == "proxy.test" else "10.0.0.2",
+                                    port,
+                                ),
+                            )
+                        ]
+
+                    with (
+                        chdir(root),
+                        patch.dict(os.environ, {"OPENAI_API_KEY": "secret"}),
+                        patch("subprocess.run", side_effect=curl_replies),
+                        patch("urllib.request.urlopen", side_effect=replies),
+                        patch("socket.socket", side_effect=sockets),
+                        patch("socket.getaddrinfo", side_effect=lookup),
+                        redirect_stdout(io.StringIO()),
+                        self.assertRaises(SystemExit) as result,
+                    ):
+                        exec(compile(source, "audit.py", "exec"), {})  # noqa: S102 — execute generated fixture
+                    self.assertEqual(
+                        result.exception.code, int(cross_error != errno.EHOSTUNREACH)
+                    )
+                    sockets[3].connect.assert_called_once_with(("10.0.0.1", 443))
+                    sockets[4].connect.assert_called_once_with(("10.0.0.2", 8443))
+                    for phase in checker.phases(args):
+                        self.assertTrue((root / (phase + ".done")).exists())

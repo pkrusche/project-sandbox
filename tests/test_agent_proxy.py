@@ -41,8 +41,6 @@ class AgentProxyTests(unittest.TestCase):
         for value in (
             "https://127.0.0.1:4000/v1",
             "http://0.0.0.0:4000/v1",
-            "http://example.com:4000/v1",
-            "http://127.0.0.1/v1",
             "http://127.0.0.1:0/v1",
             "http://127.0.0.1:65536/v1",
         ):
@@ -91,7 +89,7 @@ class AgentProxyTests(unittest.TestCase):
         request = opener.open.call_args.args[0]
         self.assertEqual(request.get_header("Authorization"), "Bearer secret")
         self.assertIsInstance(
-            build_opener.call_args.args[0], agent_proxy._NoRedirectHandler
+            build_opener.call_args.args[-1], agent_proxy._NoRedirectHandler
         )
 
     def test_discovery_failures_have_safe_actionable_diagnostics(self) -> None:
@@ -125,19 +123,19 @@ class AgentProxyTests(unittest.TestCase):
                 "listener unavailable",
                 urllib.error.URLError(key),
                 None,
-                "start or troubleshoot agentgateway-locally",
+                "check gateway connectivity and TLS certificate trust/name",
             ),
             (
                 "connection refused",
                 ConnectionRefusedError(key),
                 None,
-                "start or troubleshoot agentgateway-locally",
+                "check gateway connectivity and TLS certificate trust/name",
             ),
             (
                 "timeout",
                 TimeoutError(key),
                 None,
-                "start or troubleshoot agentgateway-locally",
+                "check gateway connectivity and TLS certificate trust/name",
             ),
             ("invalid JSON", None, "{" + key, "malformed model catalog"),
             ("invalid encoding", None, b"\xff", "malformed model catalog"),

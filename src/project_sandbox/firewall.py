@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import templating
+from .proxy_endpoint import ProxyEndpoint
 
 # Strict hostname: dot-separated labels of letters/digits/hyphens (no leading or
 # trailing hyphen per label), with an optional trailing dot. Anything else (command
@@ -17,10 +18,33 @@ _HOSTNAME_RE = re.compile(
 
 
 @dataclass(frozen=True)
-class LocalTcpDestination:
+class TcpDestination:
     label: str
     hostname: str
     port: int
+    scheme: str = "http"
+    path: str = ""
+    local: bool = True
+
+    @classmethod
+    def from_endpoint(cls, label: str, endpoint: ProxyEndpoint) -> "TcpDestination":
+        return cls(
+            label,
+            endpoint.sandbox_host,
+            endpoint.port,
+            endpoint.scheme,
+            endpoint.path,
+            endpoint.local,
+        )
+
+    @property
+    def url(self) -> str:
+        host = f"[{self.hostname}]" if ":" in self.hostname else self.hostname
+        return f"{self.scheme}://{host}:{self.port}{self.path}"
+
+
+# Compatibility for integrations using the original local-only renderer input.
+LocalTcpDestination = TcpDestination
 
 
 NORMAL = "normal"
@@ -45,6 +69,7 @@ def render(
     ollama_hostname: str = "host.docker.internal",
     agent_proxy_port: int | None = None,
     agent_proxy_hostname: str = "host.docker.internal",
+    agent_proxy_url: str | None = None,
     policy: str = NORMAL,
     local_destinations: list[LocalTcpDestination] | None = None,
 ) -> Path:
@@ -56,6 +81,9 @@ def render(
         destinations.append(
             LocalTcpDestination("Agent proxy", agent_proxy_hostname, agent_proxy_port)
         )
+    agent_proxy_url = (
+        agent_proxy_url or f"http://{agent_proxy_hostname}:{agent_proxy_port}/"
+    )
     tmpl = templating.get_template("init-firewall.sh.j2")
     container = _write(
         tmpl,
@@ -67,6 +95,7 @@ def render(
         ollama_hostname=ollama_hostname,
         agent_proxy_port=agent_proxy_port,
         agent_proxy_hostname=agent_proxy_hostname,
+        agent_proxy_url=agent_proxy_url,
         policy=policy,
         local_destinations=destinations,
     )
@@ -82,6 +111,7 @@ def render(
         ollama_hostname=ollama_hostname,
         agent_proxy_port=agent_proxy_port,
         agent_proxy_hostname=agent_proxy_hostname,
+        agent_proxy_url=agent_proxy_url,
         policy=policy,
         local_destinations=destinations,
     )
@@ -99,6 +129,7 @@ def _write(
     ollama_hostname: str,
     agent_proxy_port: int | None,
     agent_proxy_hostname: str,
+    agent_proxy_url: str,
     policy: str,
     local_destinations: list[LocalTcpDestination],
 ) -> Path:
@@ -111,8 +142,13 @@ def _write(
             ollama_hostname=ollama_hostname,
             agent_proxy_port=agent_proxy_port,
             agent_proxy_hostname=agent_proxy_hostname,
+            agent_proxy_url=agent_proxy_url,
+            agent_proxy_local=any(
+                d.label == "Agent proxy" and d.local for d in local_destinations
+            ),
             policy=policy,
             local_destinations=local_destinations,
+            endpoint_hosts=list(dict.fromkeys(d.hostname for d in local_destinations)),
         )
         + "\n",
         encoding="utf-8",

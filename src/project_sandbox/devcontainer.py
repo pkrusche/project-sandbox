@@ -42,6 +42,7 @@ def render(
     credential_dirs: dict[str, Path] | None = None,
     forward_credentials: bool = True,
     build_context: Path | None = None,
+    proxy_environment: dict[str, str] | None = None,
 ) -> Path:
     dc_dir = project / ".devcontainer"
     dc_dir.mkdir(exist_ok=True)
@@ -154,6 +155,7 @@ def render(
     if firewall_enabled:
         container_env["UV_OFFLINE"] = "1"
     container_env["HISTFILE"] = HISTORY_HISTFILE
+    container_env.update(proxy_environment or {})
 
     # Generated, non-secret config is always mounted; the staged host tokens
     # under /project-sandbox-secrets are only wired when forwarding credentials.

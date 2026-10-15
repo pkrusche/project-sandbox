@@ -19,14 +19,15 @@ Both proxy options currently require HTTP services on host loopback, preventing 
 ### New Capabilities
 
 - `proxy-endpoint-connectivity`: Shared endpoint validation, direct versus forwarded routing, DNS pinning, TLS trust, and endpoint reachability checks.
-- `internet-proxy-support`: Carry forward the implemented but unsynced capability from `add-internet-proxy-support`, incorporating independent operation and general endpoints. This is new to the main spec inventory, not a new runtime feature in its entirety.
 
 ### Modified Capabilities
 
+- `internet-proxy-support`: Extend the existing proxy mode to remote HTTP/HTTPS endpoints, preserve independent operation, and retain enforced routing and failure boundaries.
 - `agent-proxy-support`: Generalize accepted endpoints, discovery, firewall rules, and provider configuration to remote HTTP/HTTPS while retaining credentials, supported agents, and model selection behavior.
+- `local-ollama-support`: Preserve local forwarding and Internet-proxy bypass when the Internet proxy is remote; limit shared-hostname requirements to local services.
 
 ## Impact
 
 Affects URL parsing, CLI orchestration, local-service plan selection, generated firewall scripts, proxy/bypass environment, CA handling, model discovery, devcontainer assets, tests/checkers, and `docs/agent-proxy.md` / `docs/internet-proxy.md`. Remote-only sessions will not require host-loopback forwarding setup. Existing HTTP loopback commands retain their behavior. Firewall changes are security-sensitive; direct fallback must stay blocked in Internet proxy mode. No proxy server or network-provider dependency is introduced.
 
-The completed `add-internet-proxy-support` change has not been synced or archived. Implementation must reconcile its spec deltas before final spec sync so older loopback-only requirements cannot overwrite this change; this proposal does not archive or modify that change.
+The previous `add-internet-proxy-support` change was synced and archived as `2026-10-14-add-internet-proxy-support` before completing this proposal. These deltas build on that main-spec baseline.
