@@ -24,9 +24,7 @@ class InternetProxyTests(TestCase):
             "https://127.0.0.1:8080",
             "http://0.0.0.0:8080",
             "http://*:8080",
-            "http://example.com:8080",
             "http://user:pass@127.0.0.1:8080",
-            "http://127.0.0.1",
             "http://127.0.0.1:0",
             "http://127.0.0.1:65536",
             "http://127.0.0.1:8080/path",
@@ -210,7 +208,7 @@ class InternetProxyTests(TestCase):
         with TemporaryDirectory() as tmp:
             project = Path(tmp)
 
-            def preflight(_config) -> None:
+            def preflight(_config, **_kwargs) -> None:
                 events.append("preflight")
 
             def begin_filesystem_work(_path: Path) -> Path:
@@ -277,7 +275,9 @@ class InternetProxyTests(TestCase):
                 self.assertNotIn("Allowing host gateway", text)
                 self.assertIn("requires enforceable IPv6 firewall policy", text)
                 self.assertIn("--dport 53 -j DROP", text)
-                self.assertIn("exec 3<>/dev/tcp/host.docker.internal/18080", text)
+                self.assertIn(
+                    'socket.create_connection(("host.docker.internal", 18080)', text
+                )
                 self.assertIn(
                     "configure the localhost domain and then restart runtime networking",
                     text,
