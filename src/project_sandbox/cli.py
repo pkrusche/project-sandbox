@@ -179,12 +179,12 @@ def build_parser() -> ArgumentParser:
         action="append",
         default=[],
         metavar="PATH",
-        help="Bake a PEM CA certificate into the image (repeatable; requires --internet-proxy).",
+        help="Bake a PEM CA certificate into the image (repeatable; requires either proxy option).",
     )
     p.add_argument(
         "--internet-proxy",
         metavar="URL",
-        help="Route Internet traffic through a credential-free host-loopback HTTP proxy.",
+        help="Route Internet traffic through a credential-free HTTP loopback or remote HTTP/HTTPS proxy (default ports 80/443).",
     )
     p.add_argument(
         "--pi-ollama",
@@ -198,7 +198,7 @@ def build_parser() -> ArgumentParser:
     p.add_argument(
         "--agent-proxy",
         metavar="URL",
-        help="Route pi, OpenCode, or Bash through an authenticated local agentgateway; see docs/agent-proxy.md.",
+        help="Route pi, OpenCode, or Bash through an authenticated HTTP loopback or remote HTTP/HTTPS gateway; see docs/agent-proxy.md.",
     )
     p.add_argument(
         "--agent-proxy-key-env",
@@ -365,7 +365,6 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(raw_argv)
 
     internet_proxy_config = _validate_internet_proxy_args(args)
-    ca_certificates = dockerfile.read_ca_certificates(args.ca_cert)
 
     # Expand a leading "~" once, up front, so every later use of args.log (both
     # validation and session-command construction) agrees on the same absolute
@@ -383,6 +382,8 @@ def main(argv: list[str] | None = None) -> int:
     run_agent = _requested_agent(args)
     pi_ollama_enabled = _pi_ollama_enabled(args, run_agent)
     proxy_port = _validate_agent_proxy_args(args, run_agent)
+    proxy_endpoint = agent_proxy.parse(args.agent_proxy) if args.agent_proxy else None
+    ca_certificates = dockerfile.read_ca_certificates(args.ca_cert)
     _validate_api_key_injection_args(args, run_agent)
     _validate_ollama_models(args.ollama_model)
     _validate_shm_size(args.shm_size)
@@ -447,14 +448,16 @@ def main(argv: list[str] | None = None) -> int:
     # work, or owned forwarding resources when the external listener is down.
     # Build-only runs never start a sandbox and therefore need no listener.
     if internet_proxy_config is not None and run_agent is not None:
-        internet_proxy.preflight(internet_proxy_config)
+        internet_proxy.preflight(internet_proxy_config, ca_certificates=ca_certificates)
 
     proxy_key: str | None = None
     proxy_models: list[str] = []
     proxy_base_url: str | None = None
     proxy_selected_model: str | None = None
     proxy_hostname = (
-        local_service_network.HOSTNAME if runtime is not None else agent_proxy.HOSTNAME
+        proxy_endpoint.sandbox_host
+        if proxy_endpoint
+        else local_service_network.HOSTNAME
     )
     ollama_hostname = local_service_network.HOSTNAME
     ollama_base_url = f"http://{ollama_hostname}:{local_service_network.PORT}/v1"
@@ -466,7 +469,9 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 "[W] --agent-proxy-key was exposed in argv/shell history; prefer pass or an environment variable."
             )
-        proxy_models = agent_proxy.discover_models(args.agent_proxy, proxy_key)
+        proxy_models = agent_proxy.discover_models(
+            args.agent_proxy, proxy_key, ca_certificates=ca_certificates
+        )
         proxy_selected_model = args.model.removeprefix("agent-proxy/")
         if proxy_selected_model not in proxy_models:
             raise SystemExit(
@@ -559,6 +564,7 @@ def main(argv: list[str] | None = None) -> int:
                 ollama_hostname=ollama_hostname,
                 agent_proxy_port=proxy_port,
                 agent_proxy_hostname=proxy_hostname,
+                agent_proxy_url=proxy_base_url,
                 policy=(
                     firewall.INTERNET_PROXY
                     if internet_proxy_config is not None
@@ -567,6 +573,7 @@ def main(argv: list[str] | None = None) -> int:
                 local_destinations=_local_firewall_destinations(
                     internet_proxy_config,
                     proxy_port=proxy_port,
+                    proxy_url=args.agent_proxy,
                     pi_ollama_enabled=pi_ollama_enabled,
                 ),
             )
@@ -621,6 +628,17 @@ def main(argv: list[str] | None = None) -> int:
                 credential_dirs=credential_dirs,
                 forward_credentials=forward_credentials,
                 build_context=build_context,
+                proxy_environment=(
+                    internet_proxy.environment(
+                        internet_proxy_config,
+                        bypass_local_services=pi_ollama_enabled,
+                        bypass_hosts=(proxy_endpoint.sandbox_host,)
+                        if proxy_endpoint
+                        else (),
+                    )
+                    if internet_proxy_config
+                    else None
+                ),
             )
 
         if run_agent is None and not args.build_only:
@@ -755,7 +773,11 @@ def main(argv: list[str] | None = None) -> int:
 
         services = _local_services(
             internet_proxy_config,
-            proxy_port=proxy_port,
+            proxy_port=(
+                proxy_port
+                if not args.agent_proxy or agent_proxy.parse(args.agent_proxy).local
+                else None
+            ),
             proxy_loopback_host=(
                 agent_proxy.loopback_host(args.agent_proxy)
                 if args.agent_proxy
@@ -777,7 +799,8 @@ def main(argv: list[str] | None = None) -> int:
             api_key_values = internet_proxy.merge_environment(
                 api_key_values,
                 internet_proxy_config,
-                bypass_local_services=bool(proxy_port or pi_ollama_enabled),
+                bypass_local_services=pi_ollama_enabled,
+                bypass_hosts=(proxy_endpoint.sandbox_host,) if proxy_endpoint else (),
             )
 
         session_id = observability.new_session_id()
@@ -1037,7 +1060,7 @@ def _validate_agent_proxy_args(args, run_agent: str | None) -> int | None:
     if not args.model:
         raise SystemExit("--agent-proxy requires the regular --model option")
     _validate_env_name(args.agent_proxy_key_env, source="--agent-proxy-key-env")
-    if args.no_firewall:
+    if args.no_firewall and agent_proxy.parse(args.agent_proxy).local:
         print(
             "[W] --agent-proxy with --no-firewall: its internal hostname may not resolve; firewall hostname pinning is disabled."
         )
@@ -1061,8 +1084,8 @@ def _validate_agent_proxy_args(args, run_agent: str | None) -> int | None:
 
 def _validate_internet_proxy_args(args) -> internet_proxy.InternetProxy | None:
     value = getattr(args, "internet_proxy", None)
-    if getattr(args, "ca_cert", []) and not value:
-        raise SystemExit("--ca-cert requires --internet-proxy")
+    if getattr(args, "ca_cert", []) and not value and not args.agent_proxy:
+        raise SystemExit("--ca-cert requires --internet-proxy or --agent-proxy")
     if not value:
         return None
     config = internet_proxy.parse(value)
@@ -1093,7 +1116,7 @@ def _local_services(
     pi_ollama_enabled: bool,
 ) -> list[local_service_network.LocalService]:
     services: list[local_service_network.LocalService] = []
-    if config is not None:
+    if config is not None and config.endpoint.local:
         services.append(config.service)
     if proxy_port is not None:
         services.append(
@@ -1115,17 +1138,32 @@ def _local_firewall_destinations(
     *,
     proxy_port: int | None,
     pi_ollama_enabled: bool,
-) -> list[firewall.LocalTcpDestination] | None:
-    if config is None:
-        return None
-    return [
-        firewall.LocalTcpDestination(
-            service.label, local_service_network.HOSTNAME, service.port
+    proxy_url: str | None = None,
+) -> list[firewall.TcpDestination]:
+    destinations = []
+    if config:
+        destinations.append(
+            firewall.TcpDestination.from_endpoint("Internet proxy", config.endpoint)
         )
-        for service in _local_services(
-            config, proxy_port=proxy_port, pi_ollama_enabled=pi_ollama_enabled
+    if proxy_url:
+        destinations.append(
+            firewall.TcpDestination.from_endpoint(
+                "Agent proxy", agent_proxy.parse(proxy_url)
+            )
         )
-    ]
+    elif proxy_port:
+        destinations.append(
+            firewall.TcpDestination(
+                "Agent proxy", local_service_network.HOSTNAME, proxy_port
+            )
+        )
+    if pi_ollama_enabled and config:
+        destinations.append(
+            firewall.TcpDestination(
+                "Ollama", local_service_network.HOSTNAME, local_service_network.PORT
+            )
+        )
+    return destinations
 
 
 def _runtime_model(args, run_agent: str) -> str | None:
@@ -1185,7 +1223,16 @@ def _dry_run(
 
     print("DRY RUN: no files, worktrees, images, or containers will be created.")
     if args.agent_proxy:
-        print(f"Would use agent proxy: {args.agent_proxy}")
+        endpoint = agent_proxy.parse(args.agent_proxy)
+        print(
+            f"Would use agent proxy: {endpoint.sandbox_url} ({'forwarded' if endpoint.local else 'direct'})"
+        )
+        if args.no_firewall:
+            print(
+                "Would use ordinary DNS without firewall pinning or egress enforcement."
+            )
+        else:
+            print("Would defer sandbox DNS pinning and TLS verification.")
         print(f"Would select model: {args.model}")
         print("Would defer authenticated model discovery and proxy configuration.")
         if run_agent == "bash":
@@ -1267,7 +1314,11 @@ def _dry_run(
         runtime,
         _local_services(
             proxy_config,
-            proxy_port=proxy_port,
+            proxy_port=(
+                proxy_port
+                if not args.agent_proxy or agent_proxy.parse(args.agent_proxy).local
+                else None
+            ),
             proxy_loopback_host=(
                 agent_proxy.loopback_host(args.agent_proxy)
                 if args.agent_proxy
@@ -1297,16 +1348,32 @@ def _dry_run(
             "them during dry-run: " + ", ".join(args.api_key_env_file)
         )
     if proxy_config is not None:
+        endpoint = proxy_config.endpoint
+        print(
+            f"Would use Internet proxy: {endpoint.sandbox_url} ({'forwarded' if endpoint.local else 'direct'})"
+        )
+        print(
+            "Would defer DNS, TCP/TLS preflight; firewall admits only each endpoint address/port."
+        )
         proxy_env = internet_proxy.environment(
             proxy_config,
-            bypass_local_services=bool(proxy_port or pi_ollama_enabled),
+            bypass_local_services=pi_ollama_enabled,
+            bypass_hosts=(agent_proxy.parse(args.agent_proxy).sandbox_host,)
+            if args.agent_proxy
+            else (),
         )
         preview_api_key_values = internet_proxy.merge_environment(
             preview_api_key_values,
             proxy_config,
-            bypass_local_services=bool(proxy_port or pi_ollama_enabled),
+            bypass_local_services=pi_ollama_enabled,
+            bypass_hosts=(agent_proxy.parse(args.agent_proxy).sandbox_host,)
+            if args.agent_proxy
+            else (),
         )
-        print("Would inject proxy environment: " + ", ".join(proxy_env))
+        print(
+            "Would inject proxy environment: "
+            + ", ".join(f"{k}={v}" for k, v in proxy_env.items())
+        )
     cmd, log_path, unsupervised, container_stop_argv = _build_session_command(
         args,
         project=project,
