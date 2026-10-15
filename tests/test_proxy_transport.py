@@ -290,8 +290,11 @@ class ProxyTransportTests(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("curl"), "curl client is unavailable")
     def test_curl_http_and_connect_through_http_and_https_proxy(self):
-        with self.server() as origin_port:
-            ForwardProxy.allowed_ports = {origin_port}
+        with (
+            self.server() as origin_port,
+            self.server(tls=False) as plain_port,
+        ):
+            ForwardProxy.allowed_ports = {origin_port, plain_port}
             for proxy_tls in (False, True):
                 with (
                     self.subTest(proxy_tls=proxy_tls),
@@ -302,6 +305,9 @@ class ProxyTransportTests(unittest.TestCase):
                         f"{'https' if proxy_tls else 'http'}://localhost:{proxy_port}"
                     )
                     for target_scheme in ("http", "https"):
+                        target_port = (
+                            origin_port if target_scheme == "https" else plain_port
+                        )
                         result = subprocess.run(
                             [
                                 "curl",
@@ -318,7 +324,7 @@ class ProxyTransportTests(unittest.TestCase):
                                 str(self.root / "ca.pem"),
                                 "--cacert",
                                 str(self.root / "ca.pem"),
-                                f"{target_scheme}://localhost:{origin_port}/fixture",
+                                f"{target_scheme}://localhost:{target_port}/fixture",
                             ],
                             capture_output=True,
                             text=True,
