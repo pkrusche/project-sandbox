@@ -5,10 +5,12 @@ import http.server
 import json
 import os
 import select
+import shlex
 import shutil
 import socket
 import ssl
 import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -502,7 +504,16 @@ class ProxyTransportTests(unittest.TestCase):
                     else:
                         env.pop("SSL_CERT_FILE", None)
                     result = subprocess.run(
-                        ["bash", "-eu", "-c", probe],
+                        [
+                            "bash",
+                            "-eu",
+                            "-c",
+                            # The outer subprocess timeout bounds this fixture;
+                            # GNU timeout is only required inside the container.
+                            'timeout() { shift; "$@"; };\n'
+                            f'python3() {{ {shlex.quote(sys.executable)} "$@"; }};\n'
+                            + probe,
+                        ],
                         env=env,
                         capture_output=True,
                         text=True,

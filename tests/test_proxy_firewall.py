@@ -231,7 +231,12 @@ class EndpointFirewallTests(unittest.TestCase):
                     )
                 ],
             )
-            prefix = text.split("# Resolve every endpoint", 1)[0]
+            # Exercise only the IPv6 guard: host Bash (notably macOS Bash 3)
+            # need not support the container's earlier mapfile setup.
+            prefix = (
+                "IPV6_FW=1"
+                + text.split("IPV6_FW=1", 1)[1].split("# Resolve every endpoint", 1)[0]
+            )
             result = subprocess.run(
                 [
                     "bash",
