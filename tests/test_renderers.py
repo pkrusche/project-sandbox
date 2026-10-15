@@ -207,10 +207,10 @@ class RendererTests(TestCase):
             text = (context / "init-firewall.sh").read_text(encoding="utf-8")
 
             # The shared host-loopback alias is the default for every adapter.
-            probe = '"http://host.docker.internal:4000/"'
-            resolution = 'getent ahostsv4 "host.docker.internal"'
+            probe = "http://host.docker.internal:4000/; then"
+            resolution = "socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)"
             self.assertLess(text.index(resolution), text.index("iptables -t nat -F"))
-            self.assertIn('"${LOCAL_SERVICE_IP4_LIST[0]}"', text)
+            self.assertIn('"${ENDPOINT_0[@]}"', text)
             self.assertIn(probe, text)
             self.assertIn("--connect-timeout 3 --max-time 5", text)
             self.assertGreater(text.index(probe), text.index("iptables -P OUTPUT DROP"))
@@ -219,7 +219,7 @@ class RendererTests(TestCase):
                 text.index("iptables -A OUTPUT -j REJECT"),
             )
             self.assertIn("sudo container system dns create host.docker.internal", text)
-            self.assertIn("sudo container system dns delete host.docker.internal", text)
+            self.assertIn("container system stop && container system start", text)
 
     def test_agent_proxy_accepts_runtime_selected_hostname(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -232,9 +232,9 @@ class RendererTests(TestCase):
             )
             text = (context / "init-firewall.sh").read_text(encoding="utf-8")
 
-            self.assertIn('getent ahostsv4 "proxy.example.test"', text)
-            self.assertIn('"http://proxy.example.test:4000/"', text)
-            self.assertIn("Runtime host alias proxy.example.test did not resolve", text)
+            self.assertIn('endpoints = ["proxy.example.test"]', text)
+            self.assertIn("http://proxy.example.test:4000/; then", text)
+            self.assertIn("Endpoint DNS resolution failed", text)
             self.assertIn(
                 "unreachable from inside the sandbox at proxy.example.test", text
             )

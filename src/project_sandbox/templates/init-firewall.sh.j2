@@ -11,21 +11,6 @@ mapfile -t DNS6_LIST < <(awk '/^nameserver/ && $2 ~ /:/  {print $2}' /etc/resolv
 # tables. Apple container's configured host.docker.internal path depends on
 # runtime DNS plumbing that must remain available long enough to pin the result
 # into /etc/hosts below.
-{% if local_destinations %}
-mapfile -t LOCAL_SERVICE_IP4_LIST < <(
-  getent ahostsv4 "{{ local_destinations[0].hostname }}" 2>/dev/null |
-    awk '{print $1}' | sort -u
-)
-if [ -z "${LOCAL_SERVICE_IP4_LIST[0]+x}" ]; then
-  echo "ERROR: Runtime host alias {{ local_destinations[0].hostname }} did not resolve before firewall initialization." >&2
-{% if local_destinations[0].hostname == "host.docker.internal" %}
-  echo "Configure it with: sudo container system dns create host.docker.internal --localhost 203.0.113.113" >&2
-  echo "For Apple container, restart afterward with: container system stop && container system start" >&2
-  echo "If it already exists but times out instead of refusing, delete and re-create it: sudo container system dns delete host.docker.internal" >&2
-{% endif %}
-  exit 1
-fi
-{% endif %}
 {% if pi_ollama and policy == "normal" %}
 mapfile -t OLLAMA_HOST_IP4_LIST < <(
   getent ahostsv4 "{{ ollama_hostname }}" 2>/dev/null |
@@ -50,6 +35,24 @@ if ! ip6tables -L >/dev/null 2>&1; then
   fi
 {% endif %}
 fi
+
+{% if local_destinations %}
+# Resolve every endpoint with sandbox-visible NSS before DNS or NAT is closed.
+# A bounded helper validates addresses and atomically prepares shell arrays;
+# failures propagate instead of disappearing inside process substitution.
+ENDPOINT_ADDRESSES=$(timeout 15 python3 - "$IPV6_FW" <<'PY_ENDPOINTS'
+{% include '_resolve_endpoints.py.j2' %}
+PY_ENDPOINTS
+) || {
+  echo "ERROR: Endpoint resolution/pinning failed before firewall initialization." >&2
+{% if local_destinations | selectattr('local') | selectattr('hostname', 'equalto', 'host.docker.internal') | list %}
+  echo "For Apple container local services: sudo container system dns create host.docker.internal --localhost 203.0.113.113" >&2
+  echo "Then restart with: container system stop && container system start" >&2
+{% endif %}
+  exit 1
+}
+eval "$ENDPOINT_ADDRESSES"
+{% endif %}
 
 # Capture any existing DNS NAT rules (e.g. Docker's embedded resolver redirect)
 # so they can be re-applied after the flush below. Only append real matches:
@@ -197,15 +200,15 @@ for domain in "${DOMAINS[@]}"; do
 done
 {% endif %}
 
-{% if local_destinations %}
-# Local services share one pinned hostname and remain authorized by exact port.
-LOCAL_SERVICE_IP4="${LOCAL_SERVICE_IP4_LIST[0]}"
-printf '%s\t%s # project-sandbox-dns-pin\n' "$LOCAL_SERVICE_IP4" "{{ local_destinations[0].hostname }}" >> /etc/hosts
 {% for destination in local_destinations %}
-iptables -A OUTPUT -d "$LOCAL_SERVICE_IP4" -p tcp --dport {{ destination.port }} -j ACCEPT
-iptables -A INPUT -s "$LOCAL_SERVICE_IP4" -p tcp --sport {{ destination.port }} -m conntrack --ctstate ESTABLISHED -j ACCEPT
+# {{ destination.label }}: exact address/port pairs, never a cross-product.
+for endpoint_ip in "${ENDPOINT_{{ endpoint_hosts.index(destination.hostname) }}[@]}"; do
+  endpoint_tables=iptables
+  [[ "$endpoint_ip" == *:* ]] && endpoint_tables=ip6tables
+  "$endpoint_tables" -A OUTPUT -d "$endpoint_ip" -p tcp --dport {{ destination.port }} -j ACCEPT
+  "$endpoint_tables" -A INPUT -s "$endpoint_ip" -p tcp --sport {{ destination.port }} -m conntrack --ctstate ESTABLISHED -j ACCEPT
+done
 {% endfor %}
-{% endif %}
 
 {% if allow_host_network %}
 # ============================================================
@@ -300,26 +303,46 @@ fi
 # Exercise the real sandbox-to-host path after the final firewall rules are in
 # place. HTTP error statuses are acceptable here; this probe verifies only that
 # the proxy listener can be reached and returns an HTTP response.
-if ! curl --silent --show-error --connect-timeout 3 --max-time 5 \
-  --output /dev/null \
-  "http://{{ agent_proxy_hostname }}:{{ agent_proxy_port }}/"; then
+if ! curl --globoff --silent --show-error --connect-timeout 3 --max-time 5 \
+  --noproxy '*' --output /dev/null \
+  {{ agent_proxy_url | shlex_quote }}; then
   echo "ERROR: Agent proxy is unreachable from inside the sandbox at {{ agent_proxy_hostname }}:{{ agent_proxy_port }}." >&2
+{% if agent_proxy_local and agent_proxy_hostname == "host.docker.internal" %}
   echo "Verify the runtime host alias and that the proxy is listening on 127.0.0.1:{{ agent_proxy_port }}." >&2
+{% else %}
+  echo "Check sandbox connectivity and TLS certificate trust/name for the configured gateway." >&2
+{% endif %}
   exit 1
 fi
 {% endif %}
 {% for destination in local_destinations %}
 {% if destination.label == "Internet proxy" %}
-# Verify the TCP listener through the final port-scoped firewall. A proxy may
-# reject an arbitrary HTTP request, so test only connection establishment.
-if ! timeout 5 bash -c \
-    'exec 3<>/dev/tcp/{{ destination.hostname }}/{{ destination.port }}'; then
+# Verify TCP or TLS without a public destination through the final firewall.
+if ! timeout 5 python3 - <<'PY_PREFLIGHT'
+import socket
+import ssl
+try:
+    with socket.create_connection(({{ destination.hostname | tojson }}, {{ destination.port }}), timeout=3) as connection:
+{% if destination.scheme == "https" %}
+        with ssl.create_default_context().wrap_socket(connection, server_hostname={{ destination.hostname | tojson }}):
+            pass
+{% else %}
+        pass
+{% endif %}
+except ssl.SSLCertVerificationError:
+    raise SystemExit("Internet proxy TLS certificate verification failed")
+except OSError:
+    raise SystemExit("Internet proxy connection failed")
+PY_PREFLIGHT
+then
   echo "ERROR: Internet proxy is unreachable from inside the sandbox at {{ destination.hostname }}:{{ destination.port }}." >&2
+{% if destination.local %}
   echo "For Apple container, configure the localhost domain and then restart runtime networking:" >&2
   echo "  sudo container system dns create host.docker.internal --localhost 203.0.113.113" >&2
   echo "  container system stop && container system start" >&2
-  echo "  # if the alias already exists, delete it first:" >&2
-  echo "  sudo container system dns delete host.docker.internal" >&2
+{% else %}
+  echo "Verify sandbox connectivity and the configured endpoint's TLS trust/name." >&2
+{% endif %}
   exit 1
 fi
 {% endif %}
@@ -327,7 +350,7 @@ fi
 {% if pi_ollama %}
 # Verify Ollama through the final port-scoped firewall, not merely before the
 # default-deny policy and terminal reject rules are installed.
-if ! curl --fail --silent --show-error --connect-timeout 3 --max-time 5 \
+if ! curl --noproxy '*' --fail --silent --show-error --connect-timeout 3 --max-time 5 \
     "http://{{ ollama_hostname }}:11434/api/tags" >/dev/null; then
   echo "ERROR: the final firewall cannot reach loopback-bound Ollama at {{ ollama_hostname }}:11434." >&2
   exit 1
