@@ -1,0 +1,58 @@
+import ipaddress
+import shlex
+import socket
+import sys
+from pathlib import Path
+
+ipv6 = sys.argv[1] == "1"
+endpoints = {{ local_destinations | map(attribute='hostname') | list | tojson }}
+remote = {{ local_destinations | rejectattr('local') | map(attribute='hostname') | list | tojson }}
+hosts = list(dict.fromkeys(endpoints))
+resolved = {}
+for host in hosts:
+    try:
+        literal = ipaddress.ip_address(host)
+    except ValueError:
+        try:
+            addresses = [item[4][0] for item in socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)]
+        except OSError:
+            raise SystemExit(f"ERROR: Endpoint DNS resolution failed: {host}")
+    else:
+        addresses = [str(literal)]
+    admitted = []
+    for value in dict.fromkeys(addresses):
+        address = ipaddress.ip_address(value)
+        effective = getattr(address, "ipv4_mapped", None) or address
+        if ("%" in value or effective.is_unspecified or effective.is_multicast
+                or (host in remote and effective.is_loopback)):
+            raise SystemExit(f"ERROR: Prohibited endpoint address for {host}")
+        if effective.version == 6 and not ipv6:
+            continue
+        # Mapped addresses use IPv4 transport and must receive IPv4 rules.
+        admitted.append(str(effective))
+    admitted = list(dict.fromkeys(admitted))
+    if not admitted:
+        raise SystemExit(f"ERROR: No enforceable address family for endpoint {host}")
+    resolved[host] = admitted
+
+# Remove old records for these exact names, retaining other aliases on each
+# line. Rewrite the existing inode because runtimes often bind mount /etc/hosts.
+path = Path("/etc/hosts")
+lines = []
+for line in path.read_text().splitlines():
+    fields = line.split("#", 1)[0].split()
+    if len(fields) > 1 and any(name in hosts for name in fields[1:]):
+        remaining = [name for name in fields[1:] if name not in hosts]
+        if remaining:
+            lines.append(fields[0] + "\t" + " ".join(remaining))
+    else:
+        lines.append(line)
+for index, host in enumerate(hosts):
+    for address in resolved[host]:
+        # Numeric destinations do not need hosts records.
+        try:
+            ipaddress.ip_address(host)
+        except ValueError:
+            lines.append(f"{address}\t{host} # project-sandbox-endpoint-pin")
+    print(f"ENDPOINT_{index}=(" + " ".join(shlex.quote(ip) for ip in resolved[host]) + ")")
+path.write_text("\n".join(lines) + "\n")

@@ -13,7 +13,7 @@ RUN set -eux; \
     export DEBIAN_FRONTEND=noninteractive; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
-        ca-certificates curl git sudo gnupg jq xz-utils less \
+        ca-certificates curl git sudo gnupg jq xz-utils less python3 \
         iptables ipset iproute2 dnsutils aggregate libatomic1 \
         fd-find ripgrep; \
     rm -rf /var/lib/apt/lists/*; \
