@@ -111,6 +111,10 @@ class ProxyTransportTests(unittest.TestCase):
             "/CN=Fixture CA",
             "-addext",
             "basicConstraints=critical,CA:TRUE",
+            "-addext",
+            "keyUsage=critical,keyCertSign,cRLSign",
+            "-addext",
+            "subjectKeyIdentifier=hash",
         )
         openssl(
             "req",
@@ -125,7 +129,12 @@ class ProxyTransportTests(unittest.TestCase):
             "/CN=fixture.example",
         )
         (cls.root / "extensions").write_text(
-            "basicConstraints=CA:FALSE\nsubjectAltName=DNS:fixture.example,DNS:localhost,IP:127.0.0.1\n"
+            "basicConstraints=critical,CA:FALSE\n"
+            "keyUsage=critical,digitalSignature,keyEncipherment\n"
+            "extendedKeyUsage=serverAuth\n"
+            "subjectKeyIdentifier=hash\n"
+            "authorityKeyIdentifier=keyid:always\n"
+            "subjectAltName=DNS:fixture.example,DNS:localhost,IP:127.0.0.1\n"
         )
         openssl(
             "x509",
@@ -170,6 +179,16 @@ class ProxyTransportTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.directory.cleanup()
+
+    def test_fixture_certificates_support_strict_verification(self):
+        # Python 3.13+ enables strict verification by default. Exercise it on
+        # older Python versions too, regardless of the openssl CLI defaults.
+        context = ssl.create_default_context(cafile=str(self.root / "ca.pem"))
+        context.verify_flags |= ssl.VERIFY_X509_STRICT
+        with self.server() as port:
+            with socket.create_connection(("127.0.0.1", port), timeout=2) as connection:
+                with context.wrap_socket(connection, server_hostname="fixture.example"):
+                    pass
 
     def setUp(self):
         Origin.requests = []
