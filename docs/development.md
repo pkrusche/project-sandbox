@@ -74,9 +74,10 @@ All three scripts default to `--runtime chroot` on Linux and accept
 
 A separate suite covers `--python-uv`, checking inside the sandbox that the
 agent user can actually run `uv` against the baked `/opt/venv`. It builds one
-project whose `requires-python` the base image cannot satisfy, so uv downloads
-its own interpreter during the build — that interpreter must stay outside
-root's home or the agent cannot read it. It synthesises its own Dockerfile, so
+project with `python-preference = "only-managed"`, so uv downloads
+its own interpreter during the build even if a suitable system Python is
+installed. That interpreter must stay outside root's home or the agent cannot
+read it. It synthesises its own Dockerfile, so
 it needs a real container runtime and takes no `--base-image` / `--no-build`:
 
 ```bash
