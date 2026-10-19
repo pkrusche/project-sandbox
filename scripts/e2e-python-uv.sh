@@ -3,9 +3,9 @@
 #
 # Builds two throwaway uv projects and checks, inside the sandbox and as the
 # unprivileged agent user, that 'uv run' works and resolves to the baked
-# /opt/venv. One project pins a requires-python the base image cannot satisfy,
-# which makes uv fetch its own interpreter during the build: left in root's
-# home that interpreter is unreadable to the agent and every 'uv run' fails
+# /opt/venv. One project requires a uv-managed interpreter during the build:
+# left in root's home that interpreter is unreadable to the agent and every
+# 'uv run' fails
 # with "failed to canonicalize path /opt/venv/bin/python3: Permission denied".
 #
 # Usage:
@@ -18,11 +18,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUNTIME="auto"
 KEEP=0
 
-# Pinned rather than derived so both scenarios stay deterministic: the base
-# image ships BASE_PYTHON, and MANAGED_PYTHON is newer than it, so uv must
-# download an interpreter for the second project. Each scenario also asserts
-# where its interpreter came from, so bumping these into agreement fails the
-# run instead of quietly making it vacuous.
+# Use explicit interpreter preferences per fixture: sandbox tooling may install
+# additional system Pythons beyond the one shipped by the base image.
 BASE_PYTHON="3.11"
 MANAGED_PYTHON="3.13"
 
@@ -101,7 +98,7 @@ assert_file_equals() {
 # Write a minimal, buildable uv project. Hatchling needs an explicit package
 # path here: the src layout alone is not enough for its default file selection.
 make_project() {
-  local dir="$1" name="$2" requires_python="$3"
+  local dir="$1" name="$2" requires_python="$3" python_preference="$4"
   mkdir -p "$dir/src/$name"
   : > "$dir/src/$name/__init__.py"
   printf 'e2e fixture\n' > "$dir/README.md"
@@ -111,6 +108,9 @@ name = "$name"
 version = "0.1.0"
 requires-python = ">=$requires_python"
 dependencies = []
+
+[tool.uv]
+python-preference = "$python_preference"
 
 [build-system]
 requires = ["hatchling"]
@@ -195,10 +195,10 @@ echo "Configuration: runtime=$RUNTIME base_python=$BASE_PYTHON managed_python=$M
 
 # The interpreter uv has to download is the regression case; the interpreter
 # that ships in the base image is the common path and must keep working.
-make_project "$TMP_ROOT/managed-python" managedpython "$MANAGED_PYTHON"
+make_project "$TMP_ROOT/managed-python" managedpython "$MANAGED_PYTHON" only-managed
 check_scenario "uv-managed interpreter" "$TMP_ROOT/managed-python" "/opt/uv-python"
 
-make_project "$TMP_ROOT/base-python" basepython "$BASE_PYTHON"
+make_project "$TMP_ROOT/base-python" basepython "$BASE_PYTHON" only-system
 check_scenario "base image interpreter" "$TMP_ROOT/base-python" "/usr/local"
 
 echo
