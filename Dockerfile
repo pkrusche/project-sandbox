@@ -9,6 +9,12 @@ ARG AGENT_GID=1000
 # `docker buildx imagetools inspect ghcr.io/astral-sh/uv:<tag>`.
 COPY --from=ghcr.io/astral-sh/uv:0.13.0@sha256:cdc6093146eb3ff6a40107b38f008b789e050e77ad87865e381d9917da55a168 /uv /usr/local/bin/uv
 
+# Keep sandbox environments and managed interpreters off the mounted workspace.
+ENV UV_CACHE_DIR=/opt/uv-cache
+ENV UV_PROJECT_ENVIRONMENT=/opt/venv
+ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python
+RUN install -d -o "${AGENT_UID}" -g "${AGENT_GID}" /opt/uv-cache /opt/venv /opt/uv-python
+
 # Pre-populate the uv package cache so the agent can run `uv sync` / `uv run`
 # inside the sandbox without reaching PyPI (blocked by the firewall at runtime).
 # Two layers: the deps-only layer only rebuilds when pyproject.toml/uv.lock
@@ -28,7 +34,5 @@ COPY src/ /tmp/project-setup/src/
 RUN UV_CACHE_DIR=/opt/uv-cache uv sync \
         --frozen \
         --project /tmp/project-setup \
-    && chown -R "${AGENT_UID}:${AGENT_GID}" /opt/uv-cache \
+    && chown -R "${AGENT_UID}:${AGENT_GID}" /opt/uv-cache /opt/venv /opt/uv-python \
     && rm -rf /tmp/project-setup
-
-ENV UV_CACHE_DIR=/opt/uv-cache

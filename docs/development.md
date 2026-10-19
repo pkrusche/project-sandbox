@@ -342,7 +342,8 @@ runtime forwarding, full Pi/OpenCode requests, and live service-stop independenc
 remain runtime acceptance checks. Unit tests execute the generated audit with
 controlled successes/failures and ensure each failed probe makes it fail.
 
-With `--python-uv`, sandbox commands use `/opt/venv` and managed Python
+With `--python-uv` or this repository's custom `Dockerfile`, sandbox commands
+use `/opt/venv` and managed Python
 installations under `/opt/uv-python`. These paths stay inside the container,
 so running `uv` on the host can update the host `.venv` independently. The
 generated Codex configuration forwards both `UV_PROJECT_ENVIRONMENT` and
