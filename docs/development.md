@@ -341,3 +341,10 @@ firewall enforcement against bypassing/unsupported clients, IPv6 routing,
 runtime forwarding, full Pi/OpenCode requests, and live service-stop independence
 remain runtime acceptance checks. Unit tests execute the generated audit with
 controlled successes/failures and ensure each failed probe makes it fail.
+
+With `--python-uv`, sandbox commands use `/opt/venv` and managed Python
+installations under `/opt/uv-python`. These paths stay inside the container,
+so running `uv` on the host can update the host `.venv` independently. The
+generated Codex configuration forwards both `UV_PROJECT_ENVIRONMENT` and
+`UV_PYTHON_INSTALL_DIR` to its shell commands. Rebuild the sandbox after updating
+project-sandbox to regenerate that configuration for an existing image.
