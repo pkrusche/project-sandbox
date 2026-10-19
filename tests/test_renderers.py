@@ -33,6 +33,8 @@ class RendererTests(TestCase):
                     "PATH": "/usr/bin",
                     "UV_CACHE_DIR": "/custom/uv-cache",
                     "UV_OFFLINE": "0",
+                    "UV_PROJECT_ENVIRONMENT": "/opt/venv",
+                    "UV_PYTHON_INSTALL_DIR": "/opt/uv-python",
                     "UNRELATED_VARIABLE": "private",
                 }
                 forwarded = {

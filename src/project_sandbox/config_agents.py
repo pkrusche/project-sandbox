@@ -298,7 +298,7 @@ def _codex_config_toml(approval_policy: str) -> str:
         'inherit = "all"\n'
         'include_only = ["HOME", "PATH", "SHELL", "USER", "LOGNAME", '
         '"TMPDIR", "TEMP", "TMP", "SystemRoot", "COMSPEC", "PATHEXT", '
-        '"WINDIR", "UV_CACHE_DIR", "UV_OFFLINE"]\n'
+        '"WINDIR", "UV_CACHE_DIR", "UV_OFFLINE", "UV_PROJECT_ENVIRONMENT", "UV_PYTHON_INSTALL_DIR"]\n'
         "\n"
         "[analytics]\n"
         "enabled = false\n"
