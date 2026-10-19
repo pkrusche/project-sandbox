@@ -21,11 +21,13 @@ class PythonUvFixtureTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             subprocess.run(
                 [
-                    "bash", "-euc",
+                    "bash",
+                    "-euc",
                     'TMP_ROOT="$1"\nBASE_PYTHON=3.11\nMANAGED_PYTHON=3.13\n'
                     'uv() { test "$1" = lock; }\n'
                     "make_project() {" + function + "\n}\n" + calls,
-                    "fixture-test", tmp,
+                    "fixture-test",
+                    tmp,
                 ],
                 check=True,
                 capture_output=True,

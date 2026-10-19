@@ -159,6 +159,11 @@ ARG AGENT_GID=1000
 
 COPY --from=ghcr.io/astral-sh/uv:0.11.23@sha256:d0a0a753ab981624b49c97abc98821c1c09f4ca69d1ef5cee69c501be3d88479 /uv /usr/local/bin/uv
 
+ENV UV_CACHE_DIR=/opt/uv-cache
+ENV UV_PROJECT_ENVIRONMENT=/opt/venv
+ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python
+RUN install -d -o "${AGENT_UID}" -g "${AGENT_GID}" /opt/uv-cache /opt/venv /opt/uv-python
+
 # Pre-populate the uv package cache with all project dependencies so the agent
 # can run `uv sync` / `uv run` inside the sandbox without reaching PyPI.
 # Two layers: the deps-only layer only rebuilds when pyproject.toml/uv.lock
@@ -178,10 +183,8 @@ COPY src/ /tmp/project-setup/src/
 RUN UV_CACHE_DIR=/opt/uv-cache uv sync \
         --frozen \
         --project /tmp/project-setup \
-    && chown -R "${AGENT_UID}:${AGENT_GID}" /opt/uv-cache \
+    && chown -R "${AGENT_UID}:${AGENT_GID}" /opt/uv-cache /opt/venv /opt/uv-python \
     && rm -rf /tmp/project-setup
-
-ENV UV_CACHE_DIR=/opt/uv-cache
 ```
 
 Key points:
@@ -195,11 +198,27 @@ Key points:
   the local project itself. This layer rebuilds on every source edit, but
   reuses the dependency cache the first layer already populated.
 - The `chown -R 1000:1000` gives the sandbox's `agent` user, created by the
-  layers that follow, full access to the pre-warmed cache.
+  layers that follow, full access to the pre-warmed cache, virtual environment,
+  and managed Python directory.
 - `ENV UV_CACHE_DIR=/opt/uv-cache` persists into the running container so the
   agent's `uv sync` reads from the cache instead of PyPI.
 
-Generated Codex configurations allow `UV_CACHE_DIR` and `UV_OFFLINE` through
+**Custom `--dockerfile` builds must configure uv environment isolation explicitly.**
+The project directory is mounted at `/workspace`, including the host's `.venv`.
+Without `UV_PROJECT_ENVIRONMENT=/opt/venv`, sandbox `uv run` or `uv sync` can
+replace that shared `.venv` with a Linux environment, and host uv commands can
+replace it again. A typical symptom is `Ignoring existing virtual environment
+linked to non-existent Python interpreter`, followed by uv removing `.venv`.
+Recreating it may then fail because the sandbox is offline and the required
+platform-specific packages are absent from its cache.
+
+Set the environment variables shown above before the build-time `uv sync`
+commands. `UV_PYTHON_INSTALL_DIR` also keeps downloaded interpreters inside the
+container and accessible to the agent. Rebuild and recreate an existing sandbox
+to apply the settings. The generated `--python-uv` Dockerfile sets them automatically.
+
+Generated Codex configurations allow `UV_CACHE_DIR`, `UV_OFFLINE`,
+`UV_PROJECT_ENVIRONMENT`, and `UV_PYTHON_INSTALL_DIR` through
 to tool shells alongside core shell environment variables. Their values come
 from the running container; unrelated environment variables are filtered out.
 Restart with regenerated configuration to apply this policy to existing sessions.
