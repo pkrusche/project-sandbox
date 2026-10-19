@@ -28,7 +28,7 @@ class RendererTests(TestCase):
             self.assertLess(content.index(setting), first_sync)
         self.assertIn(
             'chown -R "${AGENT_UID}:${AGENT_GID}" '
-            '/opt/uv-cache /opt/venv /opt/uv-python',
+            "/opt/uv-cache /opt/venv /opt/uv-python",
             content,
         )
 
