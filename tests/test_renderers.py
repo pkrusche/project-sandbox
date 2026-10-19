@@ -18,6 +18,20 @@ def _credentials_root(root: Path):
 
 
 class RendererTests(TestCase):
+    def test_repository_dockerfile_isolates_uv_environment(self) -> None:
+        content = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text()
+        first_sync = content.index("RUN UV_CACHE_DIR=/opt/uv-cache uv sync")
+        for setting in (
+            "ENV UV_PROJECT_ENVIRONMENT=/opt/venv",
+            "ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python",
+        ):
+            self.assertLess(content.index(setting), first_sync)
+        self.assertIn(
+            'chown -R "${AGENT_UID}:${AGENT_GID}" '
+            '/opt/uv-cache /opt/venv /opt/uv-python',
+            content,
+        )
+
     def test_codex_configs_forward_uv_environment(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config_agents.render(Path(tmp))
