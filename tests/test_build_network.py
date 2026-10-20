@@ -2,6 +2,7 @@
 
 import contextlib
 import io
+import json
 import os
 import shlex
 import subprocess
@@ -168,6 +169,40 @@ class BuildEnvironmentTests(TestCase):
 
 
 class BuildNetworkRendererTests(TestCase):
+    def test_bootstrap_does_not_use_or_replace_inherited_shell(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source.Dockerfile"
+            source.write_text(
+                "FROM debian:bookworm AS prefix\n"
+                'SHELL ["/bin/bash", "-euc"]\n'
+                "RUN echo prefix\n"
+                "FROM prefix AS final\n"
+                "RUN echo final\n"
+            )
+            dockerfile.render(
+                root,
+                base_dockerfile=source,
+                build_proxy_environment=build_network.from_environment(
+                    {"HTTP_PROXY": "http://proxy.example"}
+                ),
+                build_ca_certificates=(CERTIFICATE.read_bytes(),),
+            )
+            for name in ("Dockerfile", "Dockerfile.devcontainer"):
+                text = (root / name).read_text()
+                self.assertIn('SHELL ["/bin/bash", "-euc"]', text)
+                self.assertNotIn('SHELL ["/bin/sh"', text)
+                bootstraps = [
+                    json.loads(block[0].removeprefix("RUN "))
+                    for block in dockerfile._dockerfile_blocks(text)
+                    if block and block[0].startswith('RUN ["/bin/sh",')
+                ]
+                self.assertEqual(len(bootstraps), 3)
+                for argv in bootstraps:
+                    self.assertEqual(argv[:2], ["/bin/sh", "-c"])
+                    self.assertIn("update-ca-certificates", argv[2])
+                    self.assertIn("99project-sandbox-build-proxy", argv[2])
+
     def test_all_stages_early_setup_late_cleanup_and_separate_runtime_ca(self):
         certificates = dockerfile.read_ca_certificates([str(CERTIFICATE)])
         proxy = build_network.from_environment(
@@ -214,9 +249,13 @@ class BuildNetworkRendererTests(TestCase):
                     text.index("# Session trust"), text.index("RUN echo late")
                 )
                 self.assertIn(
-                    'Acquire::http::Proxy "http://fallback.example:3128";', text
+                    'Acquire::http::Proxy "http://fallback.example:3128";',
+                    text.replace('\\"', '"'),
                 )
-                self.assertIn('Acquire::https::Proxy "https://proxy.example";', text)
+                self.assertIn(
+                    'Acquire::https::Proxy "https://proxy.example";',
+                    text.replace('\\"', '"'),
+                )
                 self.assertIn(
                     'COPY ["sandbox with spaces/project-sandbox-build-ca-', text
                 )
@@ -342,15 +381,18 @@ fi
                 build_ca_certificate_sources=["cert.crt"],
             )
             blocks = dockerfile._dockerfile_blocks(setup)
-            command = next(
+            instruction = next(
                 dockerfile._flatten_dockerfile_block(block).removeprefix("RUN ")
                 for block in blocks
                 if block and block[0].startswith("RUN ")
             )
+            argv = json.loads(instruction)
+            self.assertEqual(argv[:2], ["/bin/sh", "-c"])
+            command = argv[2]
             for path in ("/etc/", "/usr/local/", "/var/lib/"):
                 command = command.replace(path, shlex.quote(str(root)) + path)
             result = subprocess.run(
-                ["/bin/sh", "-c", command],
+                [*argv[:2], command],
                 env={"PATH": str(bindir), "FAKE_ROOT": str(root)},
                 capture_output=True,
                 text=True,

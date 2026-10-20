@@ -25,6 +25,8 @@ commands run. For supplied multi-stage Dockerfiles, setup covers executable
 Debian/Ubuntu stages, including a stage named `prefix`. Scratch stages,
 recognized non-Debian images, and stages only used as copy sources are left
 alone. Existing Dockerfile instructions can override the injected settings.
+The bootstrap explicitly uses `/bin/sh`, so an inherited custom `SHELL` does
+not change how certificate and apt proxy setup runs.
 
 Only `http_proxy`, `https_proxy`, `all_proxy`, and `no_proxy`, and their uppercase
 forms, are read. Lowercase takes precedence when present, including an empty
