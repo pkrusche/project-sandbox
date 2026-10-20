@@ -9,7 +9,8 @@ USER root
 {% for source in build_ca_certificate_sources -%}
 COPY {{ [source, '/usr/local/share/ca-certificates/'] | tojson }}
 {% endfor -%}
-RUN set -eu; \
+{% set bootstrap -%}
+set -eu; \
     if command -v apt-get >/dev/null 2>&1; then \
         mkdir -p /etc/apt/apt.conf.d; \
 {% if build_proxy_environment -%}
@@ -38,6 +39,9 @@ RUN set -eu; \
 {% endif -%}
         :; \
     fi
+{%- endset %}
+# Use POSIX sh regardless of the base image's inherited SHELL.
+RUN {{ ['/bin/sh', '-c', bootstrap] | tojson }}
 {% endif -%}
 {% if build_ca_certificate_sources -%}
 ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
