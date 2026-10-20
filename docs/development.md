@@ -191,6 +191,11 @@ continues to use `./run.py {action}`. Both can be overridden on the standalone
 script when an installation uses a different lifecycle command; by default we
 assume the internetproxy-locally and agentgateway-locally examples.
 
+The separate opt-in [Squid build-network test](build-network.md#squid-end-to-end-test)
+uses `--with-build-proxy`, `--internet-proxy-dir`, and `--proxy-fixture-host`. It
+verifies build-time proxy/CA bootstrap and runtime firewall separation without
+Agentgateway or billable requests.
+
 Use the unified host-side entry point for full local verification:
 
 ```bash

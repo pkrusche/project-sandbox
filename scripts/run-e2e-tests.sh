@@ -16,6 +16,7 @@
 #  12. agent-proxy              — real Pi/OpenCode gateway calls (explicit opt-in)
 #  13. node-npm                 — headless Playwright and ephemeral npm dependencies
 #  14. proxy-endpoints          — controlled remote HTTP/TLS fixtures (explicit opt-in)
+#  15. build-proxy              — build access through TLS-intercepting Squid (explicit opt-in)
 #
 # The console shows one progress line per suite. Each suite's output is captured
 # in its own temp log file; a failing suite's log is kept and its path reported,
@@ -27,6 +28,7 @@
 #                            [--only SUITE] [--list]
 #                            [--with-agent-proxy] [--with-internet-proxy]
 #                            [--with-proxy-endpoints --proxy-fixture-host IP]
+#                            [--with-build-proxy --internet-proxy-dir DIR]
 #                            [--proxy-fixture-ipv6-host IP]
 #                            [--ca-cert PATH ...]
 #
@@ -38,7 +40,7 @@
 #   --only SUITE     run just one suite by name (default: run every available suite).
 #                    Naming an opt-in suite is itself the opt-in, so --only agent-proxy,
 #                    --only agent-proxy-isolation, --only internet-proxy-isolation,
-#                    and --only proxy-endpoints need no additional --with-* flag.
+#                    --only proxy-endpoints, and --only build-proxy need no additional --with-* flag.
 #   --list           print the suite names accepted by --only and exit
 #   --with-agent-proxy
 #                    run proxy isolation plus the billable agent checker
@@ -51,6 +53,10 @@
 #   --with-proxy-endpoints
 #                    run temporary, non-billable remote HTTP/TLS proxy fixtures;
 #                    requires a real runtime, builds, and --proxy-fixture-host IP
+#   --with-build-proxy
+#                    run build/CA and runtime isolation checks using IPL Squid;
+#                    requires Docker or Apple container, --internet-proxy-dir,
+#                    --proxy-fixture-host, and builds enabled
 #   --proxy-fixture-host IP
 #                    local non-loopback IP reachable from the selected runtime
 #   --proxy-fixture-ipv6-host IP
@@ -74,6 +80,7 @@ SUITES=(
   agent-proxy-isolation
   agent-proxy
   proxy-endpoints
+  build-proxy
 )
 
 if [ "$(uname -s)" = Linux ]; then
@@ -88,6 +95,7 @@ ONLY=""
 WITH_AGENT_PROXY=0
 WITH_INTERNET_PROXY=0
 WITH_PROXY_ENDPOINTS=0
+WITH_BUILD_PROXY=0
 PROXY_FIXTURE_HOST=""
 PROXY_FIXTURE_IPV6_HOST=""
 BLOCKED_URL=""
@@ -109,6 +117,7 @@ while [ $# -gt 0 ]; do
     --list)       printf '%s\n' "${SUITES[@]}"; exit 0 ;;
     --with-agent-proxy) WITH_AGENT_PROXY=1; shift ;;
     --with-internet-proxy) WITH_INTERNET_PROXY=1; shift ;;
+    --with-build-proxy) WITH_BUILD_PROXY=1; shift ;;
     --with-proxy-endpoints) WITH_PROXY_ENDPOINTS=1; shift ;;
     --proxy-fixture-host) PROXY_FIXTURE_HOST="${2:?--proxy-fixture-host needs a value}"; shift 2 ;;
     --proxy-fixture-ipv6-host) PROXY_FIXTURE_IPV6_HOST="${2:?--proxy-fixture-ipv6-host needs a value}"; shift 2 ;;
@@ -136,6 +145,7 @@ if [ -n "$ONLY" ]; then
     agent-proxy|agent-proxy-isolation) WITH_AGENT_PROXY=1 ;;
     internet-proxy-isolation) WITH_INTERNET_PROXY=1 ;;
     proxy-endpoints) WITH_PROXY_ENDPOINTS=1 ;;
+    build-proxy) WITH_BUILD_PROXY=1 ;;
   esac
 fi
 
@@ -405,6 +415,20 @@ if selected proxy-endpoints; then
     fi
   else
     skip_suite "proxy-endpoints" "pass --with-proxy-endpoints and --proxy-fixture-host"
+  fi
+fi
+
+if selected build-proxy; then
+  if [ "$WITH_BUILD_PROXY" = 1 ]; then
+    if { [ "$CONTAINER_RUNTIME" != docker ] && [ "$CONTAINER_RUNTIME" != apple-container ]; } || [ -z "$PROXY_FIXTURE_HOST" ] || [ -z "$INTERNET_PROXY_DIR" ] || [ "$NO_BUILD" = 1 ]; then
+      fail_suite "build-proxy" "requires Docker or Apple container, --internet-proxy-dir, --proxy-fixture-host, and builds enabled"
+    else
+      BUILD_PROXY_ARGS=(--runtime "$CONTAINER_RUNTIME" --base-image "$BASE_IMAGE" --internet-proxy-dir "$INTERNET_PROXY_DIR" --fixture-host "$PROXY_FIXTURE_HOST")
+      [ "$KEEP" = 1 ] && BUILD_PROXY_ARGS+=(--keep)
+      run_suite "build-proxy" uv run python "$ROOT/scripts/e2e-build-proxy.py" "${BUILD_PROXY_ARGS[@]}"
+    fi
+  else
+    skip_suite "build-proxy" "pass --with-build-proxy, --internet-proxy-dir, and --proxy-fixture-host"
   fi
 fi
 

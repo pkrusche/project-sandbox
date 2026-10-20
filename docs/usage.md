@@ -42,9 +42,12 @@ instructions are appended. This keeps the expensive, source-independent layers
 cacheable when project files change and preserves earlier build stages and
 `COPY --from` references.
 
-If certificates, proxies, or package mirrors must be configured before those
-sandbox-owned network installs, put that setup in a stage named `prefix` and
-make the final stage inherit from it (directly or through other named stages):
+For corporate proxies and CAs needed during image construction, use
+[`--build-proxy-from-env` and `--build-ca-cert`](build-network.md). These configure
+access before build commands and leave runtime firewall permissions unchanged.
+For custom prerequisites such as package mirrors, put setup in a stage named
+`prefix` and make the final stage inherit from it (directly or through other
+named stages):
 
 ```dockerfile
 FROM python:3.12-slim AS prefix

@@ -1,0 +1,15 @@
+FROM ghcr.io/astral-sh/uv:0.13.0@sha256:cdc6093146eb3ff6a40107b38f008b789e050e77ad87865e381d9917da55a168 AS uv-bin
+FROM {{ base_image }} AS prefix
+# Every invocation must execute real requests, even when image layers exist.
+RUN echo {{ nonce }} > /tmp/build-proxy-probe
+COPY --from=uv-bin /uv /uvx /usr/local/bin/
+RUN sed -i 's|http://|https://|g' /etc/apt/sources.list.d/debian.sources && \
+    apt-get update --error-on=any && \
+    apt-get install -y --no-install-recommends curl && \
+    rm -rf /var/lib/apt/lists/*
+RUN curl --fail --silent --show-error --max-time 45 \
+    'https://pypi.org/simple/idna/?sandbox_probe={{ nonce }}' -o /tmp/build-proxy-download
+FROM prefix AS final
+RUN npm pack is-number@7.0.0 --pack-destination /tmp && \
+    uv venv --python /usr/local/bin/python /opt/build-proxy-venv && \
+    uv pip install --python /opt/build-proxy-venv/bin/python idna==3.10
