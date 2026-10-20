@@ -132,6 +132,13 @@ RUN chmod 0755 /usr/local/bin/project-sandbox-init-firewall \
     echo 'agent ALL=(root) NOPASSWD: /usr/local/bin/project-sandbox-init-firewall' > /etc/sudoers.d/agent-firewall && \
     chmod 0440 /etc/sudoers.d/agent-firewall
 
+{% if build_proxy_environment %}
+# Build proxy access does not grant runtime network access.
+RUN rm -f /etc/apt/apt.conf.d/99project-sandbox-build-proxy
+{% for name in build_proxy_environment %}
+ENV {{ name }}=""
+{% endfor %}
+{% endif %}
 {% if ca_certificate_sources %}
 # Session trust is installed only after all dependency and project build steps.
 {% for source in ca_certificate_sources %}

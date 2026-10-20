@@ -1,0 +1,47 @@
+# Corporate access is explicit and applies only during image construction.
+{% if build_proxy_environment -%}
+{% for name, value in build_proxy_environment.items() -%}
+ENV {{ name }}={{ value | docker_env }}
+{% endfor -%}
+{% endif -%}
+{% if build_ca_certificate_sources or build_proxy_environment -%}
+USER root
+{% for source in build_ca_certificate_sources -%}
+COPY {{ [source, '/usr/local/share/ca-certificates/'] | tojson }}
+{% endfor -%}
+RUN set -eu; \
+    if command -v apt-get >/dev/null 2>&1; then \
+        mkdir -p /etc/apt/apt.conf.d; \
+{% if build_proxy_environment -%}
+        printf '%s\n' \
+            {{ ('Acquire::http::Proxy "' + (build_proxy_environment['http_proxy'] or build_proxy_environment['all_proxy'] or 'DIRECT') + '";') | shlex_quote }} \
+            {{ ('Acquire::https::Proxy "' + (build_proxy_environment['https_proxy'] or build_proxy_environment['all_proxy'] or 'DIRECT') + '";') | shlex_quote }} \
+            > /etc/apt/apt.conf.d/99project-sandbox-build-proxy; \
+{% endif -%}
+{% if build_ca_certificate_sources -%}
+        chmod 0644 /usr/local/share/ca-certificates/project-sandbox-build-ca-*.crt; \
+        mkdir -p /etc/ssl/certs; \
+        touch /etc/ssl/certs/ca-certificates.crt; \
+        cat /usr/local/share/ca-certificates/project-sandbox-build-ca-*.crt \
+            >> /etc/ssl/certs/ca-certificates.crt; \
+        chmod 0644 /etc/ssl/certs/ca-certificates.crt; \
+        printf '%s\n' 'Acquire::https::CAInfo "/etc/ssl/certs/ca-certificates.crt";' \
+            > /etc/apt/apt.conf.d/99project-sandbox-build-ca; \
+        if command -v update-ca-certificates >/dev/null 2>&1; then \
+            update-ca-certificates; \
+        else \
+            apt-get update; \
+            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates; \
+            update-ca-certificates; \
+            rm -rf /var/lib/apt/lists/*; \
+        fi; \
+{% endif -%}
+        :; \
+    fi
+{% endif -%}
+{% if build_ca_certificate_sources -%}
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+ENV REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+ENV NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt
+ENV NODE_USE_SYSTEM_CA=1
+{% endif -%}

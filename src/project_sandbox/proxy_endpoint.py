@@ -39,7 +39,13 @@ class ProxyEndpoint:
         return self.url(sandbox=True)
 
 
-def parse(value: str, *, option: str, api_path: bool = False) -> ProxyEndpoint:
+def parse(
+    value: str,
+    *,
+    option: str,
+    api_path: bool = False,
+    allow_https_loopback: bool = False,
+) -> ProxyEndpoint:
     # urlsplit silently strips controls; reject them before parsing. Never echo
     # the supplied URL or parser exception, since either can contain userinfo.
     def reject(reason: str) -> NoReturn:
@@ -89,7 +95,7 @@ def parse(value: str, *, option: str, api_path: bool = False) -> ProxyEndpoint:
             suffix = parsed.netloc.split("]", 1)[1]
             if suffix and not re.fullmatch(r":[0-9]+", suffix):
                 reject("invalid bracketed authority")
-    if local and parsed.scheme == "https":
+    if local and parsed.scheme == "https" and not allow_https_loopback:
         reject("HTTPS loopback endpoints are unsupported; use HTTP local forwarding")
     if not api_path and parsed.path not in ("", "/"):
         reject("URL must not contain a path other than /")

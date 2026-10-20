@@ -15,6 +15,7 @@ from . import (
     __version__,
     agent_proxy,
     build_cache,
+    build_network,
     chroot,
     config_agents,
     container_cli,
@@ -175,11 +176,23 @@ def build_parser() -> ArgumentParser:
     )
     p.add_argument("--no-firewall", action="store_true")
     p.add_argument(
+        "--build-proxy-from-env",
+        action="store_true",
+        help="Use host HTTP/HTTPS/ALL_PROXY and NO_PROXY during image builds only.",
+    )
+    p.add_argument(
+        "--build-ca-cert",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="Install a PEM CA before image build downloads (repeatable; trust persists).",
+    )
+    p.add_argument(
         "--ca-cert",
         action="append",
         default=[],
         metavar="PATH",
-        help="Bake a PEM CA certificate into the image (repeatable; requires either proxy option).",
+        help="Install a PEM CA after build commands (repeatable; requires --internet-proxy or --agent-proxy).",
     )
     p.add_argument(
         "--internet-proxy",
@@ -384,6 +397,18 @@ def main(argv: list[str] | None = None) -> int:
     proxy_port = _validate_agent_proxy_args(args, run_agent)
     proxy_endpoint = agent_proxy.parse(args.agent_proxy) if args.agent_proxy else None
     ca_certificates = dockerfile.read_ca_certificates(args.ca_cert)
+    build_ca_certificates = dockerfile.read_ca_certificates(
+        args.build_ca_cert, option="--build-ca-cert"
+    )
+    build_proxy_environment = (
+        build_network.from_environment(os.environ)
+        if args.build_proxy_from_env
+        else None
+    )
+    if args.runtime == "chroot" and (args.build_proxy_from_env or args.build_ca_cert):
+        raise SystemExit(
+            "--build-proxy-from-env and --build-ca-cert require an image-based runtime"
+        )
     _validate_api_key_injection_args(args, run_agent)
     _validate_ollama_models(args.ollama_model)
     _validate_shm_size(args.shm_size)
@@ -545,6 +570,8 @@ def main(argv: list[str] | None = None) -> int:
                 build_context=build_context,
                 install_agents=available_agents,
                 ca_certificates=ca_certificates,
+                build_ca_certificates=build_ca_certificates,
+                build_proxy_environment=build_proxy_environment,
                 warn=print,
             )
         # Trim the whole-project build context only for the generated
@@ -1250,6 +1277,14 @@ def _dry_run(
                 print(f"Would mount jj git backend: {git_mount[0]} -> {git_mount[1]}")
         else:
             print(f"Would mount .git metadata: {(project / '.git').resolve()}")
+    if args.build_proxy_from_env:
+        print(
+            "Would configure environment and apt build proxies, then clear proxy settings before runtime (values redacted)."
+        )
+    for certificate in args.build_ca_cert:
+        print(
+            f"Would install build CA before downloads in sandbox and devcontainer images: {certificate}"
+        )
     for certificate in args.ca_cert:
         print(
             f"Would bake CA certificate into sandbox and devcontainer images: {certificate}"

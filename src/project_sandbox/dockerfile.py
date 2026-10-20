@@ -77,7 +77,9 @@ class _DockerfileFragments:
     after_dependencies: str
 
 
-def read_ca_certificates(paths: list[str]) -> tuple[bytes, ...]:
+def read_ca_certificates(
+    paths: list[str], *, option: str = "--ca-cert"
+) -> tuple[bytes, ...]:
     """Read public PEM certificates before any output or container side effects."""
     certificates = []
     for value in paths:
@@ -124,7 +126,7 @@ def read_ca_certificates(paths: list[str]) -> tuple[bytes, ...]:
                 )
         except (OSError, UnicodeError, ValueError) as exc:
             raise SystemExit(
-                f"--ca-cert: cannot load certificate {path}: {exc}"
+                f"{option}: cannot load certificate {path}: {exc}"
             ) from exc
         certificates.append((text + "\n").encode("ascii"))
     return tuple(certificates)
@@ -139,6 +141,8 @@ def render(
     install_agents: tuple[str, ...] = ("claude", "codex", "opencode", "pi"),
     warn: Callable[[str], None] | None = None,
     ca_certificates: tuple[bytes, ...] = (),
+    build_ca_certificates: tuple[bytes, ...] = (),
+    build_proxy_environment: dict[str, str] | None = None,
 ) -> Path:
     if (base_image is None) == (base_dockerfile is None):
         raise ValueError("Provide exactly one of base_image or base_dockerfile")
@@ -176,6 +180,15 @@ def render(
         if copy_prefix + stale.name not in certificate_sources:
             stale.unlink()
 
+    build_certificate_sources = []
+    for certificate in dict.fromkeys(build_ca_certificates):
+        name = f"project-sandbox-build-ca-{hashlib.sha256(certificate).hexdigest()}.crt"
+        (context_dir / name).write_bytes(certificate)
+        build_certificate_sources.append(copy_prefix + name)
+    for stale in context_dir.glob("project-sandbox-build-ca-*.crt"):
+        if copy_prefix + stale.name not in build_certificate_sources:
+            stale.unlink()
+
     tmpl = templating.get_template("Dockerfile.j2")
     shared = {
         "source_before_dependencies": source_before_dependencies,
@@ -183,6 +196,8 @@ def render(
         "source_after_dependencies": source_after_dependencies,
         "sandbox_copy_prefix": copy_prefix,
         "ca_certificate_sources": certificate_sources,
+        "build_ca_certificate_sources": build_certificate_sources,
+        "build_proxy_environment": build_proxy_environment or {},
         "install_claude": "claude" in install_agents,
         "install_codex": "codex" in install_agents,
         "install_opencode": "opencode" in install_agents,
@@ -200,6 +215,25 @@ def render(
         **shared,
         firewall_src_filename="init-firewall-devcontainer.sh",
     )
+    if build_proxy_environment or build_certificate_sources:
+        setup = templating.get_template("_build-network.Dockerfile.j2").render(**shared)
+        for path in (container, context_dir / "Dockerfile.devcontainer"):
+            blocks = _dockerfile_blocks(path.read_text(encoding="utf-8"))
+            stages = _dockerfile_stages(blocks)
+            # Inject without adding stages, preserving all positional references.
+            for stage in reversed(stages):
+                body = blocks[stage.from_block_index + 1 : stage.end_block_index]
+                ancestor = stage
+                while ancestor.parent_index is not None:
+                    ancestor = stages[ancestor.parent_index]
+                if _is_non_apt_image(ancestor.base) or not any(
+                    re.match(r"\s*RUN\b", block[0], re.IGNORECASE)
+                    for block in body
+                    if block
+                ):
+                    continue
+                blocks.insert(stage.from_block_index + 1, [setup])
+            path.write_text(_join_dockerfile_blocks(blocks), encoding="utf-8")
     return container
 
 
