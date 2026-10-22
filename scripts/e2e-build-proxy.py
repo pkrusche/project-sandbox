@@ -27,7 +27,7 @@ from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
-from project_sandbox import container_cli
+from project_sandbox import container_cli, fixture_network
 
 FIXTURES = Path(__file__).parent / "fixtures"
 PROXY_NAMES = ("http_proxy", "https_proxy", "all_proxy", "no_proxy")
@@ -61,7 +61,11 @@ def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--runtime", choices=("docker", "apple-container"), required=True)
     p.add_argument("--internet-proxy-dir", type=Path, required=True)
-    p.add_argument("--fixture-host", type=fixture_host, required=True)
+    p.add_argument(
+        "--fixture-host",
+        type=fixture_host,
+        help="Local fixture IP (default: outbound IPv4 source address).",
+    )
     p.add_argument("--base-image", default="python:3.12-slim")
     p.add_argument("--timeout", type=int, default=1800)
     p.add_argument("--keep", action="store_true")
@@ -166,7 +170,14 @@ def reserved_port(host: str) -> socket.socket:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = parser().parse_args(argv)
+    argument_parser = parser()
+    args = argument_parser.parse_args(argv)
+    if args.fixture_host is None:
+        try:
+            args.fixture_host = fixture_network.default_host()
+        except ValueError as exc:
+            argument_parser.error(str(exc))
+        print(f"Using proxy fixture host: {args.fixture_host}", flush=True)
     runtime = container_cli.select_runtime(args.runtime)
     if shutil.which("uv") is None:
         raise SystemExit("uv is required")
