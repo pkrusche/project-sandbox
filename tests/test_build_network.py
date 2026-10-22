@@ -5,6 +5,7 @@ import io
 import json
 import os
 import shlex
+import ssl
 import subprocess
 import tempfile
 from pathlib import Path
@@ -102,6 +103,73 @@ class BuildEnvironmentTests(TestCase):
             self.assertIn("clear proxy settings", output.getvalue())
             self.assertNotIn("proxy.example", output.getvalue())
             self.assertEqual(list(root.iterdir()), [])
+
+    def test_build_ca_bundle_is_split_and_dry_run_is_non_mutating(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bundle = root / "bundle.pem"
+            pem = CERTIFICATE.read_text()
+            bundle.write_text(pem + "\n\t" + pem)
+            certificates = dockerfile.read_ca_certificates(
+                [str(bundle)], option="--build-ca-cert", allow_bundle=True
+            )
+            self.assertEqual(certificates, (pem.encode(), pem.encode()))
+            project = root / "project"
+            project.mkdir()
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(
+                    cli.main(
+                        [
+                            "--dry-run",
+                            "--build-ca-cert",
+                            str(bundle),
+                            str(project),
+                            "debian:bookworm",
+                        ]
+                    ),
+                    0,
+                )
+            self.assertEqual(list(project.iterdir()), [])
+            context = root / "context"
+            context.mkdir()
+            dockerfile.render(
+                context,
+                base_image="debian:bookworm",
+                build_ca_certificates=certificates,
+            )
+            staged = list(context.glob("project-sandbox-build-ca-*.crt"))
+            self.assertEqual(len(staged), 1)  # Identical certificates are deduplicated.
+            self.assertEqual(staged[0].read_bytes(), pem.encode())
+
+    def test_build_ca_bundle_validates_every_certificate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bundle = root / "bundle.pem"
+            pem = CERTIFICATE.read_text()
+            for invalid in (
+                CERTIFICATE.with_name("test-leaf.pem").read_text(),
+                "-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----",
+                "-----BEGIN CERTIFICATE-----\ninvalid\n-----END CERTIFICATE-----",
+                "unrelated trailing data",
+                ssl.DER_cert_to_PEM_cert(
+                    ssl.PEM_cert_to_DER_cert(pem) + b"trailing DER data"
+                ),
+            ):
+                for contents in (pem + invalid, invalid + pem):
+                    bundle.write_text(contents)
+                    with (
+                        self.subTest(invalid=invalid),
+                        self.assertRaisesRegex(SystemExit, "--build-ca-cert"),
+                    ):
+                        cli.main(
+                            [
+                                "--build-ca-cert",
+                                str(bundle),
+                                str(root / "project"),
+                                "debian:bookworm",
+                            ]
+                        )
+                    self.assertFalse((root / "project").exists())
 
     def test_build_ca_independent_and_chroot_rejection(self):
         with tempfile.TemporaryDirectory() as tmp:

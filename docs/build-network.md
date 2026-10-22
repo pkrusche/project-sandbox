@@ -15,7 +15,8 @@ These options work with base images, `--dockerfile`, `--python-uv`, `--rust-carg
 and `--node-npm`, and are included in both generated sandbox and devcontainer
 Dockerfiles. They require an image-based runtime; chroot is unsupported.
 `--build-ca-cert` also works independently, for example with an internal HTTPS
-package mirror. Repeat it for multiple public PEM CA files, one CA per file.
+package mirror. Each public PEM file may contain one CA or a bundle of CAs. Repeat the option
+for multiple files. Each certificate is validated and installed separately.
 Private keys, leaf certificates, and malformed certificate files are rejected.
 
 ## Build settings and runtime permissions

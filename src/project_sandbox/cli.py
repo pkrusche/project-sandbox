@@ -185,7 +185,7 @@ def build_parser() -> ArgumentParser:
         action="append",
         default=[],
         metavar="PATH",
-        help="Install a PEM CA before image build downloads (repeatable; trust persists).",
+        help="Install PEM CAs (single certificate or bundle) before image build downloads (repeatable; trust persists).",
     )
     p.add_argument(
         "--ca-cert",
@@ -398,7 +398,7 @@ def main(argv: list[str] | None = None) -> int:
     proxy_endpoint = agent_proxy.parse(args.agent_proxy) if args.agent_proxy else None
     ca_certificates = dockerfile.read_ca_certificates(args.ca_cert)
     build_ca_certificates = dockerfile.read_ca_certificates(
-        args.build_ca_cert, option="--build-ca-cert"
+        args.build_ca_cert, option="--build-ca-cert", allow_bundle=True
     )
     build_proxy_environment = (
         build_network.from_environment(os.environ)

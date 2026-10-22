@@ -78,7 +78,7 @@ class _DockerfileFragments:
 
 
 def read_ca_certificates(
-    paths: list[str], *, option: str = "--ca-cert"
+    paths: list[str], *, option: str = "--ca-cert", allow_bundle: bool = False
 ) -> tuple[bytes, ...]:
     """Read public PEM certificates before any output or container side effects."""
     certificates = []
@@ -87,48 +87,44 @@ def read_ca_certificates(
         try:
             data = path.read_bytes()
             text = data.decode("ascii").strip()
-            # OpenSSL accepts trailing content after a valid certificate. Match
-            # the entire PEM envelope so unrelated data cannot enter the image.
-            if (
-                re.fullmatch(
-                    r"-----BEGIN CERTIFICATE-----\s+[A-Za-z0-9+/=\s]+"
-                    r"-----END CERTIFICATE-----",
-                    text,
-                    flags=re.ASCII,
-                )
-                is None
-            ):
+            # Match every envelope and reject any content between certificates.
+            pattern = r"-----BEGIN CERTIFICATE-----\s+[A-Za-z0-9+/=\s]+-----END CERTIFICATE-----"
+            blocks = re.findall(pattern, text, flags=re.ASCII)
+            if not blocks or re.sub(pattern, "", text, flags=re.ASCII).strip():
+                raise ValueError("expected PEM certificates without unrelated data")
+            if not allow_bundle and len(blocks) != 1:
                 raise ValueError("expected one PEM certificate per file")
-            payload = "".join(text.splitlines()[1:-1]).split()
-            der = base64.b64decode("".join(payload), validate=True)
-            # OpenSSL also ignores bytes after the DER certificate inside the
-            # PEM payload. Require one complete ASN.1 SEQUENCE, with no suffix.
-            if len(der) < 2 or der[0] != 0x30:
-                raise ValueError("expected a DER certificate sequence")
-            length = der[1]
-            header_size = 2
-            if length & 0x80:
-                length_size = length & 0x7F
-                if not length_size or len(der) < 2 + length_size:
-                    raise ValueError("invalid DER certificate length")
-                header_size += length_size
-                length = int.from_bytes(der[2:header_size], "big")
-            if header_size + length != len(der):
-                raise ValueError("expected one certificate without trailing data")
-            context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-            context.load_verify_locations(cadata=text)
-            # Loading a trust store also accepts end-entity certificates. Those
-            # cannot issue the proxy's destination certificates, so reject them
-            # here rather than letting the session fail later during TLS.
-            if context.cert_store_stats()["x509_ca"] != 1:
-                raise ValueError(
-                    "expected a CA certificate, not an end-entity certificate"
-                )
+            for text in blocks:
+                payload = "".join(text.splitlines()[1:-1]).split()
+                der = base64.b64decode("".join(payload), validate=True)
+                # OpenSSL also ignores bytes after the DER certificate inside the
+                # PEM payload. Require one complete ASN.1 SEQUENCE, with no suffix.
+                if len(der) < 2 or der[0] != 0x30:
+                    raise ValueError("expected a DER certificate sequence")
+                length = der[1]
+                header_size = 2
+                if length & 0x80:
+                    length_size = length & 0x7F
+                    if not length_size or len(der) < 2 + length_size:
+                        raise ValueError("invalid DER certificate length")
+                    header_size += length_size
+                    length = int.from_bytes(der[2:header_size], "big")
+                if header_size + length != len(der):
+                    raise ValueError("expected one certificate without trailing data")
+                context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+                context.load_verify_locations(cadata=text)
+                # Loading a trust store also accepts end-entity certificates. Those
+                # cannot issue the proxy's destination certificates, so reject them
+                # here rather than letting the session fail later during TLS.
+                if context.cert_store_stats()["x509_ca"] != 1:
+                    raise ValueError(
+                        "expected a CA certificate, not an end-entity certificate"
+                    )
+                certificates.append((text + "\n").encode("ascii"))
         except (OSError, UnicodeError, ValueError) as exc:
             raise SystemExit(
                 f"{option}: cannot load certificate {path}: {exc}"
             ) from exc
-        certificates.append((text + "\n").encode("ascii"))
     return tuple(certificates)
 
 
