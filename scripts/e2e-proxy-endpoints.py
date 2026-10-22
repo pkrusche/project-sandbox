@@ -24,7 +24,7 @@ import threading
 from pathlib import Path
 from urllib.parse import unquote
 
-from project_sandbox import agent_proxy
+from project_sandbox import agent_proxy, fixture_network
 
 KEY = "project-sandbox-fixture-key-not-a-real-credential"
 API_PATH = "/api/{tenant,other}/[v1]"
@@ -334,9 +334,8 @@ def main(argv=None):
     )
     parser.add_argument(
         "--fixture-host",
-        required=True,
         type=fixture_address,
-        help="Local IP on which fixtures bind; must be reachable from the sandbox.",
+        help="Local fixture IP (default: outbound IPv4 source address).",
     )
     parser.add_argument(
         "--ipv6-host",
@@ -347,6 +346,12 @@ def main(argv=None):
     parser.add_argument("--timeout", type=int, default=120)
     parser.add_argument("--keep", action="store_true")
     args = parser.parse_args(argv)
+    if args.fixture_host is None:
+        try:
+            args.fixture_host = fixture_network.default_host()
+        except ValueError as exc:
+            parser.error(str(exc))
+        print(f"Using proxy fixture host: {args.fixture_host}", flush=True)
     if args.ipv6_host and ipaddress.ip_address(args.ipv6_host).version != 6:
         parser.error("--ipv6-host requires an IPv6 address")
     binary = "container" if args.runtime == "apple-container" else args.runtime

@@ -99,8 +99,11 @@ class ProxyEndpointHarnessTests(unittest.TestCase):
             ):
                 checker.validate_observations(bad_gateway, bad_proxy)
 
-    def test_runner_requires_fixture_host_and_builds(self):
-        for options in ([], ["--proxy-fixture-host", "192.0.2.1", "--no-build"]):
+    def test_runner_requires_builds(self):
+        for options in (
+            ["--no-build"],
+            ["--proxy-fixture-host", "192.0.2.1", "--no-build"],
+        ):
             with self.subTest(options=options):
                 result = subprocess.run(
                     [

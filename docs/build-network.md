@@ -80,23 +80,25 @@ and describes the setup without writing files or contacting the proxy.
 ## Squid end-to-end test
 
 The opt-in test uses [internet-proxy-locally](https://github.com/pkrusche/internet-proxy-locally)
-with Squid and TLS interception. Supply its checkout and a local non-loopback
-host IP reachable from both the builder and runtime:
+with Squid and TLS interception. Supply its checkout:
 
 ```bash
 ./scripts/run-e2e-tests.sh --only build-proxy --runtime docker \
-  --internet-proxy-dir ../internet-proxy-locally \
-  --proxy-fixture-host 192.168.1.20
+  --internet-proxy-dir ../internet-proxy-locally
 ```
 
-Replace the example IP with your host's address. Docker and Apple `container`
+The fixture IP defaults to the host’s outbound IPv4 source address on macOS
+and Linux. Detection sends no packets. The selected address is printed; it must
+be reachable from both the builder and runtime. On VPN or multi-interface hosts,
+override it with `--proxy-fixture-host IP` (`--fixture-host IP` for the standalone
+harness). Detection failures require an explicit override. Docker and Apple `container`
 are supported. Use `--with-build-proxy` instead of `--only build-proxy` to include
 it in the full suite. Builds must be enabled. Run the standalone harness with:
 
 ```bash
 uv run python scripts/e2e-build-proxy.py --runtime docker \
   --internet-proxy-dir ../internet-proxy-locally \
-  --fixture-host 192.168.1.20 --keep
+  --keep
 ```
 
 The harness copies the proxy sources into a temporary workspace, extends only

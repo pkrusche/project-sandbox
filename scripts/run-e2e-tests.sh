@@ -52,13 +52,13 @@
 #                    repeat for certificate chains
 #   --with-proxy-endpoints
 #                    run temporary, non-billable remote HTTP/TLS proxy fixtures;
-#                    requires a real runtime, builds, and --proxy-fixture-host IP
+#                    requires a real runtime and builds
 #   --with-build-proxy
 #                    run build/CA and runtime isolation checks using IPL Squid;
 #                    requires Docker or Apple container, --internet-proxy-dir,
-#                    --proxy-fixture-host, and builds enabled
+#                    and builds enabled
 #   --proxy-fixture-host IP
-#                    local non-loopback IP reachable from the selected runtime
+#                    override local fixture IP (default: outbound IPv4 source address)
 #   --proxy-fixture-ipv6-host IP
 #                    optional local IPv6 IP for an additional HTTPS gateway check
 set -euo pipefail
@@ -405,30 +405,32 @@ fi
 # Controlled remote endpoints are opt-in even when a runtime is available.
 if selected proxy-endpoints; then
   if [ "$WITH_PROXY_ENDPOINTS" = 1 ]; then
-    if [ -z "$CONTAINER_RUNTIME" ] || [ -z "$PROXY_FIXTURE_HOST" ] || [ "$NO_BUILD" = 1 ]; then
-      fail_suite "proxy-endpoints" "requires a real runtime, --proxy-fixture-host, and builds enabled"
+    if [ -z "$CONTAINER_RUNTIME" ] || [ "$NO_BUILD" = 1 ]; then
+      fail_suite "proxy-endpoints" "requires a real runtime, and builds enabled"
     else
-      ENDPOINT_ARGS=(--runtime "$CONTAINER_RUNTIME" --base-image "$BASE_IMAGE" --fixture-host "$PROXY_FIXTURE_HOST")
+      ENDPOINT_ARGS=(--runtime "$CONTAINER_RUNTIME" --base-image "$BASE_IMAGE")
+      [ -n "$PROXY_FIXTURE_HOST" ] && ENDPOINT_ARGS+=(--fixture-host "$PROXY_FIXTURE_HOST")
       [ -n "$PROXY_FIXTURE_IPV6_HOST" ] && ENDPOINT_ARGS+=(--ipv6-host "$PROXY_FIXTURE_IPV6_HOST")
       [ "$KEEP" = 1 ] && ENDPOINT_ARGS+=(--keep)
       run_suite "proxy-endpoints" uv run python "$ROOT/scripts/e2e-proxy-endpoints.py" "${ENDPOINT_ARGS[@]}"
     fi
   else
-    skip_suite "proxy-endpoints" "pass --with-proxy-endpoints and --proxy-fixture-host"
+    skip_suite "proxy-endpoints" "pass --with-proxy-endpoints"
   fi
 fi
 
 if selected build-proxy; then
   if [ "$WITH_BUILD_PROXY" = 1 ]; then
-    if { [ "$CONTAINER_RUNTIME" != docker ] && [ "$CONTAINER_RUNTIME" != apple-container ]; } || [ -z "$PROXY_FIXTURE_HOST" ] || [ -z "$INTERNET_PROXY_DIR" ] || [ "$NO_BUILD" = 1 ]; then
-      fail_suite "build-proxy" "requires Docker or Apple container, --internet-proxy-dir, --proxy-fixture-host, and builds enabled"
+    if { [ "$CONTAINER_RUNTIME" != docker ] && [ "$CONTAINER_RUNTIME" != apple-container ]; } || [ -z "$INTERNET_PROXY_DIR" ] || [ "$NO_BUILD" = 1 ]; then
+      fail_suite "build-proxy" "requires Docker or Apple container, --internet-proxy-dir, and builds enabled"
     else
-      BUILD_PROXY_ARGS=(--runtime "$CONTAINER_RUNTIME" --base-image "$BASE_IMAGE" --internet-proxy-dir "$INTERNET_PROXY_DIR" --fixture-host "$PROXY_FIXTURE_HOST")
+      BUILD_PROXY_ARGS=(--runtime "$CONTAINER_RUNTIME" --base-image "$BASE_IMAGE" --internet-proxy-dir "$INTERNET_PROXY_DIR")
+      [ -n "$PROXY_FIXTURE_HOST" ] && BUILD_PROXY_ARGS+=(--fixture-host "$PROXY_FIXTURE_HOST")
       [ "$KEEP" = 1 ] && BUILD_PROXY_ARGS+=(--keep)
       run_suite "build-proxy" uv run python "$ROOT/scripts/e2e-build-proxy.py" "${BUILD_PROXY_ARGS[@]}"
     fi
   else
-    skip_suite "build-proxy" "pass --with-build-proxy, --internet-proxy-dir, and --proxy-fixture-host"
+    skip_suite "build-proxy" "pass --with-build-proxy, --internet-proxy-dir,"
   fi
 fi
 
