@@ -34,7 +34,10 @@ MODEL = "fixture-model"
 class Fixture(http.server.BaseHTTPRequestHandler):
     """Answer only fixture traffic; never forward to arbitrary destinations."""
 
-    server: FixtureServer
+    @property
+    def fixture_server(self) -> FixtureServer:
+        assert isinstance(self.server, FixtureServer)
+        return self.server
 
     def log_message(self, format: str, *args) -> None:
         pass
@@ -46,7 +49,7 @@ class Fixture(http.server.BaseHTTPRequestHandler):
             pass  # Startup transport probes intentionally close early.
 
     def record(self):
-        self.server.observations.append(
+        self.fixture_server.observations.append(
             (
                 self.command,
                 self.path,
@@ -58,7 +61,7 @@ class Fixture(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         self.record()
-        role = self.server.role
+        role = self.fixture_server.role
         status = 200
         if role == "gateway":
             if self.headers.get("Authorization") != f"Bearer {KEY}":
@@ -80,19 +83,21 @@ class Fixture(http.server.BaseHTTPRequestHandler):
 
     def do_CONNECT(self):
         self.record()
-        if self.server.role == "proxy" and self.path == "origin.test:80":
+        if self.fixture_server.role == "proxy" and self.path == "origin.test:80":
             # Newer Node versions tunnel plain HTTP targets through CONNECT.
             self.send_response(200)
             self.end_headers()
             self.tunnelled = True
             self.handle_one_request()
             return
-        if self.server.role != "proxy" or self.path != "origin.test:443":
+        if self.fixture_server.role != "proxy" or self.path != "origin.test:443":
             self.send_error(403)
             return
         # The only tunnel target is our own temporary TLS origin.
-        assert self.server.origin is not None
-        with socket.create_connection(self.server.origin, timeout=3) as upstream:
+        assert self.fixture_server.origin is not None
+        with socket.create_connection(
+            self.fixture_server.origin, timeout=3
+        ) as upstream:
             self.send_response(200)
             self.end_headers()
             while True:
