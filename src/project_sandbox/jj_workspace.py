@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import hashlib
 import os
 import posixpath
@@ -78,6 +79,13 @@ def _setup_locked(
         add_args += ["-r", bookmark]
     elif not _is_empty(repo):
         add_args += ["-r", "@"]
+    if _supports_no_colocate():
+        # jj >= 0.46 gives a workspace added from a colocated repo its own Git
+        # worktree, whose `.git` file holds a gitdir path relative to the host
+        # layout. Mounted at /workspace that path cannot resolve, so every
+        # in-container jj command fails to open the repository. The session
+        # only needs jj, so keep the workspace non-colocated.
+        add_args.append("--no-colocate")
     add_args.append(str(ws_path))
     _jj(repo, add_args)
 
@@ -286,6 +294,21 @@ def remove(repo: Path, ws: JjWorkspace) -> None:
             except subprocess.CalledProcessError:
                 pass
             shutil.rmtree(ws.path, ignore_errors=True)
+
+
+@functools.cache
+def _supports_no_colocate() -> bool:
+    """Whether the host jj accepts ``workspace add --no-colocate`` (jj >= 0.46)."""
+    try:
+        result = subprocess.run(
+            ["jj", "workspace", "add", "--help"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return False
+    return "--no-colocate" in result.stdout
 
 
 def _bookmark_exists(repo: Path, bookmark: str) -> bool:
