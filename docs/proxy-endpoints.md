@@ -15,18 +15,25 @@ key or model discovery.
 | `https://proxy.corp.example` | Yes, port 443 | Direct, verified TLS |
 | `https://10.20.30.40:8443` or `https://[2001:db8::1]:8443` | Yes | Direct; certificate must match the IP |
 
+For **remote `--internet-proxy` on Apple container**, the route above is replaced
+by `sandbox -> http://host.docker.internal:PORT -> host relay -> upstream`.
+The host uses its VPN routes and DNS. Complete the
+[Apple localhost alias setup](apple-container-dns.md) for both local and remote
+Internet proxies. Docker, Podman, devcontainers, and remote `--agent-proxy`
+connections keep the direct routes in the table.
+
 Explicit ports override defaults. Agent API paths such as `/api/v1` are retained;
 Internet proxy paths must be empty or `/`. Userinfo (including empty userinfo),
 queries, fragments, malformed hostnames, ambiguous numeric addresses, scoped IPv6,
 unspecified/wildcard addresses, and multicast are rejected. Canonical localhost
 (case-insensitive, optional trailing dot), the IPv4 loopback range, IPv6 loopback,
 and mapped IPv4 loopback all use local forwarding. Private unicast addresses are
-valid remote endpoints. The sandbox must already have a route to those endpoints;
-no particular network provider or VPN setup is required by Project Sandbox.
+valid remote endpoints. Direct endpoints must be reachable from the sandbox;
+Apple Internet-proxy upstreams must be reachable from the host.
 
-Only local services need runtime host alias setup. Remote services can share a
-port; two local forwarding listeners cannot. Remote-only Apple sessions do not
-need the administrator-managed localhost DNS entry.
+Direct remote services can share a port; local forwarding listeners cannot.
+Concurrent Apple Internet-proxy sessions using the same upstream share a derived
+relay port and therefore conflict; sequential sessions can reuse it.
 
 ## DNS and firewall lifetime
 
@@ -36,6 +43,10 @@ Each endpoint gets only its own TCP address/port rules, including usable IPv4 an
 IPv6 answers. Names resolving to loopback, unspecified, or multicast addresses
 fail startup. Numeric endpoints need no DNS. Failure to enforce IPv6 denial in
 Internet mode aborts startup; an unusable IPv6-only endpoint also aborts.
+
+For Apple Internet-proxy relays, these rules pin and authorize the loopback
+relay endpoint. The host resolves the upstream afresh for each connection;
+upstream addresses are not pinned in the sandbox.
 
 Pins last for the session. Restart to pick up DNS rotation. General outbound DNS
 stays blocked. The firewall authorizes an **IP address and port**, so another
@@ -54,13 +65,19 @@ service does not change the other's route or open direct Internet fallback.
 
 ## TLS and trust
 
-Both host preflight and final sandbox checks verify TLS certificate chains and
-names. HTTPS Internet preflight is a bounded TLS handshake, without a public test
-destination. HTTP uses a bounded TCP check. Gateway discovery makes a direct,
+For direct HTTPS endpoints, both host preflight and final sandbox checks verify
+TLS certificate chains and names. HTTPS Internet preflight is a bounded TLS
+handshake, without a public test destination. HTTP uses a bounded TCP check. Gateway discovery makes a direct,
 authenticated `/models` request regardless of ambient host proxy variables and
 never follows redirects. After firewall setup, the gateway probe uses the same
 scheme, host, port, and API path. Host success does not guarantee sandbox success;
 a failed final check prevents agent startup.
+
+For an Apple Internet-proxy relay, the sandbox-to-host hop is HTTP. Host preflight
+and each upstream TLS connection verify the HTTPS proxy using system trust plus
+`--ca-cert`; the sandbox startup probe checks only TCP reachability to the relay.
+The relay is not an end-to-end upstream health check. Destination HTTPS still
+passes through CONNECT with its own certificate verification.
 
 Use repeatable `--ca-cert PATH` with either proxy to add public CA certificates.
 The host loads these into connection-specific TLS contexts without changing its
@@ -74,10 +91,11 @@ Rebuild images and devcontainers after changing CA inputs. `--no-build` retains
 the existing image trust, even though host preflight uses the new CA inputs.
 Certificates are installed after build steps and do not change build-time trust.
 
-TLS **to the proxy** protects the sandbox-to-proxy connection. TLS **to the
+TLS **to the proxy** protects the direct sandbox-to-proxy connection, or the
+host-to-proxy connection when using the Apple relay. TLS **to the
 destination** authenticates the requested origin through a CONNECT tunnel. A CA
 input alone does not enable TLS interception. There is no verification bypass,
-HTTP downgrade, automatic direct fallback, client-certificate support, or Internet
+automatic direct fallback, client-certificate support, or Internet
 proxy authentication. HTTP 407 fails the request without obtaining credentials or
 forwarding the gateway bearer key. Remote HTTP is an explicit unencrypted choice,
 including for gateway bearer traffic; use HTTPS when that transport needs protection.

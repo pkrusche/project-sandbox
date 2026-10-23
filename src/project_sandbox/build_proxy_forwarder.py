@@ -77,6 +77,7 @@ class BuildProxyForwarder:
         self._lock = threading.Lock()
         self._connections: set[socket.socket] = set()
         self._thread: threading.Thread | None = None
+        self._reservation: socket.socket | None = None
         self._listener = self._bind(
             port if port is not None else preferred_port(endpoint)
         )
@@ -88,23 +89,38 @@ class BuildProxyForwarder:
 
     def _bind(self, port: int) -> socket.socket:
         for candidate in (port, 0) if self._fallback else (port,):
-            # No SO_REUSEADDR: on BSD/macOS it would allow binding 127.0.0.1:P
-            # while another process listens on *:P. Without it the kernel
-            # atomically refuses any port another socket owns; a port held only
-            # by TIME_WAIT connections just falls back, which costs no rebuild.
+            # Build ports can fall back on any conflict, including TIME_WAIT,
+            # so they need no address reuse. Fixed runtime ports need both
+            # reuse and the wildcard reservation below.
             listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            reservation = None
             try:
+                if not self._fallback:
+                    # Runtime ports must be reusable after a completed session.
+                    # On BSD, REUSEADDR alone also permits a loopback listener
+                    # beside a wildcard listener. Reserve the exact wildcard
+                    # address first to exclude that case, without listening on
+                    # it or accepting any non-loopback traffic. Neither socket
+                    # uses REUSEPORT, so identical bindings remain exclusive.
+                    reservation = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    reservation.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    reservation.bind(("0.0.0.0", candidate))
+                    candidate = reservation.getsockname()[1]
+                    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 listener.bind((LISTEN_HOST, candidate))
                 listener.listen(socket.SOMAXCONN)
             except OSError as exc:
                 listener.close()
+                if reservation is not None:
+                    reservation.close()
                 if candidate == 0 or not self._fallback:
                     raise SystemExit(
                         f"Could not start the {self._label.lower()} forwarder on "
                         f"{LISTEN_HOST}:{candidate}: {exc}"
                     ) from exc
                 continue
-            if candidate != port:
+            self._reservation = reservation
+            if port and candidate != port:
                 self._warn(
                     f"{self._label} forwarder port {port} is in use; using a random port."
                 )
@@ -127,6 +143,8 @@ class BuildProxyForwarder:
         if thread is not None:
             thread.join(timeout=5)
         self._listener.close()
+        if self._reservation is not None:
+            self._reservation.close()
         with self._lock:
             connections = list(self._connections)
             self._connections.clear()

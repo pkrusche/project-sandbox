@@ -191,11 +191,6 @@ continues to use `./run.py {action}`. Both can be overridden on the standalone
 script when an installation uses a different lifecycle command; by default we
 assume the internetproxy-locally and agentgateway-locally examples.
 
-The separate opt-in [Squid build-network test](build-network.md#squid-end-to-end-test)
-uses `--with-build-proxy`, `--internet-proxy-dir`, and `--proxy-fixture-host`. It
-verifies build-time proxy/CA bootstrap and runtime firewall separation without
-Agentgateway or billable requests.
-
 Use the unified host-side entry point for full local verification:
 
 ```bash
@@ -354,3 +349,42 @@ so running `uv` on the host can update the host `.venv` independently. The
 generated Codex configuration forwards both `UV_PROJECT_ENVIRONMENT` and
 `UV_PYTHON_INSTALL_DIR` to its shell commands. Rebuild the sandbox after updating
 project-sandbox to regenerate that configuration for an existing image.
+
+## Squid build-network verification
+
+The opt-in test uses [internet-proxy-locally](https://github.com/pkrusche/internet-proxy-locally)
+with Squid and TLS interception. Supply its checkout:
+
+```bash
+./scripts/run-e2e-tests.sh --only build-proxy --runtime docker \
+  --internet-proxy-dir ../internet-proxy-locally
+```
+
+The fixture IP defaults to the host’s outbound IPv4 source address on macOS
+and Linux. Detection sends no packets. The selected address is printed; it must
+be reachable from both the builder and runtime. On VPN or multi-interface hosts,
+override it with `--proxy-fixture-host IP` (`--fixture-host IP` for the standalone
+harness). Detection failures require an explicit override. Docker and Apple `container`
+are supported; with Apple `container`, the builds exercise the host-loopback forwarder. Use `--with-build-proxy` instead of `--only build-proxy` to include
+it in the full suite. Builds must be enabled. Run the standalone harness with:
+
+```bash
+uv run python scripts/e2e-build-proxy.py --runtime docker \
+  --internet-proxy-dir ../internet-proxy-locally \
+  --keep
+```
+
+The harness copies the proxy sources into a temporary workspace, extends only
+that workspace's build-domain allowlist, chooses a separate endpoint, and runs
+`ipl --engine squid setup --tls-interception`, `up --tls-interception`, and
+`ca export`. It neither copies the caller's signing key nor controls existing
+proxy instances. Squid is stopped on completion, including failure.
+
+The test makes real, uncached HTTPS apt, curl, npm, and uv requests, checks
+specific missing-CA and unreachable-proxy failures, and verifies decrypted
+requests in Squid logs. Runtime probes use separate images with blocked and
+allowed firewall policies to verify absence of build proxy settings, retained
+CA trust, blocked access without `--internet-proxy`, and successful access with it
+while direct bypass remains blocked. It needs no LLM credentials or API calls.
+Setup failures are failures, not skips. Logs and structured results are retained
+on failure; `--keep` also retains successful artifacts and tagged test images.

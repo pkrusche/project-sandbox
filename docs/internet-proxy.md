@@ -10,48 +10,22 @@ Start the external proxy on loopback with an explicit port, then run a Docker sa
 project-sandbox --internet-proxy http://127.0.0.1:18080 --runtime docker --agent bash . python:3.12-slim
 ```
 
-For a local proxy, Apple `container` uses the same command with `--runtime apple-container`. Configure its administrator-managed localhost DNS entry once, then restart the container system so it rebuilds networking with both the localhost redirect and ordinary container Internet access:
-
-```bash
-sudo container system dns create host.docker.internal --localhost 203.0.113.113
-container system stop && container system start
-```
-
-The DNS/PF change can disrupt container Internet access before the restart and
-can disable Private Relay. The CLI verifies the final proxy TCP path from inside
-the sandbox, but it never invokes `sudo` or changes this host-wide configuration. If the proxy path later times out instead of being refused, the
-alias has gone stale; delete and re-create it as described in
-[Apple container host alias](apple-container-dns.md).
+For Apple `container`, use `--runtime apple-container` and complete the
+[localhost alias setup](apple-container-dns.md). That page also covers stale
+aliases and troubleshooting; project-sandbox never changes host DNS/PF settings.
 
 ### Remote proxies with Apple container
 
-Apple `container`'s bridge network cannot route to a proxy that is only
-reachable through the host's VPN. For a remote `--internet-proxy` on Apple
-`container`, project-sandbox therefore relays the session through the host,
-using the same localhost alias and standard-library forwarder as the
-[build proxy](build-network.md#apple-container-host-loopback-forwarder):
+Remote Internet proxies also use the host alias on Apple `container`, allowing
+access through host VPN routes. See the [endpoint contract](proxy-endpoints.md)
+for the route, TLS verification, and DNS behavior. The host checks the upstream
+before image work; the sandbox checks connectivity to the relay at startup.
 
-```text
-sandbox -> http://host.docker.internal:PORT -> host 127.0.0.1:PORT (relay) -> proxy
-```
-
-The relay resolves and connects to the proxy from the host, so VPN routes and
-DNS apply. The sandbox speaks plain HTTP to the relay. For an `https://` proxy,
-the relay opens TLS to the proxy from the host and verifies it with system
-trust plus `--ca-cert` files. The host preflight still checks the real proxy
-before any image work; the in-sandbox check then verifies the relay path.
-
-`PORT` is derived from the proxy URL (range 40000–48999, distinct from the
-build forwarder's port for the same URL). Unlike the build forwarder it cannot
-fall back to another port: the sandbox firewall, which is baked into the image,
-admits only this address/port pair. The relay binds before any image work, so
-a busy port fails fast. Concurrent sessions that use the same remote proxy on
-Apple `container` therefore conflict; run them sequentially. The relay listens
-only on `127.0.0.1`, runs only while the session runs, and other local
-processes can use it meanwhile. Docker and Podman keep connecting to the
-remote proxy directly. The generated devcontainer configuration and its
-firewall also keep the direct endpoint, because devcontainer tooling runs
-outside project-sandbox without the relay.
+The relay binds before image work and listens only on loopback for the session.
+Its port is stable because the firewall admits that specific endpoint. Sequential
+sessions can reuse it immediately; concurrent sessions using the same proxy
+conflict and fail early. Other host processes can use the relay while it runs.
+Devcontainers connect directly because their tooling runs without this relay.
 
 For corporate access during image construction, use the separate
 [`--build-proxy URL` and `--build-ca-cert` options](build-network.md).
@@ -129,9 +103,8 @@ bundles, private keys, end-entity (non-CA) certificates, and unrelated trailing
 content are rejected.
 
 `--ca-cert` works with either proxy option, including agent-only private-CA
-HTTPS gateways. Remote HTTPS verifies the proxy's certificate and name on the
-host and in the sandbox. HTTP remains unencrypted to the proxy. TLS to a proxy
-and TLS to a destination are separate connections; see [TLS and trust](proxy-endpoints.md#tls-and-trust).
+HTTPS gateways. See [TLS and trust](proxy-endpoints.md#tls-and-trust) for verification and the
+Apple relay exception.
 
 Certificates are copied into the generated build context under content-based
 `.crt` names and baked into the image with `update-ca-certificates`, after all
@@ -140,11 +113,11 @@ are readable by the unprivileged agent regardless of the host's file creation
 permissions. This works with a base image,
 `--dockerfile`, and the generated `.devcontainer/`. It configures session trust;
 it does not make build-time downloads trust the proxy. For build-time trust, use
-the custom Dockerfile `prefix` stage described in [usage](usage.md).
+[`--build-ca-cert`](build-network.md#build-trust-and-runtime-trust).
 
 Node is configured with `NODE_USE_SYSTEM_CA=1` to include the OS trust store,
 using its [system CA support](https://nodejs.org/api/cli.html#node_use_system_ca1).
-No extra certificate bundle environment variables are set. Applications with
+`--ca-cert` alone sets no extra certificate bundle environment variables. Applications with
 private trust stores or explicit TLS configuration may need their own setup.
 
 Only inject CAs you trust: they can authenticate any TLS destination accepted by

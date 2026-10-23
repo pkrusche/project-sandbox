@@ -10,13 +10,14 @@ from pathlib import Path
 from unittest import TestCase
 from unittest.mock import patch
 
+from proxy_test_support import FakeProxy, exchange, mock_container_runtime
+
 from project_sandbox import (
     build_proxy_forwarder,
     cli,
     container_cli,
     internet_proxy,
 )
-from project_sandbox.git_identity import GitIdentity
 
 PROXY = "http://corp.proxy.example:3128"
 
@@ -57,6 +58,47 @@ class ForRuntimeTests(TestCase):
 
 
 class FixedPortForwarderTests(TestCase):
+    def test_fixed_port_can_be_reused_after_successful_traffic(self):
+        upstream = FakeProxy()
+        self.addCleanup(upstream.close)
+        endpoint = internet_proxy.parse(f"http://127.0.0.1:{upstream.port}").endpoint
+        port = 0
+        for _ in range(3):
+            with build_proxy_forwarder.BuildProxyForwarder(
+                endpoint, port=port, fallback=False
+            ) as relay:
+                if port:
+                    self.assertEqual(relay.port, port)
+                port = relay.port
+                request = b"GET / HTTP/1.0\r\n\r\n"
+                self.assertEqual(exchange(port, request), b"upstream:" + request)
+
+    def test_fixed_port_excludes_existing_and_later_listeners(self):
+        endpoint = internet_proxy.parse(PROXY).endpoint
+        for host in ("127.0.0.1", "0.0.0.0"):
+            with self.subTest(host=host):
+                with socket.create_server((host, 0)) as busy:
+                    with self.assertRaises(SystemExit):
+                        build_proxy_forwarder.BuildProxyForwarder(
+                            endpoint, port=busy.getsockname()[1], fallback=False
+                        )
+                with build_proxy_forwarder.BuildProxyForwarder(
+                    endpoint, port=0, fallback=False
+                ) as relay:
+                    with socket.socket() as contender:
+                        contender.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                        with self.assertRaises(OSError):
+                            contender.bind((host, relay.port))
+                            contender.listen()
+                    self.assertEqual(relay._listener.getsockname()[0], "127.0.0.1")
+                    assert relay._reservation is not None
+                    self.assertEqual(
+                        relay._reservation.getsockopt(
+                            socket.SOL_SOCKET, socket.SO_ACCEPTCONN
+                        ),
+                        0,
+                    )
+
     def test_busy_fixed_port_fails_instead_of_falling_back(self):
         # The firewall baked into the image admits only the derived port.
         with socket.create_server(("127.0.0.1", 0)) as busy:
@@ -92,8 +134,10 @@ class FixedPortForwarderTests(TestCase):
 
 
 class CliRelayTests(TestCase):
-    def run_session(self, runtime):
+    def run_session(self, runtime, *, failure=None):
         observed: dict[str, object] = {}
+        upstream = FakeProxy()
+        self.addCleanup(upstream.close)
 
         def run(cmd, env=None):
             observed["env"] = dict(env or {})
@@ -102,39 +146,46 @@ class CliRelayTests(TestCase):
             if "host.docker.internal" in url:
                 port = int(url.rsplit(":", 1)[1])
                 observed["port"] = port
-                # The relay must already be serving when the sandbox starts.
-                with socket.create_connection(("127.0.0.1", port), timeout=2):
-                    observed["listening"] = True
+                request = b"GET / HTTP/1.0\r\n\r\n"
+                self.assertEqual(exchange(port, request), b"upstream:" + request)
+                observed["listening"] = True
+            if failure is not None:
+                raise failure
             return 0
 
         with tempfile.TemporaryDirectory() as tmp:
             out = io.StringIO()
             with (
-                patch.object(cli.container_cli, "select_runtime", return_value=runtime),
-                patch.object(
-                    cli.container_cli, "ensure_system_started", return_value=0
-                ),
-                patch.object(cli.container_cli, "image_exists", return_value=True),
+                mock_container_runtime(runtime),
                 patch.object(cli.container_cli, "run", side_effect=run),
                 patch.object(cli.internet_proxy, "preflight"),
                 patch.object(
-                    cli, "read_identity", return_value=GitIdentity("Ada", "a@b.c")
+                    build_proxy_forwarder.BuildProxyForwarder,
+                    "_connect_upstream",
+                    side_effect=lambda: socket.create_connection(
+                        ("127.0.0.1", upstream.port), timeout=2
+                    ),
                 ),
                 contextlib.redirect_stdout(out),
             ):
-                rc = cli.main(
-                    [
-                        "--no-build",
-                        "--no-forward-credentials",
-                        "--no-verify-dockerfile",
-                        "--agent",
-                        "bash",
-                        "--internet-proxy",
-                        PROXY,
-                        tmp,
-                        "debian:bookworm",
-                    ]
-                )
+                with (
+                    self.assertRaises(type(failure))
+                    if failure
+                    else contextlib.nullcontext()
+                ):
+                    rc = cli.main(
+                        [
+                            "--no-build",
+                            "--no-forward-credentials",
+                            "--no-verify-dockerfile",
+                            "--agent",
+                            "bash",
+                            "--internet-proxy",
+                            PROXY,
+                            tmp,
+                            "debian:bookworm",
+                        ]
+                    )
             root = Path(tmp)
             observed["firewall"] = (
                 root / ".project-sandbox/init-firewall.sh"
@@ -145,9 +196,23 @@ class CliRelayTests(TestCase):
             observed["devcontainer"] = json.loads(
                 (root / ".devcontainer/devcontainer.json").read_text()
             )
-        self.assertEqual(rc, 0)
+        if failure is None:
+            self.assertEqual(rc, 0)
         observed["output"] = out.getvalue()
         return observed
+
+    def test_session_exception_and_interrupt_release_the_relay(self):
+        for failure in (RuntimeError("session failed"), KeyboardInterrupt()):
+            with self.subTest(failure=type(failure).__name__):
+                observed = self.run_session(
+                    container_cli.APPLE_CONTAINER, failure=failure
+                )
+                with build_proxy_forwarder.BuildProxyForwarder(
+                    internet_proxy.parse(PROXY).endpoint,
+                    port=observed["port"],
+                    fallback=False,
+                ):
+                    pass
 
     def test_apple_container_relays_remote_proxy_for_the_session(self):
         port = internet_proxy.relay_port(internet_proxy.parse(PROXY))
