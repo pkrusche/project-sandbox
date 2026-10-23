@@ -138,7 +138,6 @@ def render(
     warn: Callable[[str], None] | None = None,
     ca_certificates: tuple[bytes, ...] = (),
     build_ca_certificates: tuple[bytes, ...] = (),
-    build_proxy_environment: dict[str, str] | None = None,
 ) -> Path:
     if (base_image is None) == (base_dockerfile is None):
         raise ValueError("Provide exactly one of base_image or base_dockerfile")
@@ -193,7 +192,6 @@ def render(
         "sandbox_copy_prefix": copy_prefix,
         "ca_certificate_sources": certificate_sources,
         "build_ca_certificate_sources": build_certificate_sources,
-        "build_proxy_environment": build_proxy_environment or {},
         "install_claude": "claude" in install_agents,
         "install_codex": "codex" in install_agents,
         "install_opencode": "opencode" in install_agents,
@@ -211,7 +209,7 @@ def render(
         **shared,
         firewall_src_filename="init-firewall-devcontainer.sh",
     )
-    if build_proxy_environment or build_certificate_sources:
+    if build_certificate_sources:
         setup = templating.get_template("_build-network.Dockerfile.j2").render(**shared)
         for path in (container, context_dir / "Dockerfile.devcontainer"):
             blocks = _dockerfile_blocks(path.read_text(encoding="utf-8"))

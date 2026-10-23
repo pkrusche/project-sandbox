@@ -499,6 +499,39 @@ class ContainerCliTests(TestCase):
             "-f .project-sandbox/Dockerfile .",
         )
 
+    @patch("project_sandbox.container_cli.host_build_identity", return_value=None)
+    def test_build_image_appends_build_args_and_redacts_preview(
+        self, _identity
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            build_args = ["--build-arg", "http_proxy=http://proxy.example:3128"]
+            with patch(
+                "project_sandbox.container_cli._run_quietable", return_value=0
+            ) as run:
+                rc = build_image(
+                    runtime=DOCKER,
+                    context_dir=context,
+                    image_tag="project-sandbox:test",
+                    build_args=build_args,
+                )
+            self.assertEqual(rc, 0)
+            argv = run.call_args.args[0]
+            self.assertEqual(argv[-3:], [*build_args, "."])
+
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                build_image(
+                    runtime=DOCKER,
+                    context_dir=context,
+                    image_tag="project-sandbox:test",
+                    build_args=build_args,
+                    preview_build_args=["--build-arg", "http_proxy=<redacted>"],
+                    dry_run=True,
+                )
+        self.assertIn("--build-arg 'http_proxy=<redacted>' .", out.getvalue())
+        self.assertNotIn("proxy.example", out.getvalue())
+
     @patch("project_sandbox.container_cli.os.getgid", return_value=2345)
     @patch("project_sandbox.container_cli.os.getuid", return_value=1234)
     @patch("project_sandbox.container_cli.sys.platform", "linux")
