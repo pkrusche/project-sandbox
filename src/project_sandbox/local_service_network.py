@@ -15,8 +15,10 @@ from .container_cli import APPLE_CONTAINER, CHROOT, DOCKER, PODMAN, Runtime
 
 HOSTNAME = "host.docker.internal"
 PORT = 11434
+# Apple container redirects this TEST-NET-3 address to the host's loopback.
+APPLE_LOCALHOST_ADDRESS = "203.0.113.113"
 APPLE_SETUP_COMMAND = (
-    f"sudo container system dns create {HOSTNAME} --localhost 203.0.113.113"
+    f"sudo container system dns create {HOSTNAME} --localhost {APPLE_LOCALHOST_ADDRESS}"
 )
 APPLE_DELETE_COMMAND = f"sudo container system dns delete {HOSTNAME}"
 APPLE_RESTART_COMMAND = "container system stop && container system start"

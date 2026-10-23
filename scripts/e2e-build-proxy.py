@@ -275,13 +275,11 @@ def main(argv: list[str] | None = None) -> int:
                 "--force-build",
                 "--image-tag",
                 image,
-                "--build-proxy-from-env",
                 "--dockerfile",
                 str(project / "Dockerfile"),
             ]
             if scenario != "ca":
                 command += ["--build-ca-cert", str(certificate)]
-            command.append(str(project))
             # Reserve a closed port throughout the negative run to avoid collisions.
             with reserved_port(args.fixture_host) as closed:
                 url = (
@@ -289,18 +287,12 @@ def main(argv: list[str] | None = None) -> int:
                     if scenario == "proxy"
                     else proxy_url
                 )
-                build_env = {
-                    **env,
-                    "HTTP_PROXY": url,
-                    "HTTPS_PROXY": url,
-                    "NO_PROXY": "",
-                }
                 log = root / f"build-{scenario}.log"
                 result = run_logged(
-                    command,
+                    [*command, "--build-proxy", url, str(project)],
                     log,
                     cwd=Path(__file__).resolve().parents[1],
-                    env=build_env,
+                    env=env,
                     timeout=args.timeout,
                 )
             check_build(result.returncode, log.read_text(), scenario)

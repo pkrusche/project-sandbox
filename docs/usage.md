@@ -43,7 +43,7 @@ cacheable when project files change and preserves earlier build stages and
 `COPY --from` references.
 
 For corporate proxies and CAs needed during image construction, use
-[`--build-proxy-from-env` and `--build-ca-cert`](build-network.md). These configure
+[`--build-proxy URL` and `--build-ca-cert`](build-network.md). These configure
 access before build commands and leave runtime firewall permissions unchanged.
 For custom prerequisites such as package mirrors, put setup in a stage named
 `prefix` and make the final stage inherit from it (directly or through other
