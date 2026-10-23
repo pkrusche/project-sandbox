@@ -1,6 +1,7 @@
 """Apple container reaches a remote --internet-proxy through a host-loopback relay."""
 
 import contextlib
+import errno
 import io
 import json
 import socket
@@ -93,11 +94,15 @@ class FixedPortForwarderTests(TestCase):
                     self.assertEqual(relay._listener.getsockname()[0], "127.0.0.1")
                     assert relay._reservation is not None
                     self.assertEqual(
-                        relay._reservation.getsockopt(
-                            socket.SOL_SOCKET, socket.SO_ACCEPTCONN
-                        ),
-                        0,
+                        relay._reservation.getsockname(), ("0.0.0.0", relay.port)
                     )
+                    # SO_ACCEPTCONN is not queryable on every platform.
+                    # A bound, non-listening socket rejects accept with EINVAL;
+                    # non-blocking mode also prevents a regression from hanging.
+                    relay._reservation.setblocking(False)
+                    with self.assertRaises(OSError) as raised:
+                        relay._reservation.accept()
+                    self.assertEqual(raised.exception.errno, errno.EINVAL)
 
     def test_busy_fixed_port_fails_instead_of_falling_back(self):
         # The firewall baked into the image admits only the derived port.
