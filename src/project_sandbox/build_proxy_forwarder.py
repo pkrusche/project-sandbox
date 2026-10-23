@@ -1,10 +1,10 @@
-"""Host-loopback forwarder that lets Apple container builds reach a VPN-only proxy.
+"""Host-loopback forwarder that lets Apple container reach a VPN-only proxy.
 
 Apple container's bridge network cannot route to a proxy that is only reachable
 through the host's VPN. The configured localhost alias does reach the host's
-loopback, so a short-lived standard-library forwarder relays builder
-connections from ``127.0.0.1`` to the real proxy, resolved and connected from
-the host. HTTPS proxies are re-originated with verified TLS from the host, so
+loopback, so a standard-library forwarder relays builder (``--build-proxy``)
+or sandbox (``--internet-proxy``) connections from ``127.0.0.1`` to the real
+proxy, resolved and connected from the host. HTTPS proxies are re-originated with verified TLS from the host, so
 the builder speaks plain HTTP to the forwarder.
 """
 
@@ -33,8 +33,9 @@ BUFFER_SIZE = 65536
 BUFFER_LIMIT = 4 * BUFFER_SIZE
 
 
-def preferred_port(endpoint: proxy_endpoint.ProxyEndpoint) -> int:
-    key = f"{endpoint.scheme}://{endpoint.host}:{endpoint.port}".encode()
+def preferred_port(endpoint: proxy_endpoint.ProxyEndpoint, *, purpose: str = "") -> int:
+    """Derive a stable port; ``purpose`` separates concurrently used relays."""
+    key = f"{purpose}{endpoint.scheme}://{endpoint.host}:{endpoint.port}".encode()
     return PORT_BASE + zlib.crc32(key) % PORT_SPAN
 
 
@@ -44,7 +45,11 @@ def sandbox_url(port: int) -> str:
 
 
 class BuildProxyForwarder:
-    """Bind on construction; relay only between ``start()`` and ``close()``."""
+    """Bind on construction; relay only between ``start()`` and ``close()``.
+
+    ``port`` without ``fallback`` makes the listening port part of the
+    contract: the runtime firewall bakes it in, so a busy port is an error.
+    """
 
     def __init__(
         self,
@@ -52,6 +57,10 @@ class BuildProxyForwarder:
         *,
         ca_certificates: tuple[bytes, ...] = (),
         warn=print,
+        port: int | None = None,
+        fallback: bool = True,
+        label: str = "Build proxy",
+        ca_option: str = "--build-ca-cert",
     ) -> None:
         self._upstream = endpoint
         self._tls = (
@@ -61,11 +70,16 @@ class BuildProxyForwarder:
         )
         self._warn = warn
         self._warned = False
+        self._label = label
+        self._ca_option = ca_option
+        self._fallback = fallback
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self._connections: set[socket.socket] = set()
         self._thread: threading.Thread | None = None
-        self._listener = self._bind(preferred_port(endpoint))
+        self._listener = self._bind(
+            port if port is not None else preferred_port(endpoint)
+        )
         self.port: int = self._listener.getsockname()[1]
 
     @property
@@ -73,7 +87,7 @@ class BuildProxyForwarder:
         return sandbox_url(self.port)
 
     def _bind(self, port: int) -> socket.socket:
-        for candidate in (port, 0):
+        for candidate in (port, 0) if self._fallback else (port,):
             # No SO_REUSEADDR: on BSD/macOS it would allow binding 127.0.0.1:P
             # while another process listens on *:P. Without it the kernel
             # atomically refuses any port another socket owns; a port held only
@@ -84,14 +98,15 @@ class BuildProxyForwarder:
                 listener.listen(socket.SOMAXCONN)
             except OSError as exc:
                 listener.close()
-                if candidate == 0:
+                if candidate == 0 or not self._fallback:
                     raise SystemExit(
-                        f"Could not start the build proxy forwarder: {exc}"
+                        f"Could not start the {self._label.lower()} forwarder on "
+                        f"{LISTEN_HOST}:{candidate}: {exc}"
                     ) from exc
                 continue
-            if candidate == 0:
+            if candidate != port:
                 self._warn(
-                    f"Build proxy forwarder port {port} is in use; using a random port."
+                    f"{self._label} forwarder port {port} is in use; using a random port."
                 )
             return listener
         raise AssertionError("unreachable")
@@ -100,7 +115,9 @@ class BuildProxyForwarder:
         if self._thread is not None:
             return
         self._thread = threading.Thread(
-            target=self._serve, name="build-proxy-forwarder", daemon=True
+            target=self._serve,
+            name=f"{self._label.lower().replace(' ', '-')}-forwarder",
+            daemon=True,
         )
         self._thread.start()
 
@@ -170,7 +187,7 @@ class BuildProxyForwarder:
             upstream.close()
             self._warn_once(
                 f"TLS certificate verification failed for {host}:{port}; "
-                "supply the proxy's CA with --build-ca-cert"
+                f"supply the proxy's CA with {self._ca_option}"
             )
             return None
         except OSError as exc:
@@ -183,7 +200,7 @@ class BuildProxyForwarder:
     def _warn_once(self, detail: str) -> None:
         if not self._warned:
             self._warned = True
-            self._warn(f"[W] Build proxy forwarder {detail}")
+            self._warn(f"[W] {self._label} forwarder {detail}")
 
     def _handle(self, client: socket.socket) -> None:
         upstream = self._connect_upstream()

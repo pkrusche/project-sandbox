@@ -23,6 +23,36 @@ the sandbox, but it never invokes `sudo` or changes this host-wide configuration
 alias has gone stale; delete and re-create it as described in
 [Apple container host alias](apple-container-dns.md).
 
+### Remote proxies with Apple container
+
+Apple `container`'s bridge network cannot route to a proxy that is only
+reachable through the host's VPN. For a remote `--internet-proxy` on Apple
+`container`, project-sandbox therefore relays the session through the host,
+using the same localhost alias and standard-library forwarder as the
+[build proxy](build-network.md#apple-container-host-loopback-forwarder):
+
+```text
+sandbox -> http://host.docker.internal:PORT -> host 127.0.0.1:PORT (relay) -> proxy
+```
+
+The relay resolves and connects to the proxy from the host, so VPN routes and
+DNS apply. The sandbox speaks plain HTTP to the relay. For an `https://` proxy,
+the relay opens TLS to the proxy from the host and verifies it with system
+trust plus `--ca-cert` files. The host preflight still checks the real proxy
+before any image work; the in-sandbox check then verifies the relay path.
+
+`PORT` is derived from the proxy URL (range 40000–48999, distinct from the
+build forwarder's port for the same URL). Unlike the build forwarder it cannot
+fall back to another port: the sandbox firewall, which is baked into the image,
+admits only this address/port pair. The relay binds before any image work, so
+a busy port fails fast. Concurrent sessions that use the same remote proxy on
+Apple `container` therefore conflict; run them sequentially. The relay listens
+only on `127.0.0.1`, runs only while the session runs, and other local
+processes can use it meanwhile. Docker and Podman keep connecting to the
+remote proxy directly. The generated devcontainer configuration and its
+firewall also keep the direct endpoint, because devcontainer tooling runs
+outside project-sandbox without the relay.
+
 For corporate access during image construction, use the separate
 [`--build-proxy URL` and `--build-ca-cert` options](build-network.md).
 They do not grant runtime firewall access.
@@ -160,8 +190,9 @@ DNS/TLS checks without secrets, network requests, or generated files. Supply a
 model actually exposed by your gateway for a real run. Local Ollama can also
 coexist with a remote Internet proxy using `--agent pi --pi-ollama`.
 
-Endpoints are resolved and pinned **inside the sandbox** for the session;
-restart after DNS changes. Reachability from the host alone is insufficient.
+Endpoints are resolved and pinned **inside the sandbox** for the session
+(on Apple `container`, a remote Internet proxy is resolved on the host by
+[its relay](#remote-proxies-with-apple-container)); restart after DNS changes. Reachability from the host alone is insufficient.
 Permissions cover IP/port pairs, including other virtual hosts sharing that pair.
 No provider, GitHub, broad gateway, or general DNS exceptions are added. See the
 [accepted URL matrix, TLS scope, and client limitations](proxy-endpoints.md).

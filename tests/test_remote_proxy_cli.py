@@ -86,11 +86,24 @@ class RemoteProxyCliTests(unittest.TestCase):
                     tempfile.TemporaryDirectory() as tmp,
                 ):
                     text = self.preview(Path(tmp), options, runtime)
-                    self.assertNotIn("sudo container", text)
+                    relayed = proxy[0] in options and runtime == "apple-container"
+                    self.assertEqual("sudo container" in text, relayed)
                     self.assertNotIn("--add-host", text)
                     if gateway[0] in options:
                         self.assertIn("https://models.example:443/v1 (direct)", text)
-                    if proxy[0] in options:
+                    if relayed:
+                        # Apple container cannot route to VPN-only proxies, so
+                        # a host-loopback relay carries the traffic instead.
+                        port = internet_proxy.relay_port(internet_proxy.parse(proxy[1]))
+                        self.assertIn(
+                            f"http://host.docker.internal:{port} (forwarded)", text
+                        )
+                        self.assertIn(
+                            f"Would relay the Internet proxy from 127.0.0.1:{port} "
+                            "to https://proxy.example",
+                            text,
+                        )
+                    elif proxy[0] in options:
                         self.assertIn("https://proxy.example:443 (direct)", text)
                         self.assertNotIn("host.docker.internal", text)
 
