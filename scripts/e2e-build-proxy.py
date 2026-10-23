@@ -3,6 +3,8 @@
 
 Requires internet-proxy-locally sources, uv, Docker or Apple container, and a
 local non-loopback IP reachable from both the image builder and the sandbox.
+On Apple container the Squid fixture is reached through its container address
+instead, because published ports there forward loopback traffic only.
 Never controls the caller's existing proxy, configuration, or signing CA.
 """
 
@@ -30,6 +32,8 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from project_sandbox import container_cli, fixture_network, internet_proxy
 
 FIXTURES = Path(__file__).parent / "fixtures"
+# Squid's listening port inside the IPL fixture container.
+SQUID_PORT = 3128
 PROXY_NAMES = ("http_proxy", "https_proxy", "all_proxy", "no_proxy")
 BUILD_HOSTS = (
     "deb.debian.org",
@@ -157,6 +161,51 @@ def check_build(returncode: int, output: str, expected: str) -> None:
         )
 
 
+SQUID_ADDRESS = """
+import sys
+from internet_proxy_locally.backend import Backend
+from internet_proxy_locally.instances import instance_spec
+
+spec = instance_spec("squid", (sys.argv[1], int(sys.argv[2])))
+print(Backend("container").container_ip(spec.container_name))
+"""
+
+
+def squid_address(
+    publish: tuple[str, int], log: Path, *, cwd: Path, env: dict[str, str]
+) -> str:
+    """The Squid fixture's own address on Apple container's network.
+
+    Apple container accepts connections to a port published on a LAN address
+    but forwards only loopback traffic, so the fixture is published on
+    127.0.0.1 for IPL's health check and reached through its container IP.
+    """
+    command = ["uv", "run", "python", "-c", SQUID_ADDRESS, publish[0], str(publish[1])]
+    with log.open("a") as output:
+        output.write("COMMAND: " + shlex.join(command) + "\n")
+        result = subprocess.run(
+            command,
+            cwd=cwd,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=120,
+        )
+        output.write(result.stdout + result.stderr)
+    address = result.stdout.strip()
+    if result.returncode or not address:
+        raise RuntimeError("could not determine the Squid fixture container address")
+    return str(ipaddress.ip_address(address))
+
+
+def direct_address(host: str) -> str:
+    """A host-resolved IPv4 address for the sandbox's direct-bypass probe."""
+    return str(
+        socket.getaddrinfo(host, 443, socket.AF_INET, socket.SOCK_STREAM)[0][4][0]
+    )
+
+
 def reserved_port(host: str) -> socket.socket:
     sock = socket.socket(
         socket.AF_INET6 if ":" in host else socket.AF_INET, socket.SOCK_STREAM
@@ -207,7 +256,9 @@ def main(argv: list[str] | None = None) -> int:
     ipl = []
     try:
         prepare_fixture(source, fixture)
-        with reserved_port(args.fixture_host) as reservation:
+        apple = runtime == container_cli.APPLE_CONTAINER
+        publish_host = "127.0.0.1" if apple else args.fixture_host
+        with reserved_port(publish_host) as reservation:
             port = reservation.getsockname()[1]
         authority = (
             f"[{args.fixture_host}]" if ":" in args.fixture_host else args.fixture_host
@@ -222,7 +273,7 @@ def main(argv: list[str] | None = None) -> int:
             "--backend",
             "docker" if args.runtime == "docker" else "container",
             "--ip",
-            args.fixture_host,
+            publish_host,
             "--port",
             str(port),
         ]
@@ -243,6 +294,11 @@ def main(argv: list[str] | None = None) -> int:
         control("setup", "--tls-interception")
         started = True  # up can leave a container behind even if health checking fails.
         control("up", "--tls-interception")
+        if apple:
+            address = squid_address(
+                (publish_host, port), root / "squid.log", cwd=fixture, env=fixture_env
+            )
+            proxy_url = f"http://{address}:{SQUID_PORT}"
         certificate = root / "squid-public-ca.pem"
         control("ca", "export", "--out", str(certificate))
         fingerprint = hashlib.sha256(
@@ -305,6 +361,7 @@ def main(argv: list[str] | None = None) -> int:
         # Audit the successful image, independently of the negative build inputs.
         (project / "Dockerfile").write_text(successful_source)
         shutil.copy2(FIXTURES / "build-proxy-audit.py", project / "audit.py")
+        bypass_address = direct_address("pypi.org")
         for phase in ("blocked", "allowed"):
             image = good_image
             if phase == "allowed":
@@ -356,6 +413,7 @@ def main(argv: list[str] | None = None) -> int:
                         proxy_url,
                         runtime_proxy.forwarded_url,
                         fingerprint,
+                        bypass_address,
                     ]
                 ),
             ]
