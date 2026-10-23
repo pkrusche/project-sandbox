@@ -7,7 +7,8 @@ import socket
 import ssl
 from dataclasses import dataclass
 
-from . import proxy_endpoint
+from . import build_proxy_forwarder, proxy_endpoint
+from .container_cli import APPLE_CONTAINER, Runtime
 from .local_service_network import HOSTNAME, LocalService
 
 NO_PROXY_BASE = ("localhost", "127.0.0.1", "::1")
@@ -39,6 +40,33 @@ class InternetProxy:
 
 def parse(value: str) -> InternetProxy:
     return InternetProxy(value, proxy_endpoint.parse(value, option="--internet-proxy"))
+
+
+# Separates the runtime relay's port from the build forwarder for the same URL.
+RELAY_PURPOSE = "internet-proxy:"
+
+
+def relay_port(config: InternetProxy) -> int:
+    return build_proxy_forwarder.preferred_port(config.endpoint, purpose=RELAY_PURPOSE)
+
+
+def for_runtime(
+    config: InternetProxy | None, runtime: Runtime | None
+) -> InternetProxy | None:
+    """Return the endpoint the sandbox connects to on ``runtime``.
+
+    Apple container cannot route to VPN-only hosts, only to the host's loopback,
+    so a remote proxy is reached through a host-loopback relay there. The relay
+    speaks plain HTTP to the sandbox and re-originates TLS for an ``https://``
+    proxy on the host. Its port is derived from the proxy URL because the
+    firewall, which is baked into the image, admits only that port.
+    """
+    if config is None or runtime != APPLE_CONTAINER or config.endpoint.local:
+        return config
+    endpoint = proxy_endpoint.ProxyEndpoint(
+        "http", "127.0.0.1", relay_port(config), "", True
+    )
+    return InternetProxy(config.original_url, endpoint)
 
 
 def environment(

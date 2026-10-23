@@ -72,15 +72,28 @@ def render(
     agent_proxy_url: str | None = None,
     policy: str = NORMAL,
     local_destinations: list[LocalTcpDestination] | None = None,
+    devcontainer_destinations: list[LocalTcpDestination] | None = None,
 ) -> Path:
+    """Render the sandbox and devcontainer firewall scripts.
+
+    ``devcontainer_destinations`` defaults to ``local_destinations``; it differs
+    when the sandbox reaches an endpoint through a host relay that devcontainer
+    tooling, which builds and runs outside project-sandbox, does not have.
+    """
     _validate_domains(extra_domains)
     if policy not in (NORMAL, INTERNET_PROXY):
         raise ValueError(f"Unknown firewall policy: {policy}")
     destinations = list(local_destinations or [])
-    if not destinations and agent_proxy_port is not None:
-        destinations.append(
-            LocalTcpDestination("Agent proxy", agent_proxy_hostname, agent_proxy_port)
-        )
+    devcontainer = list(
+        destinations if devcontainer_destinations is None else devcontainer_destinations
+    )
+    for targets in (destinations, devcontainer):
+        if not targets and agent_proxy_port is not None:
+            targets.append(
+                LocalTcpDestination(
+                    "Agent proxy", agent_proxy_hostname, agent_proxy_port
+                )
+            )
     agent_proxy_url = (
         agent_proxy_url or f"http://{agent_proxy_hostname}:{agent_proxy_port}/"
     )
@@ -113,7 +126,7 @@ def render(
         agent_proxy_hostname=agent_proxy_hostname,
         agent_proxy_url=agent_proxy_url,
         policy=policy,
-        local_destinations=destinations,
+        local_destinations=devcontainer,
     )
     return container
 

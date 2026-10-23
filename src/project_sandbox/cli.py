@@ -473,6 +473,10 @@ def main(argv: list[str] | None = None) -> int:
         if (run_agent is not None or args.build_only) and not args.dry_run
         else None
     )
+    # What the sandbox connects to: the external proxy, or on Apple container
+    # a host-loopback relay to it. The original stays authoritative for host
+    # preflight and devcontainer configuration.
+    sandbox_proxy_config = internet_proxy.for_runtime(internet_proxy_config, runtime)
 
     if args.dry_run:
         wt, workspace = _plan_worktree(args, project) if run_agent else (None, project)
@@ -560,6 +564,7 @@ def main(argv: list[str] | None = None) -> int:
     # empty jj workspace).
     agent_ran = False
     forwarding_plans: list[local_service_network.ForwardingPlan] = []
+    internet_proxy_relay: build_proxy_forwarder.BuildProxyForwarder | None = None
     exit_code = 1
     session_id = ""
     container_name: str | None = None
@@ -570,6 +575,21 @@ def main(argv: list[str] | None = None) -> int:
     # not be recorded at all, which never blocks the run.
     record_path: Path | None = None
     try:
+        if (
+            run_agent is not None
+            and internet_proxy_config is not None
+            and sandbox_proxy_config is not internet_proxy_config
+        ):
+            # Bind before any image work: the firewall admits only this port,
+            # so a busy port must fail now rather than after a long build.
+            internet_proxy_relay = build_proxy_forwarder.BuildProxyForwarder(
+                internet_proxy_config.endpoint,
+                ca_certificates=ca_certificates,
+                port=internet_proxy.relay_port(internet_proxy_config),
+                fallback=False,
+                label="Internet proxy",
+                ca_option="--ca-cert",
+            )
         if not is_chroot and (args.python_uv or args.node_npm) and args.branch:
             # The venv / npm workspace manifests must match the tree mounted at
             # /workspace. Keep generated
@@ -613,6 +633,12 @@ def main(argv: list[str] | None = None) -> int:
                     else firewall.NORMAL
                 ),
                 local_destinations=_local_firewall_destinations(
+                    sandbox_proxy_config,
+                    proxy_port=proxy_port,
+                    proxy_url=args.agent_proxy,
+                    pi_ollama_enabled=pi_ollama_enabled,
+                ),
+                devcontainer_destinations=_local_firewall_destinations(
                     internet_proxy_config,
                     proxy_port=proxy_port,
                     proxy_url=args.agent_proxy,
@@ -826,7 +852,7 @@ def main(argv: list[str] | None = None) -> int:
             )
 
         services = _local_services(
-            internet_proxy_config,
+            sandbox_proxy_config,
             proxy_port=(
                 proxy_port
                 if not args.agent_proxy or agent_proxy.parse(args.agent_proxy).local
@@ -847,12 +873,12 @@ def main(argv: list[str] | None = None) -> int:
                 for plan in forwarding_plans:
                     print(local_service_network.describe(plan))
 
-        if internet_proxy_config is not None:
+        if sandbox_proxy_config is not None:
             # Internet-proxy routing is part of the enforced sandbox policy,
             # not a user-overridable credential value.
             api_key_values = internet_proxy.merge_environment(
                 api_key_values,
-                internet_proxy_config,
+                sandbox_proxy_config,
                 bypass_local_services=pi_ollama_enabled,
                 bypass_hosts=(proxy_endpoint.sandbox_host,) if proxy_endpoint else (),
             )
@@ -911,6 +937,15 @@ def main(argv: list[str] | None = None) -> int:
                 f"visible to {runtime.name}"
             )
 
+        if internet_proxy_relay is not None:
+            internet_proxy_relay.start()
+            if args.verbose:
+                print(
+                    "Internet proxy forwarding: "
+                    f"{build_proxy_forwarder.LISTEN_HOST}:{internet_proxy_relay.port} "
+                    f"(sandbox URL http://{local_service_network.HOSTNAME}:"
+                    f"{internet_proxy_relay.port})"
+                )
         for plan in forwarding_plans:
             plan.start()
         agent_ran = True
@@ -967,6 +1002,8 @@ def main(argv: list[str] | None = None) -> int:
             )
         for plan in reversed(forwarding_plans):
             plan.close()
+        if internet_proxy_relay is not None:
+            internet_proxy_relay.close()
         if args.agent_proxy:
             for secret_file in (
                 context_dir / "pi" / "models.json",
@@ -1428,7 +1465,8 @@ def _dry_run(
     proxy_port = (
         agent_proxy.validate_url(args.agent_proxy)[1] if args.agent_proxy else None
     )
-    proxy_config = _validate_internet_proxy_args(args)
+    external_proxy_config = _validate_internet_proxy_args(args)
+    proxy_config = internet_proxy.for_runtime(external_proxy_config, runtime)
     forwarding_plans = local_service_network.prepare_services(
         runtime,
         _local_services(
@@ -1471,6 +1509,12 @@ def _dry_run(
         print(
             f"Would use Internet proxy: {endpoint.sandbox_url} ({'forwarded' if endpoint.local else 'direct'})"
         )
+        if proxy_config is not external_proxy_config:
+            print(
+                "Would relay the Internet proxy from "
+                f"{build_proxy_forwarder.LISTEN_HOST}:{endpoint.port} to "
+                f"{proxy_config.original_url} for the session."
+            )
         print(
             "Would defer DNS, TCP/TLS preflight; firewall admits only each endpoint address/port."
         )
