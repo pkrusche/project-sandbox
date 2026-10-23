@@ -150,6 +150,12 @@ class BuildProxyHarnessTests(TestCase):
                             command[command.index("--engine") + 1], "squid"
                         )
                         self.assertEqual(
+                            command[command.index("--ip") + 1],
+                            "127.0.0.1"
+                            if runtime == container_cli.APPLE_CONTAINER
+                            else "192.0.2.1",
+                        )
+                        self.assertEqual(
                             kwargs["env"]["IPL_ROOT"], str(artifacts / "squid")
                         )
                         self.assertNotIn("HTTP_PROXY", kwargs["env"])
@@ -184,10 +190,13 @@ class BuildProxyHarnessTests(TestCase):
                         )
                         self.assertNotIn("HTTP_PROXY", kwargs["env"])
                         self.assertNotIn("HTTPS_PROXY", kwargs["env"])
-                        self.assertEqual(
-                            command[command.index("--build-proxy") + 1],
-                            "http://192.0.2.1:3128",
-                        )
+                        if len(scenarios) != 3 or allowed:
+                            self.assertEqual(
+                                command[command.index("--build-proxy") + 1],
+                                "http://192.168.64.9:3128"
+                                if runtime == container_cli.APPLE_CONTAINER
+                                else "http://192.0.2.1:3128",
+                            )
                         if allowed:
                             if failure == "allowed-build":
                                 code, output = 1, "allowed-policy build failed"
@@ -212,6 +221,7 @@ class BuildProxyHarnessTests(TestCase):
                         )
                         assert expected is not None
                         self.assertEqual(audit_args[4], expected.forwarded_url)
+                        self.assertEqual(audit_args[6], "198.51.100.7")
                         self.assertIn("--no-build", command)
                         self.assertEqual(
                             "--internet-proxy" in command, phase == "allowed"
@@ -241,6 +251,10 @@ class BuildProxyHarnessTests(TestCase):
                     ),
                     patch.object(module, "reserved_port", return_value=reservation),
                     patch.object(module, "run_logged", side_effect=run),
+                    patch.object(
+                        module, "squid_address", return_value="192.168.64.9"
+                    ) as address,
+                    patch.object(module, "direct_address", return_value="198.51.100.7"),
                     contextlib.redirect_stdout(io.StringIO()),
                     contextlib.redirect_stderr(io.StringIO()),
                 ):
@@ -256,6 +270,11 @@ class BuildProxyHarnessTests(TestCase):
                         ]
                     )
                 self.assertEqual(result, 0 if failure is None else 1)
+                if runtime == container_cli.APPLE_CONTAINER and failure != "up":
+                    address.assert_called_once()
+                    self.assertEqual(address.call_args.args[0], ("127.0.0.1", 3128))
+                else:
+                    address.assert_not_called()
                 self.assertTrue(
                     any(
                         command[-2:] == ["setup", "--tls-interception"]
@@ -277,6 +296,34 @@ class BuildProxyHarnessTests(TestCase):
                     (source / "state/ca/ca-key.pem").read_text(), "original private key"
                 )
 
+    def test_squid_address_asks_ipl_for_the_published_instance(self):
+        module = checker()
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "squid.log"
+            for stdout, code in (("192.168.64.9\n", 0), ("", 0), ("x\n", 1)):
+                with (
+                    self.subTest(stdout=stdout, code=code),
+                    patch.object(
+                        module.subprocess,
+                        "run",
+                        return_value=subprocess.CompletedProcess([], code, stdout, ""),
+                    ) as run,
+                ):
+                    if code or not stdout:
+                        with self.assertRaises(RuntimeError):
+                            module.squid_address(
+                                ("127.0.0.1", 41000), log, cwd=Path(tmp), env={}
+                            )
+                        continue
+                    self.assertEqual(
+                        module.squid_address(
+                            ("127.0.0.1", 41000), log, cwd=Path(tmp), env={}
+                        ),
+                        "192.168.64.9",
+                    )
+                    self.assertEqual(run.call_args.args[0][-2:], ["127.0.0.1", "41000"])
+                    self.assertEqual(run.call_args.kwargs["cwd"], Path(tmp))
+
     def test_runtime_audit_rejects_proxy_access_and_direct_bypass(self):
         certificate = ssl.PEM_cert_to_DER_cert(CERTIFICATE.read_text())
         fingerprint = hashlib.sha256(certificate).hexdigest()
@@ -286,9 +333,12 @@ class BuildProxyHarnessTests(TestCase):
                 ("blocked", [7], True),
                 ("blocked", [0], False),
                 ("blocked", [60], False),
-                ("allowed", [0, 7], True),
-                ("allowed", [0, 0], False),
-                ("allowed", [60, 7], False),
+                ("allowed", [0, 7, 7], True),
+                ("allowed", [0, 6, 28], True),
+                ("allowed", [0, 6, 0], False),
+                ("allowed", [0, 6, 6], False),
+                ("allowed", [0, 0, 7], False),
+                ("allowed", [60, 7, 7], False),
             ),
         ):
             with (
@@ -312,7 +362,14 @@ class BuildProxyHarnessTests(TestCase):
                     ),
                     patch(
                         "sys.argv",
-                        ["audit.py", phase, proxy, runtime_proxy, fingerprint],
+                        [
+                            "audit.py",
+                            phase,
+                            proxy,
+                            runtime_proxy,
+                            fingerprint,
+                            "198.51.100.7",
+                        ],
                     ),
                     patch("ssl.create_default_context", return_value=context),
                     patch(

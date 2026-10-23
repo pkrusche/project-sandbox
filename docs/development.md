@@ -365,7 +365,10 @@ and Linux. Detection sends no packets. The selected address is printed; it must
 be reachable from both the builder and runtime. On VPN or multi-interface hosts,
 override it with `--proxy-fixture-host IP` (`--fixture-host IP` for the standalone
 harness). Detection failures require an explicit override. Docker and Apple `container`
-are supported; with Apple `container`, the builds exercise the host-loopback forwarder. Use `--with-build-proxy` instead of `--only build-proxy` to include
+are supported; with Apple `container`, the builds exercise the host-loopback forwarder.
+Apple `container` forwards published ports for loopback traffic only, so there the
+Squid fixture is published on `127.0.0.1` for its health check and the builds and
+sandbox reach it at its container address. Use `--with-build-proxy` instead of `--only build-proxy` to include
 it in the full suite. Builds must be enabled. Run the standalone harness with:
 
 ```bash

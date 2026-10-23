@@ -8,7 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-phase, proxy_url, runtime_proxy_url, fingerprint = sys.argv[1:]
+phase, proxy_url, runtime_proxy_url, fingerprint, direct_address = sys.argv[1:]
 failures = []
 
 
@@ -58,10 +58,24 @@ else:
     )
     result = curl("https://pypi.org/simple/idna/")
     check(result.returncode == 0, "runtime proxy request failed: " + result.stderr)
+    # The firewall drops outbound DNS, so where the runtime resolver is not
+    # redirected locally (Apple container) the name fails to resolve first.
     result = curl("--noproxy", "*", "https://pypi.org/simple/idna/")
     check(
-        result.returncode in (7, 28),
+        result.returncode in (6, 7, 28),
         "direct runtime bypass was not blocked: " + result.stderr,
+    )
+    # A host-resolved address proves direct TCP egress is blocked regardless.
+    result = curl(
+        "--noproxy",
+        "*",
+        "--resolve",
+        "pypi.org:443:" + direct_address,
+        "https://pypi.org/simple/idna/",
+    )
+    check(
+        result.returncode in (7, 28),
+        "direct runtime bypass by address was not blocked: " + result.stderr,
     )
 
 Path(f"build-proxy-runtime-{phase}.json").write_text(
