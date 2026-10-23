@@ -182,22 +182,26 @@ class UvImagePinTests(TestCase):
         # Regression: the uv pin lives in both the committed Dockerfile and the
         # dockerfile.py helper that generates it. Both must be matched so they
         # stay in sync; previously the helper's split form was silently skipped.
-        for path in (update_pins.DOCKERFILE, update_pins.DOCKERFILE_HELPER):
+        # The build-proxy e2e fixture must track the same pin.
+        for path in (
+            update_pins.DOCKERFILE,
+            update_pins.DOCKERFILE_HELPER,
+            update_pins.BUILD_PROXY_FIXTURE,
+        ):
             with self.subTest(path=path.name):
                 matches = list(update_pins.UV_IMAGE_RE.finditer(path.read_text()))
                 self.assertEqual(len(matches), 1, f"no uv pin matched in {path}")
 
-    def test_dockerfile_and_helper_pins_agree(self) -> None:
-        dockerfile_match = update_pins.UV_IMAGE_RE.search(
-            update_pins.DOCKERFILE.read_text()
-        )
-        helper_match = update_pins.UV_IMAGE_RE.search(
-            update_pins.DOCKERFILE_HELPER.read_text()
-        )
-        self.assertEqual(
-            (dockerfile_match.group("version"), dockerfile_match.group("digest")),
-            (helper_match.group("version"), helper_match.group("digest")),
-        )
+    def test_dockerfile_helper_and_fixture_pins_agree(self) -> None:
+        pins = set()
+        for path in (
+            update_pins.DOCKERFILE,
+            update_pins.DOCKERFILE_HELPER,
+            update_pins.BUILD_PROXY_FIXTURE,
+        ):
+            match = update_pins.UV_IMAGE_RE.search(path.read_text())
+            pins.add((match.group("version"), match.group("digest")))
+        self.assertEqual(len(pins), 1, pins)
 
 
 class NpmPinUpdateTests(TestCase):

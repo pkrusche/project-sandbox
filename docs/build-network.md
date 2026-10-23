@@ -14,8 +14,10 @@ and `--node-npm`, and are included in both generated sandbox and devcontainer
 Dockerfiles. They require an image-based runtime; chroot is unsupported.
 `--build-ca-cert` also works independently, for example with an internal HTTPS
 package mirror. Each public PEM file may contain one CA or a bundle of CAs. Repeat the option
-for multiple files. Each certificate is validated and installed separately.
-Private keys, leaf certificates, and malformed certificate files are rejected.
+for multiple files. Each certificate is validated and installed separately,
+but all of them are copied into a stage with a single `COPY`, so large bundles
+do not add image layers. Private keys, leaf certificates, and malformed
+certificate files are rejected.
 
 ## Build settings and runtime permissions
 
@@ -42,10 +44,20 @@ root, or pass the variables explicitly (`sudo -E`).
 Because nothing is persisted, there is no proxy cleanup step: the agent starts
 without proxy settings. The values can still appear in build logs and in the
 builder's process arguments. Build CA setup runs early in executable
-Debian/Ubuntu stages, including a stage named `prefix`. Scratch stages,
-recognized non-Debian images, and stages only used as copy sources are left
-alone. The bootstrap explicitly uses `/bin/sh`, so an inherited custom `SHELL`
-does not change how certificate setup runs. Corporate CA trust persists in the
+Debian/Ubuntu stages, including a stage named `prefix`. A stage qualifies when
+its base image is a known Debian/Ubuntu image (`debian`, `ubuntu`, `python`,
+`node`, `golang`, `rust`, and similar official images, or a Debian/Ubuntu
+release name in the reference) or when the stage or its parent stages run
+`apt-get`, `apt`, or `dpkg`. Non-Debian images, unresolvable `FROM ${ARG}`
+bases, and unrecognized images are left alone with a warning, because the
+configured bundle path exists only on Debian/Ubuntu. Scratch stages and stages
+only used as copy sources are skipped silently.
+
+The setup never changes a stage's user. It is placed after a `USER root` that
+precedes the stage's first `RUN`, otherwise directly after `FROM`. A stage
+whose inherited user is not root prints a notice and keeps that user; the CA
+is then not installed there. The bootstrap explicitly uses `/bin/sh`, so an
+inherited custom `SHELL` does not change how certificate setup runs. Corporate CA trust persists in the
 image. System roots are retained; Node, Python requests, and uv
 are configured to use the extended system bundle. Applications with their own
 trust stores may need additional configuration. Certificate verification stays
@@ -112,10 +124,12 @@ the builder's connection. Hosts listed with `--build-no-proxy` are contacted
 directly by the builder, not through the host, so VPN-only hosts must stay
 proxied.
 
-The generated `devcontainer.json` carries the proxy URL verbatim as
-`build.args`, for devcontainer tooling that builds outside project-sandbox.
-With Docker or Podman this works as is. The builder of that tooling must be
-able to reach the proxy; no forwarder runs for it.
+The generated `devcontainer.json` does not contain the proxy. It lies inside
+whole-project build contexts, so values written to it would be copied into
+image layers by `COPY . .` and would change their cache key. Devcontainer
+tooling that builds outside project-sandbox needs its own builder proxy
+configuration, for example the `proxies` section of `~/.docker/config.json`,
+which Docker passes to builds as the same predefined build-args.
 
 These flags configure commands inside image stages. Registry pulls and remote
 `ADD` downloads are performed by the builder and need separate daemon/builder

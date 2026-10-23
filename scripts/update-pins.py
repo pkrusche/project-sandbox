@@ -30,6 +30,7 @@ UV_LOCK = ROOT / "uv.lock"
 DOCKERFILE = ROOT / "Dockerfile"
 DOCKERFILE_TEMPLATE = ROOT / "src/project_sandbox/templates/Dockerfile.j2"
 DOCKERFILE_HELPER = ROOT / "src/project_sandbox/dockerfile.py"
+BUILD_PROXY_FIXTURE = ROOT / "scripts/fixtures/build-proxy.Dockerfile.j2"
 CONFIG_AGENTS = ROOT / "src/project_sandbox/config_agents.py"
 
 PI_NPM_PACKAGE = "@earendil-works/pi-coding-agent"
@@ -754,7 +755,7 @@ def collect_jj_update(
 def collect_uv_image_update(
     minimum_age: timedelta = DEFAULT_MINIMUM_AGE,
 ) -> list[Update]:
-    candidates = [DOCKERFILE, DOCKERFILE_HELPER]
+    candidates = [DOCKERFILE, DOCKERFILE_HELPER, BUILD_PROXY_FIXTURE]
     matches: list[tuple[Path, str, str]] = []
     for path in candidates:
         for match in UV_IMAGE_RE.finditer(read(path)):

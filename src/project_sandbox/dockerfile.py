@@ -27,7 +27,50 @@ _NON_APT_IMAGE_FRAGMENTS = (
     "busybox",
     "wolfi",
     "chainguard",
+    "ubi8",
+    "ubi9",
+    "ubi10",
+    "redhat",
+    "amazonlinux",
+    "oraclelinux",
+    "archlinux",
+    "photon",
+    "mariner",
+    "azurelinux",
+    "gentoo",
+    "nixos",
 )
+
+# Images whose official variants are Debian/Ubuntu-based, matched on the last
+# repository path segment; denied fragments (e.g. "-alpine" tags) still win.
+_APT_IMAGE_NAMES = frozenset(
+    (
+        "debian",
+        "ubuntu",
+        "buildpack-deps",
+        "python",
+        "node",
+        "golang",
+        "rust",
+        "ruby",
+        "php",
+        "perl",
+        "gcc",
+        "openjdk",
+        "eclipse-temurin",
+    )
+)
+_APT_IMAGE_FRAGMENTS = (
+    "debian",
+    "ubuntu",
+    "bookworm",
+    "bullseye",
+    "trixie",
+    "jammy",
+    "noble",
+    "focal",
+)
+_APT_COMMAND_RE = re.compile(r"(?<![\w.-])(apt-get|apt|dpkg)(?![\w.-])")
 
 _LOCAL_INSTALL_RE = re.compile(
     r"uv\s+sync"
@@ -164,25 +207,15 @@ def render(
             build_context=build_context,
         )
 
-    # Content-addressed names make certificate changes invalidate the image
-    # fingerprint through the Dockerfile, and avoid collisions in host filenames.
-    certificate_sources = []
-    for certificate in dict.fromkeys(ca_certificates):
-        name = f"project-sandbox-ca-{hashlib.sha256(certificate).hexdigest()}.crt"
-        (context_dir / name).write_bytes(certificate)
-        certificate_sources.append(copy_prefix + name)
-    for stale in context_dir.glob("project-sandbox-ca-*.crt"):
-        if copy_prefix + stale.name not in certificate_sources:
-            stale.unlink()
-
-    build_certificate_sources = []
-    for certificate in dict.fromkeys(build_ca_certificates):
-        name = f"project-sandbox-build-ca-{hashlib.sha256(certificate).hexdigest()}.crt"
-        (context_dir / name).write_bytes(certificate)
-        build_certificate_sources.append(copy_prefix + name)
-    for stale in context_dir.glob("project-sandbox-build-ca-*.crt"):
-        if copy_prefix + stale.name not in build_certificate_sources:
-            stale.unlink()
+    certificate_sources = _stage_certificates(
+        context_dir, copy_prefix, ca_certificates, prefix="project-sandbox-ca-"
+    )
+    build_certificate_sources = _stage_certificates(
+        context_dir,
+        copy_prefix,
+        build_ca_certificates,
+        prefix="project-sandbox-build-ca-",
+    )
 
     tmpl = templating.get_template("Dockerfile.j2")
     shared = {
@@ -211,24 +244,99 @@ def render(
     )
     if build_certificate_sources:
         setup = templating.get_template("_build-network.Dockerfile.j2").render(**shared)
+        skipped: dict[str, None] = {}
         for path in (container, context_dir / "Dockerfile.devcontainer"):
             blocks = _dockerfile_blocks(path.read_text(encoding="utf-8"))
             stages = _dockerfile_stages(blocks)
             # Inject without adding stages, preserving all positional references.
-            for stage in reversed(stages):
+            for index in reversed(range(len(stages))):
+                stage = stages[index]
                 body = blocks[stage.from_block_index + 1 : stage.end_block_index]
-                ancestor = stage
-                while ancestor.parent_index is not None:
-                    ancestor = stages[ancestor.parent_index]
-                if _is_non_apt_image(ancestor.base) or not any(
-                    re.match(r"\s*RUN\b", block[0], re.IGNORECASE)
-                    for block in body
-                    if block
-                ):
+                if not any(_is_run_block(block) for block in body):
                     continue
-                blocks.insert(stage.from_block_index + 1, [setup])
+                if not _stage_uses_apt(blocks, stages, index):
+                    skipped[stage.alias or stage.base] = None
+                    continue
+                blocks.insert(_build_setup_index(blocks, stage), [setup])
             path.write_text(_join_dockerfile_blocks(blocks), encoding="utf-8")
+        if warn is not None:
+            for name in skipped:
+                warn(
+                    f"WARNING: --build-ca-cert is not applied to stage '{name}': "
+                    "its base is not recognized as Debian/Ubuntu."
+                )
     return container
+
+
+def _stage_certificates(
+    context_dir: Path,
+    copy_prefix: str,
+    certificates: tuple[bytes, ...],
+    *,
+    prefix: str,
+) -> list[str]:
+    """Stage certificates in the build context and return their COPY sources."""
+    # Content-addressed names make certificate changes invalidate the image
+    # fingerprint through the Dockerfile, and avoid collisions in host filenames.
+    sources = []
+    for certificate in dict.fromkeys(certificates):
+        name = f"{prefix}{hashlib.sha256(certificate).hexdigest()}.crt"
+        (context_dir / name).write_bytes(certificate)
+        sources.append(copy_prefix + name)
+    for stale in context_dir.glob(f"{prefix}*.crt"):
+        if copy_prefix + stale.name not in sources:
+            stale.unlink()
+    return sources
+
+
+def _is_run_block(block: list[str]) -> bool:
+    return bool(block) and re.match(r"\s*RUN\b", block[0], re.IGNORECASE) is not None
+
+
+def _stage_uses_apt(
+    blocks: list[list[str]], stages: list[_DockerfileStage], index: int
+) -> bool:
+    """Return True only for stages positively identified as Debian/Ubuntu.
+
+    The build-CA environment points at the Debian bundle path, so a stage whose
+    base is unknown must not receive it.
+    """
+    global_args = _single_assignment_global_args(
+        blocks, stages[0].from_block_index if stages else len(blocks)
+    )
+    chain = [stages[index]]
+    while chain[-1].parent_index is not None:
+        chain.append(stages[chain[-1].parent_index])
+    base = _expand_from_stage_reference(chain[-1].base, global_args) or ""
+    if not base or _is_non_apt_image(base):
+        return False
+    if _is_apt_image(base):
+        return True
+    return any(
+        _APT_COMMAND_RE.search(_flatten_dockerfile_block(block))
+        for stage in chain
+        for block in blocks[stage.from_block_index + 1 : stage.end_block_index]
+        if _is_run_block(block)
+    )
+
+
+def _build_setup_index(blocks: list[list[str]], stage: _DockerfileStage) -> int:
+    """Place build-CA setup after a ``USER root`` that precedes the first RUN.
+
+    The setup never changes the stage's user; when the stage switches to root
+    itself before running anything, the setup runs as that root user.
+    """
+    for offset, block in enumerate(
+        blocks[stage.from_block_index + 1 : stage.end_block_index], start=1
+    ):
+        if _is_run_block(block):
+            break
+        match = re.match(
+            r"\s*USER\s+(\S+)\s*$", _flatten_dockerfile_block(block), re.IGNORECASE
+        )
+        if match is not None and match.group(1).split(":")[0].lower() in {"0", "root"}:
+            return stage.from_block_index + offset + 1
+    return stage.from_block_index + 1
 
 
 # Paths that are never needed inside the image and never affect a build (so they
@@ -560,6 +668,15 @@ def _first_non_option_token_index(tokens: list[str]) -> int | None:
 def _is_non_apt_image(image: str) -> bool:
     lower = image.lower()
     return any(frag in lower for frag in _NON_APT_IMAGE_FRAGMENTS)
+
+
+def _is_apt_image(image: str) -> bool:
+    """Return True for image references known to be Debian/Ubuntu-based."""
+    lower = image.lower()
+    name = lower.split("@", 1)[0].rsplit("/", 1)[-1].split(":", 1)[0]
+    return name in _APT_IMAGE_NAMES or any(
+        frag in lower for frag in _APT_IMAGE_FRAGMENTS
+    )
 
 
 def _extract_final_workdir(blocks: list[list[str]]) -> str | None:

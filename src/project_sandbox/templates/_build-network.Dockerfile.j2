@@ -1,13 +1,13 @@
 # Corporate trust is explicit and installed before the first download. Build
 # proxies arrive as predefined build-args and are never written to the image.
 {% if build_ca_certificate_sources -%}
-USER root
-{% for source in build_ca_certificate_sources -%}
-COPY {{ [source, '/usr/local/share/ca-certificates/'] | tojson }}
-{% endfor -%}
+{# One COPY keeps the layer count fixed however many CAs a bundle holds. -#}
+COPY {{ (build_ca_certificate_sources + ['/usr/local/share/ca-certificates/']) | tojson }}
 {% set bootstrap -%}
 set -eu; \
-    if command -v apt-get >/dev/null 2>&1; then \
+    if [ "$(id -u)" != 0 ]; then \
+        echo 'project-sandbox: build CA not installed: this stage does not run as root' >&2; \
+    elif command -v apt-get >/dev/null 2>&1; then \
         mkdir -p /etc/apt/apt.conf.d; \
         chmod 0644 /usr/local/share/ca-certificates/project-sandbox-build-ca-*.crt; \
         mkdir -p /etc/ssl/certs; \
@@ -28,10 +28,9 @@ set -eu; \
         :; \
     fi
 {%- endset %}
-# Use POSIX sh regardless of the base image's inherited SHELL.
+# Use POSIX sh regardless of the base image's inherited SHELL. The stage's user
+# is left unchanged, so a stage that does not run as root skips the setup.
 RUN {{ ['/bin/sh', '-c', bootstrap] | tojson }}
-{% endif -%}
-{% if build_ca_certificate_sources -%}
 ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 ENV REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
 ENV NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt
