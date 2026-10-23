@@ -158,10 +158,12 @@ class BuildProxyHarnessTests(TestCase):
                         self.assertIn("--no-verify-dockerfile", command)
                         self.assertIn("--force-build", command)
                         scenarios.append(command)
+                        self.assertNotIn("HTTP_PROXY", kwargs["env"])
+                        self.assertNotIn("HTTPS_PROXY", kwargs["env"])
                         self.assertEqual(
-                            kwargs["env"]["HTTP_PROXY"], kwargs["env"]["HTTPS_PROXY"]
+                            command[command.index("--build-proxy") + 1],
+                            "http://192.0.2.1:3128",
                         )
-                        self.assertNotIn("ALL_PROXY", kwargs["env"])
                         if len(scenarios) == 2:
                             self.assertNotIn("--build-ca-cert", command)
                             code, output = 100, "Certificate verification failed"

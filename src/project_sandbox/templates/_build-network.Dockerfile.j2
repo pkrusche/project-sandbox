@@ -15,8 +15,8 @@ set -eu; \
         mkdir -p /etc/apt/apt.conf.d; \
 {% if build_proxy_environment -%}
         printf '%s\n' \
-            {{ ('Acquire::http::Proxy "' + (build_proxy_environment['http_proxy'] or build_proxy_environment['all_proxy'] or 'DIRECT') + '";') | shlex_quote }} \
-            {{ ('Acquire::https::Proxy "' + (build_proxy_environment['https_proxy'] or build_proxy_environment['all_proxy'] or 'DIRECT') + '";') | shlex_quote }} \
+            {{ ('Acquire::http::Proxy "' + build_proxy_environment['http_proxy'] + '";') | shlex_quote }} \
+            {{ ('Acquire::https::Proxy "' + build_proxy_environment['https_proxy'] + '";') | shlex_quote }} \
             > /etc/apt/apt.conf.d/99project-sandbox-build-proxy; \
 {% endif -%}
 {% if build_ca_certificate_sources -%}

@@ -24,7 +24,7 @@ alias has gone stale; delete and re-create it as described in
 [Apple container host alias](apple-container-dns.md).
 
 For corporate access during image construction, use the separate
-[`--build-proxy-from-env` and `--build-ca-cert` options](build-network.md).
+[`--build-proxy URL` and `--build-ca-cert` options](build-network.md).
 They do not grant runtime firewall access.
 
 ## Security boundaries
