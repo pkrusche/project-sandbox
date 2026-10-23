@@ -670,13 +670,6 @@ def main(argv: list[str] | None = None) -> int:
                 credential_dirs=credential_dirs,
                 forward_credentials=forward_credentials,
                 build_context=build_context,
-                # Devcontainer tooling builds outside project-sandbox, so it
-                # gets the proxy verbatim; no forwarder runs for it.
-                build_args=(
-                    build_network.environment(args.build_proxy, build_no_proxy)
-                    if args.build_proxy
-                    else None
-                ),
                 proxy_environment=(
                     internet_proxy.environment(
                         internet_proxy_config,

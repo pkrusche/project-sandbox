@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 import shlex
+import shutil
 import ssl
 import subprocess
 import tempfile
@@ -242,20 +243,14 @@ class BuildEnvironmentTests(TestCase):
                     "proxy.example",
                     (corporate / ".project-sandbox" / name).read_text(),
                 )
-            devcontainer = json.loads(
-                (corporate / ".devcontainer/devcontainer.json").read_text()
-            )
-            # Only the devcontainer build sees the proxy; the runtime does not.
-            self.assertEqual(
-                devcontainer["build"]["args"],
-                build_network.environment("http://proxy.example:3128"),
-            )
-            for section in ("containerEnv", "remoteEnv", "runArgs"):
-                self.assertNotIn("proxy.example", json.dumps(devcontainer[section]))
-            plain_devcontainer = json.loads(
-                (plain / ".devcontainer/devcontainer.json").read_text()
-            )
-            self.assertNotIn("args", plain_devcontainer["build"])
+            # Regression: devcontainer.json sits inside whole-project build
+            # contexts (COPY . .), so the proxy must never be written to it.
+            devcontainer_text = (
+                corporate / ".devcontainer/devcontainer.json"
+            ).read_text()
+            self.assertNotIn("proxy.example", devcontainer_text)
+            self.assertNotIn("_proxy", devcontainer_text.lower())
+            self.assertNotIn("args", json.loads(devcontainer_text)["build"])
 
     def test_proxy_url_changes_do_not_change_rendered_build_inputs(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -360,6 +355,108 @@ class BuildNetworkRendererTests(TestCase):
             )
             self.assertEqual(len(list(context.glob("project-sandbox-ca-*.crt"))), 1)
 
+    def _render_source(self, root, source_text, certificates=None):
+        source = root / "source.Dockerfile"
+        source.write_text(source_text)
+        warnings = []
+        dockerfile.render(
+            root,
+            base_dockerfile=source,
+            build_ca_certificates=certificates or (CERTIFICATE.read_bytes(),),
+            warn=warnings.append,
+        )
+        return (root / "Dockerfile").read_text(), warnings
+
+    def test_setup_never_changes_the_stage_user(self):
+        # Regression: the setup used to start with `USER root` and never switch
+        # back, so later steps of a non-root base stage silently ran as root.
+        source = (
+            "FROM python:3.12-slim AS builder\n"
+            "RUN pip install --user tool\n"
+            "FROM builder\n"
+            "RUN echo final\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            plain_source = root / "plain.Dockerfile"
+            plain_source.write_text(source)
+            dockerfile.render(root, base_dockerfile=plain_source)
+            plain = (root / "Dockerfile").read_text()
+            text, _ = self._render_source(root, source)
+        self.assertEqual(text.count("Corporate trust"), 3)
+        self.assertEqual(
+            [line for line in text.splitlines() if line.startswith("USER")],
+            [line for line in plain.splitlines() if line.startswith("USER")],
+        )
+        builder = text[: text.index("FROM builder")]
+        self.assertNotIn("USER", builder)
+        self.assertLess(builder.index("Corporate trust"), builder.index("pip install"))
+
+    def test_setup_follows_explicit_root_user_before_first_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            text, _ = self._render_source(
+                Path(tmp),
+                "FROM debian:bookworm AS tools\nUSER root\nRUN echo tools\n"
+                "FROM debian:bookworm\nRUN echo final\n",
+            )
+        start = text.index("AS tools\n")
+        tools = text[start : text.index("FROM ", start)]
+        self.assertLess(tools.index("USER root"), tools.index("Corporate trust"))
+        self.assertLess(tools.index("Corporate trust"), tools.index("RUN echo tools"))
+
+    def test_unrecognized_bases_are_skipped_with_a_warning(self):
+        # Regression: the env points at the Debian bundle, which non-Debian
+        # bases lack; only positively identified apt stages get the setup.
+        with tempfile.TemporaryDirectory() as tmp:
+            text, warnings = self._render_source(
+                Path(tmp),
+                "ARG UNSET\n"
+                "FROM amazonlinux:2023 AS amazon\nRUN dnf install -y gcc\n"
+                "FROM registry.access.redhat.com/ubi9/python-311 AS ubi\nRUN echo ubi\n"
+                "FROM ${UNSET} AS dynamic\nRUN echo dynamic\n"
+                "FROM mycorp/image AS custom\nRUN echo custom\n"
+                "FROM mycorp/image AS custom_apt\nRUN apt-get install -y make\n"
+                "FROM ubuntu:24.04 AS ubuntu\nRUN echo ubuntu\n"
+                "FROM debian:bookworm\nRUN echo final\n",
+            )
+
+        def stage(alias):
+            start = text.index(f"AS {alias}\n")
+            return text[start : text.index("FROM ", start)]
+
+        for alias in ("amazon", "ubi", "dynamic", "custom"):
+            with self.subTest(alias=alias):
+                self.assertNotIn("Corporate trust", stage(alias))
+                self.assertNotIn("SSL_CERT_FILE", stage(alias))
+                self.assertTrue(any(f"'{alias}'" in w for w in warnings), warnings)
+        for alias in ("custom_apt", "ubuntu"):
+            with self.subTest(alias=alias):
+                self.assertIn("Corporate trust", stage(alias))
+        self.assertEqual(len(warnings), 4, warnings)
+
+    def test_bundle_uses_one_copy_per_stage(self):
+        # Regression: one COPY per certificate let large corporate bundles
+        # exceed the builder's maximum layer depth.
+        certificates = tuple(f"cert {i}\n".encode() for i in range(150))
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            text, _ = self._render_source(
+                root,
+                "FROM debian:bookworm AS prefix\nRUN echo prefix\n",
+                certificates,
+            )
+            staged = sorted(p.name for p in root.glob("project-sandbox-build-ca-*.crt"))
+        copies = [
+            json.loads(line.removeprefix("COPY "))
+            for line in text.splitlines()
+            if line.startswith("COPY [") and "project-sandbox-build-ca-" in line
+        ]
+        self.assertEqual(len(copies), text.count("Corporate trust"))
+        self.assertEqual(len(staged), 150)
+        for argv in copies:
+            self.assertEqual(argv[-1], "/usr/local/share/ca-certificates/")
+            self.assertEqual(sorted(argv[:-1]), staged)
+
     def test_cache_changes_and_stale_certificates_cleanup(self):
         cert = CERTIFICATE.read_bytes()
         with tempfile.TemporaryDirectory() as tmp:
@@ -430,8 +527,8 @@ class BuildNetworkRendererTests(TestCase):
             bindir = root / "bin"
             bindir.mkdir()
             for name in ("mkdir", "touch", "cat", "chmod", "rm"):
-                path = Path("/usr/bin") / name
-                (bindir / name).symlink_to(path)
+                # Core tools live in /bin on macOS and /usr/bin on most Linux.
+                (bindir / name).symlink_to(shutil.which(name, path="/usr/bin:/bin"))
             certdir = root / "usr/local/share/ca-certificates"
             certdir.mkdir(parents=True)
             (certdir / "project-sandbox-build-ca-test.crt").write_bytes(
@@ -450,6 +547,9 @@ if [ "$1" = install ]; then
 fi
 """)
             apt.chmod(0o755)
+            fake_id = bindir / "id"
+            fake_id.write_text('#!/bin/sh\nprintf "%s\\n" "${FAKE_UID:-0}"\n')
+            fake_id.chmod(0o755)
             setup = templating.get_template("_build-network.Dockerfile.j2").render(
                 build_ca_certificate_sources=["cert.crt"],
             )
@@ -477,3 +577,19 @@ fi
                 (root / "apt-calls").read_text().splitlines(),
                 ["update", "install -y --no-install-recommends ca-certificates"],
             )
+
+            # A stage that does not run as root is left untouched instead of
+            # having its user switched.
+            (root / "updated").unlink()
+            (root / "apt-calls").unlink()
+            result = subprocess.run(
+                [*argv[:2], command],
+                env={"PATH": str(bindir), "FAKE_ROOT": str(root), "FAKE_UID": "1000"},
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("does not run as root", result.stderr)
+            self.assertFalse((root / "apt-calls").exists())
+            self.assertFalse((root / "updated").exists())
