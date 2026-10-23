@@ -8,7 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-phase, proxy_url, fingerprint = sys.argv[1:]
+phase, proxy_url, runtime_proxy_url, fingerprint = sys.argv[1:]
 failures = []
 
 
@@ -53,7 +53,8 @@ if phase == "blocked":
     )
 else:
     check(
-        os.environ.get("https_proxy") == proxy_url, "runtime proxy was not configured"
+        os.environ.get("https_proxy") == runtime_proxy_url,
+        "runtime proxy was not configured",
     )
     result = curl("https://pypi.org/simple/idna/")
     check(result.returncode == 0, "runtime proxy request failed: " + result.stderr)

@@ -1,7 +1,9 @@
 # Apple container host alias
 
 Agent-proxy, Internet-proxy, and Ollama forwarding all reach host-loopback
-services through one shared name, `host.docker.internal`. On Docker Desktop and
+services through one shared name, `host.docker.internal`. Remote Internet proxies
+also use this alias through a host relay. Build proxies use the corresponding
+`203.0.113.113` redirect directly. On Docker Desktop and
 rootless Podman the runtime provides that name natively, and on Linux bridge
 runtimes project-sandbox starts a `socat` listener for it. Apple `container`
 has neither path: it depends on an administrator-managed localhost DNS domain

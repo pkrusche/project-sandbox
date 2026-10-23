@@ -8,3 +8,13 @@
 - Let concurrent Apple container sessions share one `--internet-proxy` relay; today the fixed, firewall-baked relay port makes a second session using the same proxy fail.
 - A remote `--agent-proxy` on Apple container has the same VPN routing gap as `--internet-proxy` had; consider relaying it through the host as well.
 - Confirm on Docker BuildKit, Apple container's builder, and Podman/buildah that the undeclared predefined proxy build-args reach `RUN` steps (including apt's env-based HTTPS proxy and `no_proxy`) and are excluded from the layer cache, so a changed proxy URL or forwarder port reuses cached layers.
+
+## Proxy-during-build review follow-up
+
+- [x] Allow immediate sequential runtime relay sessions without weakening listener exclusivity.
+- [x] Build and audit distinct blocked/allowed firewall images in the build-proxy E2E harness.
+- [x] Audit the runtime-facing Apple relay URL separately from the upstream proxy URL.
+- [x] Reconcile proxy routing/TLS/build-CA docs, centralize Apple setup, and shorten the build-network guide.
+- [x] Cover sequential reuse, TLS backpressure/hostname failures, and failure/interruption cleanup; stop fixture threads reliably.
+- [x] Share URL/certificate validation cases and CLI test setup, and remove obsolete cleanup terminology.
+- [ ] Run the fixed-port relay reuse/exclusivity regressions natively on macOS (`uv run pytest -q tests/test_internet_proxy_relay.py`), alongside the Apple acceptance checks above; local validation used Linux sockets.

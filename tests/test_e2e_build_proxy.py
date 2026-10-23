@@ -5,6 +5,7 @@ import contextlib
 import hashlib
 import importlib.util
 import io
+import itertools
 import json
 import os
 import runpy
@@ -17,7 +18,7 @@ from pathlib import Path
 from unittest import TestCase
 from unittest.mock import MagicMock, patch
 
-from project_sandbox import container_cli
+from project_sandbox import container_cli, internet_proxy
 
 ROOT = Path(__file__).parents[1]
 CERTIFICATE = Path(__file__).parent / "fixtures/test-ca.pem"
@@ -110,8 +111,14 @@ class BuildProxyHarnessTests(TestCase):
             self.assertEqual(module.clean_environment(), {"PATH": "/bin"})
 
     def test_orchestration_success_and_failure_always_clean_up_squid(self):
-        for failure in (None, "up", "build", "logs", "down"):
-            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as tmp:
+        for runtime, failure in itertools.product(
+            (container_cli.DOCKER, container_cli.APPLE_CONTAINER),
+            (None, "up", "build", "allowed-build", "logs", "down"),
+        ):
+            with (
+                self.subTest(runtime=runtime.name, failure=failure),
+                tempfile.TemporaryDirectory() as tmp,
+            ):
                 module = checker()
                 root = Path(tmp)
                 source = fixture_source(root)
@@ -119,6 +126,8 @@ class BuildProxyHarnessTests(TestCase):
                 artifacts.mkdir()
                 calls = []
                 scenarios = []
+                built_policies = {}
+                successful_source = []
 
                 def run(
                     command,
@@ -129,6 +138,9 @@ class BuildProxyHarnessTests(TestCase):
                     module=module,
                     failure=failure,
                     scenarios=scenarios,
+                    built_policies=built_policies,
+                    successful_source=successful_source,
+                    runtime=runtime,
                     **kwargs,
                 ):
                     calls.append(command)
@@ -153,18 +165,33 @@ class BuildProxyHarnessTests(TestCase):
                         if failure in ("up", "logs", "down") and failure in command:
                             code = 1
                     elif "--build-only" in command:
-                        self.assertNotIn("--internet-proxy", command)
                         self.assertNotIn("--ca-cert", command)
                         self.assertIn("--no-verify-dockerfile", command)
-                        self.assertIn("--force-build", command)
-                        scenarios.append(command)
+                        allowed = "--internet-proxy" in command
+                        if not allowed:
+                            self.assertIn("--force-build", command)
+                            scenarios.append(command)
+                        source_text = Path(
+                            command[command.index("--dockerfile") + 1]
+                        ).read_text()
+                        if len(scenarios) == 1:
+                            successful_source.append(source_text)
+                        if allowed:
+                            self.assertEqual(source_text, successful_source[0])
+                            self.assertIn("--build-ca-cert", command)
+                        built_policies[command[command.index("--image-tag") + 1]] = (
+                            allowed
+                        )
                         self.assertNotIn("HTTP_PROXY", kwargs["env"])
                         self.assertNotIn("HTTPS_PROXY", kwargs["env"])
                         self.assertEqual(
                             command[command.index("--build-proxy") + 1],
                             "http://192.0.2.1:3128",
                         )
-                        if len(scenarios) == 2:
+                        if allowed:
+                            if failure == "allowed-build":
+                                code, output = 1, "allowed-policy build failed"
+                        elif len(scenarios) == 2:
                             self.assertNotIn("--build-ca-cert", command)
                             code, output = 100, "Certificate verification failed"
                         elif len(scenarios) == 3:
@@ -174,9 +201,18 @@ class BuildProxyHarnessTests(TestCase):
                         else:
                             self.assertIn("--build-ca-cert", command)
                     elif "--prompt-text" in command:
-                        phase = shlex.split(
+                        audit_args = shlex.split(
                             command[command.index("--prompt-text") + 1]
-                        )[2]
+                        )
+                        phase = audit_args[2]
+                        image = command[command.index("--image-tag") + 1]
+                        self.assertEqual(built_policies[image], phase == "allowed")
+                        expected = internet_proxy.for_runtime(
+                            internet_proxy.parse(audit_args[3]), runtime
+                        )
+                        assert expected is not None
+                        self.assertEqual(audit_args[4], expected.forwarded_url)
+                        self.assertIn("--no-build", command)
                         self.assertEqual(
                             "--internet-proxy" in command, phase == "allowed"
                         )
@@ -197,7 +233,7 @@ class BuildProxyHarnessTests(TestCase):
                     patch.object(
                         module.container_cli,
                         "select_runtime",
-                        return_value=container_cli.DOCKER,
+                        return_value=runtime,
                     ),
                     patch.object(module.shutil, "which", return_value="/bin/uv"),
                     patch.object(
@@ -211,7 +247,7 @@ class BuildProxyHarnessTests(TestCase):
                     result = module.main(
                         [
                             "--runtime",
-                            "docker",
+                            runtime.name,
                             "--internet-proxy-dir",
                             str(source),
                             "--fixture-host",
@@ -244,29 +280,40 @@ class BuildProxyHarnessTests(TestCase):
     def test_runtime_audit_rejects_proxy_access_and_direct_bypass(self):
         certificate = ssl.PEM_cert_to_DER_cert(CERTIFICATE.read_text())
         fingerprint = hashlib.sha256(certificate).hexdigest()
-        for phase, codes, ok in (
-            ("blocked", [7], True),
-            ("blocked", [0], False),
-            ("blocked", [60], False),
-            ("allowed", [0, 7], True),
-            ("allowed", [0, 0], False),
-            ("allowed", [60, 7], False),
+        for runtime, (phase, codes, ok) in itertools.product(
+            (container_cli.DOCKER, container_cli.APPLE_CONTAINER),
+            (
+                ("blocked", [7], True),
+                ("blocked", [0], False),
+                ("blocked", [60], False),
+                ("allowed", [0, 7], True),
+                ("allowed", [0, 0], False),
+                ("allowed", [60, 7], False),
+            ),
         ):
             with (
                 self.subTest(phase=phase, codes=codes),
                 tempfile.TemporaryDirectory() as tmp,
             ):
                 proxy = "http://192.0.2.1:3128"
+                runtime_config = internet_proxy.for_runtime(
+                    internet_proxy.parse(proxy), runtime
+                )
+                assert runtime_config is not None
+                runtime_proxy = runtime_config.forwarded_url
                 context = MagicMock()
                 context.get_ca_certs.return_value = [certificate]
                 with (
                     contextlib.chdir(tmp),
                     patch.dict(
                         os.environ,
-                        {"https_proxy": proxy} if phase == "allowed" else {},
+                        {"https_proxy": runtime_proxy} if phase == "allowed" else {},
                         clear=True,
                     ),
-                    patch("sys.argv", ["audit.py", phase, proxy, fingerprint]),
+                    patch(
+                        "sys.argv",
+                        ["audit.py", phase, proxy, runtime_proxy, fingerprint],
+                    ),
                     patch("ssl.create_default_context", return_value=context),
                     patch(
                         "subprocess.run",

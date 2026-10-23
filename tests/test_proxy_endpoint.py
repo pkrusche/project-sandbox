@@ -1,6 +1,6 @@
 import unittest
 
-from project_sandbox import agent_proxy, internet_proxy
+from project_sandbox import agent_proxy, build_network, internet_proxy
 
 
 class EndpointTests(unittest.TestCase):
@@ -28,9 +28,6 @@ class EndpointTests(unittest.TestCase):
 
     def test_rejected_authorities_and_address_classes(self):
         for value in (
-            "https://LOCALHOST./",
-            "https://127.9.8.7",
-            "https://[::ffff:127.0.0.1]",
             "http://@host",
             "http://user:secret@host",
             "http://host:",
@@ -61,13 +58,31 @@ class EndpointTests(unittest.TestCase):
             "http://::1",
             "http://*.example",
         ):
-            for parser in (agent_proxy.parse, internet_proxy.parse):
+            for parser in (
+                agent_proxy.parse,
+                internet_proxy.parse,
+                build_network.parse,
+            ):
                 with (
                     self.subTest(value=value, parser=parser),
                     self.assertRaises(SystemExit) as error,
                 ):
                     parser(value)
                 self.assertNotIn("secret", str(error.exception))
+
+    def test_https_loopback_is_build_only(self):
+        for value in (
+            "https://LOCALHOST./",
+            "https://127.9.8.7",
+            "https://[::ffff:127.0.0.1]",
+        ):
+            self.assertTrue(build_network.parse(value).local)
+            for parser in (agent_proxy.parse, internet_proxy.parse):
+                with (
+                    self.subTest(value=value, parser=parser),
+                    self.assertRaises(SystemExit),
+                ):
+                    parser(value)
 
     def test_paths(self):
         self.assertEqual(

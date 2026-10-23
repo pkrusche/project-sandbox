@@ -27,7 +27,7 @@ from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
-from project_sandbox import container_cli, fixture_network
+from project_sandbox import container_cli, fixture_network, internet_proxy
 
 FIXTURES = Path(__file__).parent / "fixtures"
 PROXY_NAMES = ("http_proxy", "https_proxy", "all_proxy", "no_proxy")
@@ -262,6 +262,7 @@ def main(argv: list[str] | None = None) -> int:
             "--no-verify-dockerfile",
         ]
         good_image = ""
+        successful_source = ""
         for scenario in ("success", "ca", "proxy"):
             nonce = uuid.uuid4().hex
             image = "project-sandbox-build-proxy:" + nonce
@@ -300,20 +301,63 @@ def main(argv: list[str] | None = None) -> int:
             print("PASS: build scenario " + scenario, flush=True)
             if scenario == "success":
                 good_image = image
+                successful_source = (project / "Dockerfile").read_text()
         # Audit the successful image, independently of the negative build inputs.
+        (project / "Dockerfile").write_text(successful_source)
         shutil.copy2(FIXTURES / "build-proxy-audit.py", project / "audit.py")
         for phase in ("blocked", "allowed"):
+            image = good_image
+            if phase == "allowed":
+                # Firewall policy is baked into the image, so changing the
+                # runtime flag alone with --no-build cannot enable the proxy.
+                image = good_image + "-allowed"
+                images.append(image)
+                result = run_logged(
+                    [
+                        *base_command,
+                        "--build-only",
+                        "--image-tag",
+                        image,
+                        "--dockerfile",
+                        str(project / "Dockerfile"),
+                        "--build-proxy",
+                        proxy_url,
+                        "--build-ca-cert",
+                        str(certificate),
+                        "--internet-proxy",
+                        proxy_url,
+                        str(project),
+                    ],
+                    root / "build-allowed.log",
+                    cwd=Path(__file__).resolve().parents[1],
+                    env=env,
+                    timeout=args.timeout,
+                )
+                check_build(result.returncode, "", "success")
+            runtime_proxy = internet_proxy.for_runtime(
+                internet_proxy.parse(proxy_url), runtime
+            )
+            assert runtime_proxy is not None
             command = [
                 *base_command,
                 "--no-build",
                 "--image-tag",
-                good_image,
+                image,
                 "--agent",
                 "bash",
                 "--timeout",
                 "120",
                 "--prompt-text",
-                shlex.join(["python3", "audit.py", phase, proxy_url, fingerprint]),
+                shlex.join(
+                    [
+                        "python3",
+                        "audit.py",
+                        phase,
+                        proxy_url,
+                        runtime_proxy.forwarded_url,
+                        fingerprint,
+                    ]
+                ),
             ]
             if phase == "allowed":
                 command += ["--internet-proxy", proxy_url]

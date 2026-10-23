@@ -4,13 +4,13 @@ import contextlib
 import io
 import shutil
 import socket
-import ssl
-import subprocess
 import tempfile
 import threading
 from pathlib import Path
 from unittest import TestCase, skipUnless
 from unittest.mock import patch
+
+from proxy_test_support import FakeProxy, exchange, mock_container_runtime, tls_server
 
 from project_sandbox import (
     build_network,
@@ -20,58 +20,6 @@ from project_sandbox import (
     local_service_network,
 )
 from project_sandbox.git_identity import GitIdentity
-
-
-class FakeProxy:
-    """Upstream that answers each request with a prefixed echo, then closes."""
-
-    def __init__(
-        self, context: ssl.SSLContext | None = None, *, wait_for_eof: bool = False
-    ) -> None:
-        self.wait_for_eof = wait_for_eof
-        self.listener = socket.create_server(("127.0.0.1", 0))
-        self.port = self.listener.getsockname()[1]
-        self.context = context
-        self.thread = threading.Thread(target=self._serve, daemon=True)
-        self.thread.start()
-
-    def _serve(self) -> None:
-        while True:
-            try:
-                connection, _ = self.listener.accept()
-            except OSError:
-                return
-            if self.context is not None:
-                try:
-                    connection = self.context.wrap_socket(connection, server_side=True)
-                except (OSError, ssl.SSLError):
-                    connection.close()
-                    continue
-            with connection:
-                request = b""
-                # wait_for_eof answers only after the client's half-close.
-                while self.wait_for_eof or not request.endswith(b"\r\n\r\n"):
-                    chunk = connection.recv(4096)
-                    if not chunk:
-                        break
-                    request += chunk
-                connection.sendall(b"upstream:" + request)
-
-    def close(self) -> None:
-        self.listener.close()
-
-
-def exchange(port: int, payload: bytes, *, half_close: bool = False) -> bytes:
-    with socket.create_connection(("127.0.0.1", port), timeout=5) as client:
-        client.sendall(payload)
-        if half_close:
-            client.shutdown(socket.SHUT_WR)
-        reply = b""
-        # A refused upstream closes the client with unread data, which can RST.
-        with contextlib.suppress(ConnectionResetError):
-            while chunk := client.recv(4096):
-                reply += chunk
-    return reply
 
 
 def _drain(connection: socket.socket, into: bytearray, size: int) -> None:
@@ -93,6 +41,11 @@ def endpoint(url: str):
 
 
 class ForwarderTests(TestCase):
+    def test_fixture_shutdown_joins_the_server(self):
+        upstream = FakeProxy()
+        upstream.close()
+        self.assertFalse(upstream.thread.is_alive())
+
     def test_relays_plain_proxy_traffic_and_uses_apple_localhost_url(self):
         upstream = FakeProxy()
         self.addCleanup(upstream.close)
@@ -240,24 +193,8 @@ class ForwarderTests(TestCase):
 
     @skipUnless(shutil.which("openssl"), "openssl is required to create a test CA")
     def test_https_upstream_is_verified_with_build_cas(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            cert, key = Path(tmp, "cert.pem"), Path(tmp, "key.pem")
-            subprocess.run(
-                [
-                    "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
-                    "-days", "1", "-subj", "/CN=127.0.0.1",
-                    "-addext", "subjectAltName=IP:127.0.0.1",
-                    "-addext", "basicConstraints=critical,CA:TRUE",
-                    "-addext", "keyUsage=critical,keyCertSign,digitalSignature",
-                    "-keyout", str(key), "-out", str(cert),
-                ],
-                check=True,
-                capture_output=True,
-            )  # fmt: skip
-            server = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-            server.load_cert_chain(cert, key)
-            pem = cert.read_bytes()
-        upstream = FakeProxy(server)
+        with tls_server() as (server, pem):
+            upstream = FakeProxy(server)
         self.addCleanup(upstream.close)
         target = endpoint(f"https://127.0.0.1:{upstream.port}")
         request = b"GET http://deb.debian.org/ HTTP/1.1\r\n\r\n"
@@ -281,9 +218,79 @@ class ForwarderTests(TestCase):
         self.assertEqual(len(warnings), 1)
         self.assertIn("--build-ca-cert", warnings[0])
 
+    @skipUnless(shutil.which("openssl"), "openssl is required to create a test CA")
+    def test_https_rejects_trusted_certificate_for_the_wrong_hostname(self):
+        with tls_server(hostname="wrong.example") as (server, pem):
+            upstream = FakeProxy(server)
+        self.addCleanup(upstream.close)
+        warnings = []
+        with build_proxy_forwarder.BuildProxyForwarder(
+            endpoint(f"https://127.0.0.1:{upstream.port}"),
+            ca_certificates=(pem,),
+            warn=warnings.append,
+        ) as relay:
+            self.assertEqual(exchange(relay.port, b"GET / HTTP/1.0\r\n\r\n"), b"")
+        self.assertIn("TLS certificate verification failed", " ".join(warnings))
+
+    @skipUnless(shutil.which("openssl"), "openssl is required to create a test CA")
+    def test_tls_bulk_transfer_with_backpressure_preserves_all_bytes(self):
+        payload = bytes(range(256)) * (4 * 1024 * 1024 // 256)
+        received_upstream = bytearray()
+        errors = []
+        with (
+            tls_server() as (context, pem),
+            socket.create_server(("127.0.0.1", 0)) as listener,
+        ):
+            listener.settimeout(5)
+
+            def upstream():
+                try:
+                    connection, _ = listener.accept()
+                    connection.settimeout(10)
+                    connection.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 16384)
+                    with context.wrap_socket(connection, server_side=True) as secure:
+                        # One thread owns the TLS socket, echoing while reading.
+                        while len(received_upstream) < len(payload):
+                            chunk = secure.recv(16384)
+                            if not chunk:
+                                break
+                            received_upstream.extend(chunk)
+                            secure.sendall(chunk)
+                except OSError as exc:
+                    errors.append(exc)
+
+            server = threading.Thread(target=upstream, daemon=True)
+            server.start()
+            with build_proxy_forwarder.BuildProxyForwarder(
+                endpoint(f"https://127.0.0.1:{listener.getsockname()[1]}"),
+                ca_certificates=(pem,),
+            ) as relay:
+                with socket.create_connection(
+                    ("127.0.0.1", relay.port), timeout=10
+                ) as client:
+                    client.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 16384)
+
+                    def upload():
+                        try:
+                            client.sendall(payload)
+                        except OSError as exc:
+                            errors.append(exc)
+
+                    writer = threading.Thread(target=upload, daemon=True)
+                    writer.start()
+                    received_client = bytearray()
+                    _drain(client, received_client, len(payload))
+                    writer.join(timeout=10)
+                    self.assertFalse(writer.is_alive())
+                server.join(timeout=10)
+            self.assertFalse(server.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(bytes(received_client), payload)
+        self.assertEqual(bytes(received_upstream), payload)
+
 
 class CliForwardingTests(TestCase):
-    def run_build(self, runtime, *extra, cache_hit=False):
+    def run_build(self, runtime, *extra, cache_hit=False, failure=None, build_result=0):
         constructed: list[bool] = []
         observed: dict[str, object] = {"constructed": constructed, "build_args": None}
         lock_held = threading.Event()
@@ -323,19 +330,17 @@ class CliForwardingTests(TestCase):
             if port is not None:
                 with socket.create_connection(("127.0.0.1", port), timeout=2):
                     observed["listening"] = True
-            return 0
+            if failure is not None:
+                raise failure
+            return build_result
 
         with tempfile.TemporaryDirectory() as tmp:
             out = io.StringIO()
             with (
-                patch.object(cli.container_cli, "select_runtime", return_value=runtime),
-                patch.object(
-                    cli.container_cli, "ensure_system_started", return_value=0
-                ),
+                mock_container_runtime(runtime),
                 patch.object(
                     cli.container_cli, "host_build_identity", return_value=None
                 ),
-                patch.object(cli.container_cli, "image_exists", return_value=True),
                 patch.object(cli.container_cli, "build_image", side_effect=build_image),
                 patch.object(cli.build_cache, "build_lock", build_lock),
                 patch.object(cli.build_cache, "is_cache_valid", return_value=cache_hit),
@@ -344,26 +349,44 @@ class CliForwardingTests(TestCase):
                     "BuildProxyForwarder",
                     side_effect=forwarder,
                 ),
-                patch.object(
-                    cli, "read_identity", return_value=GitIdentity("Ada", "a@b.c")
-                ),
                 contextlib.redirect_stdout(out),
             ):
-                rc = cli.main(
-                    [
-                        "--build-only",
-                        "--no-forward-credentials",
-                        "--no-verify-dockerfile",
-                        "--build-proxy",
-                        "https://corp.proxy.example:3128",
-                        *extra,
-                        tmp,
-                        "debian:bookworm",
-                    ]
-                )
-        self.assertEqual(rc, 0)
+                with (
+                    self.assertRaises(type(failure))
+                    if failure
+                    else contextlib.nullcontext()
+                ):
+                    rc = cli.main(
+                        [
+                            "--build-only",
+                            "--no-forward-credentials",
+                            "--no-verify-dockerfile",
+                            "--build-proxy",
+                            "https://corp.proxy.example:3128",
+                            *extra,
+                            tmp,
+                            "debian:bookworm",
+                        ]
+                    )
+        if failure is None:
+            self.assertEqual(rc, build_result)
         observed["output"] = out.getvalue()
         return observed
+
+    def test_failed_or_interrupted_build_stops_forwarding(self):
+        for failure, code in (
+            (None, 1),
+            (RuntimeError("build failed"), 0),
+            (KeyboardInterrupt(), 0),
+        ):
+            with self.subTest(failure=failure, code=code):
+                observed = self.run_build(
+                    container_cli.APPLE_CONTAINER, failure=failure, build_result=code
+                )
+                with self.assertRaises(OSError):
+                    socket.create_connection(
+                        ("127.0.0.1", observed["port"]), timeout=1
+                    ).close()
 
     def test_apple_container_build_uses_forwarder_only_during_build(self):
         observed = self.run_build(

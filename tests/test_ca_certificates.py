@@ -24,7 +24,6 @@ class CaCertificateTests(TestCase):
                     "invalid",
                     "-----BEGIN CERTIFICATE-----\ninvalid\n-----END CERTIFICATE-----",
                 ),
-                ("bundle", CERTIFICATE.read_text() * 2),
                 (
                     "trailing-der-content",
                     ssl.DER_cert_to_PEM_cert(
@@ -48,14 +47,30 @@ class CaCertificateTests(TestCase):
             ):
                 path = root / name
                 path.write_text(data)
-                with (
-                    self.subTest(name=name),
-                    self.assertRaisesRegex(SystemExit, "--ca-cert"),
+                for option, allow_bundle in (
+                    ("--ca-cert", False),
+                    ("--build-ca-cert", True),
                 ):
-                    dockerfile.read_ca_certificates([str(path)])
+                    with (
+                        self.subTest(name=name, option=option),
+                        self.assertRaisesRegex(SystemExit, option),
+                    ):
+                        dockerfile.read_ca_certificates(
+                            [str(path)], option=option, allow_bundle=allow_bundle
+                        )
             for path in (root, root / "missing"):
-                with self.assertRaisesRegex(SystemExit, "--ca-cert"):
-                    dockerfile.read_ca_certificates([str(path)])
+                for option, allow_bundle in (
+                    ("--ca-cert", False),
+                    ("--build-ca-cert", True),
+                ):
+                    with self.assertRaisesRegex(SystemExit, option):
+                        dockerfile.read_ca_certificates(
+                            [str(path)], option=option, allow_bundle=allow_bundle
+                        )
+            bundle = root / "bundle.pem"
+            bundle.write_text(CERTIFICATE.read_text() * 2)
+            with self.assertRaisesRegex(SystemExit, "one PEM certificate"):
+                dockerfile.read_ca_certificates([str(bundle)])
 
     def test_accepts_pem_whitespace_and_crlf(self):
         with tempfile.TemporaryDirectory() as tmp:
