@@ -8,6 +8,7 @@ import shutil
 import sys
 import time
 from argparse import ArgumentParser
+from collections.abc import Generator
 from datetime import datetime
 from pathlib import Path
 from typing import NoReturn
@@ -183,6 +184,16 @@ def build_parser() -> ArgumentParser:
         help=(
             "Use this credential-free HTTP/HTTPS proxy during image builds only. "
             "With Apple container it is reached through a host-loopback forwarder."
+        ),
+    )
+    p.add_argument(
+        "--build-no-proxy",
+        action="append",
+        default=[],
+        metavar="HOSTS",
+        help=(
+            "Additional comma-separated no_proxy entries (hosts, .domains, IPs, "
+            "CIDRs) during image builds (repeatable; requires --build-proxy)."
         ),
     )
     p.add_argument(
@@ -406,9 +417,13 @@ def main(argv: list[str] | None = None) -> int:
         args.build_ca_cert, option="--build-ca-cert", allow_bundle=True
     )
     build_proxy = build_network.parse(args.build_proxy) if args.build_proxy else None
+    build_no_proxy = build_network.parse_no_proxy(args.build_no_proxy)
+    if build_no_proxy and build_proxy is None:
+        raise SystemExit("--build-no-proxy requires --build-proxy")
     if args.runtime == "chroot" and (args.build_proxy or args.build_ca_cert):
         raise SystemExit(
-            "--build-proxy and --build-ca-cert require an image-based runtime"
+            "--build-proxy, --build-no-proxy and --build-ca-cert require an "
+            "image-based runtime"
         )
     _validate_api_key_injection_args(args, run_agent)
     _validate_ollama_models(args.ollama_model)
@@ -545,7 +560,6 @@ def main(argv: list[str] | None = None) -> int:
     # empty jj workspace).
     agent_ran = False
     forwarding_plans: list[local_service_network.ForwardingPlan] = []
-    build_forwarder: build_proxy_forwarder.BuildProxyForwarder | None = None
     exit_code = 1
     session_id = ""
     container_name: str | None = None
@@ -564,14 +578,6 @@ def main(argv: list[str] | None = None) -> int:
             base_image, base_dockerfile, build_context = _resolve_build_source(
                 args, project=workspace, context_dir=context_dir
             )
-        build_proxy_environment = None
-        if build_proxy is not None:
-            build_proxy_environment, build_forwarder = _prepare_build_proxy(
-                args,
-                build_proxy,
-                runtime=runtime,
-                ca_certificates=build_ca_certificates,
-            )
         if not is_chroot:
             dockerfile.render(
                 context_dir,
@@ -581,7 +587,6 @@ def main(argv: list[str] | None = None) -> int:
                 install_agents=available_agents,
                 ca_certificates=ca_certificates,
                 build_ca_certificates=build_ca_certificates,
-                build_proxy_environment=build_proxy_environment,
                 warn=print,
             )
         # Trim the whole-project build context only for the generated
@@ -665,6 +670,13 @@ def main(argv: list[str] | None = None) -> int:
                 credential_dirs=credential_dirs,
                 forward_credentials=forward_credentials,
                 build_context=build_context,
+                # Devcontainer tooling builds outside project-sandbox, so it
+                # gets the proxy verbatim; no forwarder runs for it.
+                build_args=(
+                    build_network.environment(args.build_proxy, build_no_proxy)
+                    if args.build_proxy
+                    else None
+                ),
                 proxy_environment=(
                     internet_proxy.environment(
                         internet_proxy_config,
@@ -762,15 +774,24 @@ def main(argv: list[str] | None = None) -> int:
                     if not args.verbose:
                         print("Building container image…")
                     start = time.monotonic()
-                    # The forwarder serves only this build and stops before
-                    # any sandbox starts.
-                    with build_forwarder or contextlib.nullcontext():
+                    # Any forwarder starts only for an actual build, inside the
+                    # build lock, and stops before any sandbox starts.
+                    with _build_proxy_session(
+                        args,
+                        build_proxy,
+                        no_proxy=build_no_proxy,
+                        runtime=runtime,
+                        ca_certificates=build_ca_certificates,
+                    ) as build_proxy_environment:
                         rc = container_cli.build_image(
                             runtime=runtime,
                             context_dir=context_dir,
                             image_tag=args.image_tag,
                             build_context=build_context,
                             dockerfile_path=context_dir / "Dockerfile",
+                            build_args=build_network.build_args(
+                                build_proxy_environment or {}
+                            ),
                             verbose=args.verbose,
                         )
                     if rc != 0:
@@ -953,8 +974,6 @@ def main(argv: list[str] | None = None) -> int:
             )
         for plan in reversed(forwarding_plans):
             plan.close()
-        if build_forwarder is not None:
-            build_forwarder.close()
         if args.agent_proxy:
             for secret_file in (
                 context_dir / "pi" / "models.json",
@@ -1150,35 +1169,39 @@ def _validate_internet_proxy_args(args) -> internet_proxy.InternetProxy | None:
     return config
 
 
-def _prepare_build_proxy(
+@contextlib.contextmanager
+def _build_proxy_session(
     args,
     endpoint,
     *,
-    runtime: container_cli.Runtime | None,
+    no_proxy: tuple[str, ...],
+    runtime: container_cli.Runtime,
     ca_certificates: tuple[bytes, ...],
-) -> tuple[dict[str, str], build_proxy_forwarder.BuildProxyForwarder | None]:
-    """Return build proxy variables and, for Apple container builds, a forwarder.
+) -> Generator[dict[str, str] | None]:
+    """Yield the build proxy variables for one image build.
 
     Apple container builders cannot route to a VPN-only proxy, but they can
-    reach the host's loopback through the localhost alias.
+    reach the host's loopback through the localhost alias, so for them a
+    forwarder listens for exactly the duration of the build.
     """
+    if endpoint is None:
+        yield None
+        return
     if runtime != container_cli.APPLE_CONTAINER:
-        return build_network.environment(args.build_proxy), None
-    if args.no_build:
-        # Nothing is built: render the usual forwarded URL without listening.
-        port = build_proxy_forwarder.preferred_port(endpoint)
-        return build_network.environment(build_proxy_forwarder.sandbox_url(port)), None
+        yield build_network.environment(args.build_proxy, no_proxy)
+        return
     forwarder = build_proxy_forwarder.BuildProxyForwarder(
         endpoint, ca_certificates=ca_certificates
     )
-    print(local_service_network.apple_setup_notice("Build proxy"))
-    if args.verbose:
-        print(
-            "Build proxy forwarding: "
-            f"{build_proxy_forwarder.LISTEN_HOST}:{forwarder.port} "
-            f"(builder URL {forwarder.sandbox_url})"
-        )
-    return build_network.environment(forwarder.sandbox_url), forwarder
+    with forwarder:
+        print(local_service_network.apple_setup_notice("Build proxy"))
+        if args.verbose:
+            print(
+                "Build proxy forwarding: "
+                f"{build_proxy_forwarder.LISTEN_HOST}:{forwarder.port} "
+                f"(builder URL {forwarder.sandbox_url})"
+            )
+        yield build_network.environment(forwarder.sandbox_url, no_proxy)
 
 
 def _local_services(
@@ -1325,8 +1348,12 @@ def _dry_run(
             print(f"Would mount .git metadata: {(project / '.git').resolve()}")
     if args.build_proxy:
         print(
-            "Would configure environment and apt build proxies, then clear proxy settings before runtime (values redacted)."
+            "Would pass the build proxy as predefined proxy build-args, which are "
+            "not written to Dockerfiles or images (values redacted)."
         )
+        build_no_proxy = build_network.parse_no_proxy(args.build_no_proxy)
+        if build_no_proxy:
+            print("Would exclude from the build proxy: " + ",".join(build_no_proxy))
     for certificate in args.build_ca_cert:
         print(
             f"Would install build CA before downloads in sandbox and devcontainer images: {certificate}"
@@ -1393,6 +1420,11 @@ def _dry_run(
             image_tag=args.image_tag,
             build_context=build_context,
             dockerfile_path=context_dir / "Dockerfile",
+            preview_build_args=(
+                build_network.redacted_build_args(build_network.environment(""))
+                if args.build_proxy
+                else ()
+            ),
             dry_run=True,
             verbose=args.verbose,
         )

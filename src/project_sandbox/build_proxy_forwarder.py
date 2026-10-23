@@ -22,13 +22,15 @@ from .local_service_network import APPLE_LOCALHOST_ADDRESS
 
 LISTEN_HOST = "127.0.0.1"
 # Below macOS's ephemeral range, so the preferred port is rarely taken by an
-# outgoing connection. A stable port keeps rendered Dockerfiles and the
-# image layer cache unchanged between runs.
+# outgoing connection. The port only reaches the builder as a predefined proxy
+# build-arg, so a fallback port changes neither Dockerfiles nor the layer cache.
 PORT_BASE = 40000
 PORT_SPAN = 9000
 CONNECT_TIMEOUT = 10.0
 POLL_INTERVAL = 0.2
 BUFFER_SIZE = 65536
+# Per-direction backlog; reading pauses while the peer cannot keep up.
+BUFFER_LIMIT = 4 * BUFFER_SIZE
 
 
 def preferred_port(endpoint: proxy_endpoint.ProxyEndpoint) -> int:
@@ -72,10 +74,11 @@ class BuildProxyForwarder:
 
     def _bind(self, port: int) -> socket.socket:
         for candidate in (port, 0):
+            # No SO_REUSEADDR: on BSD/macOS it would allow binding 127.0.0.1:P
+            # while another process listens on *:P. Without it the kernel
+            # atomically refuses any port another socket owns; a port held only
+            # by TIME_WAIT connections just falls back, which costs no rebuild.
             listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            # Lets a rerun rebind the stable port while old connections are in
-            # TIME_WAIT; it never allows binding over an active listener.
-            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 listener.bind((LISTEN_HOST, candidate))
                 listener.listen(socket.SOMAXCONN)
@@ -88,8 +91,7 @@ class BuildProxyForwarder:
                 continue
             if candidate == 0:
                 self._warn(
-                    f"[W] Build proxy forwarder port {port} is in use; using a "
-                    "random port, which invalidates the image build cache."
+                    f"Build proxy forwarder port {port} is in use; using a random port."
                 )
             return listener
         raise AssertionError("unreachable")
@@ -193,39 +195,123 @@ class BuildProxyForwarder:
             return
         try:
             _relay(client, upstream, self._stop)
-        except OSError:
+        except (OSError, ssl.SSLError):
             pass
         finally:
             self._untrack(client, upstream)
 
 
+class _Direction:
+    """One copy direction with a bounded backlog and EOF bookkeeping."""
+
+    def __init__(self, source: socket.socket, sink: socket.socket) -> None:
+        self.source = source
+        self.sink = sink
+        self.buffer = bytearray()
+        self.eof = False
+        self.sink_closed = False
+
+    @property
+    def done(self) -> bool:
+        return self.eof and not self.buffer
+
+
 def _relay(client: socket.socket, upstream: socket.socket, stop: threading.Event):
-    """Copy bytes both ways on one thread (TLS objects are not thread-safe)."""
-    peers = {client: upstream, upstream: client}
-    readable = {client, upstream}
+    """Copy bytes both ways on one thread (TLS objects are not thread-safe).
+
+    Sockets are non-blocking and each direction buffers at most BUFFER_LIMIT
+    bytes, so a peer that stops reading only pauses the opposite read instead
+    of blocking the thread (and with it the other direction).
+    """
+    tls_upstream = isinstance(upstream, ssl.SSLSocket)
+    up = _Direction(client, upstream)
+    down = _Direction(upstream, client)
+    directions = (up, down)
+    # TLS operations may need the opposite readiness (SSLWantRead/WantWrite).
+    wants: dict[socket.socket, int] = {client: 0, upstream: 0}
+    for connection in (client, upstream):
+        connection.setblocking(False)
     with selectors.DefaultSelector() as selector:
-        for connection in readable:
-            selector.register(connection, selectors.EVENT_READ)
-        while readable and not stop.is_set():
+        registered: dict[socket.socket, int] = {}
+        while not stop.is_set():
+            if down.done:
+                # The proxy finished and its reply was delivered.
+                return
+            if up.done and not up.sink_closed:
+                # Forward the client's half-close. TLS cannot half-close, so a
+                # TLS upstream just stops receiving while its reply is drained.
+                up.sink_closed = True
+                if not tls_upstream:
+                    upstream.shutdown(socket.SHUT_WR)
+            interest = dict(wants)
+            for direction in directions:
+                if not direction.eof and len(direction.buffer) < BUFFER_LIMIT:
+                    interest[direction.source] |= selectors.EVENT_READ
+                if direction.buffer:
+                    interest[direction.sink] |= selectors.EVENT_WRITE
+            for connection, events in interest.items():
+                if events == registered.get(connection, 0):
+                    continue
+                if not events:
+                    selector.unregister(connection)
+                    del registered[connection]
+                    continue
+                if connection in registered:
+                    selector.modify(connection, events)
+                else:
+                    selector.register(connection, events)
+                registered[connection] = events
             # Decrypted TLS data can be buffered without the socket polling ready.
             pending = {
-                connection
-                for connection in readable
-                if isinstance(connection, ssl.SSLSocket) and connection.pending()
+                direction
+                for direction in directions
+                if interest[direction.source] & selectors.EVENT_READ
+                and isinstance(direction.source, ssl.SSLSocket)
+                and direction.source.pending()
             }
-            events = selector.select(timeout=0 if pending else POLL_INTERVAL)
-            for source in pending | {key.fileobj for key, _ in events}:
-                assert isinstance(source, socket.socket)
-                if source not in readable:
-                    continue
-                data = source.recv(BUFFER_SIZE)
-                if data:
-                    peers[source].sendall(data)
-                    continue
-                if source is upstream or isinstance(upstream, ssl.SSLSocket):
-                    # The proxy finished, or a TLS upstream cannot half-close.
-                    return
-                # Forward the client's half-close and drain the proxy's reply.
-                readable.discard(source)
-                selector.unregister(source)
-                upstream.shutdown(socket.SHUT_WR)
+            ready = selector.select(timeout=0 if pending else POLL_INTERVAL)
+            readiness = {key.fileobj: mask for key, mask in ready}
+            wants = {client: 0, upstream: 0}
+            for direction in directions:
+                if (
+                    direction in pending
+                    or readiness.get(direction.source, 0) & (interest[direction.source])
+                ):
+                    _pump_read(direction, wants)
+                if direction.buffer and readiness.get(direction.sink, 0):
+                    _pump_write(direction, wants)
+
+
+def _pump_read(direction: _Direction, wants: dict[socket.socket, int]) -> None:
+    if direction.eof or len(direction.buffer) >= BUFFER_LIMIT:
+        return
+    try:
+        data = direction.source.recv(BUFFER_SIZE)
+    except ssl.SSLWantReadError:
+        wants[direction.source] |= selectors.EVENT_READ
+        return
+    except ssl.SSLWantWriteError:
+        wants[direction.source] |= selectors.EVENT_WRITE
+        return
+    except BlockingIOError:
+        return
+    except (ssl.SSLZeroReturnError, ssl.SSLEOFError):
+        data = b""
+    if data:
+        direction.buffer += data
+    else:
+        direction.eof = True
+
+
+def _pump_write(direction: _Direction, wants: dict[socket.socket, int]) -> None:
+    try:
+        sent = direction.sink.send(direction.buffer)
+    except ssl.SSLWantReadError:
+        wants[direction.sink] |= selectors.EVENT_READ
+        return
+    except ssl.SSLWantWriteError:
+        wants[direction.sink] |= selectors.EVENT_WRITE
+        return
+    except BlockingIOError:
+        return
+    del direction.buffer[:sent]

@@ -403,9 +403,16 @@ def build_image(
     image_tag: str,
     build_context: Path | None = None,
     dockerfile_path: Path | None = None,
+    build_args: Sequence[str] = (),
+    preview_build_args: Sequence[str] | None = None,
     dry_run: bool = False,
     verbose: bool = True,
 ) -> int:
+    """Build ``image_tag``; ``build_args`` are extra ``--build-arg`` argv.
+
+    ``preview_build_args`` replaces ``build_args`` in the dry-run print so
+    sensitive values (such as proxy URLs) can be redacted.
+    """
     if not runtime.is_container:
         return 0
     build_context = (build_context or context_dir).resolve(strict=False)
@@ -432,10 +439,15 @@ def build_image(
             "--build-arg",
             f"AGENT_GID={gid}",
         ]
-    cmd.append(".")
     if dry_run:
-        print(f"cd {shlex.quote(str(build_context))} && {shlex.join(cmd)}")
+        shown = [
+            *cmd,
+            *(build_args if preview_build_args is None else preview_build_args),
+            ".",
+        ]
+        print(f"cd {shlex.quote(str(build_context))} && {shlex.join(shown)}")
         return 0
+    cmd += [*build_args, "."]
     return _run_quietable(cmd, verbose=verbose, cwd=str(build_context))
 
 

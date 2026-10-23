@@ -1,4 +1,4 @@
-"""Build access is early, explicit, cache-sensitive, and independent of runtime policy."""
+"""Build access is early, explicit, cache-stable, and independent of runtime policy."""
 
 import contextlib
 import io
@@ -25,6 +25,36 @@ class BuildEnvironmentTests(TestCase):
         self.assertEqual(values["https_proxy"], "http://proxy.example:3128")
         self.assertEqual(values["no_proxy"], "localhost,127.0.0.1,::1")
 
+    def test_extra_no_proxy_entries_are_appended_once(self):
+        values = build_network.environment(
+            "http://proxy.example:3128", ("corp.example", "127.0.0.1", ".internal")
+        )
+        expected = "localhost,127.0.0.1,::1,corp.example,.internal"
+        self.assertEqual(values["no_proxy"], expected)
+        self.assertEqual(values["NO_PROXY"], expected)
+
+    def test_no_proxy_entries_are_validated(self):
+        self.assertEqual(
+            build_network.parse_no_proxy(
+                [" .corp.example, mirror.corp:8080", "10.0.0.0/8,fd00::1", "host"]
+            ),
+            (".corp.example", "mirror.corp:8080", "10.0.0.0/8", "fd00::1", "host"),
+        )
+        for value in ("", "a,,b", "*", "bad host", 'a"b', "-bad.example", "a/b"):
+            with self.subTest(value=value), self.assertRaises(SystemExit) as exc:
+                build_network.parse_no_proxy([value])
+            self.assertIn("--build-no-proxy", str(exc.exception))
+
+    def test_build_args_use_predefined_proxy_names(self):
+        env = build_network.environment("http://proxy.example:3128")
+        args = build_network.build_args(env)
+        self.assertEqual(args[0::2], ["--build-arg"] * len(env))
+        self.assertIn("https_proxy=http://proxy.example:3128", args)
+        self.assertIn("NO_PROXY=localhost,127.0.0.1,::1", args)
+        redacted = build_network.redacted_build_args(env)
+        self.assertIn("http_proxy=<redacted>", redacted)
+        self.assertNotIn("proxy.example", " ".join(redacted))
+
     def test_invalid_url_does_not_echo_input(self):
         for value in (
             "socks5://proxy.example",
@@ -47,8 +77,10 @@ class BuildEnvironmentTests(TestCase):
             for options in (
                 ["--build-ca-cert", str(root / "missing")],
                 ["--build-proxy", "socks5://proxy.example"],
+                ["--build-no-proxy", "corp.example"],
+                ["--build-proxy", "http://proxy.example", "--build-no-proxy", "*"],
             ):
-                with self.assertRaises(SystemExit):
+                with self.subTest(options=options), self.assertRaises(SystemExit):
                     cli.main([*options, str(root), "debian:bookworm"])
                 self.assertEqual(list(root.iterdir()), [])
             with contextlib.redirect_stdout(io.StringIO()) as output:
@@ -58,6 +90,8 @@ class BuildEnvironmentTests(TestCase):
                             "--dry-run",
                             "--build-proxy",
                             "http://proxy.example:3128",
+                            "--build-no-proxy",
+                            ".corp.example",
                             "--build-ca-cert",
                             str(CERTIFICATE),
                             str(root),
@@ -67,7 +101,10 @@ class BuildEnvironmentTests(TestCase):
                     0,
                 )
             self.assertIn("before downloads", output.getvalue())
-            self.assertIn("clear proxy settings", output.getvalue())
+            self.assertIn("predefined proxy build-args", output.getvalue())
+            self.assertIn(
+                "Would exclude from the build proxy: .corp.example", output.getvalue()
+            )
             self.assertNotIn("proxy.example", output.getvalue())
             self.assertEqual(list(root.iterdir()), [])
 
@@ -156,6 +193,12 @@ class BuildEnvironmentTests(TestCase):
             for option in (
                 ["--build-ca-cert", str(CERTIFICATE)],
                 ["--build-proxy", "http://proxy.example"],
+                [
+                    "--build-proxy",
+                    "http://proxy.example",
+                    "--build-no-proxy",
+                    "corp.example",
+                ],
             ):
                 with self.assertRaisesRegex(SystemExit, "image-based runtime"):
                     cli.main(["--runtime", "chroot", "--agent", "bash", *option, tmp])
@@ -194,8 +237,52 @@ class BuildEnvironmentTests(TestCase):
                     (plain / ".project-sandbox" / name).read_bytes(),
                     (corporate / ".project-sandbox" / name).read_bytes(),
                 )
-            devcontainer = (corporate / ".devcontainer/devcontainer.json").read_text()
-            self.assertNotIn("proxy.example", devcontainer)
+            for name in ("Dockerfile", "Dockerfile.devcontainer"):
+                self.assertNotIn(
+                    "proxy.example",
+                    (corporate / ".project-sandbox" / name).read_text(),
+                )
+            devcontainer = json.loads(
+                (corporate / ".devcontainer/devcontainer.json").read_text()
+            )
+            # Only the devcontainer build sees the proxy; the runtime does not.
+            self.assertEqual(
+                devcontainer["build"]["args"],
+                build_network.environment("http://proxy.example:3128"),
+            )
+            for section in ("containerEnv", "remoteEnv", "runArgs"):
+                self.assertNotIn("proxy.example", json.dumps(devcontainer[section]))
+            plain_devcontainer = json.loads(
+                (plain / ".devcontainer/devcontainer.json").read_text()
+            )
+            self.assertNotIn("args", plain_devcontainer["build"])
+
+    def test_proxy_url_changes_do_not_change_rendered_build_inputs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rendered = []
+            for proxy in ("http://proxy.example:3128", "http://other.example:8080"):
+                project = root / proxy.split("//")[1].replace(":", "-")
+                project.mkdir()
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(
+                        cli.main(
+                            [
+                                "--no-forward-credentials",
+                                "--build-proxy",
+                                proxy,
+                                str(project),
+                                "debian:bookworm",
+                            ]
+                        ),
+                        0,
+                    )
+                rendered.append(
+                    build_cache.compute_fingerprint(
+                        project / ".project-sandbox", extra={}
+                    )
+                )
+            self.assertEqual(rendered[0], rendered[1])
 
 
 class BuildNetworkRendererTests(TestCase):
@@ -213,9 +300,6 @@ class BuildNetworkRendererTests(TestCase):
             dockerfile.render(
                 root,
                 base_dockerfile=source,
-                build_proxy_environment=build_network.environment(
-                    "http://proxy.example"
-                ),
                 build_ca_certificates=(CERTIFICATE.read_bytes(),),
             )
             for name in ("Dockerfile", "Dockerfile.devcontainer"):
@@ -231,11 +315,10 @@ class BuildNetworkRendererTests(TestCase):
                 for argv in bootstraps:
                     self.assertEqual(argv[:2], ["/bin/sh", "-c"])
                     self.assertIn("update-ca-certificates", argv[2])
-                    self.assertIn("99project-sandbox-build-proxy", argv[2])
+                    self.assertNotIn("Proxy", argv[2])
 
     def test_all_stages_early_setup_late_cleanup_and_separate_runtime_ca(self):
         certificates = dockerfile.read_ca_certificates([str(CERTIFICATE)])
-        proxy = build_network.environment("https://proxy.example")
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             context = root / "sandbox with spaces"
@@ -249,7 +332,6 @@ class BuildNetworkRendererTests(TestCase):
                 base_dockerfile=source,
                 build_context=root,
                 build_ca_certificates=certificates,
-                build_proxy_environment=proxy,
                 ca_certificates=certificates,
             )
             for name in ("Dockerfile", "Dockerfile.devcontainer"):
@@ -264,31 +346,15 @@ class BuildNetworkRendererTests(TestCase):
                 self.assertLess(
                     text.index("NODE_EXTRA_CA_CERTS"), text.index("RUN npm install")
                 )
-                self.assertLess(
-                    text.index("RUN echo late"), text.index("# Build proxy access")
-                )
-                self.assertLess(
-                    text.index("# Build proxy access"), text.index("# Session trust")
-                )
                 self.assertGreater(
                     text.index("# Session trust"), text.index("RUN echo late")
                 )
-                self.assertIn(
-                    'Acquire::http::Proxy "https://proxy.example";',
-                    text.replace('\\"', '"'),
-                )
-                self.assertIn(
-                    'Acquire::https::Proxy "https://proxy.example";',
-                    text.replace('\\"', '"'),
-                )
+                self.assertNotIn("_proxy", text)
+                self.assertNotIn("Acquire::http::Proxy", text)
                 self.assertIn(
                     'COPY ["sandbox with spaces/project-sandbox-build-ca-', text
                 )
-                self.assertEqual(text.count("# Corporate access"), 3)
-                for key in proxy:
-                    self.assertIn(
-                        f'ENV {key}=""', text[text.index("# Build proxy access") :]
-                    )
+                self.assertEqual(text.count("# Corporate trust"), 3)
             self.assertEqual(
                 len(list(context.glob("project-sandbox-build-ca-*.crt"))), 1
             )
@@ -299,22 +365,20 @@ class BuildNetworkRendererTests(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
 
-            def render(proxy="http://proxy.example", certificates=(cert,)):
+            def render(certificates=(cert,)):
                 dockerfile.render(
                     root,
                     base_image="debian:bookworm",
                     build_ca_certificates=certificates,
-                    build_proxy_environment=build_network.environment(proxy),
                 )
                 return build_cache.compute_fingerprint(root, extra={})
 
             original = render()
-            self.assertNotEqual(original, render(proxy="http://different.example"))
             self.assertNotEqual(original, render(certificates=(cert + b"\n",)))
             self.assertEqual(len(list(root.glob("project-sandbox-build-ca-*.crt"))), 1)
             dockerfile.render(root, base_image="debian:bookworm")
             self.assertEqual(list(root.glob("project-sandbox-build-ca-*.crt")), [])
-            self.assertNotIn("Corporate access", (root / "Dockerfile").read_text())
+            self.assertNotIn("Corporate trust", (root / "Dockerfile").read_text())
 
     def test_generated_languages_and_numeric_stage_references(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -334,17 +398,22 @@ class BuildNetworkRendererTests(TestCase):
                         root,
                         base_dockerfile=source,
                         build_context=root,
-                        build_proxy_environment=build_network.environment(
-                            "http://proxy.example"
-                        ),
+                        build_ca_certificates=(CERTIFICATE.read_bytes(),),
                     )
                     text = (root / "Dockerfile").read_text()
+                    # Ignore the bootstrap's own fallback apt-get update.
+                    outside_bootstrap = "\n".join(
+                        line
+                        for line in text.splitlines()
+                        if not line.startswith('RUN ["/bin/sh", "-c"')
+                    )
                     self.assertLess(
-                        text.index("ENV http_proxy="), text.index("apt-get update")
+                        outside_bootstrap.index("# Corporate trust"),
+                        outside_bootstrap.index("apt-get update"),
                     )
                     if source == python:
                         self.assertNotIn(
-                            "Corporate access",
+                            "Corporate trust",
                             text[
                                 text.index("FROM ghcr.io") : text.index("FROM python")
                             ],
@@ -352,16 +421,10 @@ class BuildNetworkRendererTests(TestCase):
                     if source == custom:
                         self.assertIn("COPY --from=0 /tmp/tool /tmp/tool", text)
 
-    def test_env_data_uses_docker_escaping(self):
-        value = 'localhost,$HOME,"literal",\\path,`literal`'
-        self.assertEqual(
-            build_network.docker_env(value),
-            '"localhost,\\$HOME,\\"literal\\",\\\\path,`literal`"',
-        )
-
     def test_bootstrap_works_without_existing_ca_tools_or_bundle(self):
         # Execute the actual rendered bootstrap in a fake root. The fake apt
-        # verifies CA trust and proxy configuration exist before any download.
+        # verifies CA trust exists before any download; the proxy comes from
+        # build-arg environment, so no apt proxy file is written.
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             bindir = root / "bin"
@@ -379,7 +442,7 @@ class BuildNetworkRendererTests(TestCase):
 set -eu
 test -s "$FAKE_ROOT/etc/ssl/certs/ca-certificates.crt"
 test -s "$FAKE_ROOT/etc/apt/apt.conf.d/99project-sandbox-build-ca"
-test -s "$FAKE_ROOT/etc/apt/apt.conf.d/99project-sandbox-build-proxy"
+test ! -e "$FAKE_ROOT/etc/apt/apt.conf.d/99project-sandbox-build-proxy"
 printf '%s\\n' "$*" >> "$FAKE_ROOT/apt-calls"
 if [ "$1" = install ]; then
   printf '#!/bin/sh\\nprintf updated > "$FAKE_ROOT/updated"\\n' > "$FAKE_ROOT/bin/update-ca-certificates"
@@ -388,9 +451,6 @@ fi
 """)
             apt.chmod(0o755)
             setup = templating.get_template("_build-network.Dockerfile.j2").render(
-                build_proxy_environment=build_network.environment(
-                    "http://proxy.example"
-                ),
                 build_ca_certificate_sources=["cert.crt"],
             )
             blocks = dockerfile._dockerfile_blocks(setup)

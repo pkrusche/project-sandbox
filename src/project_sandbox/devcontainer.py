@@ -43,6 +43,7 @@ def render(
     forward_credentials: bool = True,
     build_context: Path | None = None,
     proxy_environment: dict[str, str] | None = None,
+    build_args: dict[str, str] | None = None,
 ) -> Path:
     dc_dir = project / ".devcontainer"
     dc_dir.mkdir(exist_ok=True)
@@ -227,6 +228,7 @@ def render(
         "build": {
             "dockerfile": _devcontainer_ref(dc_dir, generated_dockerfile),
             "context": _devcontainer_ref(dc_dir, build_context),
+            **({"args": dict(build_args)} if build_args else {}),
         },
         "runArgs": run_args,
         "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=delegated",

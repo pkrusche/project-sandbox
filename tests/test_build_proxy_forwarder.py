@@ -25,7 +25,10 @@ from project_sandbox.git_identity import GitIdentity
 class FakeProxy:
     """Upstream that answers each request with a prefixed echo, then closes."""
 
-    def __init__(self, context: ssl.SSLContext | None = None) -> None:
+    def __init__(
+        self, context: ssl.SSLContext | None = None, *, wait_for_eof: bool = False
+    ) -> None:
+        self.wait_for_eof = wait_for_eof
         self.listener = socket.create_server(("127.0.0.1", 0))
         self.port = self.listener.getsockname()[1]
         self.context = context
@@ -46,7 +49,8 @@ class FakeProxy:
                     continue
             with connection:
                 request = b""
-                while not request.endswith(b"\r\n\r\n"):
+                # wait_for_eof answers only after the client's half-close.
+                while self.wait_for_eof or not request.endswith(b"\r\n\r\n"):
                     chunk = connection.recv(4096)
                     if not chunk:
                         break
@@ -57,15 +61,31 @@ class FakeProxy:
         self.listener.close()
 
 
-def exchange(port: int, payload: bytes) -> bytes:
+def exchange(port: int, payload: bytes, *, half_close: bool = False) -> bytes:
     with socket.create_connection(("127.0.0.1", port), timeout=5) as client:
         client.sendall(payload)
+        if half_close:
+            client.shutdown(socket.SHUT_WR)
         reply = b""
         # A refused upstream closes the client with unread data, which can RST.
         with contextlib.suppress(ConnectionResetError):
             while chunk := client.recv(4096):
                 reply += chunk
     return reply
+
+
+def _drain(connection: socket.socket, into: bytearray, size: int) -> None:
+    while len(into) < size:
+        chunk = connection.recv(1 << 16)
+        if not chunk:
+            return
+        into += chunk
+
+
+def relay_warnings(warnings: list[str]) -> list[str]:
+    """Drop port fallback notices: without SO_REUSEADDR a recently used
+    preferred port can still be in TIME_WAIT."""
+    return [warning for warning in warnings if "random port" not in warning]
 
 
 def endpoint(url: str):
@@ -116,7 +136,91 @@ class ForwarderTests(TestCase):
             self.addCleanup(forwarder.close)
             self.assertNotEqual(forwarder.port, busy.getsockname()[1])
         self.assertEqual(len(warnings), 1)
-        self.assertIn("cache", warnings[0])
+        self.assertIn("random port", warnings[0])
+        # A fallback port no longer affects build inputs, so no cache warning.
+        self.assertNotIn("cache", warnings[0])
+
+    def test_listener_does_not_set_reuseaddr(self):
+        # On BSD/macOS SO_REUSEADDR would allow binding 127.0.0.1:P while
+        # another process listens on *:P.
+        forwarder = build_proxy_forwarder.BuildProxyForwarder(
+            endpoint("http://proxy.example:3128"), warn=lambda _message: None
+        )
+        self.addCleanup(forwarder.close)
+        self.assertEqual(
+            forwarder._listener.getsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR), 0
+        )
+
+    def test_wildcard_listener_on_preferred_port_forces_fallback(self):
+        warnings: list[str] = []
+        with socket.create_server(("0.0.0.0", 0), reuse_port=False) as busy:
+            port = busy.getsockname()[1]
+            with patch.object(
+                build_proxy_forwarder, "preferred_port", return_value=port
+            ):
+                forwarder = build_proxy_forwarder.BuildProxyForwarder(
+                    endpoint("http://proxy.example:3128"), warn=warnings.append
+                )
+            self.addCleanup(forwarder.close)
+            self.assertNotEqual(forwarder.port, port)
+        self.assertEqual(len(warnings), 1)
+
+    def test_full_duplex_bulk_transfer_does_not_deadlock(self):
+        # The proxy streams a large reply while it still reads, and the client
+        # uploads far more than socket buffers hold before it reads. A relay
+        # blocked writing to the client then never reads the upload.
+        size = 8 * 1024 * 1024
+        payload = bytes(range(256)) * (size // 256)
+        with socket.create_server(("127.0.0.1", 0)) as upstream_listener:
+            received_upstream = bytearray()
+
+            def upstream() -> None:
+                connection, _ = upstream_listener.accept()
+                with connection:
+                    reader = threading.Thread(
+                        target=_drain, args=(connection, received_upstream, size)
+                    )
+                    reader.start()
+                    connection.sendall(payload)
+                    reader.join(timeout=30)
+
+            server = threading.Thread(target=upstream, daemon=True)
+            server.start()
+            target = endpoint(f"http://127.0.0.1:{upstream_listener.getsockname()[1]}")
+            with build_proxy_forwarder.BuildProxyForwarder(target) as forwarder:
+                with socket.create_connection(
+                    ("127.0.0.1", forwarder.port), timeout=30
+                ) as client:
+                    received_client = bytearray()
+                    # The reader only starts after the full write, mirroring a
+                    # peer that uploads before it reads.
+                    writer_done = threading.Event()
+
+                    def write() -> None:
+                        client.sendall(payload)
+                        writer_done.set()
+
+                    writer = threading.Thread(target=write, daemon=True)
+                    writer.start()
+                    self.assertTrue(
+                        writer_done.wait(30), "upload stalled: relay deadlocked"
+                    )
+                    _drain(client, received_client, size)
+                # Closing the forwarder stops relays, so let the upload finish.
+                server.join(timeout=30)
+        self.assertEqual(bytes(received_client), payload)
+        self.assertEqual(bytes(received_upstream), payload)
+
+    def test_client_half_close_still_receives_plain_reply(self):
+        upstream = FakeProxy(wait_for_eof=True)
+        self.addCleanup(upstream.close)
+        target = endpoint(f"http://127.0.0.1:{upstream.port}")
+        request = b"GET http://deb.debian.org/ HTTP/1.0\r\n\r\n"
+        with build_proxy_forwarder.BuildProxyForwarder(target) as forwarder:
+            self.assertEqual(
+                exchange(forwarder.port, request, half_close=True),
+                b"upstream:" + request,
+            )
 
     def test_unreachable_upstream_closes_client_and_warns_once(self):
         with socket.create_server(("127.0.0.1", 0)) as reserved:
@@ -130,6 +234,7 @@ class ForwarderTests(TestCase):
                 self.assertEqual(
                     exchange(forwarder.port, b"GET / HTTP/1.1\r\n\r\n"), b""
                 )
+        warnings = relay_warnings(warnings)
         self.assertEqual(len(warnings), 1)
         self.assertIn("could not connect", warnings[0])
 
@@ -161,34 +266,58 @@ class ForwarderTests(TestCase):
             target, ca_certificates=(pem,)
         ) as forwarder:
             self.assertEqual(exchange(forwarder.port, request), b"upstream:" + request)
+            # A client half-close must not drop the TLS upstream's reply.
+            self.assertEqual(
+                exchange(forwarder.port, request, half_close=True),
+                b"upstream:" + request,
+            )
 
         warnings: list[str] = []
         with build_proxy_forwarder.BuildProxyForwarder(
             target, warn=warnings.append
         ) as forwarder:
             self.assertEqual(exchange(forwarder.port, request), b"")
+        warnings = relay_warnings(warnings)
         self.assertEqual(len(warnings), 1)
         self.assertIn("--build-ca-cert", warnings[0])
 
 
 class CliForwardingTests(TestCase):
-    def run_build(self, runtime, *extra):
-        observed: dict[str, object] = {}
+    def run_build(self, runtime, *extra, cache_hit=False):
+        constructed: list[bool] = []
+        observed: dict[str, object] = {"constructed": constructed, "build_args": None}
+        lock_held = threading.Event()
+        real_lock = cli.build_cache.build_lock
+        real_forwarder = build_proxy_forwarder.BuildProxyForwarder
 
-        def build_image(*, context_dir, **_kwargs):
-            text = (context_dir / "Dockerfile").read_text()
-            observed["dockerfile"] = text
+        @contextlib.contextmanager
+        def build_lock(context_dir):
+            with real_lock(context_dir):
+                lock_held.set()
+                try:
+                    yield
+                finally:
+                    lock_held.clear()
+
+        def forwarder(*args, **kwargs):
+            constructed.append(lock_held.is_set())
+            return real_forwarder(*args, **kwargs)
+
+        def build_image(*, context_dir, build_args=(), **_kwargs):
+            observed["dockerfile"] = (context_dir / "Dockerfile").read_text()
             observed["devcontainer"] = (
                 context_dir / "Dockerfile.devcontainer"
             ).read_text()
-            port = next(
-                (
-                    int(line.split(":")[-1].rstrip('"'))
-                    for line in text.splitlines()
-                    if line.startswith("ENV http_proxy=")
-                    and local_service_network.APPLE_LOCALHOST_ADDRESS in line
-                ),
-                None,
+            observed["build_args"] = list(build_args)
+            values = dict(
+                arg.split("=", 1) for arg in build_args if arg != "--build-arg"
+            )
+            observed["env"] = values
+            url = values.get("http_proxy", "")
+            port = (
+                int(url.rsplit(":", 1)[1])
+                if local_service_network.APPLE_LOCALHOST_ADDRESS in url
+                else None
             )
             observed["port"] = port
             if port is not None:
@@ -208,6 +337,13 @@ class CliForwardingTests(TestCase):
                 ),
                 patch.object(cli.container_cli, "image_exists", return_value=True),
                 patch.object(cli.container_cli, "build_image", side_effect=build_image),
+                patch.object(cli.build_cache, "build_lock", build_lock),
+                patch.object(cli.build_cache, "is_cache_valid", return_value=cache_hit),
+                patch.object(
+                    cli.build_proxy_forwarder,
+                    "BuildProxyForwarder",
+                    side_effect=forwarder,
+                ),
                 patch.object(
                     cli, "read_identity", return_value=GitIdentity("Ada", "a@b.c")
                 ),
@@ -216,7 +352,6 @@ class CliForwardingTests(TestCase):
                 rc = cli.main(
                     [
                         "--build-only",
-                        "--force-build",
                         "--no-forward-credentials",
                         "--no-verify-dockerfile",
                         "--build-proxy",
@@ -231,26 +366,60 @@ class CliForwardingTests(TestCase):
         return observed
 
     def test_apple_container_build_uses_forwarder_only_during_build(self):
-        observed = self.run_build(container_cli.APPLE_CONTAINER)
+        observed = self.run_build(
+            container_cli.APPLE_CONTAINER, "--build-no-proxy", "mirror.corp"
+        )
         port = build_proxy_forwarder.preferred_port(
             endpoint("https://corp.proxy.example:3128")
         )
-        self.assertEqual(observed["port"], port)
+        self.assertEqual(observed["constructed"], [True])  # Bound inside the lock.
+        if "random port" not in observed["output"]:  # Not in TIME_WAIT.
+            self.assertEqual(observed["port"], port)
+        port = observed["port"]
         self.assertTrue(observed["listening"])
+        self.assertEqual(
+            observed["env"],
+            build_network.environment(f"http://203.0.113.113:{port}", ("mirror.corp",)),
+        )
         for text in (observed["dockerfile"], observed["devcontainer"]):
-            self.assertIn(f'ENV https_proxy="http://203.0.113.113:{port}"', text)
+            self.assertNotIn("203.0.113.113", text)
             self.assertNotIn("corp.proxy.example", text)
+            self.assertNotIn("_proxy", text)
         self.assertIn("container system dns create", observed["output"])
         with self.assertRaises(OSError):
             socket.create_connection(("127.0.0.1", port), timeout=1).close()
 
+    def test_cached_image_starts_no_forwarder(self):
+        observed = self.run_build(container_cli.APPLE_CONTAINER, cache_hit=True)
+        self.assertEqual(observed["constructed"], [])
+        self.assertIsNone(observed["build_args"])
+        self.assertIn("Reusing cached image", observed["output"])
+        self.assertNotIn("container system dns create", observed["output"])
+
+    def test_busy_port_does_not_change_rendered_dockerfile(self):
+        port = build_proxy_forwarder.preferred_port(
+            endpoint("https://corp.proxy.example:3128")
+        )
+        free = self.run_build(container_cli.APPLE_CONTAINER)
+        try:
+            busy = socket.create_server(("127.0.0.1", port))
+        except OSError:
+            self.skipTest("preferred port unavailable for this test")
+        with busy:
+            fallback = self.run_build(container_cli.APPLE_CONTAINER)
+        self.assertNotEqual(fallback["port"], port)
+        self.assertEqual(free["dockerfile"], fallback["dockerfile"])
+        self.assertEqual(free["devcontainer"], fallback["devcontainer"])
+
     def test_other_runtimes_use_the_proxy_verbatim(self):
         observed = self.run_build(container_cli.DOCKER)
+        self.assertEqual(observed["constructed"], [])
         self.assertIsNone(observed["port"])
-        self.assertIn(
-            'ENV https_proxy="https://corp.proxy.example:3128"',
-            observed["dockerfile"],
+        self.assertEqual(
+            observed["env"],
+            build_network.environment("https://corp.proxy.example:3128"),
         )
+        self.assertNotIn("corp.proxy.example", observed["dockerfile"])
 
     def test_dry_run_describes_forwarding_without_listening(self):
         target = "https://corp.proxy.example:3128"
@@ -260,6 +429,11 @@ class CliForwardingTests(TestCase):
             with (
                 patch.object(
                     cli, "read_identity", return_value=GitIdentity("Ada", "a@b.c")
+                ),
+                patch.object(
+                    cli.build_proxy_forwarder,
+                    "BuildProxyForwarder",
+                    side_effect=AssertionError("dry-run must not listen"),
                 ),
                 contextlib.redirect_stdout(out),
             ):
@@ -278,4 +452,5 @@ class CliForwardingTests(TestCase):
             self.assertEqual(list(Path(tmp).iterdir()), [])
         self.assertEqual(rc, 0)
         self.assertIn(f"127.0.0.1:{port}", out.getvalue())
+        self.assertIn("--build-arg 'http_proxy=<redacted>'", out.getvalue())
         self.assertNotIn("corp.proxy.example", out.getvalue())

@@ -19,23 +19,34 @@ Private keys, leaf certificates, and malformed certificate files are rejected.
 
 ## Build settings and runtime permissions
 
-Build proxy settings configure the environment and apt before the build's
-commands run. For supplied multi-stage Dockerfiles, setup covers executable
+The proxy is passed to the image build as the builder's predefined proxy
+build-args (`--build-arg http_proxy=…`, plus `https_proxy` and `no_proxy`, in
+lowercase and uppercase). They are deliberately not declared with `ARG`. Every
+`RUN` instruction sees them as environment variables, but they never appear in
+the generated Dockerfiles, the image configuration, or its history. BuildKit
+also excludes them from the layer cache key, so a changed proxy URL or
+forwarder port reuses existing layers instead of rebuilding.
+
+`no_proxy` defaults to `localhost,127.0.0.1,::1`. Add entries with
+`--build-no-proxy HOSTS`. The option is repeatable and takes comma-separated
+host names, `.domain` suffixes (optionally with `:port`), IP addresses, or CIDR
+networks. It requires `--build-proxy`, and `*` is rejected. Host proxy variables
+are not read. The URL must be a credential-free HTTP or HTTPS endpoint without
+a path. SOCKS proxies are unsupported.
+
+apt reads `http_proxy`, `https_proxy`, and `no_proxy` from the environment, so
+no apt proxy file is written. Commands that clear the environment, such as
+`sudo apt-get` under the default `env_reset`, do not see the proxy. Run them as
+root, or pass the variables explicitly (`sudo -E`).
+
+Because nothing is persisted, there is no proxy cleanup step: the agent starts
+without proxy settings. The values can still appear in build logs and in the
+builder's process arguments. Build CA setup runs early in executable
 Debian/Ubuntu stages, including a stage named `prefix`. Scratch stages,
 recognized non-Debian images, and stages only used as copy sources are left
-alone. Existing Dockerfile instructions can override the injected settings.
-The bootstrap explicitly uses `/bin/sh`, so an inherited custom `SHELL` does
-not change how certificate and apt proxy setup runs.
-
-The proxy URL is set as `http_proxy` and `https_proxy`, in lowercase and
-uppercase, and as apt's HTTP and HTTPS proxy. `no_proxy` is fixed to
-`localhost,127.0.0.1,::1`. Host proxy variables are not read. The URL must be a
-credential-free HTTP or HTTPS endpoint without a path. SOCKS proxies are unsupported.
-
-Proxy environment values and the generated apt proxy file are cleared after
-all build commands, before the agent starts. They can still appear in generated
-Dockerfiles, build logs, and intermediate image layers. Corporate CA trust
-persists in the image. System roots are retained; Node, Python requests, and uv
+alone. The bootstrap explicitly uses `/bin/sh`, so an inherited custom `SHELL`
+does not change how certificate setup runs. Corporate CA trust persists in the
+image. System roots are retained; Node, Python requests, and uv
 are configured to use the extended system bundle. Applications with their own
 trust stores may need additional configuration. Certificate verification stays
 enabled, including the initial apt request when `ca-certificates` is absent.
@@ -80,29 +91,40 @@ when forwarding is used. The builder always speaks plain HTTP to the
 forwarder. For an `https://` proxy, the forwarder opens TLS to the proxy from
 the host and verifies it with system trust plus `--build-ca-cert` files.
 
-`PORT` is derived from the proxy URL (range 40000–48999), so the rendered
-Dockerfile and the layer cache stay stable across runs. If that port is busy,
-a random free port is used with a warning, which invalidates the build cache
-for that run. The forwarder only listens on `127.0.0.1`, starts just before
-the image build, and stops when the build finishes, before any sandbox starts.
-Other local processes can use it while it runs. Cached-image runs start no
-forwarder. If the proxy cannot be reached or its TLS certificate fails
-verification, the forwarder prints one warning and closes the builder's
-connection.
+`PORT` is preferably derived from the proxy URL (range 40000–48999). The port
+only reaches the builder as a build-arg, so if that port is busy, a random free
+port is used with a notice and the Dockerfiles and the layer cache are unaffected.
+Concurrent runs on the same project therefore never rewrite each other's
+Dockerfile. The listener is bound without `SO_REUSEADDR`, so it never shares
+a port with another listener, including a wildcard (`*:PORT`) listener on
+macOS. A port still in `TIME_WAIT` from a recent run also falls back.
 
-The forwarded URL is written to both the sandbox and devcontainer Dockerfiles.
-Builds outside project-sandbox, such as a devcontainer rebuild, have no
-forwarder running and fail to reach the proxy. Rebuild with project-sandbox,
-or render the devcontainer for a runtime that can reach the proxy directly.
+The forwarder only listens on `127.0.0.1`. It is created after the
+cache check, inside the per-project build lock, and only when an image is
+actually built. It stops when the build finishes, before any sandbox starts.
+Cached-image and `--no-build` runs start no forwarder. Other local processes
+can use it while it runs. Each connection is relayed with bounded,
+non-blocking buffers, so large simultaneous uploads and downloads cannot
+deadlock. A builder's half-close is honoured, and the proxy's reply is still
+delivered, also for `https://` proxies. If the proxy cannot be reached or its
+TLS certificate fails verification, the forwarder prints one warning and closes
+the builder's connection. Hosts listed with `--build-no-proxy` are contacted
+directly by the builder, not through the host, so VPN-only hosts must stay
+proxied.
+
+The generated `devcontainer.json` carries the proxy URL verbatim as
+`build.args`, for devcontainer tooling that builds outside project-sandbox.
+With Docker or Podman this works as is. The builder of that tooling must be
+able to reach the proxy; no forwarder runs for it.
 
 These flags configure commands inside image stages. Registry pulls and remote
 `ADD` downloads are performed by the builder and need separate daemon/builder
 proxy and certificate configuration. Configure the proxy's allowlist for all
 package repositories and redirects used by the build.
 
-Changed proxy URLs or certificate contents invalidate generated build inputs.
-Removing the options removes their generated configuration and staged CA files
-on the next render. Rebuild the image, including devcontainers, to apply
+Changed certificate contents invalidate generated build inputs; changed proxy
+settings do not, because they are not build inputs. Removing the options removes
+their generated configuration and staged CA files on the next render. Rebuild the image, including devcontainers, to apply
 changes; `--no-build` continues using the existing image. `--dry-run` validates
 and describes the setup, including the Apple forwarder port, without writing
 files, listening, or contacting the proxy.
