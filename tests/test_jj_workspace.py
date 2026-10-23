@@ -248,6 +248,15 @@ class JjWorkspaceSetupTests(unittest.TestCase):
         # Workspace directory should have jj state
         self.assertTrue((ws.path / ".jj").exists())
 
+    def test_setup_does_not_colocate_a_git_worktree(self) -> None:
+        """Regression: jj >= 0.46 colocates new workspaces with a Git worktree
+        whose relative `.git` gitdir cannot resolve from /workspace in the
+        container, breaking every in-container jj command."""
+        ws = jj_workspace_mod.setup(self.repo, "feat/no-colocate")
+
+        self.assertFalse((ws.path / ".git").exists())
+        self.assertFalse((self.repo / ".git" / "worktrees").exists())
+
     def test_git_backend_mount_points_at_main_repo_git_dir(self) -> None:
         ws = jj_workspace_mod.setup(self.repo, "feat/hello")
 

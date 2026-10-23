@@ -18,3 +18,11 @@
 - [x] Cover sequential reuse, TLS backpressure/hostname failures, and failure/interruption cleanup; stop fixture threads reliably.
 - [x] Share URL/certificate validation cases and CLI test setup, and remove obsolete cleanup terminology.
 - [ ] Run the fixed-port relay reuse/exclusivity regressions natively on macOS (`uv run pytest -q tests/test_internet_proxy_relay.py`), alongside the Apple acceptance checks above; local validation used Linux sockets.
+
+## jj 0.46 colocated-workspace fix follow-up
+
+- [ ] Free disk space, then rerun the full suite (`uv run pytest -q`); the last run had ~20 unrelated `git init` exit-128 failures caused by ENOSPC.
+- [ ] Rerun the `jj-workflow` e2e suite (`scripts/run-e2e-tests.sh`) on Apple container to confirm `--no-colocate` workspaces work in the container.
+- [ ] Confirm `test_setup_does_not_colocate_a_git_worktree` fails without the `--no-colocate` fix.
+- [ ] Clean up old e2e leftovers under `.project-sandbox/e2e/`, including `jj-e2e.88BjD8-workspaces/e2e-jj-default`.
+- [ ] Workspaces created by jj >= 0.46 before this fix are colocated and still break in the container when reused (`--keep-workspace`); document that they must be recreated, or detect and reject/repair them in `jj_workspace.setup`.
