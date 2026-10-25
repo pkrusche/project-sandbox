@@ -4,6 +4,7 @@ import functools
 import hashlib
 import os
 import posixpath
+import shlex
 import shutil
 import subprocess
 from collections.abc import Generator
@@ -61,6 +62,18 @@ def _setup_locked(
     if ws_path.exists():
         existing = _list_workspaces(repo)
         if str(ws_path) in existing or str(ws_path.resolve()) in existing:
+            if _is_colocated(ws_path):
+                # Kept from a jj >= 0.46 session before --no-colocate was used.
+                # Its work may be unsnapshotted, so never repair it in place.
+                raise SystemExit(
+                    f"workspace is colocated with a Git worktree, which cannot "
+                    f"be opened inside the container: {ws_path}\n"
+                    f"  Keep its work on the bookmark, then recreate it:\n"
+                    f"    jj -R {shlex.quote(str(ws_path))} bookmark set "
+                    f"{shlex.quote(bookmark)} -r @\n"
+                    f"    jj workspace forget {shlex.quote(ws_path.name)}\n"
+                    f"  Remove the directory and retry."
+                )
             # Reusing a kept workspace and its bookmark; created nothing.
             return JjWorkspace(path=ws_path, bookmark=bookmark)
         raise SystemExit(
@@ -88,6 +101,19 @@ def _setup_locked(
         add_args.append("--no-colocate")
     add_args.append(str(ws_path))
     _jj(repo, add_args)
+    if _is_colocated(ws_path):
+        # The flag probe missed a jj that colocates; the fresh workspace holds
+        # no work yet, so drop it rather than hand the container a broken one.
+        try:
+            _jj(repo, ["workspace", "forget", ws_path.name])
+        except subprocess.CalledProcessError:
+            pass
+        shutil.rmtree(ws_path, ignore_errors=True)
+        raise SystemExit(
+            f"jj created a colocated workspace at {ws_path}, which cannot be "
+            f"opened inside the container; upgrade jj to one that supports "
+            f"`jj workspace add --no-colocate`."
+        )
 
     # Point the bookmark at this workspace's working-copy commit. When reusing an
     # existing bookmark, @ was created on top of it (above), so leave it where it
@@ -309,6 +335,11 @@ def _supports_no_colocate() -> bool:
     except OSError:
         return False
     return "--no-colocate" in result.stdout
+
+
+def _is_colocated(ws_path: Path) -> bool:
+    """Whether the workspace has its own Git worktree (a ``.git`` file or dir)."""
+    return os.path.lexists(ws_path / ".git")
 
 
 def _bookmark_exists(repo: Path, bookmark: str) -> bool:

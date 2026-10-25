@@ -555,6 +555,12 @@ uv run project-sandbox \
   place, and a later run for the same branch/bookmark reuses it. Rather than
   recomputing the name, read the exact absolute path from `workspace_path` in
   the JSON summary.
+- jj session workspaces are always created non-colocated (`jj workspace add
+  --no-colocate` on jj >= 0.46), even when the main repo is colocated: a
+  workspace's own Git worktree cannot be opened from `/workspace` in the
+  container. The agent uses `jj` there, not `git`. A kept workspace that is
+  colocated (created by jj >= 0.46 before this rule) is rejected on reuse with
+  the commands to recreate it; its work is left untouched.
 - Headless Claude, Codex, Pi, and OpenCode runs retain their raw JSON event log,
   translate completed messages and tool activity to Markdown on the terminal as
   the session runs, and render the same readable transcript beside the log.

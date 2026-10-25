@@ -3,39 +3,6 @@
 This file contains functionality researched but not yet planned for execution
 in the next release via <TODO.md>.
 
-## Prebuilt container image distribution
-
-The generated container image is currently intended for local use. Before publishing
-or otherwise distributing prebuilt images, complete a third-party licensing and terms
-review and make the image carry the notices required by every bundled component.
-
-- Preserve Node.js's license in the image. The generated Dockerfile currently excludes
-  `LICENSE` while extracting the official Node.js archive; a distributable image must
-  retain or separately reproduce the required copyright and license notice.
-- Include the Apache-2.0 license and any applicable notices for the bundled `jj` binary.
-- Verify that globally installed npm packages retain their license files and required
-  notices, including their transitive production dependencies. Generate and review an
-  SBOM and a consolidated third-party-notices file for each released image.
-- Treat Claude Code separately from the permissively licensed agents. Its package is
-  proprietary and subject to Anthropic's legal agreements; obtain written clarification
-  or permission before redistributing an image that embeds it.
-- Re-run the review whenever a pinned component or base image changes. Include the base
-  image, Debian packages, Node.js, npm packages, downloaded binaries, and generated
-  application files in the review scope.
-- Never publish an image or layer containing staged user credentials, authentication
-  state, project data, build secrets, or local configuration. Build release images from
-  a clean, credential-free context and scan the final image before publication.
-
-## Firewall: verify multi-resolver rules on a real iptables host
-
-Code is complete and the render path is covered by
-`tests/test_renderers.py::test_firewall_collects_all_resolvers_not_just_first`.
-The unit tests are render-only by policy and do not exercise live iptables.
-Outstanding: run the rendered script on a host with iptables and multiple
-`nameserver` entries in `resolv.conf`, then confirm allowlisted-domain
-pre-resolution works across the resolver setup and post-firewall DNS egress does
-not leak before treating this as shipped.
-
 ## Isolate concurrent subagents in separate clones, merge back on teardown
 
 Every `--branch` jj agent shares one repo's `.jj/repo` store and — since we now
@@ -69,3 +36,11 @@ See [proxy endpoints](docs/proxy-endpoints.md) for supported URLs, session DNS
 lifetime, trust, and compatibility; [development](docs/development.md#proxy-endpoint-verification)
 records verification and runtime acceptance limitations. Deferred authentication
 and dynamic DNS refresh are tracked in TODO.md.
+
+Items still to be considered:
+
+- Let concurrent Apple container sessions share one `--internet-proxy` relay; today the fixed, firewall-baked relay port makes a second session using the same proxy fail.
+- Consider authenticated Internet proxies without exposing credentials or forwarding gateway keys; this release intentionally rejects URL credentials and has no authentication negotiation.
+- Consider privileged DNS refresh for long sessions; current endpoint pins require a session restart after DNS changes.
+- Run the opt-in `proxy-endpoints` suite on Docker, Podman, and Apple container, including its native IPv6 scenario. Separately verify pinned bundled Pi/OpenCode versions, DNS-name pinning, and IPv6-disabled fallback. The implementation environment has no container runtime or network-administration capabilities.
+- A remote `--agent-proxy` on Apple container has the same VPN routing gap as `--internet-proxy` had; consider relaying it through the host as well.
