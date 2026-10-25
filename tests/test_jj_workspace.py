@@ -257,6 +257,41 @@ class JjWorkspaceSetupTests(unittest.TestCase):
         self.assertFalse((ws.path / ".git").exists())
         self.assertFalse((self.repo / ".git" / "worktrees").exists())
 
+    def test_setup_rejects_reused_colocated_workspace(self) -> None:
+        """A kept workspace created colocated (jj >= 0.46, before --no-colocate)
+        must be rejected on reuse, not mounted broken; its work is left intact."""
+        ws = jj_workspace_mod.setup(self.repo, "feat/old-colocated")
+        (ws.path / ".git").write_text(
+            "gitdir: ../repo/.git/worktrees/x\n", encoding="utf-8"
+        )
+        (ws.path / "work.txt").write_text("work\n", encoding="utf-8")
+
+        with self.assertRaises(SystemExit) as raised:
+            jj_workspace_mod.setup(self.repo, "feat/old-colocated")
+
+        msg = str(raised.exception)
+        self.assertIn("colocated", msg)
+        self.assertIn(str(ws.path), msg)
+        self.assertIn("jj workspace forget", msg)
+        self.assertTrue((ws.path / "work.txt").is_file())
+
+    @unittest.skipUnless(
+        jj_workspace_mod._supports_no_colocate(),
+        "only jj >= 0.46 colocates new workspaces",
+    )
+    def test_setup_rejects_and_removes_workspace_jj_created_colocated(self) -> None:
+        ws_path = jj_workspace_mod.path_for(self.repo, "feat/colocated")
+        with patch.object(
+            jj_workspace_mod, "_supports_no_colocate", return_value=False
+        ):
+            with self.assertRaises(SystemExit) as raised:
+                jj_workspace_mod.setup(self.repo, "feat/colocated")
+
+        self.assertIn("--no-colocate", str(raised.exception))
+        self.assertFalse(ws_path.exists())
+        self.assertNotIn(str(ws_path), jj_workspace_mod._list_workspaces(self.repo))
+        self.assertFalse(jj_workspace_mod._bookmark_exists(self.repo, "feat/colocated"))
+
     def test_git_backend_mount_points_at_main_repo_git_dir(self) -> None:
         ws = jj_workspace_mod.setup(self.repo, "feat/hello")
 
