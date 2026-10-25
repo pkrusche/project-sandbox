@@ -1,4 +1,4 @@
-# Corporate trust is explicit and installed before the first download. Build
+# CA trust is explicit and installed before the first download. Build
 # proxies arrive as predefined build-args and are never written to the image.
 {% if build_ca_certificate_sources -%}
 {# One COPY keeps the layer count fixed however many CAs a bundle holds. -#}

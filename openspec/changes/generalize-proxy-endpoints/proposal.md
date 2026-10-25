@@ -2,7 +2,7 @@
 
 ## Why
 
-Both proxy options currently require HTTP services on host loopback, preventing use of remote gateways and corporate Internet proxies. General endpoint support should preserve independent routing and firewall enforcement while allowing verified HTTPS connections to remote services.
+Both proxy options currently require HTTP services on host loopback, preventing use of remote gateways and some Internet proxies. General endpoint support should preserve independent routing and firewall enforcement while allowing verified HTTPS connections to remote services.
 
 ## What Changes
 
@@ -12,7 +12,7 @@ Both proxy options currently require HTTP services on host loopback, preventing 
 - Resolve and pin each endpoint for the sandbox lifetime, permitting only its address/port combinations. Keep agent gateways and Ollama outside general Internet proxy routing.
 - Verify remote TLS with system trust plus optional public CA certificates supplied through `--ca-cert`; apply relevant trust to host preflight and generated sandbox/devcontainer images, including agent-proxy-only sessions.
 - Preserve agent bearer-key authentication. Internet-proxy authentication, client certificates, local HTTPS, network-provider integration, and proxy lifecycle management are out of scope.
-- Document compatibility and test independent, mixed local/remote, and HTTPS configurations without tying behavior to a particular corporate network or VPN.
+- Document compatibility and test independent, mixed local/remote, and HTTPS configurations without tying behavior to a particular network or VPN.
 
 ## Capabilities
 

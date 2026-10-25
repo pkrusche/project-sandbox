@@ -94,7 +94,7 @@ container system. See [Apple container host alias](apple-container-dns.md).
 
 ```bash
 project-sandbox --agent bash --agent-proxy https://models.corp.example/v1 --model example-model --runtime docker . python:3.12-slim
-project-sandbox --agent bash --agent-proxy https://models.corp.example/api/v1 --model example-model --ca-cert /path/to/corporate-ca.pem --runtime docker . python:3.12-slim
+project-sandbox --agent bash --agent-proxy https://models.corp.example/api/v1 --model example-model --ca-cert /path/to/extra-ca.pem --runtime docker . python:3.12-slim
 ```
 
 Remote hosts retain their scheme, hostname, effective port (443 here), and API

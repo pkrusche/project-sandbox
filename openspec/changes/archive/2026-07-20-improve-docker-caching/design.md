@@ -1,6 +1,6 @@
 ## Context
 
-The current implementation splits sanitized source text after its final `FROM`, emits all earlier stages and that final `FROM`, then runs sandbox-owned dependency installs before the final-stage body. This improves caching but assumes the final base is already ready for network access. A previous source Dockerfile could instead install a corporate CA, configure an apt mirror, or set proxy state before those operations.
+The current implementation splits sanitized source text after its final `FROM`, emits all earlier stages and that final `FROM`, then runs sandbox-owned dependency installs before the final-stage body. This improves caching but assumes the final base is already ready for network access. A previous source Dockerfile could instead install a CA, configure an apt mirror, or set proxy state before those operations.
 
 Docker only carries filesystem and image configuration between stages when a later `FROM` inherits an earlier stage. Textual placement of an unrelated named stage is not enough, so the generated Dockerfile must model the cache boundary with explicit stage inheritance.
 

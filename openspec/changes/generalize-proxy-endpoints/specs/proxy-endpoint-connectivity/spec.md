@@ -11,7 +11,7 @@ Both proxy options SHALL accept HTTP loopback endpoints and remote HTTP/HTTPS en
 - **WHEN** either proxy option specifies HTTPS on localhost or a numeric loopback address
 - **THEN** validation rejects it before secret lookup, network access, or generated-file writes
 
-#### Scenario: Corporate HTTPS endpoint uses the default port
+#### Scenario: HTTPS endpoint uses the default port
 - **WHEN** a proxy URL is `https://proxy.corp.example`
 - **THEN** its effective port is 443 and the sandbox retains `proxy.corp.example` as the TLS identity
 

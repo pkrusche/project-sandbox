@@ -42,7 +42,7 @@ instructions are appended. This keeps the expensive, source-independent layers
 cacheable when project files change and preserves earlier build stages and
 `COPY --from` references.
 
-For corporate proxies and CAs needed during image construction, use
+For proxies and CAs needed during image construction, use
 [`--build-proxy URL`, `--build-no-proxy HOSTS`, and `--build-ca-cert`](build-network.md).
 These configure access before build commands and leave runtime firewall
 permissions unchanged.
@@ -52,7 +52,7 @@ named stages):
 
 ```dockerfile
 FROM python:3.12-slim AS prefix
-COPY corporate-ca.crt /usr/local/share/ca-certificates/
+COPY proxy-ca.crt /usr/local/share/ca-certificates/
 RUN update-ca-certificates
 ENV HTTPS_PROXY=http://proxy.example
 
@@ -640,7 +640,7 @@ uv run python -m compileall src tests scripts
 uv run pytest -q
 ```
 
-For session-time corporate proxy trust, use repeatable [`--ca-cert PATH`](internet-proxy.md#injecting-proxy-ca-certificates) with `--internet-proxy`. This also applies to generated devcontainers.
+For session-time proxy trust, use repeatable [`--ca-cert PATH`](internet-proxy.md#injecting-proxy-ca-certificates) with `--internet-proxy`. This also applies to generated devcontainers.
 
 With `--python-uv --branch`, the image is built from the resolved Git worktree
 or jj workspace, including its `pyproject.toml` and `uv.lock`. Generated sandbox

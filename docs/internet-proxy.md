@@ -27,7 +27,7 @@ sessions can reuse it immediately; concurrent sessions using the same proxy
 conflict and fail early. Other host processes can use the relay while it runs.
 Devcontainers connect directly because their tooling runs without this relay.
 
-For corporate access during image construction, use the separate
+For proxy access during image construction, use the separate
 [`--build-proxy URL` and `--build-ca-cert` options](build-network.md).
 They do not grant runtime firewall access.
 
@@ -89,12 +89,12 @@ Linux reads extra trusted CAs from its NSS database (`~/.pki/nssdb`) rather than
 
 ## Injecting proxy CA certificates
 
-For a TLS-inspecting corporate proxy, supply its public CA certificate in PEM
+For a TLS-inspecting proxy, supply its public CA certificate in PEM
 format (one certificate per file). Repeat `--ca-cert` for multiple certificates:
 
 ```bash
 project-sandbox --internet-proxy http://127.0.0.1:18080 \
-  --ca-cert /path/to/corporate-root.pem --ca-cert /path/to/intermediate.pem \
+  --ca-cert /path/to/proxy-root.pem --ca-cert /path/to/intermediate.pem \
   --runtime docker --agent bash . python:3.12-slim
 ```
 

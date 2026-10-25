@@ -19,7 +19,7 @@ When rendering a user-supplied `--dockerfile`, the system SHALL place sandbox-ow
 The system SHALL recognize a source stage named `prefix` case-insensitively and SHALL run the generated dependency stage from the completed prefix stage.
 
 #### Scenario: Certificate and proxy prefix
-- **WHEN** a prefix stage copies a corporate CA, updates certificate trust, or sets proxy/mirror configuration
+- **WHEN** a prefix stage copies a CA, updates certificate trust, or sets proxy/mirror configuration
 - **THEN** those instructions execute before sandbox-owned apt, curl, and npm network operations and their resulting state is inherited
 
 #### Scenario: Mixed-case prefix name

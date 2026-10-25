@@ -2,10 +2,36 @@
 
 Notable changes to `project-sandbox` are documented here.
 
-## [Unreleased]
+## [0.3.0]
+
+### Added
+
+- Remote proxy endpoints: `--internet-proxy` and `--agent-proxy` now accept
+  remote HTTP or verified-TLS HTTPS proxies and gateways in addition to host
+  loopback. The sandbox pins each endpoint's DNS answers in `/etc/hosts` and
+  the firewall allows only those addresses and ports. On Apple container, a
+  remote `--internet-proxy` is reached through a host-loopback relay so the
+  host's VPN routes and DNS apply. See [proxy endpoints](docs/proxy-endpoints.md).
+- [proxied network access during image builds](docs/build-network.md):
+  `--build-proxy` routes image-build downloads through a credential-free
+  HTTP/HTTPS proxy (via a host-loopback forwarder on Apple container), without
+  persisting proxy values in generated Dockerfiles. `--build-no-proxy` adds
+  `no_proxy` entries, and `--build-ca-cert` installs PEM CA certificates or
+  bundles before build downloads.
 
 ### Changed
 
+- jj `--branch` sessions now always create non-colocated workspaces
+  (`jj workspace add --no-colocate` on jj 0.46 and later), even from a
+  colocated repository. A kept workspace that is colocated is rejected on reuse
+  with instructions to recreate it.
+- `--python-uv` sandboxes keep their virtual environment and managed Python
+  installations in container-only paths (`/opt/venv`, `/opt/uv-python`), so
+  host `uv` runs and sandbox runs no longer share the project `.venv`. The
+  generated Codex configuration forwards these uv settings to its tool shells.
+- Refreshed pinned sandbox tooling and build inputs, including Node.js, uv,
+  OpenSpec, Claude Code, Codex CLI, OpenCode, its OpenAI provider package, Pi,
+  Ruff, and ty, along with the lockfile.
 - Git and jj sandbox container tests now require
   `PROJECT_SANDBOX_CONTAINER_TESTS=1`; default unit-test collection and execution
   do not probe Docker/Podman or start containers. The release checks enable
@@ -21,6 +47,9 @@ Notable changes to `project-sandbox` are documented here.
   of crashing Claude, Codex, or OpenCode credential parsing.
 - The nested gitignore test now keeps all writes inside its temporary project,
   avoiding a stray `.gitignore` in the system temporary directory.
+- jj `--branch` sessions no longer fail to open the repository inside the
+  container with jj 0.46, which colocated new workspaces with a Git worktree
+  whose `.git` pointer cannot resolve from `/workspace`.
 
 ## [0.2.2]
 
@@ -183,7 +212,8 @@ Initial public release.
 - Build caching, dry-run support, timeout teardown, end-to-end tests, and CI.
 - Ruff, pytest, and release preflight checks.
 
-[0.2.2]: https://github.com/pkrusche/project-sandbox/compare/v0.2.1...HEAD
+[0.3.0]: https://github.com/pkrusche/project-sandbox/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/pkrusche/project-sandbox/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/pkrusche/project-sandbox/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/pkrusche/project-sandbox/compare/v0.1.4...v0.2.0
 [0.1.4]: https://github.com/pkrusche/project-sandbox/compare/v0.1.3...v0.1.4

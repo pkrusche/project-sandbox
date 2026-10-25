@@ -1,11 +1,12 @@
-# Corporate network access during image builds
+# Proxied network access during image builds
 
 Use `--build-proxy URL` for downloads during image construction and
-`--build-ca-cert PATH` to install corporate trust before those downloads:
+`--build-ca-cert PATH` to install additional certificates to trust (e.g. in a
+corporate network) before those downloads:
 
 ```bash
 project-sandbox --build-proxy http://proxy.corp.example:3128 \
-  --build-ca-cert /path/to/corporate-root.pem \
+  --build-ca-cert /path/to/extra-roots.pem \
   --runtime docker --build-only . python:3.12-slim
 ```
 
@@ -65,7 +66,7 @@ access, add `--internet-proxy` and build an image with that policy:
 
 ```bash
 project-sandbox --build-proxy http://proxy.corp.example:3128 \
-  --build-ca-cert /path/to/corporate-root.pem \
+  --build-ca-cert /path/to/extra-roots.pem \
   --internet-proxy http://proxy.corp.example:3128 --runtime docker \
   --agent bash . python:3.12-slim
 ```

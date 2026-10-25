@@ -1,6 +1,6 @@
 ## Why
 
-The cache-first `--dockerfile` splice order puts sandbox-owned `apt-get`, `curl`, and `npm` network operations before source Dockerfile instructions that may configure corporate certificates, proxies, or package mirrors. We need an explicit prerequisite stage while retaining cache-stable sandbox dependency layers.
+The cache-first `--dockerfile` splice order puts sandbox-owned `apt-get`, `curl`, and `npm` network operations before source Dockerfile instructions that may configure certificates, proxies, or package mirrors. We need an explicit prerequisite stage while retaining cache-stable sandbox dependency layers.
 
 ## What Changes
 

@@ -1,7 +1,5 @@
 # Documentation
 
-See [Internet proxy](internet-proxy.md) for fail-closed routing through an externally managed filtering proxy.
-
 This directory contains the detailed project-sandbox documentation.
 
 ## Contents
@@ -14,8 +12,10 @@ This directory contains the detailed project-sandbox documentation.
 - [Generated files and runtime behavior](runtime.md) - end-to-end flow, file
   layout, generated image tags, OpenSpec, credential staging, and workspace
   masking.
-- [Corporate build networking](build-network.md) - early proxy and CA setup,
+- [proxied build networking](build-network.md) - early proxy and CA setup,
   build/runtime separation, and the Squid acceptance test.
+- See [Internet proxy](internet-proxy.md) for routing traffic through an externally 
+  managed filtering proxy.
 - [Proxy endpoints](proxy-endpoints.md) - accepted local/remote URLs, DNS pinning,
   verified TLS, and independent gateway and Internet routing.
 - [Security model](security.md) - firewall behavior, OAuth token lifetime,

@@ -332,7 +332,7 @@ class BuildNetworkRendererTests(TestCase):
                 self.assertIn(
                     'COPY ["sandbox with spaces/project-sandbox-build-ca-', text
                 )
-                self.assertEqual(text.count("# Corporate trust"), 3)
+                self.assertEqual(text.count("# CA trust"), 3)
             self.assertEqual(
                 len(list(context.glob("project-sandbox-build-ca-*.crt"))), 1
             )
@@ -366,14 +366,14 @@ class BuildNetworkRendererTests(TestCase):
             dockerfile.render(root, base_dockerfile=plain_source)
             plain = (root / "Dockerfile").read_text()
             text, _ = self._render_source(root, source)
-        self.assertEqual(text.count("Corporate trust"), 3)
+        self.assertEqual(text.count("CA trust"), 3)
         self.assertEqual(
             [line for line in text.splitlines() if line.startswith("USER")],
             [line for line in plain.splitlines() if line.startswith("USER")],
         )
         builder = text[: text.index("FROM builder")]
         self.assertNotIn("USER", builder)
-        self.assertLess(builder.index("Corporate trust"), builder.index("pip install"))
+        self.assertLess(builder.index("CA trust"), builder.index("pip install"))
 
     def test_setup_follows_explicit_root_user_before_first_run(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -384,8 +384,8 @@ class BuildNetworkRendererTests(TestCase):
             )
         start = text.index("AS tools\n")
         tools = text[start : text.index("FROM ", start)]
-        self.assertLess(tools.index("USER root"), tools.index("Corporate trust"))
-        self.assertLess(tools.index("Corporate trust"), tools.index("RUN echo tools"))
+        self.assertLess(tools.index("USER root"), tools.index("CA trust"))
+        self.assertLess(tools.index("CA trust"), tools.index("RUN echo tools"))
 
     def test_unrecognized_bases_are_skipped_with_a_warning(self):
         # Regression: the env points at the Debian bundle, which non-Debian
@@ -409,12 +409,12 @@ class BuildNetworkRendererTests(TestCase):
 
         for alias in ("amazon", "ubi", "dynamic", "custom"):
             with self.subTest(alias=alias):
-                self.assertNotIn("Corporate trust", stage(alias))
+                self.assertNotIn("CA trust", stage(alias))
                 self.assertNotIn("SSL_CERT_FILE", stage(alias))
                 self.assertTrue(any(f"'{alias}'" in w for w in warnings), warnings)
         for alias in ("custom_apt", "ubuntu"):
             with self.subTest(alias=alias):
-                self.assertIn("Corporate trust", stage(alias))
+                self.assertIn("CA trust", stage(alias))
         self.assertEqual(len(warnings), 4, warnings)
 
     def test_bundle_uses_one_copy_per_stage(self):
@@ -434,7 +434,7 @@ class BuildNetworkRendererTests(TestCase):
             for line in text.splitlines()
             if line.startswith("COPY [") and "project-sandbox-build-ca-" in line
         ]
-        self.assertEqual(len(copies), text.count("Corporate trust"))
+        self.assertEqual(len(copies), text.count("CA trust"))
         self.assertEqual(len(staged), 150)
         for argv in copies:
             self.assertEqual(argv[-1], "/usr/local/share/ca-certificates/")
@@ -458,7 +458,7 @@ class BuildNetworkRendererTests(TestCase):
             self.assertEqual(len(list(root.glob("project-sandbox-build-ca-*.crt"))), 1)
             dockerfile.render(root, base_image="debian:bookworm")
             self.assertEqual(list(root.glob("project-sandbox-build-ca-*.crt")), [])
-            self.assertNotIn("Corporate trust", (root / "Dockerfile").read_text())
+            self.assertNotIn("CA trust", (root / "Dockerfile").read_text())
 
     def test_generated_languages_and_numeric_stage_references(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -488,12 +488,12 @@ class BuildNetworkRendererTests(TestCase):
                         if not line.startswith('RUN ["/bin/sh", "-c"')
                     )
                     self.assertLess(
-                        outside_bootstrap.index("# Corporate trust"),
+                        outside_bootstrap.index("# CA trust"),
                         outside_bootstrap.index("apt-get update"),
                     )
                     if source == python:
                         self.assertNotIn(
-                            "Corporate trust",
+                            "CA trust",
                             text[
                                 text.index("FROM ghcr.io") : text.index("FROM python")
                             ],

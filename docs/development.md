@@ -167,7 +167,7 @@ certificate chain:
 
 ```bash
 uv run python scripts/e2e-internet-proxy-smoke.py \
-  --runtime docker --ca-cert /path/to/corporate-root.pem
+  --runtime docker --ca-cert /path/to/extra-roots.pem
 ```
 
 The full Internet-routing acceptance test is deliberately opt-in because it
@@ -178,7 +178,7 @@ stops and restarts both external services and makes real Agentgateway requests:
   --blocked-url https://blocked.example.test/ \
   --internet-proxy-dir ../internet-proxy-locally \
   --agentgateway-dir ../agentgateway-locally \
-  --ca-cert /path/to/corporate-root.pem
+  --ca-cert /path/to/extra-roots.pem
 ```
 
 Use a denied public-domain fixture configured by the proxy, not the placeholder
