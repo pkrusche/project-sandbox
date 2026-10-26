@@ -23,6 +23,14 @@ uv sync
 uv run project-sandbox --help
 ```
 
+Check that a container runtime, git, and (optionally) jj are ready:
+
+```bash
+uv run project-sandbox doctor
+```
+
+See [Host prerequisite checks](doctor.md) for what is probed.
+
 ## Quick Start
 
 ```bash

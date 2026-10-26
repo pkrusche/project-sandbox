@@ -25,6 +25,7 @@ from . import (
     devcontainer,
     dockerfile,
     dockerfile_checksum,
+    doctor,
     firewall,
     internet_proxy,
     local_service_network,
@@ -391,6 +392,8 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit("usage: project-sandbox sessions list [--json]")
         observability.print_sessions(as_json="--json" in extra)
         return 0
+    if raw_argv[:1] == ["doctor"]:
+        return doctor.main(raw_argv[1:])
     args = build_parser().parse_args(raw_argv)
 
     internet_proxy_config = _validate_internet_proxy_args(args)
