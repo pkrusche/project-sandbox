@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import socket
@@ -107,8 +108,14 @@ def discover_models(
             ) from None
         if isinstance(reason, socket.gaierror):
             raise SystemExit("Agent proxy DNS resolution failed") from None
+        # Name the failure without echoing exception text, which may carry
+        # request details such as the bearer key.
+        detail = type(reason if isinstance(reason, BaseException) else exc).__name__
+        if isinstance(reason, OSError) and reason.errno in errno.errorcode:
+            detail += f" {errno.errorcode[reason.errno]}"
         raise SystemExit(
-            "Agent proxy is unavailable; check gateway connectivity and TLS certificate trust/name"
+            f"Agent proxy is unavailable ({detail}); check gateway connectivity "
+            "and TLS certificate trust/name"
         ) from exc
     except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
         raise SystemExit("Agent proxy returned a malformed model catalog") from exc

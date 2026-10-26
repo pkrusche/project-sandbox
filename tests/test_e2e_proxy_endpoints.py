@@ -9,6 +9,7 @@ import shutil
 import socket
 import subprocess
 import tempfile
+import threading
 import unittest
 from contextlib import chdir
 from pathlib import Path
@@ -58,6 +59,46 @@ class ProxyEndpointHarnessTests(unittest.TestCase):
         ):
             with self.subTest(host=host), self.assertRaises(argparse.ArgumentTypeError):
                 checker.fixture_address(host)
+
+    def test_round_trip_check_explains_connect_only_local_network(self):
+        checker = load_script(ROOT / "scripts/e2e-proxy-endpoints.py")
+        with checker.FixtureServer("127.0.0.1", "canary") as canary:
+            checker.check_round_trip("127.0.0.1", canary.server_port)
+        # Accept TCP but drop the request, as macOS Local Network blocking does.
+        with socket.create_server(("127.0.0.1", 0)) as listener:
+            port = listener.getsockname()[1]
+
+            def drop():
+                connection, _ = listener.accept()
+                connection.close()
+
+            thread = threading.Thread(target=drop, daemon=True)
+            thread.start()
+            with self.assertRaises(SystemExit) as raised:
+                checker.check_round_trip("127.0.0.1", port)
+            thread.join(timeout=2)
+        self.assertIn("Local Network", str(raised.exception))
+        self.assertIn("127.0.0.1", str(raised.exception))
+
+    def test_gateway_unavailable_error_includes_cause(self):
+        with socket.create_server(("127.0.0.1", 0)) as listener:
+            port = listener.getsockname()[1]
+
+            def drop():
+                connection, _ = listener.accept()
+                connection.recv(65536)
+                connection.close()
+
+            thread = threading.Thread(target=drop, daemon=True)
+            thread.start()
+            with self.assertRaises(SystemExit) as raised:
+                agent_proxy.discover_models(
+                    f"http://127.0.0.1:{port}/v1", "key", timeout=3
+                )
+            thread.join(timeout=2)
+        self.assertIn(
+            "Agent proxy is unavailable (RemoteDisconnected)", str(raised.exception)
+        )
 
     def test_observation_validation_rejects_missing_routes_and_key_leaks(self):
         checker = load_script(ROOT / "scripts/e2e-proxy-endpoints.py")

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import errno
+import http.client
 import http.server
 import ipaddress
 import json
@@ -47,6 +49,10 @@ class Fixture(http.server.BaseHTTPRequestHandler):
             super().handle()
         except (BrokenPipeError, ConnectionResetError):
             pass  # Startup transport probes intentionally close early.
+        except OSError as exc:
+            # macOS reports some early closes as ENOTCONN instead.
+            if exc.errno != errno.ENOTCONN:
+                raise
 
     def record(self):
         self.fixture_server.observations.append(
@@ -155,6 +161,24 @@ def fixture_address(value: str) -> str:
             "use a non-loopback, unscoped unicast IP address"
         ) from exc
     return str(address)
+
+
+def check_round_trip(host: str, port: int) -> None:
+    """Fail clearly when the host can connect to its own address but not exchange data."""
+    connection = http.client.HTTPConnection(host, port, timeout=3)
+    try:
+        connection.request("GET", "/fixture")
+        connection.getresponse().read()
+    except (OSError, http.client.HTTPException) as exc:
+        raise SystemExit(
+            f"Local network traffic to fixture host {host} is blocked: TCP connects "
+            f"but an HTTP request fails ({exc.__class__.__name__}: {exc}). On macOS, "
+            "allow your terminal or IDE under System Settings > Privacy & Security > "
+            "Local Network and restart it; otherwise check firewall or VPN filtering "
+            "of LAN traffic, or pass a different --fixture-host."
+        ) from None
+    finally:
+        connection.close()
 
 
 def certificates(root: Path, hosts: list[str]) -> ssl.SSLContext:
@@ -271,11 +295,9 @@ def run_scenario(args, root, context, scheme, gateway_host, name):
 
         proxy_url = url(args.fixture_host, proxy.server_port)
         gateway_url = url(gateway_host, gateway.server_port) + API_PATH
-        # Prove the denied port really has a live listener before testing denial.
-        with socket.create_connection(
-            (args.fixture_host, canary.server_port), timeout=3
-        ):
-            pass
+        # Prove the denied port really has a live listener before testing
+        # denial, and that the host can exchange data with its own address.
+        check_round_trip(args.fixture_host, canary.server_port)
         (project / "audit.json").write_text(
             json.dumps(
                 {
