@@ -7,6 +7,8 @@ This directory contains the detailed project-sandbox documentation.
 - [Usage guide](usage.md) - installation, quick start, custom Dockerfiles,
   devcontainer setup, unsupervised sessions, runtime selection, and dependency
   pin updates.
+- [Host prerequisite checks](doctor.md) - `project-sandbox doctor` checks
+  container runtimes, git/jj, and networking tools before a first run.
 - [Headless browser testing](headless-browser-testing.md) - Playwright setup,
   agent-neutral task prompts, and reusable application instructions.
 - [Generated files and runtime behavior](runtime.md) - end-to-end flow, file

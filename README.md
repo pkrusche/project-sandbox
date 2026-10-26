@@ -48,6 +48,12 @@ uv sync
 uv run project-sandbox --help
 ```
 
+Check host prerequisites (container runtimes, git/jj):
+
+```bash
+project-sandbox doctor
+```
+
 Generate sandbox files for a project:
 
 ```bash
