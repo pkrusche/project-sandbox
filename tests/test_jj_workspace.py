@@ -50,6 +50,7 @@ requires_jj_046 = _skip_unless_lazy(
     "requires jj >= 0.46",
 )
 
+
 def _find_docker() -> str | None:
     for cmd in ("docker", "podman"):
         path = shutil.which(cmd)

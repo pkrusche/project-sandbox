@@ -111,8 +111,9 @@ def discover_models(
         # Name the failure without echoing exception text, which may carry
         # request details such as the bearer key.
         detail = type(reason if isinstance(reason, BaseException) else exc).__name__
-        if isinstance(reason, OSError) and reason.errno in errno.errorcode:
-            detail += f" {errno.errorcode[reason.errno]}"
+        code = reason.errno if isinstance(reason, OSError) else None
+        if code is not None and code in errno.errorcode:
+            detail += f" {errno.errorcode[code]}"
         raise SystemExit(
             f"Agent proxy is unavailable ({detail}); check gateway connectivity "
             "and TLS certificate trust/name"
