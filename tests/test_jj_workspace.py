@@ -1,4 +1,5 @@
 import contextlib
+import functools
 import io
 import os
 import shutil
@@ -15,6 +16,39 @@ from project_sandbox import jj_workspace as jj_workspace_mod
 
 JJ = shutil.which("jj")
 
+
+@functools.cache
+def _git_at_least(major: int, minor: int) -> bool:
+    try:
+        out = subprocess.run(
+            ["git", "--version"], capture_output=True, text=True, check=False
+        ).stdout
+        version = tuple(int(part) for part in out.split()[2].split(".")[:2])
+    except (OSError, IndexError, ValueError):
+        return False
+    return version >= (major, minor)
+
+
+def _skip_unless_lazy(check, reason: str):
+    """Like unittest.skipUnless, but ``check`` runs when the test does, so
+    importing this module never spawns a subprocess (collection must not)."""
+
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(self, *args, **kwargs):
+            if not check():
+                self.skipTest(reason)
+            return func(self, *args, **kwargs)
+
+        return wrapper
+
+    return decorator
+
+
+requires_jj_046 = _skip_unless_lazy(
+    lambda: bool(JJ) and jj_workspace_mod._supports_no_colocate(),
+    "requires jj >= 0.46",
+)
 
 def _find_docker() -> str | None:
     for cmd in ("docker", "podman"):
@@ -257,6 +291,7 @@ class JjWorkspaceSetupTests(unittest.TestCase):
         self.assertFalse((ws.path / ".git").exists())
         self.assertFalse((self.repo / ".git" / "worktrees").exists())
 
+    @requires_jj_046
     def test_setup_rejects_reused_colocated_workspace(self) -> None:
         """A kept workspace created colocated (jj >= 0.46, before --no-colocate)
         must be rejected on reuse, not mounted broken; its work is left intact."""
@@ -275,9 +310,9 @@ class JjWorkspaceSetupTests(unittest.TestCase):
         self.assertIn("jj workspace forget", msg)
         self.assertTrue((ws.path / "work.txt").is_file())
 
-    @unittest.skipUnless(
-        jj_workspace_mod._supports_no_colocate(),
-        "only jj >= 0.46 colocates new workspaces",
+    @requires_jj_046
+    @_skip_unless_lazy(
+        lambda: _git_at_least(2, 42), "jj >= 0.46 colocating needs git >= 2.42"
     )
     def test_setup_rejects_and_removes_workspace_jj_created_colocated(self) -> None:
         ws_path = jj_workspace_mod.path_for(self.repo, "feat/colocated")
@@ -292,6 +327,7 @@ class JjWorkspaceSetupTests(unittest.TestCase):
         self.assertNotIn(str(ws_path), jj_workspace_mod._list_workspaces(self.repo))
         self.assertFalse(jj_workspace_mod._bookmark_exists(self.repo, "feat/colocated"))
 
+    @requires_jj_046
     def test_git_backend_mount_points_at_main_repo_git_dir(self) -> None:
         ws = jj_workspace_mod.setup(self.repo, "feat/hello")
 
@@ -325,6 +361,7 @@ class JjWorkspaceSetupTests(unittest.TestCase):
         self.assertTrue(ws.path.is_dir())
         self.assertEqual(ws.path.parent, custom)
 
+    @requires_jj_046
     def test_setup_idempotent_reuse(self) -> None:
         ws1 = jj_workspace_mod.setup(self.repo, "feat/x")
         ws2 = jj_workspace_mod.setup(self.repo, "feat/x")

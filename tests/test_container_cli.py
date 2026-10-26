@@ -570,7 +570,7 @@ class ContainerCliTests(TestCase):
         self.assertEqual(rc, 0)
         self.assertIn(
             "podman build -t project-sandbox:test"
-            " -f Dockerfile --build-arg AGENT_UID=3456"
+            " -f Dockerfile --format docker --build-arg AGENT_UID=3456"
             " --build-arg AGENT_GID=4567 .",
             out.getvalue(),
         )
@@ -667,6 +667,38 @@ class ContainerCliTests(TestCase):
         self.assertEqual(cmd[:2], ["podman", "run"])
         self.assertIn("-it", cmd)
         self.assertNotIn("--cap-add", cmd)
+
+    def _run_argv(self, runtime) -> list[str]:
+        root = Path("/tmp/ps-test")
+        return build_run_argv(
+            runtime=runtime,
+            image="project-sandbox:test",
+            project_abs=root / "workspace",
+            claude_cfg=root / "claude/settings.json",
+            claude_credentials_dir=root / "claude-secrets",
+            codex_cfg=root / "codex/config.toml",
+            codex_credentials_dir=None,
+            identity=GitIdentity(None, None),
+            memory="8g",
+            cpus=4,
+            extra_mounts=[],
+            agent="bash",
+            firewall_enabled=False,
+            interactive=False,
+        )
+
+    @patch("project_sandbox.container_cli.os.getgid", return_value=1000)
+    @patch("project_sandbox.container_cli.os.getuid", return_value=1000)
+    @patch("project_sandbox.container_cli.sys.platform", "linux")
+    def test_rootless_podman_run_keeps_host_uid(self, _getuid, _getgid) -> None:
+        self.assertIn("--userns=keep-id", self._run_argv(PODMAN))
+        self.assertNotIn("--userns=keep-id", self._run_argv(DOCKER))
+
+    @patch("project_sandbox.container_cli.os.getgid", return_value=0)
+    @patch("project_sandbox.container_cli.os.getuid", return_value=0)
+    @patch("project_sandbox.container_cli.sys.platform", "linux")
+    def test_root_podman_run_does_not_use_keep_id(self, _getuid, _getgid) -> None:
+        self.assertNotIn("--userns=keep-id", self._run_argv(PODMAN))
 
     def test_docker_runtime_does_not_start_apple_system_service(self) -> None:
         out = io.StringIO()
@@ -803,7 +835,7 @@ class NodeNpmRunArgvTests(TestCase):
     def test_tmpfs_and_shm_size_per_runtime(self) -> None:
         expected = {
             DOCKER: "/workspace/node_modules:rw,exec,mode=1777",
-            PODMAN: "/workspace/node_modules:rw,exec,mode=1777",
+            PODMAN: "/workspace/node_modules:rw,exec,mode=1777,notmpcopyup",
             APPLE_CONTAINER: "/workspace/node_modules",
         }
         for runtime, tmpfs in expected.items():

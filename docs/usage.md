@@ -104,6 +104,9 @@ uv run project-sandbox --runtime podman --agent bash /absolute/path/to/repo pyth
 uv run project-sandbox --runtime apple-container --agent bash /absolute/path/to/repo python:3.12-slim
 ```
 
+Rootless Podman runs pass `--userns=keep-id` so the sandbox user, built with
+your host UID, can write the bind-mounted workspace.
+
 Linux also provides an explicit layout-inspection mode that needs no image:
 
 ```bash

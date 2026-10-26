@@ -145,6 +145,7 @@ def prepare(
 
     info = {} if dry_run else _runtime_info(runtime)
     if runtime == PODMAN and _podman_is_rootless_or_machine(info):
+        _require_podman_host_gateway(info)
         return ForwardingPlan(
             "podman-native-host-alias",
             add_host=f"{hostname}:host-gateway",
@@ -279,6 +280,28 @@ def _podman_is_rootless_or_machine(info: dict) -> bool:
         or info.get("remoteSocket")
         or info.get("version", {}).get("RemoteSocket")
     )
+
+
+def _require_podman_host_gateway(info: dict) -> None:
+    """Reject podman releases whose ``--add-host`` cannot resolve ``host-gateway``.
+
+    Podman 4.3 fails at container creation with "invalid IP address in
+    add-host". There is no safe alternative to reach the host loopback
+    (rootless slirp4netns blocks it unless allow_host_loopback is enabled, which
+    would expose every host loopback service), so fail early and clearly. The
+    cut-off is conservative; an unreadable version is assumed to be supported.
+    """
+    version = str(info.get("version", {}).get("Version", ""))
+    try:
+        parsed = tuple(int(part) for part in version.split(".")[:2])
+    except ValueError:
+        return
+    if len(parsed) == 2 and parsed < (5, 0):
+        raise SystemExit(
+            f"podman {version} cannot resolve --add-host host-gateway, which "
+            "forwarding a host-local service (Ollama, agent proxy) requires; "
+            "upgrade to podman >= 5.0."
+        )
 
 
 def _docker_is_desktop(info: dict) -> bool:

@@ -143,6 +143,30 @@ class OllamaNetworkTests(TestCase):
             "host.docker.internal:host-gateway",
         )
 
+    def test_old_podman_without_host_gateway_is_rejected(self) -> None:
+        with patch.object(
+            ollama_network,
+            "_runtime_info",
+            return_value={
+                "host": {"security": {"rootless": True}},
+                "version": {"Version": "4.3.1"},
+            },
+        ):
+            with self.assertRaisesRegex(SystemExit, "host-gateway"):
+                ollama_network.prepare(PODMAN)
+
+    def test_new_podman_uses_native_alias(self) -> None:
+        with patch.object(
+            ollama_network,
+            "_runtime_info",
+            return_value={
+                "host": {"security": {"rootless": True}},
+                "version": {"Version": "5.2.1"},
+            },
+        ):
+            plan = ollama_network.prepare(PODMAN)
+        self.assertEqual(plan.strategy, "podman-native-host-alias")
+
     def test_docker_desktop_uses_native_alias(self) -> None:
         with patch.object(
             ollama_network,

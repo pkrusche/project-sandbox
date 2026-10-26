@@ -241,6 +241,10 @@ def node_modules_tmpfs_arg(runtime: Runtime) -> str:
     """
     if runtime.name == APPLE_CONTAINER.name:
         return WORKSPACE_NODE_MODULES_TARGET
+    if runtime.name == PODMAN.name:
+        # Podman copies the bind-mounted host directory's contents into a new
+        # tmpfs by default, which would leak host dependencies into the sandbox.
+        return f"{WORKSPACE_NODE_MODULES_TARGET}:rw,exec,mode=1777,notmpcopyup"
     return f"{WORKSPACE_NODE_MODULES_TARGET}:rw,exec,mode=1777"
 
 
@@ -330,6 +334,12 @@ def build_run_argv(
         "--workdir",
         "/workspace",
     ]
+    # Rootless podman maps the host user to container root, so the image's
+    # agent user (built with the host UID) would land on an unrelated subuid and
+    # be unable to write the /workspace bind mount. keep-id maps the host UID to
+    # itself instead. A non-root host UID implies rootless podman.
+    if runtime.name == PODMAN.name and host_build_identity(runtime) is not None:
+        argv.append("--userns=keep-id")
     if shm_size is not None:
         argv += ["--shm-size", shm_size]
     if container_name:
@@ -430,6 +440,10 @@ def build_image(
     except ValueError:
         file_arg = str(dockerfile_path)
     cmd = [runtime.binary, "build", "-t", image_tag, "-f", file_arg]
+    # Podman defaults to OCI format, which drops the Dockerfile SHELL
+    # instruction; RUN steps then use /bin/sh and fail on bashisms (pipefail).
+    if runtime.name == PODMAN.name:
+        cmd += ["--format", "docker"]
     identity = host_build_identity(runtime)
     if identity is not None:
         uid, gid = identity
