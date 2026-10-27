@@ -25,7 +25,7 @@
 # Usage:
 #   scripts/run-e2e-tests.sh [--runtime chroot|auto|apple-container|docker|podman]
 #                            [--base-image IMAGE] [--no-build] [--keep]
-#                            [--only SUITE] [--list]
+#                            [--only SUITE] [--list] [--all-tests]
 #                            [--with-agent-proxy] [--with-internet-proxy]
 #                            [--with-proxy-endpoints --proxy-fixture-host IP]
 #                            [--with-build-proxy --internet-proxy-dir DIR]
@@ -42,6 +42,12 @@
 #                    --only agent-proxy-isolation, --only internet-proxy-isolation,
 #                    --only proxy-endpoints, and --only build-proxy need no additional --with-* flag.
 #   --list           print the suite names accepted by --only and exit
+#   --all-tests      run every suite, including all opt-in ones (implies
+#                    --with-agent-proxy, --with-internet-proxy,
+#                    --with-proxy-endpoints, and --with-build-proxy). Requires
+#                    --blocked-url, --internet-proxy-dir, and --agentgateway-dir,
+#                    a real container runtime (Docker or Apple container for
+#                    build-proxy), and builds enabled; billable and destructive
 #   --with-agent-proxy
 #                    run proxy isolation plus the billable agent checker
 #   --with-internet-proxy
@@ -96,6 +102,7 @@ WITH_AGENT_PROXY=0
 WITH_INTERNET_PROXY=0
 WITH_PROXY_ENDPOINTS=0
 WITH_BUILD_PROXY=0
+ALL_TESTS=0
 PROXY_FIXTURE_HOST=""
 PROXY_FIXTURE_IPV6_HOST=""
 BLOCKED_URL=""
@@ -115,6 +122,7 @@ while [ $# -gt 0 ]; do
     --keep)       KEEP=1; shift ;;
     --only)       ONLY="${2:?--only needs a value}"; shift 2 ;;
     --list)       printf '%s\n' "${SUITES[@]}"; exit 0 ;;
+    --all-tests)  ALL_TESTS=1; shift ;;
     --with-agent-proxy) WITH_AGENT_PROXY=1; shift ;;
     --with-internet-proxy) WITH_INTERNET_PROXY=1; shift ;;
     --with-build-proxy) WITH_BUILD_PROXY=1; shift ;;
@@ -129,6 +137,25 @@ while [ $# -gt 0 ]; do
     *) echo "Unknown option: $1" >&2; usage >&2; exit 64 ;;
   esac
 done
+
+if [ "$ALL_TESTS" = 1 ]; then
+  WITH_AGENT_PROXY=1
+  WITH_INTERNET_PROXY=1
+  WITH_PROXY_ENDPOINTS=1
+  WITH_BUILD_PROXY=1
+  missing=()
+  [ -n "$BLOCKED_URL" ] || missing+=(--blocked-url)
+  [ -n "$INTERNET_PROXY_DIR" ] || missing+=(--internet-proxy-dir)
+  [ -n "$AGENTGATEWAY_DIR" ] || missing+=(--agentgateway-dir)
+  if [ ${#missing[@]} -gt 0 ]; then
+    echo "--all-tests also requires: ${missing[*]}" >&2
+    exit 64
+  fi
+  if [ "$NO_BUILD" = 1 ]; then
+    echo "--all-tests cannot be combined with --no-build" >&2
+    exit 64
+  fi
+fi
 
 if [ -n "$ONLY" ]; then
   known=0

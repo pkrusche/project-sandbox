@@ -121,6 +121,17 @@ single one, pass `--only SUITE`; `--list` prints the accepted suite names:
 ./scripts/run-e2e-tests.sh --only git-workflow
 ```
 
+`--all-tests` runs every suite, including all opt-in ones. It implies
+`--with-agent-proxy`, `--with-internet-proxy`, `--with-proxy-endpoints`, and
+`--with-build-proxy`, and exits early (64) unless `--blocked-url`,
+`--internet-proxy-dir`, and `--agentgateway-dir` are supplied (and `--no-build`
+is not). These suites are billable and destructive:
+
+```bash
+./scripts/run-e2e-tests.sh --all-tests --runtime docker \
+  --blocked-url URL --internet-proxy-dir DIR --agentgateway-dir DIR
+```
+
 Naming an opt-in suite with `--only` is itself the opt-in, so `--only
 proxy-endpoints`, `--only agent-proxy`, `--only agent-proxy-isolation`, and `--only
 internet-proxy-isolation` run without their corresponding `--with-*` flags
