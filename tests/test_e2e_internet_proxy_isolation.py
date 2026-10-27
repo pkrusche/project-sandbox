@@ -4,6 +4,7 @@ import io
 import json
 import os
 import socket
+import subprocess
 import tempfile
 import urllib.error
 from contextlib import chdir, redirect_stderr, redirect_stdout
@@ -11,6 +12,8 @@ from email.message import Message
 from pathlib import Path
 from unittest import TestCase
 from unittest.mock import MagicMock, call, patch
+
+ROOT = Path(__file__).parents[1]
 
 
 def _load_checker():
@@ -23,6 +26,62 @@ def _load_checker():
 
 
 class InternetProxyEndToEndScriptTests(TestCase):
+    def test_blocked_url_defaults_to_example_com(self) -> None:
+        args = (
+            _load_checker()
+            .parser()
+            .parse_args(
+                [
+                    "--runtime",
+                    "docker",
+                    "--internet-proxy-dir",
+                    "/unused",
+                    "--agentgateway-dir",
+                    "/unused",
+                ]
+            )
+        )
+        self.assertEqual(args.blocked_url, "https://example.com")
+
+    def test_runner_forwards_the_default_blocked_url(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake_uv = root / "uv"
+            # The runner's startup orphan reap also goes through uv; ignore it.
+            fake_uv.write_text(
+                "#!/bin/sh\n"
+                'case "$*" in *e2e-reap-orphans*) exit 0 ;; esac\n'
+                'printf "%s\\n" "$@" > "$AUDIT_ARGUMENT_LOG"\n'
+            )
+            fake_uv.chmod(0o755)
+            arguments = root / "arguments"
+            result = subprocess.run(
+                [
+                    "bash",
+                    str(ROOT / "scripts/run-e2e-tests.sh"),
+                    "--only",
+                    "internet-proxy-isolation",
+                    "--runtime",
+                    "docker",
+                    "--internet-proxy-dir",
+                    str(root),
+                    "--agentgateway-dir",
+                    str(root),
+                ],
+                env={
+                    **os.environ,
+                    "PATH": str(root) + os.pathsep + os.environ["PATH"],
+                    "AUDIT_ARGUMENT_LOG": str(arguments),
+                },
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            forwarded = arguments.read_text().splitlines()
+        index = forwarded.index("--blocked-url")
+        self.assertEqual(forwarded[index + 1], "https://example.com")
+
     def test_every_audit_failure_changes_the_result(self) -> None:
         checker = _load_checker()
         args = checker.parser().parse_args(

@@ -207,7 +207,7 @@ def parser() -> argparse.ArgumentParser:
         "--model", default=os.environ.get("AGENT_PROXY_TEST_MODEL", "gpt-5-mini")
     )
     p.add_argument("--allowed-url", default="https://github.com/")
-    p.add_argument("--blocked-url", required=True)
+    p.add_argument("--blocked-url", default="https://example.com")
     p.add_argument("--denial-words", default="denied,blocked,forbidden,policy")
     p.add_argument("--public-ip", default="1.1.1.1")
     p.add_argument("--dns-ip", default="1.1.1.1")

@@ -47,15 +47,17 @@
 #   --all-tests      run every suite, including all opt-in ones (implies
 #                    --with-agent-proxy, --with-internet-proxy,
 #                    --with-proxy-endpoints, and --with-build-proxy). Requires
-#                    --blocked-url, --internet-proxy-dir, and --agentgateway-dir,
+#                    --internet-proxy-dir and --agentgateway-dir,
 #                    a real container runtime (build-proxy on Podman also needs
 #                    Docker for its fixture), and builds enabled; billable and destructive
 #   --with-agent-proxy
 #                    run proxy isolation plus the billable agent checker
 #   --with-internet-proxy
 #                    run the destructive two-service Internet isolation audit;
-#                    also requires --blocked-url, --internet-proxy-dir, and
-#                    --agentgateway-dir
+#                    also requires --internet-proxy-dir and --agentgateway-dir
+#   --blocked-url URL
+#                    URL the Internet proxy must deny in the isolation audit
+#                    (default: https://example.com)
 #   --ca-cert PATH   bake a proxy CA certificate into Internet-proxy test images;
 #                    repeat for certificate chains
 #   --with-proxy-endpoints
@@ -107,7 +109,7 @@ ALL_TESTS=0
 PROXY_FIXTURE_HOST=""
 PROXY_FIXTURE_IPV6_HOST=""
 PROXY_FIXTURE_HOSTNAME=""
-BLOCKED_URL=""
+BLOCKED_URL="https://example.com"
 INTERNET_PROXY_DIR=""
 AGENTGATEWAY_DIR=""
 CA_CERTS=()
@@ -147,7 +149,6 @@ if [ "$ALL_TESTS" = 1 ]; then
   WITH_PROXY_ENDPOINTS=1
   WITH_BUILD_PROXY=1
   missing=()
-  [ -n "$BLOCKED_URL" ] || missing+=(--blocked-url)
   [ -n "$INTERNET_PROXY_DIR" ] || missing+=(--internet-proxy-dir)
   [ -n "$AGENTGATEWAY_DIR" ] || missing+=(--agentgateway-dir)
   if [ ${#missing[@]} -gt 0 ]; then
@@ -389,9 +390,9 @@ fi
 # services and makes real AI requests. Never availability-gate this destructive test.
 if selected internet-proxy-isolation; then
   if [ "$WITH_INTERNET_PROXY" = 1 ]; then
-    if [ -z "$CONTAINER_RUNTIME" ] || [ -z "$BLOCKED_URL" ] || [ -z "$INTERNET_PROXY_DIR" ] || [ -z "$AGENTGATEWAY_DIR" ]; then
+    if [ -z "$CONTAINER_RUNTIME" ] || [ -z "$INTERNET_PROXY_DIR" ] || [ -z "$AGENTGATEWAY_DIR" ]; then
       fail_suite "internet-proxy-isolation" \
-        "requires a real runtime, --blocked-url, --internet-proxy-dir, and --agentgateway-dir"
+        "requires a real runtime, --internet-proxy-dir, and --agentgateway-dir"
     else
       INTERNET_AUDIT_ARGS=(
         --runtime "$CONTAINER_RUNTIME" --base-image "$BASE_IMAGE"
