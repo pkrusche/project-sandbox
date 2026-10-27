@@ -12,7 +12,7 @@ class EndpointTests(unittest.TestCase):
             ("http://[::ffff:127.0.0.1]/v1", True, 80, "::ffff:127.0.0.1"),
             ("https://models.corp.example/v1", False, 443, "models.corp.example"),
             ("http://10.1.2.3:8080/api/v1", False, 8080, "10.1.2.3"),
-            ("https://[2001:db8::1]/v1", False, 443, "2001:db8::1"),
+            ("http://[2001:db8::1]/v1", False, 80, "2001:db8::1"),
         ):
             with self.subTest(url=url):
                 endpoint = agent_proxy.parse(url)
@@ -83,6 +83,23 @@ class EndpointTests(unittest.TestCase):
                     self.assertRaises(SystemExit),
                 ):
                     parser(value)
+
+    def test_https_ip_addresses_are_build_only(self):
+        for value in (
+            "https://10.20.30.40:8443",
+            "https://[2001:db8::1]:8443",
+            "https://[::ffff:192.0.2.1]",
+        ):
+            self.assertFalse(build_network.parse(value).local)
+            for parser in (agent_proxy.parse, internet_proxy.parse):
+                with (
+                    self.subTest(value=value, parser=parser),
+                    self.assertRaises(SystemExit) as error,
+                ):
+                    parser(value)
+                self.assertIn("DNS hostname", str(error.exception))
+            # The same addresses stay valid over plain HTTP.
+            agent_proxy.parse(value.replace("https://", "http://"))
 
     def test_paths(self):
         self.assertEqual(

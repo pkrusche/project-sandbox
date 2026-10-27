@@ -45,6 +45,7 @@ def parse(
     option: str,
     api_path: bool = False,
     allow_https_loopback: bool = False,
+    allow_https_ip: bool = False,
 ) -> ProxyEndpoint:
     # urlsplit silently strips controls; reject them before parsing. Never echo
     # the supplied URL or parser exception, since either can contain userinfo.
@@ -83,7 +84,9 @@ def parse(
         ):
             reject("use a canonical IP address")
         local = host.rstrip(".").lower() == "localhost"
+        literal = False
     else:
+        literal = True
         effective = getattr(address, "ipv4_mapped", None) or address
         if effective.is_unspecified or effective.is_multicast:
             reject("wildcard and multicast addresses are not allowed")
@@ -97,6 +100,10 @@ def parse(
                 reject("invalid bracketed authority")
     if local and parsed.scheme == "https" and not allow_https_loopback:
         reject("HTTPS loopback endpoints are unsupported; use HTTP local forwarding")
+    # Node.js refuses IP addresses as TLS server names, so Node-based agents
+    # cannot reach an HTTPS endpoint addressed by IP.
+    if literal and parsed.scheme == "https" and not allow_https_ip:
+        reject("HTTPS endpoints must use a DNS hostname, not an IP address")
     if not api_path and parsed.path not in ("", "/"):
         reject("URL must not contain a path other than /")
     return ProxyEndpoint(

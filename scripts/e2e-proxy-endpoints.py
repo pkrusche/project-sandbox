@@ -181,6 +181,14 @@ def check_round_trip(host: str, port: int) -> None:
         connection.close()
 
 
+def san_type(host: str) -> str:
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return "DNS"
+    return "IP"
+
+
 def certificates(root: Path, hosts: list[str]) -> ssl.SSLContext:
     def openssl(*args):
         subprocess.run(["openssl", *args], cwd=root, check=True, capture_output=True)
@@ -225,7 +233,7 @@ def certificates(root: Path, hosts: list[str]) -> ssl.SSLContext:
         "subjectKeyIdentifier=hash\n"
         "authorityKeyIdentifier=keyid\n"
         "subjectAltName=DNS:origin.test,"
-        + ",".join(f"IP:{host}" for host in hosts)
+        + ",".join(f"{san_type(host)}:{host}" for host in hosts)
         + "\n"
     )
     openssl(
@@ -277,7 +285,18 @@ def validate_observations(gateway, proxy):
         raise AssertionError("gateway credentials reached the Internet proxy")
 
 
-def run_scenario(args, root, context, scheme, gateway_host, name):
+def resolves_to(hostname: str, address: str) -> bool:
+    try:
+        infos = socket.getaddrinfo(hostname, None, proto=socket.IPPROTO_TCP)
+    except socket.gaierror:
+        return False
+    return ipaddress.ip_address(address) in {
+        ipaddress.ip_address(info[4][0]) for info in infos
+    }
+
+
+def run_scenario(args, root, context, scheme, gateway_host, name, url_host=None):
+    """Bind fixtures to IPs; ``url_host`` names them in URLs (HTTPS needs DNS)."""
     project = root / name
     project.mkdir()
     shutil.copyfile(
@@ -302,8 +321,8 @@ def run_scenario(args, root, context, scheme, gateway_host, name):
             authority = f"[{host}]" if ":" in host else host
             return f"{scheme}://{authority}:{port}"
 
-        proxy_url = url(args.fixture_host, proxy.server_port)
-        gateway_url = url(gateway_host, gateway.server_port) + API_PATH
+        proxy_url = url(url_host or args.fixture_host, proxy.server_port)
+        gateway_url = url(url_host or gateway_host, gateway.server_port) + API_PATH
         # Prove the denied port really has a live listener before testing
         # denial, and that the host can exchange data with its own address.
         check_round_trip(args.fixture_host, canary.server_port)
@@ -371,7 +390,15 @@ def main(argv=None):
     parser.add_argument(
         "--ipv6-host",
         type=fixture_address,
-        help="Optional local native IPv6 address for an additional HTTPS scenario.",
+        help="Optional local native IPv6 address for an additional HTTP scenario.",
+    )
+    parser.add_argument(
+        "--fixture-hostname",
+        help=(
+            "DNS name resolving to --fixture-host on the host and in the sandbox, "
+            "e.g. 192-168-1-10.sslip.io. HTTPS endpoints must be named, so the "
+            "HTTPS scenario is skipped without it."
+        ),
     )
     parser.add_argument("--base-image", default="python:3.12-slim")
     parser.add_argument("--timeout", type=int, default=120)
@@ -385,6 +412,13 @@ def main(argv=None):
         print(f"Using proxy fixture host: {args.fixture_host}", flush=True)
     if args.ipv6_host and ipaddress.ip_address(args.ipv6_host).version != 6:
         parser.error("--ipv6-host requires an IPv6 address")
+    if args.fixture_hostname and not resolves_to(
+        args.fixture_hostname, args.fixture_host
+    ):
+        parser.error(
+            f"--fixture-hostname {args.fixture_hostname} does not resolve to "
+            f"{args.fixture_host}"
+        )
     binary = "container" if args.runtime == "apple-container" else args.runtime
     for required in (binary, "openssl"):
         if shutil.which(required) is None:
@@ -397,20 +431,28 @@ def main(argv=None):
     success = False
     try:
         hosts = [args.fixture_host]
-        scenarios = [
-            ("http", args.fixture_host, "http"),
-            ("https", args.fixture_host, "https"),
-        ]
+        scenarios = [("http", args.fixture_host, "http", None)]
+        if args.fixture_hostname:
+            hosts.append(args.fixture_hostname)
+            scenarios.append(
+                ("https", args.fixture_host, "https", args.fixture_hostname)
+            )
+        else:
+            print(
+                "SKIP: https: pass --fixture-hostname; HTTPS endpoints must "
+                "use a DNS name",
+                flush=True,
+            )
         if ipaddress.ip_address(args.fixture_host).version == 4:
             mapped = f"::ffff:{args.fixture_host}"
             hosts.append(mapped)
-            scenarios.append(("http", mapped, "mapped-ipv4"))
+            scenarios.append(("http", mapped, "mapped-ipv4", None))
         if args.ipv6_host:
             hosts.append(args.ipv6_host)
-            scenarios.append(("https", args.ipv6_host, "ipv6"))
+            scenarios.append(("http", args.ipv6_host, "ipv6", None))
         context = certificates(root, hosts)
-        for scheme, host, name in scenarios:
-            run_scenario(args, root, context, scheme, host, name)
+        for scheme, host, name, url_host in scenarios:
+            run_scenario(args, root, context, scheme, host, name, url_host)
         success = True
         return 0
     finally:

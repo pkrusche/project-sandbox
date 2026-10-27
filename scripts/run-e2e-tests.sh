@@ -30,6 +30,7 @@
 #                            [--with-proxy-endpoints --proxy-fixture-host IP]
 #                            [--with-build-proxy --internet-proxy-dir DIR]
 #                            [--proxy-fixture-ipv6-host IP]
+#                            [--proxy-fixture-hostname NAME]
 #                            [--ca-cert PATH ...]
 #
 #   --runtime NAME   runtime forwarded to workflow scripts (default: chroot on Linux, auto otherwise)
@@ -66,7 +67,10 @@
 #   --proxy-fixture-host IP
 #                    override local fixture IP (default: outbound IPv4 source address)
 #   --proxy-fixture-ipv6-host IP
-#                    optional local IPv6 IP for an additional HTTPS gateway check
+#                    optional local IPv6 IP for an additional HTTP gateway check
+#   --proxy-fixture-hostname NAME
+#                    DNS name resolving to the fixture IP; enables the HTTPS
+#                    scenario (HTTPS endpoints must be named, e.g. 192-168-1-10.sslip.io)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -105,6 +109,7 @@ WITH_BUILD_PROXY=0
 ALL_TESTS=0
 PROXY_FIXTURE_HOST=""
 PROXY_FIXTURE_IPV6_HOST=""
+PROXY_FIXTURE_HOSTNAME=""
 BLOCKED_URL=""
 INTERNET_PROXY_DIR=""
 AGENTGATEWAY_DIR=""
@@ -129,6 +134,7 @@ while [ $# -gt 0 ]; do
     --with-proxy-endpoints) WITH_PROXY_ENDPOINTS=1; shift ;;
     --proxy-fixture-host) PROXY_FIXTURE_HOST="${2:?--proxy-fixture-host needs a value}"; shift 2 ;;
     --proxy-fixture-ipv6-host) PROXY_FIXTURE_IPV6_HOST="${2:?--proxy-fixture-ipv6-host needs a value}"; shift 2 ;;
+    --proxy-fixture-hostname) PROXY_FIXTURE_HOSTNAME="${2:?--proxy-fixture-hostname needs a value}"; shift 2 ;;
     --blocked-url) BLOCKED_URL="${2:?--blocked-url needs a value}"; shift 2 ;;
     --internet-proxy-dir) INTERNET_PROXY_DIR="${2:?--internet-proxy-dir needs a value}"; shift 2 ;;
     --agentgateway-dir) AGENTGATEWAY_DIR="${2:?--agentgateway-dir needs a value}"; shift 2 ;;
@@ -445,6 +451,7 @@ if selected proxy-endpoints; then
       ENDPOINT_ARGS=(--runtime "$CONTAINER_RUNTIME" --base-image "$BASE_IMAGE")
       [ -n "$PROXY_FIXTURE_HOST" ] && ENDPOINT_ARGS+=(--fixture-host "$PROXY_FIXTURE_HOST")
       [ -n "$PROXY_FIXTURE_IPV6_HOST" ] && ENDPOINT_ARGS+=(--ipv6-host "$PROXY_FIXTURE_IPV6_HOST")
+      [ -n "$PROXY_FIXTURE_HOSTNAME" ] && ENDPOINT_ARGS+=(--fixture-hostname "$PROXY_FIXTURE_HOSTNAME")
       [ "$KEEP" = 1 ] && ENDPOINT_ARGS+=(--keep)
       run_suite "proxy-endpoints" uv run python "$ROOT/scripts/e2e-proxy-endpoints.py" "${ENDPOINT_ARGS[@]}"
     fi

@@ -268,9 +268,16 @@ are left running. Enable it explicitly:
 ```bash
 # Replace this with a local non-loopback address reachable from the sandbox.
 ./scripts/run-e2e-tests.sh --only proxy-endpoints --runtime docker \
-  --proxy-fixture-host 192.168.1.10
+  --proxy-fixture-host 192.168.1.10 --proxy-fixture-hostname 192-168-1-10.sslip.io
 # Add to the full matrix with --with-proxy-endpoints --proxy-fixture-host IP.
 ```
+
+HTTPS endpoints must be named by DNS, so the HTTPS scenario runs only with
+`--proxy-fixture-hostname` (`--fixture-hostname` for the standalone script): a
+name that resolves to the fixture IP both on the host and inside the sandbox.
+A wildcard-DNS service such as sslip.io works if your resolver allows public
+names to answer with private addresses; a local DNS or `/etc/hosts` entry that
+the runtime also sees works too. Without it the HTTPS scenario is skipped.
 
 Docker, Podman, and Apple container are accepted. The host needs OpenSSL and an
 address the selected runtime can reach, including access to temporary listener
@@ -285,12 +292,13 @@ Python/curl/Node, HTTP requests and HTTPS CONNECT through the Internet proxy,
 and absence of gateway keys at that proxy. A separate live listener must receive
 an administrative firewall denial, preventing closed-port false passes. An IPv4
 fixture address also exercises an IPv4-mapped IPv6 gateway URL. To add native
-IPv6 routing, pass `--proxy-fixture-ipv6-host` with a local unscoped IPv6 address
-reachable from the runtime, or run the script directly:
+IPv6 routing (over HTTP), pass `--proxy-fixture-ipv6-host` with a local unscoped
+IPv6 address reachable from the runtime, or run the script directly:
 
 ```bash
 uv run python scripts/e2e-proxy-endpoints.py --runtime docker \
-  --fixture-host 192.168.1.10 --ipv6-host fd12:3456:789a::10 --keep
+  --fixture-host 192.168.1.10 --fixture-hostname 192-168-1-10.sslip.io \
+  --ipv6-host fd12:3456:789a::10 --keep
 ```
 
 Temporary listeners always stop at exit. Successful runs remove their workdir

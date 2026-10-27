@@ -185,6 +185,8 @@ class ProxyEndpointHarnessTests(unittest.TestCase):
                     "192.0.2.1",
                     "--proxy-fixture-ipv6-host",
                     "2001:db8::1",
+                    "--proxy-fixture-hostname",
+                    "fixture.example",
                 ],
                 env={
                     **os.environ,
@@ -210,6 +212,8 @@ class ProxyEndpointHarnessTests(unittest.TestCase):
                     "192.0.2.1",
                     "--ipv6-host",
                     "2001:db8::1",
+                    "--fixture-hostname",
+                    "fixture.example",
                 ],
             )
 

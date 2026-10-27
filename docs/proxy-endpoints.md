@@ -13,7 +13,15 @@ key or model discovery.
 | HTTPS on any loopback spelling | No | Local TLS forwarding is unsupported |
 | `http://proxy.corp.example` | Yes, port 80 | Direct from sandbox |
 | `https://proxy.corp.example` | Yes, port 443 | Direct, verified TLS |
-| `https://10.20.30.40:8443` or `https://[2001:db8::1]:8443` | Yes | Direct; certificate must match the IP |
+| `http://10.20.30.40:8080` or `http://[2001:db8::1]:8080` | Yes | Direct from sandbox |
+| `https://10.20.30.40:8443` or `https://[2001:db8::1]:8443` | No | HTTPS needs a DNS hostname; see below |
+
+HTTPS endpoints must be named by DNS hostname. Node.js, which runs Pi, OpenCode,
+and most agent tooling, refuses to send an IP address as the TLS server name, so
+an HTTPS proxy or gateway addressed by IP fails inside the sandbox even though
+the host preflight succeeds. Give the endpoint a DNS name with a matching
+certificate, or use plain HTTP to the IP. `--build-proxy` is unaffected: its
+upstream TLS is handled by the host forwarder.
 
 For **remote `--internet-proxy` on Apple container**, the route above is replaced
 by `sandbox -> http://host.docker.internal:PORT -> host relay -> upstream`.

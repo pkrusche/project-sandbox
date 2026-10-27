@@ -1,6 +1,6 @@
 # Internet proxy
 
-`--internet-proxy` sends proxy-aware Internet traffic through a separately managed HTTP loopback or remote HTTP/HTTPS proxy while the sandbox firewall prevents direct fallback. Install, start, and configure the proxy separately; Project Sandbox does not manage its lifecycle or Internet destination policy.
+`--internet-proxy` sends proxy-aware Internet traffic through a separately managed HTTP loopback or remote HTTP/HTTPS proxy (HTTPS by DNS hostname only) while the sandbox firewall prevents direct fallback. Install, start, and configure the proxy separately; Project Sandbox does not manage its lifecycle or Internet destination policy.
 
 [internet-proxy-locally](https://github.com/pkrusche/internet-proxy-locally) is one example setup, with a local HTTP listener. See the [endpoint contract](proxy-endpoints.md) for remote endpoints and client compatibility.
 

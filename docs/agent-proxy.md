@@ -98,7 +98,9 @@ project-sandbox --agent bash --agent-proxy https://models.corp.example/api/v1 --
 ```
 
 Remote hosts retain their scheme, hostname, effective port (443 here), and API
-path. Only local HTTP endpoints use forwarding; HTTPS loopback is rejected.
+path. Only local HTTP endpoints use forwarding; HTTPS loopback is rejected, and
+HTTPS gateways must use a DNS hostname rather than an IP address
+([why](proxy-endpoints.md)).
 Gateway discovery ignores ambient host proxies and rejects redirects. Both host
 and sandbox TLS checks verify trust and endpoint identity before agent startup.
 

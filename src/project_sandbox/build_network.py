@@ -24,8 +24,12 @@ _HOST_PATTERN = re.compile(
 
 def parse(value: str) -> proxy_endpoint.ProxyEndpoint:
     """Validate a credential-free HTTP(S) proxy URL without echoing it."""
+    # The host forwarder, not a Node client, terminates upstream TLS.
     return proxy_endpoint.parse(
-        value, option="--build-proxy", allow_https_loopback=True
+        value,
+        option="--build-proxy",
+        allow_https_loopback=True,
+        allow_https_ip=True,
     )
 
 
