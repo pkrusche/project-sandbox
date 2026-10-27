@@ -15,11 +15,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-if [ "$(uname -s)" = Linux ]; then
-  RUNTIME="chroot"
-else
-  RUNTIME="auto"
-fi
+RUNTIME="auto"
 BASE_IMAGE="python:3.12-slim"
 NO_BUILD=0
 KEEP=0

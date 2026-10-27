@@ -68,7 +68,8 @@ or leave agent work after the session:
 ./scripts/e2e-jj-workflow.sh
 ```
 
-All three scripts default to `--runtime chroot` on Linux and accept
+All three scripts default to `--runtime auto` (Apple `container` on macOS,
+otherwise Docker, then Podman) and accept
 `--runtime chroot|auto|apple-container|docker|podman`, `--base-image IMAGE`,
 `--no-build`, and `--keep`.
 
@@ -216,8 +217,9 @@ Use the unified host-side entry point for full local verification:
 ```
 
 It runs `uv sync --locked`, compile checks, Ruff, pytest, and the complete E2E
-aggregator in that order. On Linux the default `chroot` runtime keeps the run
-portable; select a real runtime to include container-only checks.
+aggregator in that order. The default `auto` runtime picks a real container
+runtime so container-only checks run; pass `--runtime chroot` on Linux for a
+host-only run without Docker or Podman.
 
 ## Releasing
 

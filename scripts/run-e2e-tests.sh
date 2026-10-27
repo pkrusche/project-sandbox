@@ -33,7 +33,7 @@
 #                            [--proxy-fixture-hostname NAME]
 #                            [--ca-cert PATH ...]
 #
-#   --runtime NAME   runtime forwarded to workflow scripts (default: chroot on Linux, auto otherwise)
+#   --runtime NAME   runtime forwarded to workflow scripts (default: auto)
 #   --base-image IMG base image forwarded to workflow scripts (default: python:3.12-slim)
 #   --no-build       forward --no-build to workflow scripts
 #   --keep           keep temporary directories on failure for debugging, and
@@ -93,11 +93,7 @@ SUITES=(
   build-proxy
 )
 
-if [ "$(uname -s)" = Linux ]; then
-  RUNTIME="chroot"
-else
-  RUNTIME="auto"
-fi
+RUNTIME="auto"
 BASE_IMAGE="python:3.12-slim"
 NO_BUILD=0
 KEEP=0
