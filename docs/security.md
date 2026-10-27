@@ -123,6 +123,13 @@ the container and:
   mapping or exact Linux bridge listener, but other peers able to reach that
   private runtime network remain in the trust boundary. The fixed hostname is
   pinned where the runtime permits it.
+- Rootless Podman on Linux with pasta forwards each planned host-local service
+  port (`-T <port>:<port>`) from the container's loopback to the same port on
+  host loopback, IPv4 only (`-4`). The sandbox firewall accepts all loopback
+  traffic, so that port list, built from exactly the planned services, is the
+  boundary: no other host-loopback port is reachable. A sandbox process
+  listening on a forwarded port inside the container conflicts with the forward.
+  Services listening only on IPv6 loopback are rejected on this path.
 - Ollama itself stays on host loopback. Local Linux bridge modes conditionally
   require `socat`, bound to the exact validated bridge address and terminated
   with the sandbox. Apple `container` requires the administrator-managed

@@ -2973,6 +2973,62 @@ class PiOllamaTests(TestCase):
                 "http://host.docker.internal:11434/v1",
             )
 
+    def test_pasta_forwarding_plans_reach_the_podman_run_command(self) -> None:
+        # The pasta port list is the network boundary for host-local services,
+        # so the planned ports must reach `podman run` exactly as planned.
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            host_home = project / "home"
+            paths = _agent_paths(host_home)
+            for key in paths:
+                paths[key].mkdir(parents=True, exist_ok=True)
+            plan = cli.local_service_network.ForwardingPlan(
+                "podman-pasta-forward",
+                add_host="host.docker.internal:127.0.0.1",
+                port=11434,
+            )
+            with (
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
+                patch.object(
+                    cli.config_agents, "_agent_host_paths", return_value=paths
+                ),
+                patch.object(cli.config_agents, "sync_credentials"),
+                patch.object(
+                    cli.container_cli,
+                    "select_runtime",
+                    return_value=cli.container_cli.PODMAN,
+                ),
+                patch.object(cli.container_cli, "build_image", return_value=0),
+                patch.object(cli.container_cli, "run", return_value=0) as run,
+                patch.object(
+                    cli.local_service_network,
+                    "prepare_services",
+                    return_value=[plan],
+                ),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                rc = cli.main(
+                    [
+                        "--runtime",
+                        "podman",
+                        "--agent",
+                        "pi",
+                        "--pi-ollama",
+                        str(project),
+                        "python:3.12-slim",
+                    ]
+                )
+            self.assertEqual(rc, 0)
+            argv = run.call_args.args[0]
+            index = argv.index("--network")
+            self.assertEqual(argv[index + 1], "pasta:-4,-T,11434:11434")
+            self.assertIn("host.docker.internal:127.0.0.1", argv)
+
 
 def _headless_dry_run(agent: str, *extra: str) -> tuple[int, str]:
     """Dry-run an unsupervised session and return (exit code, printed command)."""

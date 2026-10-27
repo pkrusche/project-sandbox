@@ -939,6 +939,7 @@ def _main(argv: list[str] | None = None) -> int:
             create_prompt_files=True,
             api_key_values=api_key_values,
             ollama_add_hosts=[p.add_host for p in forwarding_plans if p.add_host],
+            network=local_service_network.network_argument(forwarding_plans),
             session_id=session_id,
         )
         container_name = session_container_name
@@ -1591,6 +1592,7 @@ def _dry_run(
         create_prompt_files=False,
         api_key_values=preview_api_key_values,
         ollama_add_hosts=[p.add_host for p in forwarding_plans if p.add_host],
+        network=local_service_network.network_argument(forwarding_plans),
     )
     if unsupervised:
         assert log_path is not None
@@ -2381,6 +2383,7 @@ def _build_session_command(
     api_key_values: dict[str, str] | None = None,
     ollama_add_host: str | None = None,
     ollama_add_hosts: list[str] | None = None,
+    network: str | None = None,
     session_id: str | None = None,
 ) -> tuple[list[str], Path | None, bool, list[str] | None]:
     # Agent availability is validated up front in main() via _ensure_agent_available.
@@ -2617,6 +2620,7 @@ def _build_session_command(
             add_hosts=(
                 ollama_add_hosts or ([ollama_add_host] if ollama_add_host else [])
             ),
+            network=network,
             shm_size=_effective_shm_size(args),
             node_modules_tmpfs=getattr(args, "node_npm", False),
         )

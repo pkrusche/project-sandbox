@@ -320,6 +320,7 @@ def build_run_argv(
     container_name: str | None = None,
     forward_credentials: bool = True,
     add_hosts: Sequence[str] = (),
+    network: str | None = None,
     shm_size: str | None = None,
     node_modules_tmpfs: bool = False,
 ) -> list[str]:
@@ -348,6 +349,8 @@ def build_run_argv(
         argv.append("-it")
     if firewall_enabled:
         argv += ["--cap-add", "NET_ADMIN", "--cap-add", "NET_RAW"]
+    if network:
+        argv += ["--network", network]
     for mapping in add_hosts:
         argv += ["--add-host", mapping]
     # Generated, non-secret config (settings.json / config.toml) is always

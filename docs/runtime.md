@@ -40,8 +40,9 @@ When launching Codex manually from a sandbox shell or devcontainer, use
 `check_for_update_on_startup = false`; update Codex by rebuilding the image.
 
 With `--agent pi --pi-ollama`, a runtime networking adapter is selected before
-step 4. Native host-loopback forwarding is preferred; local Linux bridge modes
-start a short-lived `socat` proxy on the exact bridge address. Agent-proxy and
+step 4. Native host-loopback forwarding is preferred; rootless Podman on Linux
+with pasta forwards only the planned ports to host loopback over IPv4, and local
+Linux bridge modes start a short-lived `socat` proxy on the exact bridge address. Agent-proxy and
 Ollama sessions on Apple `container` use a user-configured
 `host.docker.internal` localhost DNS mapping; see the setup and restart warning
 in `docs/usage.md`.

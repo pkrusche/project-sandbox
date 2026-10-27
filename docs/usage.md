@@ -521,9 +521,12 @@ uv run project-sandbox \
 - `--pi-ollama` (only with `--agent pi`) extends the firewall to reach a
   host-run Ollama server and pre-configures Pi to use it as the default
   provider while Ollama remains bound to `127.0.0.1:11434`. It is a no-op with
-  any other `--agent`. The runtime adapter uses native host-loopback forwarding
-  for rootless Podman and Docker Desktop, and an exact-bridge `socat` proxy for
-  local Linux Docker/rootful Podman. VM-backed native aliases are accepted only
+  any other `--agent`. The runtime adapter forwards exactly the planned ports
+  over pasta (`--network=pasta:-4,-T,<port>:<port>`, with `host.docker.internal`
+  mapped to the container's `127.0.0.1`) for rootless Podman on Linux, uses
+  native host-loopback forwarding for other rootless Podman setups and Docker
+  Desktop, and an exact-bridge `socat` proxy for local Linux Docker/rootful
+  Podman. VM-backed native aliases are accepted only
   when the container startup probe reaches Ollama. Unsupported modes fail
   closed; project-sandbox never falls back to `0.0.0.0`.
 

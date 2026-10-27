@@ -4,7 +4,9 @@ Agent-proxy, Internet-proxy, and Ollama forwarding all reach host-loopback
 services through one shared name, `host.docker.internal`. Remote Internet proxies
 also use this alias through a host relay. Build proxies use the corresponding
 `203.0.113.113` redirect directly. On Docker Desktop and
-rootless Podman the runtime provides that name natively, and on Linux bridge
+rootless Podman the runtime provides that name natively (on Linux, rootless
+Podman maps it to the container's loopback and forwards the service ports over
+pasta), and on Linux bridge
 runtimes project-sandbox starts a `socat` listener for it. Apple `container`
 has neither path: it depends on an administrator-managed localhost DNS domain
 plus the packet-filter redirect that domain installs. project-sandbox verifies

@@ -149,6 +149,82 @@ class OllamaNetworkTests(TestCase):
             "host.docker.internal:host-gateway",
         )
 
+    def _pasta_info(self) -> dict:
+        return {
+            "host": {"security": {"rootless": True}, "rootlessNetworkCmd": "pasta"},
+            "version": {"Version": "5.4.2"},
+        }
+
+    def test_rootless_pasta_podman_forwards_planned_ports_to_loopback(self) -> None:
+        # Regression: pasta copies the host address into the container and its
+        # host-gateway reaches the LAN address, so loopback-only Ollama and
+        # agent gateways were unreachable through host.docker.internal.
+        with (
+            patch.object(ollama_network.sys, "platform", "linux"),
+            patch.object(
+                ollama_network, "_runtime_info", return_value=self._pasta_info()
+            ),
+        ):
+            plans = ollama_network.prepare_services(
+                PODMAN,
+                [
+                    ollama_network.LocalService("Agent proxy", 4000),
+                    ollama_network.LocalService("Ollama", 11434),
+                ],
+            )
+        self.assertEqual(
+            [plan.strategy for plan in plans], ["podman-pasta-forward"] * 2
+        )
+        self.assertEqual(
+            [plan.add_host for plan in plans], ["host.docker.internal:127.0.0.1", None]
+        )
+        # Exactly the planned ports reach the host, over IPv4 only.
+        self.assertEqual(
+            ollama_network.network_argument(plans),
+            "pasta:-4,-T,4000:4000,-T,11434:11434",
+        )
+        for plan in plans:
+            plan.start()  # no host-side forwarder process
+            self.assertIsNone(plan.proxy)
+
+    def test_pasta_rejects_ipv6_loopback_services_in_any_order(self) -> None:
+        services = [
+            ollama_network.LocalService("Ollama", 11434),
+            ollama_network.LocalService("Agent proxy", 4000, loopback_host="::1"),
+        ]
+        for ordered in (services, services[::-1]):
+            with (
+                self.subTest(first=ordered[0].label),
+                patch.object(ollama_network.sys, "platform", "linux"),
+                patch.object(
+                    ollama_network, "_runtime_info", return_value=self._pasta_info()
+                ),
+                self.assertRaisesRegex(SystemExit, "Agent proxy listens on ::1"),
+            ):
+                ollama_network.prepare_services(PODMAN, ordered)
+
+    def test_pasta_forwarding_requires_a_local_linux_podman(self) -> None:
+        # podman machine runs pasta in a VM whose loopback is not this host's.
+        with (
+            patch.object(ollama_network.sys, "platform", "darwin"),
+            patch.object(
+                ollama_network, "_runtime_info", return_value=self._pasta_info()
+            ),
+        ):
+            plan = ollama_network.prepare(PODMAN)
+        self.assertEqual(plan.strategy, "podman-native-host-alias")
+        self.assertIsNone(ollama_network.network_argument([plan]))
+
+    def test_rootless_slirp_podman_keeps_native_alias(self) -> None:
+        info = self._pasta_info()
+        info["host"]["rootlessNetworkCmd"] = "slirp4netns"
+        with (
+            patch.object(ollama_network.sys, "platform", "linux"),
+            patch.object(ollama_network, "_runtime_info", return_value=info),
+        ):
+            plan = ollama_network.prepare(PODMAN)
+        self.assertEqual(plan.strategy, "podman-native-host-alias")
+
     def test_old_podman_without_host_gateway_is_rejected(self) -> None:
         with patch.object(
             ollama_network,

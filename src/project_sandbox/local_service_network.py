@@ -27,6 +27,7 @@ APPLE_SETUP_COMMAND = (
 )
 APPLE_DELETE_COMMAND = f"sudo container system dns delete {HOSTNAME}"
 APPLE_RESTART_COMMAND = "container system stop && container system start"
+PASTA_STRATEGY = "podman-pasta-forward"
 
 
 @dataclass(frozen=True)
@@ -179,6 +180,18 @@ def prepare(
         )
 
     info = {} if dry_run else _runtime_info(runtime)
+    if runtime == PODMAN and _podman_uses_local_pasta(info):
+        # pasta copies the host's addresses into the container, and its
+        # host-gateway alias reaches the host's LAN address rather than its
+        # loopback. Forward exactly the planned ports to host loopback instead.
+        return ForwardingPlan(
+            PASTA_STRATEGY,
+            add_host=f"{hostname}:127.0.0.1",
+            hostname=hostname,
+            port=port,
+            label=label,
+            loopback_host=loopback_host,
+        )
     if runtime == PODMAN and _podman_is_rootless_or_machine(info):
         _require_podman_host_gateway(info)
         return ForwardingPlan(
@@ -247,6 +260,14 @@ def prepare_services(
         label=first.label,
         loopback_host=first.loopback_host,
     )
+    if base.strategy == PASTA_STRATEGY:
+        for service in services:
+            if not _is_ipv4_loopback(service.loopback_host):
+                raise SystemExit(
+                    f"{service.label} listens on {service.loopback_host}, but "
+                    "rootless podman forwards host-local services over IPv4 "
+                    "loopback only; listen on 127.0.0.1 instead."
+                )
     plans = [base]
     for service in services[1:]:
         # Runtime strategy and hostname endpoint are sandbox-wide decisions.
@@ -265,6 +286,20 @@ def prepare_services(
             )
         )
     return plans
+
+
+def network_argument(plans: list[ForwardingPlan]) -> str | None:
+    """The ``--network`` value the plans need, or None for the runtime default.
+
+    pasta's ``-T`` forwards each listed container-loopback port to the same
+    host-loopback port and nothing else, so the port list is the boundary.
+    ``-4`` keeps pasta off IPv6, whose host-side connection attempt fails on
+    affected pasta releases before IPv4 is tried.
+    """
+    ports = [plan.port for plan in plans if plan.strategy == PASTA_STRATEGY]
+    if not ports:
+        return None
+    return "pasta:" + ",".join(["-4", *(f"-T,{port}:{port}" for port in ports)])
 
 
 def describe(plan: ForwardingPlan) -> str:
@@ -315,6 +350,29 @@ def _podman_is_rootless_or_machine(info: dict) -> bool:
         or info.get("remoteSocket")
         or info.get("version", {}).get("RemoteSocket")
     )
+
+
+def _podman_uses_local_pasta(info: dict) -> bool:
+    """Rootless podman on this Linux host networking containers with pasta.
+
+    podman machine and remote connections are excluded: their pasta runs in a
+    VM or on another host, whose loopback is not this host's.
+    """
+    host = info.get("host", {})
+    if not isinstance(host, dict) or sys.platform != "linux":
+        return False
+    security = host.get("security", {})
+    return (
+        bool(isinstance(security, dict) and security.get("rootless"))
+        and host.get("rootlessNetworkCmd") == "pasta"
+    )
+
+
+def _is_ipv4_loopback(value: str) -> bool:
+    try:
+        return ipaddress.ip_address(value) == ipaddress.ip_address("127.0.0.1")
+    except ValueError:
+        return False
 
 
 def _require_podman_host_gateway(info: dict) -> None:
