@@ -201,6 +201,10 @@ def certificates(root: Path, hosts: list[str]) -> ssl.SSLContext:
         "/CN=Proxy E2E CA",
         "-addext",
         "basicConstraints=critical,CA:TRUE",
+        # Python 3.13+ verifies with VERIFY_X509_STRICT, which rejects a CA
+        # without keyUsage and a leaf without an authority key identifier.
+        "-addext",
+        "keyUsage=critical,keyCertSign,cRLSign",
     )
     openssl(
         "req",
@@ -215,7 +219,12 @@ def certificates(root: Path, hosts: list[str]) -> ssl.SSLContext:
         "/CN=origin.test",
     )
     (root / "extensions").write_text(
-        "basicConstraints=CA:FALSE\nsubjectAltName=DNS:origin.test,"
+        "basicConstraints=CA:FALSE\n"
+        "keyUsage=critical,digitalSignature,keyEncipherment\n"
+        "extendedKeyUsage=serverAuth\n"
+        "subjectKeyIdentifier=hash\n"
+        "authorityKeyIdentifier=keyid\n"
+        "subjectAltName=DNS:origin.test,"
         + ",".join(f"IP:{host}" for host in hosts)
         + "\n"
     )

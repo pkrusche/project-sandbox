@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import socket
+import ssl
 import subprocess
 import tempfile
 import threading
@@ -15,7 +16,7 @@ from contextlib import chdir
 from pathlib import Path
 from unittest.mock import patch
 
-from project_sandbox import agent_proxy, internet_proxy
+from project_sandbox import agent_proxy, internet_proxy, proxy_endpoint
 
 ROOT = Path(__file__).parents[1]
 
@@ -211,6 +212,25 @@ class ProxyEndpointHarnessTests(unittest.TestCase):
                     "2001:db8::1",
                 ],
             )
+
+    @unittest.skipUnless(shutil.which("openssl"), "openssl unavailable")
+    def test_fixture_certificates_pass_strict_proxy_tls_verification(self):
+        checker = load_script(ROOT / "scripts/e2e-proxy-endpoints.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            context = checker.certificates(root, ["127.0.0.1"])
+            # The sandbox preflight verifies with this context, which is strict
+            # on Python 3.13+.
+            client = proxy_endpoint.tls_context(((root / "ca.pem").read_bytes(),))
+            client.verify_flags |= ssl.VERIFY_X509_STRICT
+            with (
+                checker.FixtureServer("127.0.0.1", "proxy", context) as proxy,
+                socket.create_connection(
+                    ("127.0.0.1", proxy.server_port), timeout=5
+                ) as connection,
+                client.wrap_socket(connection, server_hostname="127.0.0.1"),
+            ):
+                pass
 
     @unittest.skipUnless(
         all(shutil.which(tool) for tool in ("node", "curl", "openssl")),
