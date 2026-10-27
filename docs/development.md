@@ -299,7 +299,17 @@ the runtime also sees works too. Without it the HTTPS scenario is skipped.
 
 Docker, Podman, and Apple container are accepted. The host needs OpenSSL and an
 address the selected runtime can reach, including access to temporary listener
-ports. The test binds only that address; the proxy accepts only its own fixture
+ports.
+
+The aggregate runner skips this suite on rootless Podman with pasta networking
+(the default). pasta copies the host's own LAN address into the container
+namespace, so a connection from the sandbox to the fixture address (for example
+`192.168.1.10`) stays inside the container and is refused; the fixtures are
+never reached. The host-side address that does reach the host from Podman
+(`169.254.1.2`, `host.containers.internal`) is not usable on the host itself,
+where the CLI checks the proxy listener before starting. Covering this path
+needs the CLI to map a host-own proxy address for Podman, as it relays remote
+proxies on Apple container. The test binds only that address; the proxy accepts only its own fixture
 origin and cannot relay arbitrary destinations. Images are built normally, so
 build-time Internet access is required; `--no-build` is unsupported because each
 run selects fresh ports and generates a temporary CA.
@@ -414,7 +424,13 @@ harness). Detection failures require an explicit override. Docker and Apple `con
 are supported; with Apple `container`, the builds exercise the host-loopback forwarder.
 Apple `container` forwards published ports for loopback traffic only, so there the
 Squid fixture is published on `127.0.0.1` for its health check and the builds and
-sandbox reach it at its container address. Use `--with-build-proxy` instead of `--only build-proxy` to include
+sandbox reach it at its container address. Rootless Podman is accepted too. IPL
+has no Podman backend, so the Squid fixture runs on Docker (which must also be
+installed), and Podman builds and sandboxes reach it at pasta's host address
+`169.254.1.2`, because the fixture's own LAN address is unreachable from Podman
+containers. Until the CLI maps a host-own proxy address for Podman, the allowed
+runtime phase fails on Podman: `--internet-proxy http://169.254.1.2:PORT` fails
+the CLI's host-side listener check. Use `--with-build-proxy` instead of `--only build-proxy` to include
 it in the full suite. Builds must be enabled. Run the standalone harness with:
 
 ```bash

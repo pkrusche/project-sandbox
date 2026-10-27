@@ -16,7 +16,8 @@
 #  12. agent-proxy              — real Pi/OpenCode gateway calls (explicit opt-in)
 #  13. node-npm                 — headless Playwright and ephemeral npm dependencies
 #  14. proxy-endpoints          — controlled remote HTTP/TLS fixtures (explicit opt-in)
-#  15. build-proxy              — build access through TLS-intercepting Squid (explicit opt-in)
+#  15. build-proxy              — build access through TLS-intercepting Squid (explicit opt-in;
+#                                 on Podman the Squid fixture runs on Docker)
 #
 # The console shows one progress line per suite. Each suite's output is captured
 # in its own temp log file; a failing suite's log is kept and its path reported,
@@ -47,8 +48,8 @@
 #                    --with-agent-proxy, --with-internet-proxy,
 #                    --with-proxy-endpoints, and --with-build-proxy). Requires
 #                    --blocked-url, --internet-proxy-dir, and --agentgateway-dir,
-#                    a real container runtime (Docker or Apple container for
-#                    build-proxy), and builds enabled; billable and destructive
+#                    a real container runtime (build-proxy on Podman also needs
+#                    Docker for its fixture), and builds enabled; billable and destructive
 #   --with-agent-proxy
 #                    run proxy isolation plus the billable agent checker
 #   --with-internet-proxy
@@ -62,8 +63,8 @@
 #                    requires a real runtime and builds
 #   --with-build-proxy
 #                    run build/CA and runtime isolation checks using IPL Squid;
-#                    requires Docker or Apple container, --internet-proxy-dir,
-#                    and builds enabled
+#                    requires Docker, Apple container, or Podman (plus Docker
+#                    for the fixture), --internet-proxy-dir, and builds enabled
 #   --proxy-fixture-host IP
 #                    override local fixture IP (default: outbound IPv4 source address)
 #   --proxy-fixture-ipv6-host IP
@@ -444,6 +445,10 @@ if selected proxy-endpoints; then
   if [ "$WITH_PROXY_ENDPOINTS" = 1 ]; then
     if [ -z "$CONTAINER_RUNTIME" ] || [ "$NO_BUILD" = 1 ]; then
       fail_suite "proxy-endpoints" "requires a real runtime, and builds enabled"
+    elif [ "$CONTAINER_RUNTIME" = podman ] && [ "$(podman info --format '{{.Host.RootlessNetworkCmd}}' 2>/dev/null)" = pasta ]; then
+      # pasta copies the host's LAN address into the container, so fixtures
+      # bound to it are unreachable from the sandbox; see docs/development.md.
+      skip_suite "proxy-endpoints" "unsupported on Podman with pasta networking"
     else
       ENDPOINT_ARGS=(--runtime "$CONTAINER_RUNTIME" --base-image "$BASE_IMAGE")
       [ -n "$PROXY_FIXTURE_HOST" ] && ENDPOINT_ARGS+=(--fixture-host "$PROXY_FIXTURE_HOST")
@@ -459,8 +464,9 @@ fi
 
 if selected build-proxy; then
   if [ "$WITH_BUILD_PROXY" = 1 ]; then
-    if { [ "$CONTAINER_RUNTIME" != docker ] && [ "$CONTAINER_RUNTIME" != apple-container ]; } || [ -z "$INTERNET_PROXY_DIR" ] || [ "$NO_BUILD" = 1 ]; then
-      fail_suite "build-proxy" "requires Docker or Apple container, --internet-proxy-dir, and builds enabled"
+    if [ -z "$CONTAINER_RUNTIME" ] || [ -z "$INTERNET_PROXY_DIR" ] || [ "$NO_BUILD" = 1 ] \
+        || { [ "$CONTAINER_RUNTIME" = podman ] && ! command -v docker >/dev/null 2>&1; }; then
+      fail_suite "build-proxy" "requires a real runtime (Podman also needs Docker for the fixture), --internet-proxy-dir, and builds enabled"
     else
       BUILD_PROXY_ARGS=(--runtime "$CONTAINER_RUNTIME" --base-image "$BASE_IMAGE" --internet-proxy-dir "$INTERNET_PROXY_DIR")
       [ -n "$PROXY_FIXTURE_HOST" ] && BUILD_PROXY_ARGS+=(--fixture-host "$PROXY_FIXTURE_HOST")

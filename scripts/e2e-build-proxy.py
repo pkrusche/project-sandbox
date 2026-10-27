@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """Opt-in build proxy/CA acceptance test using an isolated IPL Squid workspace.
 
-Requires internet-proxy-locally sources, uv, Docker or Apple container, and a
-local non-loopback IP reachable from both the image builder and the sandbox.
-On Apple container the Squid fixture is reached through its container address
-instead, because published ports there forward loopback traffic only.
+Requires internet-proxy-locally sources, uv, Docker, Apple container, or
+rootless Podman (with Docker for the fixture), and a local non-loopback IP
+reachable from both the image builder and the sandbox. On Apple container the
+Squid fixture is reached through its container address instead, because
+published ports there forward loopback traffic only. IPL has no Podman backend,
+so a Podman run hosts the fixture on Docker and reaches it through pasta's
+host address: pasta copies the host's own LAN address into the container, so
+that address is unreachable from Podman builds and sandboxes.
 Never controls the caller's existing proxy, configuration, or signing CA.
 """
 
@@ -63,7 +67,9 @@ def fixture_host(value: str) -> str:
 
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--runtime", choices=("docker", "apple-container"), required=True)
+    p.add_argument(
+        "--runtime", choices=("docker", "apple-container", "podman"), required=True
+    )
     p.add_argument("--internet-proxy-dir", type=Path, required=True)
     p.add_argument(
         "--fixture-host",
@@ -199,6 +205,11 @@ def squid_address(
     return str(ipaddress.ip_address(address))
 
 
+# Podman >= 5.3 maps this pasta address (host.containers.internal) to the host's
+# own address, where Docker publishes the fixture.
+PODMAN_HOST_ADDRESS = "169.254.1.2"
+
+
 def direct_address(host: str) -> str:
     """A host-resolved IPv4 address for the sandbox's direct-bypass probe."""
     return str(
@@ -230,6 +241,8 @@ def main(argv: list[str] | None = None) -> int:
     runtime = container_cli.select_runtime(args.runtime)
     if shutil.which("uv") is None:
         raise SystemExit("uv is required")
+    if runtime == container_cli.PODMAN and shutil.which("docker") is None:
+        raise SystemExit("--runtime podman hosts the Squid fixture on Docker")
     source = args.internet_proxy_dir.expanduser().resolve()
     if (
         not (source / "src/internet_proxy_locally").is_dir()
@@ -260,9 +273,12 @@ def main(argv: list[str] | None = None) -> int:
         publish_host = "127.0.0.1" if apple else args.fixture_host
         with reserved_port(publish_host) as reservation:
             port = reservation.getsockname()[1]
-        authority = (
-            f"[{args.fixture_host}]" if ":" in args.fixture_host else args.fixture_host
+        sandbox_host = (
+            PODMAN_HOST_ADDRESS
+            if runtime == container_cli.PODMAN
+            else args.fixture_host
         )
+        authority = f"[{sandbox_host}]" if ":" in sandbox_host else sandbox_host
         proxy_url = f"http://{authority}:{port}"
         ipl = [
             "uv",
@@ -271,7 +287,7 @@ def main(argv: list[str] | None = None) -> int:
             "--engine",
             "squid",
             "--backend",
-            "docker" if args.runtime == "docker" else "container",
+            "container" if apple else "docker",
             "--ip",
             publish_host,
             "--port",

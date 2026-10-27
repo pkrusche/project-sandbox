@@ -112,7 +112,7 @@ class BuildProxyHarnessTests(TestCase):
 
     def test_orchestration_success_and_failure_always_clean_up_squid(self):
         for runtime, failure in itertools.product(
-            (container_cli.DOCKER, container_cli.APPLE_CONTAINER),
+            (container_cli.DOCKER, container_cli.APPLE_CONTAINER, container_cli.PODMAN),
             (None, "up", "build", "allowed-build", "logs", "down"),
         ):
             with (
@@ -155,6 +155,13 @@ class BuildProxyHarnessTests(TestCase):
                             if runtime == container_cli.APPLE_CONTAINER
                             else "192.0.2.1",
                         )
+                        # IPL has no Podman backend; Podman runs use Docker.
+                        self.assertEqual(
+                            command[command.index("--backend") + 1],
+                            "container"
+                            if runtime == container_cli.APPLE_CONTAINER
+                            else "docker",
+                        )
                         self.assertEqual(
                             kwargs["env"]["IPL_ROOT"], str(artifacts / "squid")
                         )
@@ -193,9 +200,13 @@ class BuildProxyHarnessTests(TestCase):
                         if len(scenarios) != 3 or allowed:
                             self.assertEqual(
                                 command[command.index("--build-proxy") + 1],
-                                "http://192.168.64.9:3128"
-                                if runtime == container_cli.APPLE_CONTAINER
-                                else "http://192.0.2.1:3128",
+                                {
+                                    container_cli.APPLE_CONTAINER.name: (
+                                        "http://192.168.64.9:3128"
+                                    ),
+                                    # pasta hides the host's own LAN address.
+                                    container_cli.PODMAN.name: "http://169.254.1.2:3128",
+                                }.get(runtime.name, "http://192.0.2.1:3128"),
                             )
                         if allowed:
                             if failure == "allowed-build":
