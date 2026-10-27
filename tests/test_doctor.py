@@ -17,7 +17,9 @@ from project_sandbox.doctor import FAIL, INFO, OK, WARN, Probe
 class FakeHost:
     """Stub PATH lookups and probe results keyed by argv prefix."""
 
-    def __init__(self, binaries: set[str], probes: Mapping[tuple[str, ...], Probe | None]):
+    def __init__(
+        self, binaries: set[str], probes: Mapping[tuple[str, ...], Probe | None]
+    ):
         self.binaries = binaries
         self.probes = probes
         self.calls: list[list[str]] = []
