@@ -96,6 +96,22 @@ earlier sandbox CLI that was killed (for example with SIGKILL) before it could
 tear down. Only containers whose session record is `orphaned` (the recorded CLI
 PID no longer exists) are stopped; sandboxes still in use are left alone.
 
+Suites tag a fresh image per temporary project, and interrupted runs can leave
+containers and forwarders behind. Sweep them afterwards with:
+
+```bash
+uv run python scripts/e2e-cleanup.py --dry-run   # list what would be removed
+uv run python scripts/e2e-cleanup.py             # every runtime found on PATH
+uv run python scripts/e2e-cleanup.py --runtime docker
+```
+
+It removes sandbox containers running an e2e image, the IPL Squid fixture
+started by the build-proxy suite (recognised by its config mount in a
+`project-sandbox-build-proxy.*` temp directory, so a real IPL proxy is never
+touched), socat forwarders whose CLI has exited, and images whose tags the
+suites generate. Images of real projects are left alone. It refuses to run
+while an e2e script is active unless `--force` is given.
+
 The Node/npm smoke script creates a small Vite app, resolves and locks
 `@playwright/test`, Vite, and `lodash-es` on the host, and builds the sandbox.
 Each of two sessions runs a production build, checks its output, and runs the
