@@ -4,6 +4,14 @@ Notable changes to `project-sandbox` are documented here.
 
 ## [0.3.0]
 
+### Breaking
+
+- Rootful Podman is no longer supported. `--runtime podman`, and `auto` when it
+  selects Podman, refuses to start unless `podman info` reports rootless.
+- HTTPS `--agent-proxy` and `--internet-proxy` endpoints must be named by DNS
+  hostname; HTTPS endpoints addressed by IP are rejected because Node.js-based
+  agents cannot verify them. Plain HTTP to an IP is still accepted.
+
 ### Added
 
 - Remote proxy endpoints: `--internet-proxy` and `--agent-proxy` now accept
@@ -18,9 +26,23 @@ Notable changes to `project-sandbox` are documented here.
   persisting proxy values in generated Dockerfiles. `--build-no-proxy` adds
   `no_proxy` entries, and `--build-ca-cert` installs PEM CA certificates or
   bundles before build downloads.
+- [`project-sandbox doctor`](docs/doctor.md) checks host prerequisites
+  (Python, container runtimes, `socat`, Git and jj) without starting services
+  or writing files, with a `--json` report for scripts and CI.
+- Rootless Podman on Linux forwards host-loopback services (Ollama, agent
+  proxy, Internet proxy) over pasta, and Podman sessions use their own address
+  so proxies on the host's LAN address stay reachable.
+- End-to-end tooling: `run-e2e-tests.sh --all-tests` runs every suite including
+  the proxy suites, and new cleanup scripts remove leftover e2e containers,
+  forwarders, and images.
 
 ### Changed
 
+- Podman runs pass `--userns=keep-id` so the sandbox user can write the
+  bind-mounted workspace.
+- The e2e runner defaults to `--runtime auto` on all platforms, starts the
+  Internet proxy for `internet-proxy-isolation` when it is not running, and
+  defaults `--blocked-url` to `https://example.com`.
 - jj `--branch` sessions now always create non-colocated workspaces
   (`jj workspace add --no-colocate` on jj 0.46 and later), even from a
   colocated repository. A kept workspace that is colocated is rejected on reuse
@@ -50,6 +72,10 @@ Notable changes to `project-sandbox` are documented here.
 - jj `--branch` sessions no longer fail to open the repository inside the
   container with jj 0.46, which colocated new workspaces with a Git worktree
   whose `.git` pointer cannot resolve from `/workspace`.
+- SIGTERM and SIGHUP now unwind the CLI cleanly, so `socat` forwarders and
+  headless containers are cleaned up instead of left running.
+- The local-service port probe no longer fails on ports still in `TIME_WAIT`
+  from a previous session.
 
 ## [0.2.2]
 
@@ -212,7 +238,7 @@ Initial public release.
 - Build caching, dry-run support, timeout teardown, end-to-end tests, and CI.
 - Ruff, pytest, and release preflight checks.
 
-[0.3.0]: https://github.com/pkrusche/project-sandbox/compare/v0.2.2...HEAD
+[0.3.0]: https://github.com/pkrusche/project-sandbox/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/pkrusche/project-sandbox/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/pkrusche/project-sandbox/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/pkrusche/project-sandbox/compare/v0.1.4...v0.2.0
