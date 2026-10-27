@@ -431,7 +431,8 @@ if [ "$WITH_AGENT_PROXY" = 1 ]; then
   fi
   if selected agent-proxy; then
     run_suite "agent-proxy" \
-      uv run python "$ROOT/scripts/check-agent-proxy.py" --base-image "$BASE_IMAGE"
+      uv run python "$ROOT/scripts/check-agent-proxy.py" --base-image "$BASE_IMAGE" \
+        --runtime "${CONTAINER_RUNTIME:-auto}"
   fi
 else
   if selected agent-proxy-isolation; then

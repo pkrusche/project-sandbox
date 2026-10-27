@@ -23,6 +23,13 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--key", help="Unsafe last-resort key; argv/history may expose it")
     p.add_argument("--timeout", type=int, default=300)
     p.add_argument("--base-image", default="ubuntu:24.04")
+    p.add_argument("--runtime", default="auto")
+    p.add_argument(
+        "--output-tail",
+        type=int,
+        default=40,
+        help="Lines of redacted agent output to show when a check fails.",
+    )
     return p
 
 
@@ -33,6 +40,8 @@ def run_agent(project: Path, agent: str, model: str, marker: str, args, env) -> 
         "project_sandbox",
         str(project),
         args.base_image,
+        "--runtime",
+        args.runtime,
         "--agent",
         agent,
         "--agent-proxy",
@@ -66,6 +75,8 @@ def run_agent(project: Path, agent: str, model: str, marker: str, args, env) -> 
             f"FAIL {agent}: exit={proc.returncode}; expected marker missing",
             file=sys.stderr,
         )
+        for line in output.splitlines()[-args.output_tail :]:
+            print(f"  {agent}| {line}", file=sys.stderr)
         return False
     print(f"PASS {agent}")
     return True

@@ -718,6 +718,43 @@ class AgentProxyTests(unittest.TestCase):
             "CUSTOM_GATEWAY_KEY",
         )
 
+    @patch("subprocess.run")
+    def test_checker_passes_runtime_to_sandbox(self, run: Mock) -> None:
+        checker = _load_checker()
+        run.return_value = Mock(returncode=0, stdout="MARKER\n", stderr="")
+        args = checker.parser().parse_args(["--runtime", "docker"])
+        env = {args.key_env: "secret"}
+
+        checker.run_agent(Path("/tmp/project"), "pi", "model", "MARKER", args, env)
+
+        command = run.call_args.args[0]
+        self.assertEqual(command[command.index("--runtime") + 1], "docker")
+
+    @patch("subprocess.run")
+    def test_checker_failure_shows_redacted_output_tail(self, run: Mock) -> None:
+        checker = _load_checker()
+        run.return_value = Mock(
+            returncode=1,
+            stdout="".join(f"line {i}\n" for i in range(50)),
+            stderr="boom: key secret rejected\n",
+        )
+        args = checker.parser().parse_args(["--output-tail", "3"])
+        env = {args.key_env: "secret"}
+        stderr = io.StringIO()
+
+        with contextlib.redirect_stderr(stderr):
+            ok = checker.run_agent(
+                Path("/tmp/project"), "pi", "model", "MARKER", args, env
+            )
+
+        self.assertFalse(ok)
+        text = stderr.getvalue()
+        self.assertIn("FAIL pi: exit=1; expected marker missing", text)
+        self.assertIn("  pi| line 48", text)
+        self.assertIn(f"  pi| boom: key {agent_proxy.REDACTED} rejected", text)
+        self.assertNotIn("line 47", text)
+        self.assertNotIn("secret", text)
+
 
 if __name__ == "__main__":
     unittest.main()
