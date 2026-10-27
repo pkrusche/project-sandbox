@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import ctypes
 import ipaddress
 import json
+import os
 import shutil
+import signal
 import socket
 import subprocess
+import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Self
 
@@ -80,6 +85,10 @@ class ForwardingPlan:
                 stderr=subprocess.PIPE,
                 text=True,
                 start_new_session=True,
+                # The listener sits in its own session, so a SIGKILL of this
+                # process would orphan it and keep the bridge port bound.
+                # cli starts forwarders before any helper thread exists.
+                preexec_fn=_die_with_parent_hook(),  # noqa: PLW1509
             )
         except OSError as exc:
             raise SystemExit(
@@ -110,6 +119,32 @@ class ForwardingPlan:
 
     def __exit__(self, *_exc) -> None:
         self.close()
+
+
+_PR_SET_PDEATHSIG = 1
+
+
+def _die_with_parent_hook() -> Callable[[], None] | None:
+    """Return a ``preexec_fn`` that SIGTERMs the child when this process dies.
+
+    Linux-only (``prctl(PR_SET_PDEATHSIG)``); elsewhere returns None. libc is
+    resolved here, in the parent, so the forked child only makes the syscall.
+    """
+    if not sys.platform.startswith("linux"):
+        return None
+    try:
+        prctl = ctypes.CDLL(None, use_errno=True).prctl
+    except (OSError, AttributeError):
+        return None
+    parent = os.getpid()
+
+    def hook() -> None:
+        prctl(_PR_SET_PDEATHSIG, signal.SIGTERM, 0, 0, 0)
+        # The parent may have died between fork and prctl.
+        if os.getppid() != parent:
+            os._exit(1)
+
+    return hook
 
 
 def prepare(

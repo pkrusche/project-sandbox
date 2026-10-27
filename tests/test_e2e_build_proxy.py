@@ -398,8 +398,11 @@ class BuildProxyHarnessTests(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             fake_uv = root / "uv"
+            # The runner's startup orphan reap also goes through uv; ignore it.
             fake_uv.write_text(
-                '#!/bin/sh\nprintf "%s\\n" "$@" > "$BUILD_PROXY_ARGUMENT_LOG"\n'
+                "#!/bin/sh\n"
+                'case "$*" in *e2e-reap-orphans*) exit 0 ;; esac\n'
+                'printf "%s\\n" "$@" > "$BUILD_PROXY_ARGUMENT_LOG"\n'
             )
             fake_uv.chmod(0o755)
             arguments = root / "arguments"

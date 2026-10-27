@@ -1,5 +1,10 @@
+import os
+import signal
 import subprocess
 import sys
+import textwrap
+import time
+import unittest
 from pathlib import Path
 from unittest import TestCase
 from unittest.mock import MagicMock, patch
@@ -273,3 +278,71 @@ class OllamaNetworkTests(TestCase):
             plan = ollama_network.prepare(DOCKER, dry_run=True)
         self.assertEqual(plan.strategy, "runtime-probe-required")
         run.assert_not_called()
+
+    def test_bridge_proxy_is_spawned_with_parent_death_hook(self) -> None:
+        proc = MagicMock()
+        proc.poll.return_value = None
+        sentinel = object()
+        with (
+            patch.object(ollama_network.shutil, "which", return_value="/usr/bin/socat"),
+            patch.object(
+                ollama_network.subprocess, "Popen", return_value=proc
+            ) as popen,
+            patch.object(ollama_network.time, "sleep"),
+            patch.object(
+                ollama_network, "_die_with_parent_hook", return_value=sentinel
+            ),
+        ):
+            ollama_network.ForwardingPlan(
+                "linux-bridge-socat", endpoint="172.17.0.1"
+            ).start()
+        self.assertIs(popen.call_args.kwargs["preexec_fn"], sentinel)
+        self.assertTrue(popen.call_args.kwargs["start_new_session"])
+
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"), "PR_SET_PDEATHSIG is Linux-only"
+    )
+    def test_parent_death_hook_kills_orphaned_child(self) -> None:
+        # Regression: a SIGKILLed sandbox left socat holding the bridge port.
+        script = textwrap.dedent(
+            """
+            import subprocess, sys, time
+            from project_sandbox import local_service_network as lsn
+            child = subprocess.Popen(
+                ["sleep", "60"],
+                start_new_session=True,
+                preexec_fn=lsn._die_with_parent_hook(),
+            )
+            print(child.pid, flush=True)
+            time.sleep(60)
+            """
+        )
+        src = str(Path(__file__).resolve().parents[1] / "src")
+        parent = subprocess.Popen(
+            [sys.executable, "-c", script],
+            stdout=subprocess.PIPE,
+            text=True,
+            env={**os.environ, "PYTHONPATH": src},
+        )
+        try:
+            assert parent.stdout is not None
+            child_pid = int(parent.stdout.readline())
+        finally:
+            parent.kill()
+            parent.wait()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and _pid_alive(child_pid):
+            time.sleep(0.05)
+        alive = _pid_alive(child_pid)
+        if alive:
+            os.kill(child_pid, signal.SIGKILL)
+        self.assertFalse(alive, "child outlived its SIGKILLed parent")
+
+
+def _pid_alive(pid: int) -> bool:
+    # The orphan is reparented to init, which reaps it; a zombie counts as dead.
+    try:
+        with open(f"/proc/{pid}/stat", encoding="ascii") as handle:
+            return handle.read().split(")")[-1].split()[0] != "Z"
+    except (FileNotFoundError, ProcessLookupError):
+        return False

@@ -5,7 +5,9 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import sys
+import threading
 import time
 from argparse import ArgumentParser
 from collections.abc import Generator
@@ -384,7 +386,38 @@ def build_parser() -> ArgumentParser:
     return p
 
 
+@contextlib.contextmanager
+def _exit_on_termination_signals() -> Generator[None]:
+    """Turn SIGTERM/SIGHUP into SystemExit so cleanup ``finally`` blocks run.
+
+    Python's default SIGTERM action exits without unwinding, which would leave
+    socat forwarders and headless containers behind. After the first signal,
+    further ones are ignored so teardown itself is not interrupted.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    signums = (signal.SIGTERM, signal.SIGHUP)
+
+    def handler(signum: int, _frame) -> NoReturn:
+        for other in signums:
+            signal.signal(other, signal.SIG_IGN)
+        raise SystemExit(128 + signum)
+
+    previous = {signum: signal.signal(signum, handler) for signum in signums}
+    try:
+        yield
+    finally:
+        for signum, action in previous.items():
+            signal.signal(signum, action)
+
+
 def main(argv: list[str] | None = None) -> int:
+    with _exit_on_termination_signals():
+        return _main(argv)
+
+
+def _main(argv: list[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     if raw_argv[:2] == ["sessions", "list"]:
         extra = raw_argv[2:]
@@ -940,6 +973,10 @@ def main(argv: list[str] | None = None) -> int:
                 f"visible to {runtime.name}"
             )
 
+        # Spawn socat forwarders before the relay thread exists: their
+        # preexec_fn is only fork-safe in a single-threaded parent.
+        for plan in forwarding_plans:
+            plan.start()
         if internet_proxy_relay is not None:
             internet_proxy_relay.start()
             if args.verbose:
@@ -949,8 +986,6 @@ def main(argv: list[str] | None = None) -> int:
                     f"(sandbox URL http://{local_service_network.HOSTNAME}:"
                     f"{internet_proxy_relay.port})"
                 )
-        for plan in forwarding_plans:
-            plan.start()
         agent_ran = True
         session_started_at = datetime.now().astimezone()
         # Injected API key values are never baked into cmd's argv (see

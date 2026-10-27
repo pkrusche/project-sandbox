@@ -257,6 +257,30 @@ WORKFLOW_ARGS=(--runtime "$RUNTIME" --base-image "$BASE_IMAGE")
 [ "$NO_BUILD" = 1 ] && WORKFLOW_ARGS+=(--no-build)
 [ "$KEEP"     = 1 ] && WORKFLOW_ARGS+=(--keep)
 
+# Resolve a concrete runtime for checks that require a real container and do
+# not accept chroot/auto. Selecting chroot deliberately keeps the aggregate
+# suite host-only even if Docker or Podman happens to be installed.
+CONTAINER_RUNTIME=""
+case "$RUNTIME" in
+  apple-container|docker|podman) CONTAINER_RUNTIME="$RUNTIME" ;;
+  auto)
+    if [ "$(uname -s)" = Darwin ] && command -v container >/dev/null 2>&1; then
+      CONTAINER_RUNTIME="apple-container"
+    elif command -v docker >/dev/null 2>&1; then
+      CONTAINER_RUNTIME="docker"
+    elif command -v podman >/dev/null 2>&1; then
+      CONTAINER_RUNTIME="podman"
+    fi
+    ;;
+esac
+
+# A SIGKILLed sandbox CLI from an earlier run cannot stop its own container;
+# stop such orphans so they cannot interfere with this run. Best-effort.
+if [ -n "$CONTAINER_RUNTIME" ]; then
+  (cd "$ROOT" && uv run python "$ROOT/scripts/e2e-reap-orphans.py" \
+    --runtime "$CONTAINER_RUNTIME") || true
+fi
+
 # 1. Basic artifact-generation smoke test (no container required)
 if selected smoke; then
   run_suite "smoke" "$ROOT/scripts/e2e-test.sh"
@@ -280,23 +304,6 @@ if selected jj-workflow; then
     skip_suite "jj-workflow" "jj not found on PATH"
   fi
 fi
-
-# Resolve a concrete runtime for checks that require a real container and do
-# not accept chroot/auto. Selecting chroot deliberately keeps the aggregate
-# suite host-only even if Docker or Podman happens to be installed.
-CONTAINER_RUNTIME=""
-case "$RUNTIME" in
-  apple-container|docker|podman) CONTAINER_RUNTIME="$RUNTIME" ;;
-  auto)
-    if [ "$(uname -s)" = Darwin ] && command -v container >/dev/null 2>&1; then
-      CONTAINER_RUNTIME="apple-container"
-    elif command -v docker >/dev/null 2>&1; then
-      CONTAINER_RUNTIME="docker"
-    elif command -v podman >/dev/null 2>&1; then
-      CONTAINER_RUNTIME="podman"
-    fi
-    ;;
-esac
 
 # 5. Dockerfile tamper detection always runs its portable host checks. Add its
 # real-container override check when this invocation permits a build.

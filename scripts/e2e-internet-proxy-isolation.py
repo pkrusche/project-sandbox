@@ -363,7 +363,14 @@ def main(argv: list[str] | None = None) -> int:
         if "gateway" in stopped:
             control(args.agentgateway_control, "restart", args.agentgateway_dir)
         if process is not None and process.poll() is None:
+            # SIGTERM lets the sandbox stop its container and socat forwarders;
+            # wait for that so the next suite finds the bridge ports free.
             process.terminate()
+            try:
+                process.wait(timeout=60)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
         if args.keep:
             print(f"Test project kept for inspection: {project}")
         else:

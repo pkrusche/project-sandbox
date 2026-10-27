@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -6259,3 +6260,45 @@ class NodeNpmFlagTests(TestCase):
             f"{workspace / '.project-sandbox' / 'Dockerfile.node-npm'}",
             output,
         )
+
+
+class TerminationSignalTests(TestCase):
+    def test_sigterm_unwinds_main_so_cleanup_runs(self) -> None:
+        # Regression: a SIGTERMed sandbox skipped its finally block and leaked
+        # socat forwarders bound to the bridge gateway.
+        cleaned_up = []
+
+        def fake_main(_argv):
+            try:
+                os.kill(os.getpid(), signal.SIGTERM)
+                return 0
+            finally:
+                cleaned_up.append(True)
+
+        with patch.object(cli, "_main", side_effect=fake_main):
+            with self.assertRaises(SystemExit) as caught:
+                cli.main([])
+        self.assertEqual(caught.exception.code, 128 + signal.SIGTERM)
+        self.assertEqual(cleaned_up, [True])
+
+    def test_signal_handlers_are_restored(self) -> None:
+        before = signal.getsignal(signal.SIGTERM), signal.getsignal(signal.SIGHUP)
+        with patch.object(cli, "_main", return_value=0):
+            self.assertEqual(cli.main([]), 0)
+        self.assertEqual(
+            (signal.getsignal(signal.SIGTERM), signal.getsignal(signal.SIGHUP)),
+            before,
+        )
+
+    def test_repeated_signal_does_not_interrupt_teardown(self) -> None:
+        def fake_main(_argv):
+            try:
+                os.kill(os.getpid(), signal.SIGTERM)
+            finally:
+                # A second signal during cleanup must be ignored.
+                os.kill(os.getpid(), signal.SIGHUP)
+
+        with patch.object(cli, "_main", side_effect=fake_main):
+            with self.assertRaises(SystemExit) as caught:
+                cli.main([])
+        self.assertEqual(caught.exception.code, 128 + signal.SIGTERM)

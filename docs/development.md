@@ -90,6 +90,11 @@ teardown when a real runtime is selected, and availability-gated Ollama checks. 
 to run the gateway-only network/credential isolation audit followed by two
 billable Pi/OpenCode LLM requests.
 
+Before the first suite, the runner stops sandbox containers left running by an
+earlier sandbox CLI that was killed (for example with SIGKILL) before it could
+tear down. Only containers whose session record is `orphaned` (the recorded CLI
+PID no longer exists) are stopped; sandboxes still in use are left alone.
+
 The Node/npm smoke script creates a small Vite app, resolves and locks
 `@playwright/test`, Vite, and `lodash-es` on the host, and builds the sandbox.
 Each of two sessions runs a production build, checks its output, and runs the
