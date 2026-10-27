@@ -12,6 +12,7 @@ import json
 import os
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -213,6 +214,11 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--internet-proxy-dir", required=True, type=Path)
     p.add_argument("--agentgateway-dir", required=True, type=Path)
     p.add_argument("--internet-proxy-control", default="uv run ipl {action}")
+    p.add_argument(
+        "--internet-proxy-start",
+        default="setup,up",
+        help="Comma-separated control actions that start a stopped proxy.",
+    )
     p.add_argument("--agentgateway-control", default="./run.py {action}")
     p.add_argument(
         "--stop-order", choices=("proxy-first", "gateway-first"), default="proxy-first"
@@ -227,6 +233,14 @@ def control(template: str, action: str, cwd: Path) -> None:
     command = shlex.split(template.format(action=action))
     print(f"CONTROL ({cwd}): {shlex.join(command)}", flush=True)
     subprocess.run(command, cwd=cwd, check=True)
+
+
+def listener_up(proxy: internet_proxy.InternetProxy) -> bool:
+    try:
+        with socket.create_connection((proxy.host, proxy.port), timeout=2):
+            return True
+    except OSError:
+        return False
 
 
 def wait_for(path: Path, process: subprocess.Popen[str], timeout: int) -> None:
@@ -281,12 +295,35 @@ def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     proxy = internet_proxy.parse(args.internet_proxy)
     certificates = dockerfile.read_ca_certificates(args.ca_cert)
-    internet_proxy.preflight(proxy, ca_certificates=certificates)
-    agent_proxy.validate_url(args.gateway)
-    key, _ = agent_proxy.resolve_key(args.key_env, None)
     for directory in (args.internet_proxy_dir, args.agentgateway_dir):
         if not directory.is_dir():
             raise SystemExit(f"control directory does not exist: {directory}")
+    agent_proxy.validate_url(args.gateway)
+    key, _ = agent_proxy.resolve_key(args.key_env, None)
+    # Start a stopped proxy rather than failing; stop it again afterwards so
+    # the host is left as it was found.
+    started_proxy = not listener_up(proxy)
+    if started_proxy:
+        print(f"Internet proxy {args.internet_proxy} is down; starting it", flush=True)
+        for action in filter(None, args.internet_proxy_start.split(",")):
+            control(
+                args.internet_proxy_control, action.strip(), args.internet_proxy_dir
+            )
+    try:
+        return _run(args, proxy, certificates, key, started_proxy)
+    finally:
+        if started_proxy:
+            control(args.internet_proxy_control, "down", args.internet_proxy_dir)
+
+
+def _run(
+    args: argparse.Namespace,
+    proxy: internet_proxy.InternetProxy,
+    certificates: tuple[bytes, ...],
+    key: str,
+    started_proxy: bool,
+) -> int:
+    internet_proxy.preflight(proxy, ca_certificates=certificates)
 
     root = Path(__file__).resolve().parents[1]
     temp_root = root / ".project-sandbox"
@@ -358,7 +395,8 @@ def main(argv: list[str] | None = None) -> int:
         print("PASS: Internet proxy, bypass, separation, and fail-closed checklist")
         return 0
     finally:
-        if "proxy" in stopped:
+        # A proxy this run started is taken down by main() instead.
+        if "proxy" in stopped and not started_proxy:
             control(args.internet_proxy_control, "restart", args.internet_proxy_dir)
         if "gateway" in stopped:
             control(args.agentgateway_control, "restart", args.agentgateway_dir)

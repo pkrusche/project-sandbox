@@ -179,14 +179,18 @@ class InternetProxyEndToEndScriptTests(TestCase):
                     self.assertTrue((project / marker).exists())
 
     def test_host_orchestration_controls_services_and_propagates_results(self) -> None:
-        for returncode, result in (
-            (0, {"ok": True}),
-            (1, {"ok": True}),
-            (0, {"ok": False, "failures": ["probe failed"]}),
-            (0, None),
+        for returncode, result, proxy_was_up in (
+            (0, {"ok": True}, True),
+            (1, {"ok": True}, True),
+            (0, {"ok": False, "failures": ["probe failed"]}, True),
+            (0, None, True),
+            (0, {"ok": True}, False),
+            (1, {"ok": True}, False),
         ):
             with (
-                self.subTest(returncode=returncode, result=result),
+                self.subTest(
+                    returncode=returncode, result=result, proxy_was_up=proxy_was_up
+                ),
                 tempfile.TemporaryDirectory() as tmp,
             ):
                 checker = _load_checker()
@@ -205,7 +209,8 @@ class InternetProxyEndToEndScriptTests(TestCase):
                     patch.object(
                         checker.tempfile, "mkdtemp", return_value=str(project)
                     ),
-                    patch.object(checker.internet_proxy, "preflight"),
+                    patch.object(checker.internet_proxy, "preflight") as preflight,
+                    patch.object(checker, "listener_up", return_value=proxy_was_up),
                     patch.object(
                         checker.dockerfile, "read_ca_certificates", return_value=()
                     ),
@@ -241,15 +246,22 @@ class InternetProxyEndToEndScriptTests(TestCase):
                 self.assertEqual(
                     rc, 0 if returncode == 0 and result and result["ok"] else 1
                 )
-                self.assertEqual(
-                    run.call_args_list,
-                    [
+                phases = [
+                    call(["uv", "run", "ipl", "down"], cwd=root, check=True),
+                    call(["uv", "run", "ipl", "restart"], cwd=root, check=True),
+                    call(["./run.py", "down"], cwd=root, check=True),
+                    call(["./run.py", "restart"], cwd=root, check=True),
+                ]
+                if not proxy_was_up:
+                    # Started before the preflight, stopped again at the end.
+                    phases = [
+                        call(["uv", "run", "ipl", "setup"], cwd=root, check=True),
+                        call(["uv", "run", "ipl", "up"], cwd=root, check=True),
+                        *phases,
                         call(["uv", "run", "ipl", "down"], cwd=root, check=True),
-                        call(["uv", "run", "ipl", "restart"], cwd=root, check=True),
-                        call(["./run.py", "down"], cwd=root, check=True),
-                        call(["./run.py", "restart"], cwd=root, check=True),
-                    ],
-                )
+                    ]
+                self.assertEqual(run.call_args_list, phases)
+                self.assertTrue(preflight.called)
                 self.assertEqual(
                     [c.args[0].name for c in wait_for.call_args_list],
                     [

@@ -355,7 +355,11 @@ uv run python scripts/e2e-internet-proxy-isolation.py --runtime docker \
 ```
 
 This checker stops/restarts the named external services, so use dedicated test
-instances and provide their control-command overrides where appropriate. The
+instances and provide their control-command overrides where appropriate. If the
+Internet proxy listener is down at start, the checker runs its control command
+with each `--internet-proxy-start` action (default `setup,up`, which builds a
+missing image first) and with `down` when finished; a running proxy is left
+running. The
 normal CLI never manages external services. Check local Ollama separately with
 the existing Ollama runtime acceptance suite, including a remote Internet proxy.
 
