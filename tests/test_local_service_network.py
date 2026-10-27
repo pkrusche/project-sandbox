@@ -1,5 +1,6 @@
 import os
 import signal
+import socket
 import subprocess
 import sys
 import textwrap
@@ -272,6 +273,23 @@ class OllamaNetworkTests(TestCase):
             with self.assertRaisesRegex(SystemExit, "Address already in use"):
                 ollama_network._validate_bindable("172.17.0.1")
         probe.close.assert_called_once()
+
+    def test_bind_probe_ignores_time_wait_but_not_live_listener(self) -> None:
+        # Regression: a session that just closed connections on the bridge
+        # port leaves TIME_WAIT sockets that socat's reuseaddr tolerates.
+        server = socket.socket()
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind(("127.0.0.1", 0))
+        server.listen()
+        port = server.getsockname()[1]
+        client = socket.create_connection(("127.0.0.1", port))
+        accepted, _ = server.accept()
+        accepted.close()
+        with self.assertRaisesRegex(SystemExit, "Cannot bind"):
+            ollama_network._validate_bindable("127.0.0.1", port=port)
+        server.close()
+        client.close()
+        ollama_network._validate_bindable("127.0.0.1", port=port)
 
     def test_dry_run_does_not_call_runtime(self) -> None:
         with patch.object(subprocess, "run") as run:

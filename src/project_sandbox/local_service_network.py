@@ -399,6 +399,9 @@ def _validate_bindable(
 ) -> None:
     probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
+        # Match socat's `reuseaddr`: TIME_WAIT sockets left by a previous
+        # session must not fail the probe, while a live listener still does.
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         probe.bind((endpoint, port))
     except OSError as exc:
         raise SystemExit(
