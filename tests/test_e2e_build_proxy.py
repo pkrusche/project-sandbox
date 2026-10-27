@@ -204,8 +204,6 @@ class BuildProxyHarnessTests(TestCase):
                                     container_cli.APPLE_CONTAINER.name: (
                                         "http://192.168.64.9:3128"
                                     ),
-                                    # pasta hides the host's own LAN address.
-                                    container_cli.PODMAN.name: "http://169.254.1.2:3128",
                                 }.get(runtime.name, "http://192.0.2.1:3128"),
                             )
                         if allowed:

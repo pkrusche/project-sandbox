@@ -28,6 +28,13 @@ APPLE_SETUP_COMMAND = (
 APPLE_DELETE_COMMAND = f"sudo container system dns delete {HOSTNAME}"
 APPLE_RESTART_COMMAND = "container system stop && container system start"
 PASTA_STRATEGY = "podman-pasta-forward"
+# pasta otherwise copies the host's own addresses into the container, so a
+# service on the host's LAN address (a proxy, a gateway) is unreachable from
+# builds and sandboxes. 198.18.0.0/15 is reserved for benchmarking (RFC 2544),
+# so it is unlikely to shadow a network the sandbox must reach.
+PASTA_ADDRESS = "198.18.0.2"
+PASTA_PREFIX = 24
+PASTA_GATEWAY = "198.18.0.1"
 
 
 @dataclass(frozen=True)
@@ -295,18 +302,27 @@ def prepare_services(
     return plans
 
 
-def network_argument(plans: list[ForwardingPlan]) -> str | None:
-    """The ``--network`` value the plans need, or None for the runtime default.
+def uses_local_pasta(runtime: Runtime) -> bool:
+    """Whether ``runtime`` is rootless podman networking with pasta on this host."""
+    return runtime == PODMAN and _podman_uses_local_pasta(_runtime_info(runtime))
 
-    pasta's ``-T`` forwards each listed container-loopback port to the same
-    host-loopback port and nothing else, so the port list is the boundary.
+
+def network_argument(plans: list[ForwardingPlan], *, pasta: bool = False) -> str | None:
+    """The ``--network`` value for a build or session, or None for the default.
+
+    With pasta, the container gets its own address instead of a copy of the
+    host's. pasta's ``-T`` forwards each listed container-loopback port to the
+    same host-loopback port and nothing else, so the port list is the boundary.
     ``-4`` keeps pasta off IPv6, whose host-side connection attempt fails on
     affected pasta releases before IPv4 is tried.
     """
     ports = [plan.port for plan in plans if plan.strategy == PASTA_STRATEGY]
-    if not ports:
+    if not (pasta or ports):
         return None
-    return "pasta:" + ",".join(["-4", *(f"-T,{port}:{port}" for port in ports)])
+    options = ["-a", PASTA_ADDRESS, "-n", str(PASTA_PREFIX), "-g", PASTA_GATEWAY]
+    if ports:
+        options += ["-4", *(f"-T,{port}:{port}" for port in ports)]
+    return "pasta:" + ",".join(options)
 
 
 def describe(plan: ForwardingPlan) -> str:

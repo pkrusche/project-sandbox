@@ -606,6 +606,22 @@ class ContainerCliTests(TestCase):
             out.getvalue(),
         )
 
+    def test_podman_build_passes_the_requested_network(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                build_image(
+                    runtime=PODMAN,
+                    context_dir=Path(tmp),
+                    image_tag="project-sandbox:test",
+                    network="pasta:-a,198.18.0.2,-n,24,-g,198.18.0.1",
+                    dry_run=True,
+                )
+        self.assertIn(
+            "--format docker --network pasta:-a,198.18.0.2,-n,24,-g,198.18.0.1",
+            out.getvalue(),
+        )
+
     @patch("project_sandbox.container_cli.os.getgid", return_value=0)
     @patch("project_sandbox.container_cli.os.getuid", return_value=1234)
     @patch("project_sandbox.container_cli.sys.platform", "linux")

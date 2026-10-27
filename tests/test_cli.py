@@ -3003,12 +3003,15 @@ class PiOllamaTests(TestCase):
                     "select_runtime",
                     return_value=cli.container_cli.PODMAN,
                 ),
-                patch.object(cli.container_cli, "build_image", return_value=0),
+                patch.object(cli.container_cli, "build_image", return_value=0) as build,
                 patch.object(cli.container_cli, "run", return_value=0) as run,
                 patch.object(
                     cli.local_service_network,
                     "prepare_services",
                     return_value=[plan],
+                ),
+                patch.object(
+                    cli.local_service_network, "uses_local_pasta", return_value=True
                 ),
                 contextlib.redirect_stdout(io.StringIO()),
             ):
@@ -3026,8 +3029,16 @@ class PiOllamaTests(TestCase):
             self.assertEqual(rc, 0)
             argv = run.call_args.args[0]
             index = argv.index("--network")
-            self.assertEqual(argv[index + 1], "pasta:-4,-T,11434:11434")
+            self.assertEqual(
+                argv[index + 1],
+                "pasta:-a,198.18.0.2,-n,24,-g,198.18.0.1,-4,-T,11434:11434",
+            )
             self.assertIn("host.docker.internal:127.0.0.1", argv)
+            # The build shares the address but forwards no host-loopback ports.
+            self.assertEqual(
+                build.call_args.kwargs["network"],
+                "pasta:-a,198.18.0.2,-n,24,-g,198.18.0.1",
+            )
 
 
 def _headless_dry_run(agent: str, *extra: str) -> tuple[int, str]:

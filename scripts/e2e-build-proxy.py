@@ -6,9 +6,7 @@ rootless Podman (with Docker for the fixture), and a local non-loopback IP
 reachable from both the image builder and the sandbox. On Apple container the
 Squid fixture is reached through its container address instead, because
 published ports there forward loopback traffic only. IPL has no Podman backend,
-so a Podman run hosts the fixture on Docker and reaches it through pasta's
-host address: pasta copies the host's own LAN address into the container, so
-that address is unreachable from Podman builds and sandboxes.
+so a Podman run hosts the fixture on Docker.
 Never controls the caller's existing proxy, configuration, or signing CA.
 """
 
@@ -205,11 +203,6 @@ def squid_address(
     return str(ipaddress.ip_address(address))
 
 
-# Podman >= 5.3 maps this pasta address (host.containers.internal) to the host's
-# own address, where Docker publishes the fixture.
-PODMAN_HOST_ADDRESS = "169.254.1.2"
-
-
 def direct_address(host: str) -> str:
     """A host-resolved IPv4 address for the sandbox's direct-bypass probe."""
     return str(
@@ -273,12 +266,9 @@ def main(argv: list[str] | None = None) -> int:
         publish_host = "127.0.0.1" if apple else args.fixture_host
         with reserved_port(publish_host) as reservation:
             port = reservation.getsockname()[1]
-        sandbox_host = (
-            PODMAN_HOST_ADDRESS
-            if runtime == container_cli.PODMAN
-            else args.fixture_host
+        authority = (
+            f"[{args.fixture_host}]" if ":" in args.fixture_host else args.fixture_host
         )
-        authority = f"[{sandbox_host}]" if ":" in sandbox_host else sandbox_host
         proxy_url = f"http://{authority}:{port}"
         ipl = [
             "uv",

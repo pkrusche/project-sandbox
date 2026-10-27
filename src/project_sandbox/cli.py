@@ -509,6 +509,11 @@ def _main(argv: list[str] | None = None) -> int:
         if (run_agent is not None or args.build_only) and not args.dry_run
         else None
     )
+    # Builds and sessions share one pasta address so host-own LAN services
+    # (proxies, gateways) stay reachable from both.
+    podman_pasta = runtime is not None and local_service_network.uses_local_pasta(
+        runtime
+    )
     # What the sandbox connects to: the external proxy, or on Apple container
     # a host-loopback relay to it. The original stays authoritative for host
     # preflight and devcontainer configuration.
@@ -847,6 +852,9 @@ def _main(argv: list[str] | None = None) -> int:
                             build_args=build_network.build_args(
                                 build_proxy_environment or {}
                             ),
+                            network=local_service_network.network_argument(
+                                [], pasta=podman_pasta
+                            ),
                             verbose=args.verbose,
                         )
                     if rc != 0:
@@ -939,7 +947,9 @@ def _main(argv: list[str] | None = None) -> int:
             create_prompt_files=True,
             api_key_values=api_key_values,
             ollama_add_hosts=[p.add_host for p in forwarding_plans if p.add_host],
-            network=local_service_network.network_argument(forwarding_plans),
+            network=local_service_network.network_argument(
+                forwarding_plans, pasta=podman_pasta
+            ),
             session_id=session_id,
         )
         container_name = session_container_name

@@ -464,6 +464,7 @@ def build_image(
     dockerfile_path: Path | None = None,
     build_args: Sequence[str] = (),
     preview_build_args: Sequence[str] | None = None,
+    network: str | None = None,
     dry_run: bool = False,
     verbose: bool = True,
 ) -> int:
@@ -493,6 +494,8 @@ def build_image(
     # instruction; RUN steps then use /bin/sh and fail on bashisms (pipefail).
     if runtime.name == PODMAN.name:
         cmd += ["--format", "docker"]
+    if network:
+        cmd += ["--network", network]
     identity = host_build_identity(runtime)
     if identity is not None:
         uid, gid = identity

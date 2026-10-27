@@ -123,6 +123,14 @@ the container and:
   mapping or exact Linux bridge listener, but other peers able to reach that
   private runtime network remain in the trust boundary. The fixed hostname is
   pinned where the runtime permits it.
+- Rootless Podman on Linux with pasta runs every build and session with its own
+  address, `198.18.0.2/24` with gateway `198.18.0.1` (`-a`, `-n`, `-g`), instead
+  of pasta's default copy of the host's addresses. Without it, a proxy or
+  gateway on the host's own LAN address is unreachable. The range is reserved
+  for benchmarking (RFC 2544); a real network in `198.18.0.0/24` is shadowed.
+  The gateway does not map to host loopback, and podman's
+  `host.containers.internal` (`169.254.1.2`) does not answer in this mode. The
+  host's own IPv6 addresses are still copied and remain unreachable.
 - Rootless Podman on Linux with pasta forwards each planned host-local service
   port (`-T <port>:<port>`) from the container's loopback to the same port on
   host loopback, IPv4 only (`-4`). The sandbox firewall accepts all loopback

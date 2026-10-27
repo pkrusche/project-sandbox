@@ -445,10 +445,6 @@ if selected proxy-endpoints; then
   if [ "$WITH_PROXY_ENDPOINTS" = 1 ]; then
     if [ -z "$CONTAINER_RUNTIME" ] || [ "$NO_BUILD" = 1 ]; then
       fail_suite "proxy-endpoints" "requires a real runtime, and builds enabled"
-    elif [ "$CONTAINER_RUNTIME" = podman ] && [ "$(podman info --format '{{.Host.RootlessNetworkCmd}}' 2>/dev/null)" = pasta ]; then
-      # pasta copies the host's LAN address into the container, so fixtures
-      # bound to it are unreachable from the sandbox; see docs/development.md.
-      skip_suite "proxy-endpoints" "unsupported on Podman with pasta networking"
     else
       ENDPOINT_ARGS=(--runtime "$CONTAINER_RUNTIME" --base-image "$BASE_IMAGE")
       [ -n "$PROXY_FIXTURE_HOST" ] && ENDPOINT_ARGS+=(--fixture-host "$PROXY_FIXTURE_HOST")

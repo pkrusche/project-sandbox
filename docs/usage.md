@@ -112,6 +112,10 @@ uv run project-sandbox --runtime podman --agent bash /absolute/path/to/repo pyth
 uv run project-sandbox --runtime apple-container --agent bash /absolute/path/to/repo python:3.12-slim
 ```
 
+With pasta (the default on Linux), Podman builds and sessions use their own
+address, `198.18.0.2/24`, so proxies and gateways on the host's own LAN address
+stay reachable; see `docs/security.md`.
+
 Podman must run rootless: `--runtime podman` (and `auto` when it picks Podman)
 refuses to start when `podman info` reports a rootful setup, such as running
 project-sandbox as root or a Podman machine set with `--rootful`. Podman runs

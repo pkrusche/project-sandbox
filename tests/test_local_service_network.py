@@ -181,11 +181,23 @@ class OllamaNetworkTests(TestCase):
         # Exactly the planned ports reach the host, over IPv4 only.
         self.assertEqual(
             ollama_network.network_argument(plans),
-            "pasta:-4,-T,4000:4000,-T,11434:11434",
+            "pasta:-a,198.18.0.2,-n,24,-g,198.18.0.1,-4,-T,4000:4000,-T,11434:11434",
         )
         for plan in plans:
             plan.start()  # no host-side forwarder process
             self.assertIsNone(plan.proxy)
+
+    def test_pasta_sessions_and_builds_get_their_own_address(self) -> None:
+        # Regression: pasta copied the host's LAN address into the container,
+        # so proxies on that address were unreachable from builds and sessions.
+        self.assertEqual(
+            ollama_network.network_argument([], pasta=True),
+            "pasta:-a,198.18.0.2,-n,24,-g,198.18.0.1",
+        )
+        self.assertIsNone(ollama_network.network_argument([]))
+        with patch.object(ollama_network, "_runtime_info") as info:
+            self.assertFalse(ollama_network.uses_local_pasta(DOCKER))
+        info.assert_not_called()
 
     def test_pasta_rejects_ipv6_loopback_services_in_any_order(self) -> None:
         services = [
