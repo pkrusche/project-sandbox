@@ -30,6 +30,15 @@ def load_script(path):
 
 
 class ProxyEndpointHarnessTests(unittest.TestCase):
+    def test_image_tag_is_a_valid_docker_reference(self):
+        # Regression: mkdtemp suffixes like "_v3nv9so" produced "-_", which
+        # Docker rejects as an invalid reference format.
+        checker = load_script(ROOT / "scripts/e2e-proxy-endpoints.py")
+        component = r"[a-z0-9]+(?:(?:\.|_|__|-+)[a-z0-9]+)*"
+        for _ in range(50):
+            tag = checker.image_tag()
+            self.assertRegex(tag, rf"^{component}:[A-Za-z0-9_][A-Za-z0-9_.-]*$")
+
     def test_audit_does_not_mistake_closed_or_unreachable_ports_for_denial(self):
         audit = load_script(ROOT / "scripts/fixtures/proxy-endpoints-audit.py")
         for error in (None, ConnectionRefusedError(), TimeoutError()):

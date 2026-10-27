@@ -15,6 +15,7 @@ import http.server
 import ipaddress
 import json
 import os
+import secrets
 import select
 import shutil
 import socket
@@ -377,6 +378,11 @@ def run_scenario(args, root, context, scheme, gateway_host, name, url_host=None)
         print(f"PASS: {name}", flush=True)
 
 
+def image_tag() -> str:
+    # mkdtemp suffixes may contain "_", which Docker rejects next to "-".
+    return f"project-sandbox-proxy-endpoints-{secrets.token_hex(4)}:latest"
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -426,7 +432,7 @@ def main(argv=None):
     parent = Path(__file__).resolve().parents[1] / ".project-sandbox/e2e"
     parent.mkdir(parents=True, exist_ok=True)
     root = Path(tempfile.mkdtemp(prefix="proxy-endpoints-", dir=parent))
-    args.image_tag = f"project-sandbox-{root.name}:latest"
+    args.image_tag = image_tag()
     (root / "empty-password-store").mkdir()
     success = False
     try:
