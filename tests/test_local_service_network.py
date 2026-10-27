@@ -225,6 +225,17 @@ class OllamaNetworkTests(TestCase):
             plan = ollama_network.prepare(PODMAN)
         self.assertEqual(plan.strategy, "podman-native-host-alias")
 
+    def test_rootful_podman_never_falls_back_to_a_bridge_listener(self) -> None:
+        for info in ({"host": {"security": {"rootless": False}}}, {}):
+            with (
+                self.subTest(info=info),
+                patch.object(ollama_network, "_runtime_info", return_value=info),
+                patch.object(ollama_network, "_bridge_gateway") as bridge,
+                self.assertRaisesRegex(SystemExit, "rootless podman only"),
+            ):
+                ollama_network.prepare(PODMAN)
+            bridge.assert_not_called()
+
     def test_old_podman_without_host_gateway_is_rejected(self) -> None:
         with patch.object(
             ollama_network,

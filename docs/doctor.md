@@ -20,7 +20,7 @@ reported rather than blocking the command.
 | Host | Python >= 3.11 | fail |
 | Container runtimes | Apple `container` (macOS): version, system service, `host.docker.internal` DNS alias | info (service stopped is fine: direct runs start it) |
 | | Docker: client on `PATH` and daemon reachable (`docker version`) | warn |
-| | Podman: `podman info` succeeds (rootless setup / Podman machine) | warn |
+| | Podman: `podman info` succeeds and reports rootless (rootful Podman, including a rootful Podman machine, is unsupported and refused at startup) | warn |
 | | `chroot` (Linux): `unshare --map-root-user --mount` works | warn |
 | | `auto`: which runtime `--runtime auto` would select, and whether it works | fail |
 | Networking tools | `socat` (Linux; needed for `--pi-ollama` and host-local proxies on bridge networks) | info |

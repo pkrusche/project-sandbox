@@ -72,6 +72,8 @@ def select_runtime(requested: str, *, dry_run: bool = False) -> Runtime:
             raise SystemExit("The chroot runtime is supported on Linux only")
         if not dry_run and shutil.which(runtime.binary) is None:
             raise SystemExit(f"{runtime.binary} CLI not found on PATH")
+        if not dry_run and runtime == PODMAN:
+            require_rootless_podman()
         return runtime
 
     if dry_run:
@@ -84,12 +86,55 @@ def select_runtime(requested: str, *, dry_run: bool = False) -> Runtime:
     )
     for runtime in candidates:
         if shutil.which(runtime.binary) is not None:
+            if runtime == PODMAN:
+                require_rootless_podman()
             return runtime
 
     names = ", ".join(runtime.name for runtime in candidates)
     raise SystemExit(
         f"No supported container runtime found on PATH for {sys.platform}; "
         f"install one of: {names}, or pass --runtime explicitly."
+    )
+
+
+def podman_rootless() -> bool | None:
+    """Whether podman runs rootless, or None when ``podman info`` cannot say.
+
+    Asks podman rather than inspecting the caller: a root caller, or a podman
+    machine or connection set to rootful, all report ``false`` here.
+    """
+    try:
+        proc = subprocess.run(
+            [PODMAN.binary, "info", "--format", "{{.Host.Security.Rootless}}"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    answer = proc.stdout.strip().lower() if proc.returncode == 0 else ""
+    return {"true": True, "false": False}.get(answer)
+
+
+def require_rootless_podman() -> None:
+    """Refuse rootful podman, which project-sandbox does not support."""
+    rootless = podman_rootless()
+    if rootless is True:
+        return
+    if rootless is False:
+        raise SystemExit(
+            "podman is running rootful, which project-sandbox does not support. "
+            "Run project-sandbox as a normal user with rootless podman"
+            + (
+                ", or switch the machine with: podman machine set --rootful=false"
+                if sys.platform == "darwin"
+                else "."
+            )
+        )
+    raise SystemExit(
+        "Could not determine whether podman runs rootless; check `podman info`. "
+        "project-sandbox supports rootless podman only."
     )
 
 
@@ -338,7 +383,8 @@ def build_run_argv(
     # Rootless podman maps the host user to container root, so the image's
     # agent user (built with the host UID) would land on an unrelated subuid and
     # be unable to write the /workspace bind mount. keep-id maps the host UID to
-    # itself instead. A non-root host UID implies rootless podman.
+    # itself instead. Rootful podman is refused at runtime selection; a root
+    # caller has no host identity to keep.
     if runtime.name == PODMAN.name and host_build_identity(runtime) is not None:
         argv.append("--userns=keep-id")
     if shm_size is not None:

@@ -80,7 +80,7 @@ class DockerTests(TestCase):
                 ("docker", "version"): Probe(
                     1, "", "Cannot connect to the Docker daemon\n"
                 ),
-                ("podman", "info"): ok("5.4.0\n"),
+                ("podman", "info"): ok("5.4.0 true\n"),
                 **HEALTHY_VCS,
             },
         )
@@ -91,6 +91,18 @@ class DockerTests(TestCase):
         self.assertEqual(checks["podman"].status, OK)
         self.assertEqual(checks["auto"].status, FAIL)
         self.assertIn("--runtime podman", checks["auto"].hint or "")
+
+    def test_rootful_podman_warns_and_auto_fails(self) -> None:
+        host = FakeHost(
+            {"podman", "git", "jj"},
+            {("podman", "info"): ok("5.4.2 false\n"), **HEALTHY_VCS},
+        )
+        with host.active():
+            checks = by_name(doctor.run_checks())
+        self.assertEqual(checks["podman"].status, WARN)
+        self.assertIn("rootful", checks["podman"].detail)
+        self.assertIn("5.4.2", checks["podman"].detail)
+        self.assertEqual(checks["auto"].status, FAIL)
 
     def test_hung_daemon_is_reported_not_raised(self) -> None:
         host = FakeHost({"docker", "git"}, {("docker", "version"): None, **HEALTHY_VCS})

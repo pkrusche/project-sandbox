@@ -22,7 +22,7 @@ Given `project-sandbox /path/to/repo python:3.12-slim`:
 Given `project-sandbox --agent claude /path/to/repo python:3.12-slim`, it also:
 
 1. Selects a direct-run runtime: Apple `container` on macOS, or Docker/Podman on
-   Linux.
+   Linux. Podman must be rootless; a rootful Podman is refused.
 2. Verifies the Apple `container` system service is running when that runtime is
    selected.
 3. Builds the image with the selected runtime.

@@ -192,7 +192,14 @@ def check_podman() -> Check:
     runtime = container_cli.PODMAN
     if shutil.which(runtime.binary) is None:
         return Check("runtimes", runtime.name, INFO, "podman not found on PATH")
-    probe = _run([runtime.binary, "info", "--format", "{{.Version.Version}}"])
+    probe = _run(
+        [
+            runtime.binary,
+            "info",
+            "--format",
+            "{{.Version.Version}} {{.Host.Security.Rootless}}",
+        ]
+    )
     if probe is None or probe.returncode != 0:
         detail = (
             f"did not answer within {PROBE_TIMEOUT}s"
@@ -205,12 +212,19 @@ def check_podman() -> Check:
             else "Run `podman info` to diagnose the rootless setup"
         )
         return Check("runtimes", runtime.name, WARN, detail, hint)
-    return Check(
-        "runtimes",
-        runtime.name,
-        OK,
-        f"{_version(probe.stdout) or probe.stdout.strip()}; ready",
-    )
+    version, _, rootless = probe.stdout.strip().rpartition(" ")
+    version = _version(version) or version
+    if rootless.lower() != "true":
+        return Check(
+            "runtimes",
+            runtime.name,
+            WARN,
+            f"{version}; rootful, which project-sandbox refuses to use",
+            "Switch to rootless: podman machine set --rootful=false"
+            if sys.platform == "darwin"
+            else "Run project-sandbox as a normal user with rootless podman",
+        )
+    return Check("runtimes", runtime.name, OK, f"{version}; rootless, ready")
 
 
 def check_chroot() -> Check:

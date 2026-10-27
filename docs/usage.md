@@ -112,8 +112,11 @@ uv run project-sandbox --runtime podman --agent bash /absolute/path/to/repo pyth
 uv run project-sandbox --runtime apple-container --agent bash /absolute/path/to/repo python:3.12-slim
 ```
 
-Rootless Podman runs pass `--userns=keep-id` so the sandbox user, built with
-your host UID, can write the bind-mounted workspace.
+Podman must run rootless: `--runtime podman` (and `auto` when it picks Podman)
+refuses to start when `podman info` reports a rootful setup, such as running
+project-sandbox as root or a Podman machine set with `--rootful`. Podman runs
+pass `--userns=keep-id` so the sandbox user, built with your host UID, can
+write the bind-mounted workspace.
 
 Linux also provides an explicit layout-inspection mode that needs no image:
 
@@ -523,11 +526,11 @@ uv run project-sandbox \
   provider while Ollama remains bound to `127.0.0.1:11434`. It is a no-op with
   any other `--agent`. The runtime adapter forwards exactly the planned ports
   over pasta (`--network=pasta:-4,-T,<port>:<port>`, with `host.docker.internal`
-  mapped to the container's `127.0.0.1`) for rootless Podman on Linux, uses
-  native host-loopback forwarding for other rootless Podman setups and Docker
-  Desktop, and an exact-bridge `socat` proxy for local Linux Docker/rootful
-  Podman. VM-backed native aliases are accepted only
-  when the container startup probe reaches Ollama. Unsupported modes fail
+  mapped to the container's `127.0.0.1`) for Podman on Linux with pasta (the
+  default), uses native host-loopback forwarding for other Podman setups
+  (slirp4netns, Podman machine) and Docker Desktop, and an
+  exact-bridge `socat` proxy for local Linux Docker. VM-backed native aliases
+  are accepted only when the container startup probe reaches Ollama. Unsupported modes fail
   closed; project-sandbox never falls back to `0.0.0.0`.
 
   Apple `container` requires a one-time localhost DNS mapping shared by Ollama

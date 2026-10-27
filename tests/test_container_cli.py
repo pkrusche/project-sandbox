@@ -4,6 +4,7 @@ import io
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TypedDict
 from unittest import TestCase
 
@@ -753,6 +754,40 @@ class ContainerCliTests(TestCase):
         with patch("project_sandbox.container_cli.shutil.which", return_value=None):
             runtime = select_runtime("podman", dry_run=True)
         self.assertEqual(runtime, PODMAN)
+
+    def _select_podman(self, requested: str, info: SimpleNamespace):
+        with (
+            patch("project_sandbox.container_cli.sys.platform", "linux"),
+            patch(
+                "project_sandbox.container_cli.shutil.which",
+                side_effect=lambda b: "/usr/bin/podman" if b == "podman" else None,
+            ),
+            patch(
+                "project_sandbox.container_cli.subprocess.run", return_value=info
+            ) as run,
+        ):
+            return select_runtime(requested), run
+
+    def test_select_runtime_accepts_rootless_podman(self) -> None:
+        for requested in ("podman", "auto"):
+            with self.subTest(requested=requested):
+                runtime, run = self._select_podman(
+                    requested, SimpleNamespace(returncode=0, stdout="true\n")
+                )
+                self.assertEqual(runtime, PODMAN)
+                self.assertIn("{{.Host.Security.Rootless}}", run.call_args.args[0])
+
+    def test_select_runtime_refuses_rootful_or_unknown_podman(self) -> None:
+        for requested in ("podman", "auto"):
+            for info, message in (
+                (SimpleNamespace(returncode=0, stdout="false\n"), "rootful"),
+                (SimpleNamespace(returncode=125, stdout=""), "Could not determine"),
+            ):
+                with (
+                    self.subTest(requested=requested, message=message),
+                    self.assertRaisesRegex(SystemExit, message),
+                ):
+                    self._select_podman(requested, info)
 
     def test_select_runtime_explicit_missing_binary_raises(self) -> None:
         with patch("project_sandbox.container_cli.shutil.which", return_value=None):

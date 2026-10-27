@@ -192,7 +192,14 @@ def prepare(
             label=label,
             loopback_host=loopback_host,
         )
-    if runtime == PODMAN and _podman_is_rootless_or_machine(info):
+    if runtime == PODMAN and not dry_run:
+        # Runtime selection already refused rootful podman; never fall back to
+        # a bridge listener if that check was bypassed.
+        if _podman_security(info).get("rootless") is not True:
+            raise SystemExit(
+                "project-sandbox supports rootless podman only; podman reports "
+                "a rootful (or unknown) setup."
+            )
         _require_podman_host_gateway(info)
         return ForwardingPlan(
             "podman-native-host-alias",
@@ -341,15 +348,10 @@ def _runtime_info(runtime: Runtime) -> dict:
     return value if isinstance(value, dict) else {}
 
 
-def _podman_is_rootless_or_machine(info: dict) -> bool:
+def _podman_security(info: dict) -> dict:
     host = info.get("host", {})
     security = host.get("security", {}) if isinstance(host, dict) else {}
-    return bool(
-        security.get("rootless")
-        or host.get("rootless")
-        or info.get("remoteSocket")
-        or info.get("version", {}).get("RemoteSocket")
-    )
+    return security if isinstance(security, dict) else {}
 
 
 def _podman_uses_local_pasta(info: dict) -> bool:
@@ -361,9 +363,8 @@ def _podman_uses_local_pasta(info: dict) -> bool:
     host = info.get("host", {})
     if not isinstance(host, dict) or sys.platform != "linux":
         return False
-    security = host.get("security", {})
     return (
-        bool(isinstance(security, dict) and security.get("rootless"))
+        _podman_security(info).get("rootless") is True
         and host.get("rootlessNetworkCmd") == "pasta"
     )
 
@@ -405,13 +406,12 @@ def _docker_is_desktop(info: dict) -> bool:
 
 
 def _bridge_gateway(runtime: Runtime) -> str:
-    network = "bridge" if runtime == DOCKER else "podman"
     proc = subprocess.run(
         [
             runtime.binary,
             "network",
             "inspect",
-            network,
+            "bridge",
             "--format",
             "{{(index .IPAM.Config 0).Gateway}}",
         ],
