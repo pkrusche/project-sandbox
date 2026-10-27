@@ -18,6 +18,7 @@ def _load():
     spec = importlib.util.spec_from_file_location(
         "e2e_reap_orphans", ROOT / "scripts/e2e-reap-orphans.py"
     )
+    assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
