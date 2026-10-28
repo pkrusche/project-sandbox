@@ -77,12 +77,22 @@ is_jj_repo() {
     command -v jj &>/dev/null && jj root &>/dev/null 2>&1
 }
 
-# A non-colocated jj repo has no .git directory, so point git (and gh, which
-# shells out to git to resolve the repository) at jj's backing git store.
+# A non-colocated jj repo has no .git directory, so git (and gh, which shells
+# out to git to resolve the repository) must be pointed at jj's backing git
+# store. This is applied per call rather than exported, so that subprocesses
+# such as the test suite still see their own repositories.
+REPO_GIT_DIR=""
 if is_jj_repo && ! git rev-parse --git-dir &>/dev/null; then
-    GIT_DIR="$(jj git root)"
-    export GIT_DIR
+    REPO_GIT_DIR="$(jj git root)"
 fi
+
+with_repo_git_dir() {
+    if [[ -n "$REPO_GIT_DIR" ]]; then
+        GIT_DIR="$REPO_GIT_DIR" "$@"
+    else
+        "$@"
+    fi
+}
 
 record_version_bump() {
     local version="$1"
@@ -210,7 +220,7 @@ if ! step_done "04-gh-release"; then
     fi
 
     RELEASE_TAG="v$RELEASE_VERSION"
-    if remote_tag=$(git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG" 2>&1); then
+    if remote_tag=$(with_repo_git_dir git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG" 2>&1); then
         die "GitHub tag $RELEASE_TAG already exists."
     else
         status=$?
@@ -220,7 +230,7 @@ if ! step_done "04-gh-release"; then
         fi
     fi
 
-    if release_lookup=$(gh api "repos/{owner}/{repo}/releases/tags/$RELEASE_TAG" 2>&1); then
+    if release_lookup=$(with_repo_git_dir gh api"repos/{owner}/{repo}/releases/tags/$RELEASE_TAG" 2>&1); then
         die "GitHub release $RELEASE_TAG already exists."
     elif ! grep -q 'HTTP 404' <<<"$release_lookup"; then
         echo "$release_lookup" >&2
@@ -228,7 +238,7 @@ if ! step_done "04-gh-release"; then
     fi
 
     echo "==> [5/8] Creating GitHub release $RELEASE_TAG …"
-    gh release create "v$RELEASE_VERSION" \
+    with_repo_git_dir gh release create "v$RELEASE_VERSION" \
         --title "v$RELEASE_VERSION" \
         --generate-notes
     mark_done "04-gh-release"
