@@ -21,6 +21,8 @@ cd "$ROOT"
 STATUS_DIR="$ROOT/.release-status"
 mkdir -p "$STATUS_DIR"
 
+die() { echo "ERROR: $*" >&2; exit 1; }
+
 # --- arg parsing loop ---
 
 while [[ $# -gt 0 ]]; do
@@ -70,8 +72,6 @@ prompt_token() {
     [[ -n "$token" ]] || die "$registry token must not be empty."
     printf '%s' "$token"
 }
-
-die() { echo "ERROR: $*" >&2; exit 1; }
 
 is_jj_repo() {
     command -v jj &>/dev/null && jj root &>/dev/null 2>&1
