@@ -77,6 +77,13 @@ is_jj_repo() {
     command -v jj &>/dev/null && jj root &>/dev/null 2>&1
 }
 
+# A non-colocated jj repo has no .git directory, so point git (and gh, which
+# shells out to git to resolve the repository) at jj's backing git store.
+if is_jj_repo && ! git rev-parse --git-dir &>/dev/null; then
+    GIT_DIR="$(jj git root)"
+    export GIT_DIR
+fi
+
 record_version_bump() {
     local version="$1"
     local message="Bump version to $version"
