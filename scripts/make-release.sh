@@ -230,7 +230,7 @@ if ! step_done "04-gh-release"; then
         fi
     fi
 
-    if release_lookup=$(with_repo_git_dir gh api"repos/{owner}/{repo}/releases/tags/$RELEASE_TAG" 2>&1); then
+    if release_lookup=$(with_repo_git_dir gh api "repos/{owner}/{repo}/releases/tags/$RELEASE_TAG" 2>&1); then
         die "GitHub release $RELEASE_TAG already exists."
     elif ! grep -q 'HTTP 404' <<<"$release_lookup"; then
         echo "$release_lookup" >&2
