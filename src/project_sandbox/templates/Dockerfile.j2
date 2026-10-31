@@ -24,13 +24,13 @@ RUN set -eux; \
 # and replace both per-architecture checksums with the values published in
 # https://nodejs.org/dist/${NODE_VERSION}/SHASUMS256.txt.
 RUN set -euxo pipefail; \
-    NODE_VERSION="v26.12.1"; \
+    NODE_VERSION="v26.13.0"; \
     NODE_ARCH="$(uname -m)"; \
     case "$NODE_ARCH" in \
         x86_64) NODE_ARCH="x64"; \
-            NODE_SHA256="6170b2d474e1c626f43cff3adc118df9fe3b573258a4fc3d850c8dbc6b079bbd" ;; \
+            NODE_SHA256="d28a96af6c38596f6d9d97c0ee531c13d238d757742387d1928de822d959e997" ;; \
         aarch64|arm64) NODE_ARCH="arm64"; \
-            NODE_SHA256="42aa04922591ee5d4dbc7740d452621acf28508239daa512f5ee8c47ee224fdb" ;; \
+            NODE_SHA256="406fe3fbde1c054adff8b297c16fdb5af6659db327c1ac8acd46b56ef1af9a92" ;; \
         *) echo "Unsupported architecture for Node.js: $NODE_ARCH" >&2; exit 1 ;; \
     esac; \
     node_tmp="$(mktemp -d)"; \
@@ -73,14 +73,14 @@ RUN set -euxo pipefail; \
 RUN npm install -g @fission-ai/openspec@1.15.0
 
 {% if install_claude %}
-RUN npm install -g @anthropic-ai/claude-code@2.1.310
+RUN npm install -g @anthropic-ai/claude-code@2.1.315
 {% endif %}
 {% if install_codex %}
-RUN npm install -g @openai/codex@0.164.0
+RUN npm install -g @openai/codex@0.166.0
 {% endif %}
 {% if install_opencode %}
-RUN npm install -g opencode-ai@1.19.4
-RUN npm install -g @ai-sdk/openai@4.0.102
+RUN npm install -g opencode-ai@1.19.5
+RUN npm install -g @ai-sdk/openai@4.0.106
 {% endif %}
 {% if install_pi %}
 RUN npm install -g @earendil-works/pi-coding-agent@1.4.0
