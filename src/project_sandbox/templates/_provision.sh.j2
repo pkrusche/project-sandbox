@@ -22,6 +22,10 @@ if [ -s "/project-sandbox-secrets/claude/.credentials.json" ]; then
   cp "/project-sandbox-secrets/claude/.credentials.json" "$HOME/.claude/.credentials.json"
   chmod 600 "$HOME/.claude/.credentials.json"
 fi
+if [ -s "/project-sandbox-secrets/claude/remote-settings-consent.json" ]; then
+  cp "/project-sandbox-secrets/claude/remote-settings-consent.json" "$HOME/.claude/remote-settings-consent.json"
+  chmod 600 "$HOME/.claude/remote-settings-consent.json"
+fi
 if [ -f "/project-sandbox-secrets/claude/.claude.json" ]; then
   cp "/project-sandbox-secrets/claude/.claude.json" "$HOME/.claude.json"
   cp "/project-sandbox-secrets/claude/.claude.json" "$HOME/.claude/.claude.json"

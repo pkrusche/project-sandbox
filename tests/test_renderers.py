@@ -909,6 +909,49 @@ class RendererTests(TestCase):
                 ],
             )
 
+    def test_claude_managed_settings_consent_is_staged_for_all_profiles(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            context = root / ".project-sandbox"
+            (home / ".claude").mkdir(parents=True)
+            consent = (
+                '{"version":1,"records":{"org":{"accountUuid":"acct",'
+                '"dangerousSettingsHash":"abc","updatedAt":1}}}\n'
+            )
+            (home / ".claude" / "remote-settings-consent.json").write_text(
+                consent, encoding="utf-8"
+            )
+
+            with _credentials_root(root):
+                staged = config_agents.sync_credentials(context, home=home)
+
+            for profile in ("claude", "claude-devcontainer"):
+                staged_consent = staged[profile] / "remote-settings-consent.json"
+                self.assertEqual(staged_consent.read_text(encoding="utf-8"), consent)
+                self.assertEqual(staged_consent.stat().st_mode & 0o777, 0o600)
+
+    def test_removed_claude_managed_settings_consent_is_unstaged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            context = root / ".project-sandbox"
+            host_consent = home / ".claude" / "remote-settings-consent.json"
+            host_consent.parent.mkdir(parents=True)
+            host_consent.write_text('{"version":1}\n', encoding="utf-8")
+
+            with _credentials_root(root):
+                staged_dir = config_agents.sync_credentials(context, home=home)[
+                    "claude"
+                ]
+                self.assertTrue((staged_dir / host_consent.name).exists())
+                host_consent.unlink()
+                config_agents.sync_credentials(context, home=home)
+
+            self.assertFalse((staged_dir / host_consent.name).exists())
+
     def test_credentials_dir_rejects_invalid_agent_name(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(ValueError) as raised:
@@ -1788,6 +1831,10 @@ class RendererTests(TestCase):
             self.assertIn("/project-sandbox-config/claude/settings.json", text)
             self.assertIn("/project-sandbox-secrets/claude/.claude.json", text)
             self.assertIn("/project-sandbox-secrets/claude/.credentials.json", text)
+            self.assertIn(
+                "/project-sandbox-secrets/claude/remote-settings-consent.json", text
+            )
+            self.assertIn('"$HOME/.claude/remote-settings-consent.json"', text)
             self.assertIn('"$HOME/.claude/.claude.json"', text)
             self.assertIn("CLAUDE_SECURESTORAGE_CONFIG_DIR", text)
             self.assertNotIn("CLAUDE_CONFIG_DIR", text)
@@ -2044,6 +2091,10 @@ class RendererTests(TestCase):
             self.assertIn("/project-sandbox-config/claude/settings.json", text)
             self.assertIn("/project-sandbox-secrets/claude/.claude.json", text)
             self.assertIn("/project-sandbox-secrets/claude/.credentials.json", text)
+            self.assertIn(
+                "/project-sandbox-secrets/claude/remote-settings-consent.json", text
+            )
+            self.assertIn('"$HOME/.claude/remote-settings-consent.json"', text)
             self.assertIn('"$HOME/.claude/.claude.json"', text)
             self.assertIn("CLAUDE_SECURESTORAGE_CONFIG_DIR", text)
             self.assertNotIn("CLAUDE_CONFIG_DIR", text)
