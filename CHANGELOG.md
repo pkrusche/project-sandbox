@@ -2,6 +2,14 @@
 
 Notable changes to `project-sandbox` are documented here.
 
+## [Unreleased]
+
+### Added
+
+- `--fast` enables fast mode for Claude (`fastMode` setting via `--settings`)
+  and Codex (`service_tier = "fast"`) in interactive and headless runs. It is
+  rejected for other agents. See [usage](docs/usage.md).
+
 ## [0.3.0]
 
 ### Breaking
