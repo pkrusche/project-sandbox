@@ -57,6 +57,9 @@ CLAUDE_CREDENTIAL_STATE_KEYS = frozenset(
 )
 
 CREDENTIALS_ROOT = Path("/tmp")
+# Claude Code records the user's acceptance of server-managed settings here;
+# without it the sandbox re-prompts with the managed settings dialog each run.
+CLAUDE_MANAGED_SETTINGS_CONSENT = "remote-settings-consent.json"
 
 _CONFIGURED_AGENTS = ("claude", "codex", "opencode", "pi")
 SUPPORTED_CREDENTIAL_AGENTS = frozenset(_CONFIGURED_AGENTS)
@@ -429,6 +432,11 @@ def _sync_claude_credentials(
         )
         if not copied:
             _remove_if_exists(out_dir / ".credentials.json")
+    if not _copy_if_file(
+        home / ".claude" / CLAUDE_MANAGED_SETTINGS_CONSENT,
+        out_dir / CLAUDE_MANAGED_SETTINGS_CONSENT,
+    ):
+        _remove_if_exists(out_dir / CLAUDE_MANAGED_SETTINGS_CONSENT)
     _stage_config_state(
         (
             home / ".claude.json",

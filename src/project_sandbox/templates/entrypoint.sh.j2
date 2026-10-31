@@ -60,8 +60,8 @@ load_project_sandbox_prompt() {
 
 # When --verbose is requested, echo the coding agent's resolved config and the
 # exact argv it is launched with (to stderr, so the stream-json stdout stays
-# clean). This makes it visible whether --model / --effort actually reached the
-# agent: a blank value here means the env var did not arrive.
+# clean). This makes it visible whether --model / --effort / --fast actually
+# reached the agent: a blank value here means the env var did not arrive.
 log_project_sandbox_agent_command() {
   if [ "${PROJECT_SANDBOX_VERBOSE:-0}" != "1" ]; then
     return 0
@@ -70,6 +70,7 @@ log_project_sandbox_agent_command() {
     printf 'project-sandbox: coding agent config:\n'
     printf '  model:  %s\n' "${PROJECT_SANDBOX_MODEL:-(agent default)}"
     printf '  effort: %s\n' "${PROJECT_SANDBOX_EFFORT:-(agent default)}"
+    printf '  fast:   %s\n' "${PROJECT_SANDBOX_FAST:-(agent default)}"
     printf 'project-sandbox: coding agent command:'
     for _arg in "$@"; do
       printf ' %s' "$_arg"
@@ -84,6 +85,9 @@ case "${1:-bash}" in
     case "${1:-bash}" in
       claude)
         shift
+        if [ "${PROJECT_SANDBOX_FAST:-}" = "1" ]; then
+          set -- --settings '{"fastMode":true}' "$@"
+        fi
         if [ -n "${PROJECT_SANDBOX_EFFORT:-}" ]; then
           set -- --effort "$PROJECT_SANDBOX_EFFORT" "$@"
         fi
@@ -97,6 +101,9 @@ case "${1:-bash}" in
         shift
         # Run in-process: the shared background server can fail inside the sandbox.
         set -- --no-daemon "$@"
+        if [ "${PROJECT_SANDBOX_FAST:-}" = "1" ]; then
+          set -- -c 'service_tier="fast"' "$@"
+        fi
         if [ -n "${PROJECT_SANDBOX_EFFORT:-}" ]; then
           set -- -c "model_reasoning_effort=\"$PROJECT_SANDBOX_EFFORT\"" "$@"
         fi
@@ -137,6 +144,9 @@ case "${1:-bash}" in
         shift
         load_project_sandbox_prompt claude-headless || exit $?
         set -- -p "$PROMPT" --output-format stream-json --verbose --dangerously-skip-permissions
+        if [ "${PROJECT_SANDBOX_FAST:-}" = "1" ]; then
+          set -- --settings '{"fastMode":true}' "$@"
+        fi
         if [ -n "${PROJECT_SANDBOX_EFFORT:-}" ]; then
           set -- --effort "$PROJECT_SANDBOX_EFFORT" "$@"
         fi
@@ -150,6 +160,9 @@ case "${1:-bash}" in
         shift
         load_project_sandbox_prompt codex-headless || exit $?
         set -- --skip-git-repo-check --json --color never "$PROMPT"
+        if [ "${PROJECT_SANDBOX_FAST:-}" = "1" ]; then
+          set -- -c 'service_tier="fast"' "$@"
+        fi
         if [ -n "${PROJECT_SANDBOX_EFFORT:-}" ]; then
           set -- -c "model_reasoning_effort=\"$PROJECT_SANDBOX_EFFORT\"" "$@"
         fi

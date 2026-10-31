@@ -94,6 +94,8 @@ class CliTests(TestCase):
         self.assertIn("bash", help_text)
         self.assertIn("--model", help_text)
         self.assertIn("--effort", help_text)
+        self.assertIn("--fast", help_text)
+        self.assertIn("--agent claude --fast or --agent codex --fast", flat_help)
         self.assertIn("--agent claude --model sonnet --prompt-text", flat_help)
         self.assertIn("--agent claude --model sonnet --effort low", flat_help)
         self.assertIn("--agent claude --model sonnet --effort high", flat_help)
@@ -3347,6 +3349,132 @@ class EffortSelectionTests(TestCase):
             result = out.getvalue()
             self.assertIn("PROJECT_SANDBOX_MODEL=sonnet", result)
             self.assertIn("PROJECT_SANDBOX_EFFORT=high", result)
+
+
+class FastModeTests(TestCase):
+    """--fast forwards PROJECT_SANDBOX_FAST to Claude and Codex sessions only."""
+
+    def test_fast_injected_for_claude_and_codex_headless(self) -> None:
+        for agent in ("claude", "codex"):
+            with self.subTest(agent=agent):
+                rc, output = _headless_dry_run(agent, "--fast")
+                self.assertEqual(rc, 0)
+                self.assertIn("PROJECT_SANDBOX_FAST=1", output)
+
+    def test_no_fast_does_not_inject_env_var(self) -> None:
+        for agent in ("claude", "codex"):
+            with self.subTest(agent=agent):
+                rc, output = _headless_dry_run(agent)
+                self.assertEqual(rc, 0)
+                self.assertNotIn("PROJECT_SANDBOX_FAST", output)
+
+    def test_fast_rejected_for_unsupported_agents(self) -> None:
+        for agent in ("opencode", "pi", "bash"):
+            with self.subTest(agent=agent):
+                with self.assertRaises(SystemExit) as ctx:
+                    _headless_dry_run(agent, "--fast")
+                self.assertEqual(
+                    str(ctx.exception),
+                    "--fast supports only --agent claude or --agent codex",
+                )
+
+    def test_fast_rejected_without_agent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(SystemExit) as ctx:
+                cli.main(["--dry-run", "--fast", tmp, "python:3.12-slim"])
+            self.assertEqual(
+                str(ctx.exception),
+                "--fast supports only --agent claude or --agent codex",
+            )
+
+    def test_fast_defaults_to_claude_for_prompt_without_agent(self) -> None:
+        # A prompt without --agent runs Claude, which supports fast mode.
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            paths = _agent_paths(project / "home")
+            paths["claude"].mkdir(parents=True, exist_ok=True)
+            out = io.StringIO()
+            with (
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
+                patch.object(
+                    cli.config_agents, "_agent_host_paths", return_value=paths
+                ),
+                contextlib.redirect_stdout(out),
+            ):
+                rc = cli.main(
+                    [
+                        "--dry-run",
+                        "--no-build",
+                        "--no-firewall",
+                        "--fast",
+                        "--prompt-text",
+                        "do something",
+                        str(project),
+                        "python:3.12-slim",
+                    ]
+                )
+            self.assertEqual(rc, 0)
+            self.assertIn("PROJECT_SANDBOX_FAST=1", out.getvalue())
+
+    def test_fast_injected_in_interactive_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            paths = _agent_paths(project / "home")
+            paths["codex"].mkdir(parents=True, exist_ok=True)
+            out = io.StringIO()
+            with (
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
+                patch.object(
+                    cli.config_agents, "_agent_host_paths", return_value=paths
+                ),
+                contextlib.redirect_stdout(out),
+            ):
+                rc = cli.main(
+                    [
+                        "--dry-run",
+                        "--no-build",
+                        "--no-firewall",
+                        "--agent",
+                        "codex",
+                        "--fast",
+                        str(project),
+                        "python:3.12-slim",
+                    ]
+                )
+            self.assertEqual(rc, 0)
+            self.assertIn("PROJECT_SANDBOX_FAST=1", out.getvalue())
+
+    def test_fast_combines_with_model_and_effort(self) -> None:
+        rc, output = _headless_dry_run(
+            "claude", "--fast", "--model", "opus", "--effort", "high"
+        )
+        self.assertEqual(rc, 0)
+        self.assertIn("PROJECT_SANDBOX_MODEL=opus", output)
+        self.assertIn("PROJECT_SANDBOX_EFFORT=high", output)
+        self.assertIn("PROJECT_SANDBOX_FAST=1", output)
+
+    def test_verbose_summary_reports_fast_mode(self) -> None:
+        rc, output = _headless_dry_run("codex", "--verbose", "--fast")
+        self.assertEqual(rc, 0)
+        self.assertIn("fast:   on", output)
+        rc, output = _headless_dry_run("codex", "--verbose")
+        self.assertEqual(rc, 0)
+        self.assertIn("fast:   off", output)
+
+    def test_verbose_summary_omits_fast_for_unsupported_agents(self) -> None:
+        rc, output = _headless_dry_run("opencode", "--verbose")
+        self.assertEqual(rc, 0)
+        self.assertNotIn("fast:", output)
 
 
 class PiToolAllowlistTests(TestCase):

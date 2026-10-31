@@ -909,6 +909,49 @@ class RendererTests(TestCase):
                 ],
             )
 
+    def test_claude_managed_settings_consent_is_staged_for_all_profiles(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            context = root / ".project-sandbox"
+            (home / ".claude").mkdir(parents=True)
+            consent = (
+                '{"version":1,"records":{"org":{"accountUuid":"acct",'
+                '"dangerousSettingsHash":"abc","updatedAt":1}}}\n'
+            )
+            (home / ".claude" / "remote-settings-consent.json").write_text(
+                consent, encoding="utf-8"
+            )
+
+            with _credentials_root(root):
+                staged = config_agents.sync_credentials(context, home=home)
+
+            for profile in ("claude", "claude-devcontainer"):
+                staged_consent = staged[profile] / "remote-settings-consent.json"
+                self.assertEqual(staged_consent.read_text(encoding="utf-8"), consent)
+                self.assertEqual(staged_consent.stat().st_mode & 0o777, 0o600)
+
+    def test_removed_claude_managed_settings_consent_is_unstaged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            context = root / ".project-sandbox"
+            host_consent = home / ".claude" / "remote-settings-consent.json"
+            host_consent.parent.mkdir(parents=True)
+            host_consent.write_text('{"version":1}\n', encoding="utf-8")
+
+            with _credentials_root(root):
+                staged_dir = config_agents.sync_credentials(context, home=home)[
+                    "claude"
+                ]
+                self.assertTrue((staged_dir / host_consent.name).exists())
+                host_consent.unlink()
+                config_agents.sync_credentials(context, home=home)
+
+            self.assertFalse((staged_dir / host_consent.name).exists())
+
     def test_credentials_dir_rejects_invalid_agent_name(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(ValueError) as raised:
@@ -1788,6 +1831,10 @@ class RendererTests(TestCase):
             self.assertIn("/project-sandbox-config/claude/settings.json", text)
             self.assertIn("/project-sandbox-secrets/claude/.claude.json", text)
             self.assertIn("/project-sandbox-secrets/claude/.credentials.json", text)
+            self.assertIn(
+                "/project-sandbox-secrets/claude/remote-settings-consent.json", text
+            )
+            self.assertIn('"$HOME/.claude/remote-settings-consent.json"', text)
             self.assertIn('"$HOME/.claude/.claude.json"', text)
             self.assertIn("CLAUDE_SECURESTORAGE_CONFIG_DIR", text)
             self.assertNotIn("CLAUDE_CONFIG_DIR", text)
@@ -1918,6 +1965,70 @@ class RendererTests(TestCase):
                             result.stdout.splitlines(), prefix + flags + tail
                         )
 
+    def test_entrypoint_fast_mode_flags_for_claude_and_codex(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            text = dockerfile.render_entrypoint(context).read_text()
+            dispatch = text[text.index('case "${1:-bash}" in') :]
+            bindir = context / "bin"
+            bindir.mkdir()
+            script = context / "dispatch.sh"
+            script.write_text(
+                "set -eu\n"
+                "log_project_sandbox_agent_command() { :; }\n"
+                "load_project_sandbox_prompt() { PROMPT='do it'; }\n"
+                + dispatch
+            )
+            for agent in ("claude", "codex"):
+                stub = bindir / agent
+                stub.write_text('#!/bin/sh\nprintf "%s\n" "$@"\n')
+                stub.chmod(0o755)
+            fast_flags = {
+                "claude": ["--settings", '{"fastMode":true}'],
+                "codex": ["-c", 'service_tier="fast"'],
+            }
+            for agent, flags in fast_flags.items():
+                for mode in (agent, agent + "-headless"):
+                    for fast in ("1", ""):
+                        with self.subTest(mode=mode, fast=fast):
+                            result = subprocess.run(
+                                [
+                                    "/bin/sh",
+                                    str(script),
+                                    "project-sandbox-run",
+                                    mode,
+                                ],
+                                env={
+                                    "PATH": f"{bindir}:/usr/bin:/bin",
+                                    "PROJECT_SANDBOX_FAST": fast,
+                                },
+                                capture_output=True,
+                                text=True,
+                                check=True,
+                            )
+                            argv = result.stdout.splitlines()
+                            # The fast flag pair is adjacent and present only
+                            # when PROJECT_SANDBOX_FAST=1.
+                            pairs = list(zip(argv, argv[1:]))
+                            if fast:
+                                self.assertIn(tuple(flags), pairs)
+                            else:
+                                self.assertNotIn(flags[1], argv)
+
+    def test_entrypoint_fast_mode_only_for_claude_and_codex(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            text = dockerfile.render_entrypoint(context).read_text(encoding="utf-8")
+            # Two branches each (interactive and headless); OpenCode, Pi and
+            # Bash never see the fast-mode flags.
+            self.assertEqual(
+                text.count("set -- --settings '{\"fastMode\":true}' \"$@\""), 2
+            )
+            self.assertEqual(
+                text.count("set -- -c 'service_tier=\"fast\"' \"$@\""), 2
+            )
+            self.assertEqual(text.count('"${PROJECT_SANDBOX_FAST:-}" = "1"'), 4)
+
     def test_entrypoint_pi_never_emits_separate_effort_flag(self) -> None:
         import re
 
@@ -1992,6 +2103,10 @@ class RendererTests(TestCase):
                 "printf '  effort: %s\\n' \"${PROJECT_SANDBOX_EFFORT:-(agent default)}\"",
                 text,
             )
+            self.assertIn(
+                "printf '  fast:   %s\\n' \"${PROJECT_SANDBOX_FAST:-(agent default)}\"",
+                text,
+            )
             # Each headless agent logs its resolved argv right before exec.
             self.assertIn('log_project_sandbox_agent_command claude "$@"', text)
             self.assertIn('log_project_sandbox_agent_command codex exec "$@"', text)
@@ -2044,6 +2159,10 @@ class RendererTests(TestCase):
             self.assertIn("/project-sandbox-config/claude/settings.json", text)
             self.assertIn("/project-sandbox-secrets/claude/.claude.json", text)
             self.assertIn("/project-sandbox-secrets/claude/.credentials.json", text)
+            self.assertIn(
+                "/project-sandbox-secrets/claude/remote-settings-consent.json", text
+            )
+            self.assertIn('"$HOME/.claude/remote-settings-consent.json"', text)
             self.assertIn('"$HOME/.claude/.claude.json"', text)
             self.assertIn("CLAUDE_SECURESTORAGE_CONFIG_DIR", text)
             self.assertNotIn("CLAUDE_CONFIG_DIR", text)

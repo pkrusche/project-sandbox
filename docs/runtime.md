@@ -34,7 +34,7 @@ Given `project-sandbox --agent claude /path/to/repo python:3.12-slim`, it also:
 
 Interactive `--agent codex` launches with `--no-daemon` to bypass Codex's shared
 background app server, which can fail to start inside the sandbox. Model, effort,
-and forwarded arguments still apply. Headless runs continue to use `codex exec`.
+fast mode, and forwarded arguments still apply. Headless runs continue to use `codex exec`.
 When launching Codex manually from a sandbox shell or devcontainer, use
 `codex --no-daemon` as well. Both generated Codex configs set
 `check_for_update_on_startup = false`; update Codex by rebuilding the image.

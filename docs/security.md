@@ -22,6 +22,13 @@ the generated configuration directories or image build context. Explicit
 `--mount` values are user-authorized exposure and can still reveal any host path
 the user chooses, including a credential-bearing path.
 
+Claude's forwarded files are its OAuth credentials (`~/.claude/.credentials.json`
+or the macOS Keychain entry), a sanitized `~/.claude.json`, and, when present,
+`~/.claude/remote-settings-consent.json`. The consent file records that the host
+user accepted their organization's server-managed settings. Forwarding it means
+a sandboxed Claude session can skip the managed settings dialog for those same
+settings. If they change, Claude Code prompts again inside the container.
+
 ## Unsupervised session history
 
 A run with `--prompt` or `--prompt-text` is unsupervised. These runs retain the

@@ -517,6 +517,13 @@ uv run project-sandbox \
   values are never rewritten, so `provider/id[:thinking]` forms remain intact,
   and every `--effort` level maps onto a Pi thinking level. They are ignored for
   Bash.
+- `--fast` turns on the agent's fast mode for Claude and Codex, in interactive
+  and headless runs. The CLI forwards `PROJECT_SANDBOX_FAST=1`, and the
+  entrypoint adds `--settings '{"fastMode":true}'` for Claude or
+  `-c service_tier="fast"` for Codex. Fast mode bills at a higher rate and only
+  works with models and plans that offer it; the agent decides what happens
+  otherwise. `--fast` is rejected for OpenCode, Pi, and Bash. It combines with
+  `--model` and `--effort`, e.g. `--agent claude --model opus --fast`.
 - `--pi-tools TOOLS` sets Pi's comma-separated tool allowlist; pass
   `--pi-tools read,grep,find,ls` for a read-only session. Only meaningful with
   `--agent pi`; when omitted, Pi's own default tool set applies, so the agent
@@ -601,9 +608,10 @@ uv run project-sandbox \
   end. With `--verbose`, the build output streams, the firewall banner shows, and
   additional raw non-agent output is teed live to the terminal as well as the
   log. Live agent progress is shown as Markdown in either mode. Verbose mode
-  also prints the resolved coding-agent config (agent, model, effort) before
-  launch. The entrypoint echoes those values and the exact agent argv from
-  inside the container; a blank model/effort means the env var did not arrive.
+  also prints the resolved coding-agent config (agent, model, effort, and fast
+  mode for Claude/Codex) before launch. The entrypoint echoes those values and
+  the exact agent argv from inside the container; a blank model/effort/fast
+  value means the env var did not arrive.
 - The agent's exit code is propagated, so CI pipelines can detect failures. Pi's
   JSON output mode always exits 0, so a headless Pi run whose last assistant
   message ended in `error`/`aborted` is reported as exit `1` (or `75` when the

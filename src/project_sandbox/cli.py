@@ -58,6 +58,7 @@ from .paths import (
 )
 
 SUPPORTED_AGENTS = ("claude", "codex", "opencode", "pi", "bash")
+FAST_MODE_AGENTS = ("claude", "codex")
 PROMPT_MOUNT_TARGET = "/project-sandbox-prompt"
 # Headless Chromium uses /dev/shm heavily; Docker's 64m default makes it crash.
 NODE_NPM_DEFAULT_SHM_SIZE = "2g"
@@ -343,6 +344,17 @@ def build_parser() -> ArgumentParser:
         ),
     )
     p.add_argument(
+        "--fast",
+        action="store_true",
+        help=(
+            "Enable the agent's fast mode, in both interactive and unsupervised "
+            "(batch) runs. Supported for Claude (fastMode setting) and Codex "
+            "(service_tier = \"fast\"). Fast mode bills at a higher rate and "
+            "only works with models and plans that offer it. "
+            "Example: --agent claude --fast or --agent codex --fast."
+        ),
+    )
+    p.add_argument(
         "--no-forward-credentials",
         action="store_true",
         help=(
@@ -462,6 +474,7 @@ def _main(argv: list[str] | None = None) -> int:
             "image-based runtime"
         )
     _validate_api_key_injection_args(args, run_agent)
+    _validate_fast_mode_args(args, run_agent)
     _validate_ollama_models(args.ollama_model)
     _validate_shm_size(args.shm_size)
     is_chroot = args.runtime == container_cli.CHROOT.name
@@ -1181,6 +1194,11 @@ def _requested_agent(args) -> str | None:
 
 def _pi_ollama_enabled(args, run_agent: str | None) -> bool:
     return bool(args.pi_ollama and run_agent == "pi")
+
+
+def _validate_fast_mode_args(args, run_agent: str | None) -> None:
+    if args.fast and run_agent not in FAST_MODE_AGENTS:
+        raise SystemExit("--fast supports only --agent claude or --agent codex")
 
 
 def _validate_agent_proxy_args(args, run_agent: str | None) -> int | None:
@@ -2467,14 +2485,16 @@ def _build_session_command(
         # Have the entrypoint echo the resolved coding-agent config and argv, so
         # the actual --model/--effort the agent receives are visible.
         extra_env.append("PROJECT_SANDBOX_VERBOSE=1")
-    # Model/effort apply in both interactive and headless runs; the entrypoint
-    # branch for each agent turns these into the agent's own --model/--effort
-    # flags (and ignores them for bash).
+    # Model/effort/fast apply in both interactive and headless runs; the
+    # entrypoint branch for each agent turns these into the agent's own
+    # --model/--effort/fast-mode flags (and ignores them for bash).
     runtime_model = _runtime_model(args, run_agent)
     if runtime_model:
         extra_env.append(f"PROJECT_SANDBOX_MODEL={runtime_model}")
     if getattr(args, "effort", None):
         extra_env.append(f"PROJECT_SANDBOX_EFFORT={args.effort}")
+    if getattr(args, "fast", False) and run_agent in FAST_MODE_AGENTS:
+        extra_env.append("PROJECT_SANDBOX_FAST=1")
     if run_agent == "pi" and getattr(args, "pi_tools", None):
         extra_env.append(f"PROJECT_SANDBOX_PI_TOOLS={args.pi_tools}")
     run_mode_agent = run_agent
@@ -2679,6 +2699,8 @@ def _print_agent_config(run_agent: str, args, *, unsupervised: bool) -> None:
     print(f"  agent:  {run_agent}")
     print(f"  model:  {args.model or '(agent default)'}")
     print(f"  effort: {args.effort or '(agent default)'}")
+    if run_agent in FAST_MODE_AGENTS:
+        print(f"  fast:   {'on' if getattr(args, 'fast', False) else 'off'}")
 
 
 def _print_next_steps(

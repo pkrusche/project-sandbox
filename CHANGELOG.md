@@ -2,6 +2,14 @@
 
 Notable changes to `project-sandbox` are documented here.
 
+## [Unreleased]
+
+### Added
+
+- `--fast` enables fast mode for Claude (`fastMode` setting via `--settings`)
+  and Codex (`service_tier = "fast"`) in interactive and headless runs. It is
+  rejected for other agents. See [usage](docs/usage.md).
+
 ## [0.3.0]
 
 ### Breaking
@@ -35,6 +43,10 @@ Notable changes to `project-sandbox` are documented here.
 - End-to-end tooling: `run-e2e-tests.sh --all-tests` runs every suite including
   the proxy suites, and new cleanup scripts remove leftover e2e containers,
   forwarders, and images.
+- Claude managed settings consent: when the host has accepted server-managed
+  settings, `~/.claude/remote-settings-consent.json` is staged and provisioned
+  with the other Claude credentials, so sandboxed Claude sessions no longer
+  re-prompt for the managed settings dialog.
 
 ### Changed
 
