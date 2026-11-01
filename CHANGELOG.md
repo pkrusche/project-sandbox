@@ -2,7 +2,7 @@
 
 Notable changes to `project-sandbox` are documented here.
 
-## [Unreleased]
+## [0.3.1]
 
 ### Added
 
@@ -256,7 +256,7 @@ Initial public release.
 - Build caching, dry-run support, timeout teardown, end-to-end tests, and CI.
 - Ruff, pytest, and release preflight checks.
 
-[Unreleased]: https://github.com/pkrusche/project-sandbox/compare/v0.3.0...HEAD
+[0.3.1]: https://github.com/pkrusche/project-sandbox/compare/v0.3.0...HEAD
 [0.3.0]: https://github.com/pkrusche/project-sandbox/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/pkrusche/project-sandbox/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/pkrusche/project-sandbox/compare/v0.2.0...v0.2.1
