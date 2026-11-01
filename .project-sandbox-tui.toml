@@ -18,7 +18,21 @@ keep_workspace = true                  # -> --keep-workspace
 # effort = "medium"                    # low | medium | high | xhigh | max
 
 [commands]                           # :name runs the shell command in the repository
-test = "uv run ruff check && uv run ty check && uv run ruff format --check && uv run pytest"               # :test -k merge appends the arguments
+test = "uv run pytest -q -n auto"               # :test -k merge appends the arguments
+lint = "uv run ruff format . && uv run ruff check --fix . && uv run ty check"
+check = "scripts/run-host-tests.sh"
+e2e = "scripts/run-e2e-tests.sh"
+e2e-full = "scripts/run-e2e-tests.sh --all-tests --agentgateway-dir \"${SBX_REPO:-$PWD}/../agentgateway-locally\" --internet-proxy-dir \"${SBX_REPO:-$PWD}/../internet-proxy-locally\""
 
 [leader]                             # ui.leader (\) then these keys run a command line
 t = "test"
+l = "lint"
+c = "check"
+e = "e2e"
+
+[actions.chores]
+prompt = "Tidy up {bookmark} against {main} following CLAUDE.md: add regression tests for behavior changes, document user-facing changes under docs/ (keep README.md minimal), record leftover work in TODO.md, and make `uv run ruff format .`, `uv run ruff check .`, `uv run ty check` and `uv run pytest -q` pass. Use jj, not git, and commit the result as a separate jj change with a short imperative description."
+
+[actions.reviewandfix]
+prompt = "Review {bookmark} against {main} (use `jj diff -r {main}..{bookmark}`). Report correctness bugs, missing regression tests, and security-sensitive changes to generated container config, firewall or credential handling. Fix all issues you find."
+effort = "high"
