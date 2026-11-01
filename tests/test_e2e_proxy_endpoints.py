@@ -228,6 +228,19 @@ class ProxyEndpointHarnessTests(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("openssl"), "openssl unavailable")
     def test_fixture_certificates_pass_strict_proxy_tls_verification(self):
+        self.check_fixture_certificates_pass_strict_proxy_tls_verification()
+
+    @unittest.skipUnless(shutil.which("openssl"), "openssl unavailable")
+    def test_fixture_certificates_pass_strict_tls_without_default_extensions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "openssl.cnf"
+            # Some host configurations supply CA extensions implicitly. The
+            # harness must produce a strict-valid chain without that help.
+            config.write_text("[req]\ndistinguished_name=dn\n[dn]\n")
+            with patch.dict(os.environ, {"OPENSSL_CONF": str(config)}):
+                self.check_fixture_certificates_pass_strict_proxy_tls_verification()
+
+    def check_fixture_certificates_pass_strict_proxy_tls_verification(self):
         checker = load_script(ROOT / "scripts/e2e-proxy-endpoints.py")
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

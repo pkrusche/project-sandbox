@@ -214,6 +214,10 @@ def certificates(root: Path, hosts: list[str]) -> ssl.SSLContext:
         # without keyUsage and a leaf without an authority key identifier.
         "-addext",
         "keyUsage=critical,keyCertSign,cRLSign",
+        # The leaf's authority key identifier copies this value. Do not rely
+        # on the host OpenSSL configuration to provide it.
+        "-addext",
+        "subjectKeyIdentifier=hash",
     )
     openssl(
         "req",
@@ -232,7 +236,7 @@ def certificates(root: Path, hosts: list[str]) -> ssl.SSLContext:
         "keyUsage=critical,digitalSignature,keyEncipherment\n"
         "extendedKeyUsage=serverAuth\n"
         "subjectKeyIdentifier=hash\n"
-        "authorityKeyIdentifier=keyid\n"
+        "authorityKeyIdentifier=keyid:always\n"
         "subjectAltName=DNS:origin.test,"
         + ",".join(f"{san_type(host)}:{host}" for host in hosts)
         + "\n"
