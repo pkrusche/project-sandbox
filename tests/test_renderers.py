@@ -4,6 +4,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+from itertools import pairwise
 from pathlib import Path
 from unittest import TestCase, skipUnless
 from unittest.mock import patch
@@ -1976,8 +1977,7 @@ class RendererTests(TestCase):
             script.write_text(
                 "set -eu\n"
                 "log_project_sandbox_agent_command() { :; }\n"
-                "load_project_sandbox_prompt() { PROMPT='do it'; }\n"
-                + dispatch
+                "load_project_sandbox_prompt() { PROMPT='do it'; }\n" + dispatch
             )
             for agent in ("claude", "codex"):
                 stub = bindir / agent
@@ -2009,7 +2009,7 @@ class RendererTests(TestCase):
                             argv = result.stdout.splitlines()
                             # The fast flag pair is adjacent and present only
                             # when PROJECT_SANDBOX_FAST=1.
-                            pairs = list(zip(argv, argv[1:]))
+                            pairs = list(pairwise(argv))
                             if fast:
                                 self.assertIn(tuple(flags), pairs)
                             else:
@@ -2022,11 +2022,9 @@ class RendererTests(TestCase):
             # Two branches each (interactive and headless); OpenCode, Pi and
             # Bash never see the fast-mode flags.
             self.assertEqual(
-                text.count("set -- --settings '{\"fastMode\":true}' \"$@\""), 2
+                text.count('set -- --settings \'{"fastMode":true}\' "$@"'), 2
             )
-            self.assertEqual(
-                text.count("set -- -c 'service_tier=\"fast\"' \"$@\""), 2
-            )
+            self.assertEqual(text.count('set -- -c \'service_tier="fast"\' "$@"'), 2)
             self.assertEqual(text.count('"${PROJECT_SANDBOX_FAST:-}" = "1"'), 4)
 
     def test_entrypoint_pi_never_emits_separate_effort_flag(self) -> None:

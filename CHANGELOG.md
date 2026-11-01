@@ -9,6 +9,16 @@ Notable changes to `project-sandbox` are documented here.
 - `--fast` enables fast mode for Claude (`fastMode` setting via `--settings`)
   and Codex (`service_tier = "fast"`) in interactive and headless runs. It is
   rejected for other agents. See [usage](docs/usage.md).
+- Claude managed settings consent: when the host has accepted server-managed
+  settings, `~/.claude/remote-settings-consent.json` is staged and provisioned
+  with the other Claude credentials, so sandboxed Claude sessions no longer
+  re-prompt for the managed settings dialog.
+
+### Changed
+
+- Refreshed pinned sandbox tooling and build inputs: Node.js, uv, Claude Code,
+  Codex CLI, OpenCode, its OpenAI provider package, pytest, Ruff, and ty,
+  along with the lockfile.
 
 ## [0.3.0]
 
@@ -43,10 +53,6 @@ Notable changes to `project-sandbox` are documented here.
 - End-to-end tooling: `run-e2e-tests.sh --all-tests` runs every suite including
   the proxy suites, and new cleanup scripts remove leftover e2e containers,
   forwarders, and images.
-- Claude managed settings consent: when the host has accepted server-managed
-  settings, `~/.claude/remote-settings-consent.json` is staged and provisioned
-  with the other Claude credentials, so sandboxed Claude sessions no longer
-  re-prompt for the managed settings dialog.
 
 ### Changed
 
@@ -250,6 +256,7 @@ Initial public release.
 - Build caching, dry-run support, timeout teardown, end-to-end tests, and CI.
 - Ruff, pytest, and release preflight checks.
 
+[Unreleased]: https://github.com/pkrusche/project-sandbox/compare/v0.3.0...HEAD
 [0.3.0]: https://github.com/pkrusche/project-sandbox/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/pkrusche/project-sandbox/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/pkrusche/project-sandbox/compare/v0.2.0...v0.2.1

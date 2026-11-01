@@ -349,7 +349,7 @@ def build_parser() -> ArgumentParser:
         help=(
             "Enable the agent's fast mode, in both interactive and unsupervised "
             "(batch) runs. Supported for Claude (fastMode setting) and Codex "
-            "(service_tier = \"fast\"). Fast mode bills at a higher rate and "
+            '(service_tier = "fast"). Fast mode bills at a higher rate and '
             "only works with models and plans that offer it. "
             "Example: --agent claude --fast or --agent codex --fast."
         ),
