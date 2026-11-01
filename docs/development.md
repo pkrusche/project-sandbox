@@ -21,6 +21,10 @@ classes require an explicit opt-in (and may download their test images):
 PROJECT_SANDBOX_CONTAINER_TESTS=1 uv run pytest -q tests/test_worktree.py tests/test_jj_workspace.py
 ```
 
+The repository TUI's `:test` command runs pytest in parallel with
+`-n auto --dist loadfile`. Keep tests from each file on the same worker because
+the relay session tests share a fixed host port.
+
 `scripts/check-ruff.sh` verifies that Python files have Ruff formatting applied
 and contain no Ruff lint violations. For behavior previews, use
 `uv run project-sandbox --dry-run ...`; dry-run must not write files or start
