@@ -229,6 +229,7 @@ def render(
         "install_codex": "codex" in install_agents,
         "install_opencode": "opencode" in install_agents,
         "install_pi": "pi" in install_agents,
+        "install_copilot": "copilot" in install_agents,
     }
     container = _write_dockerfile(
         tmpl,

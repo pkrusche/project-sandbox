@@ -131,6 +131,50 @@ class ObservabilityTests(TestCase):
                     self.assertEqual(observability.pi_json_stream_failed(log), expected)
         self.assertFalse(observability.pi_json_stream_failed(None))
 
+    def test_copilot_stream_failure_is_conservative(self) -> None:
+        def record(kind: str, **data) -> str:
+            return json.dumps({"type": kind, "data": data}) + "\n"
+
+        error = record("session.error", message="model not found")
+        answer = record("assistant.message", content="done")
+        cases = {
+            "final error": (answer + error, "error"),
+            "final error then lifecycle markers": (
+                error + record("session.idle") + record("assistant.turn_end"),
+                "error",
+            ),
+            "bare error kind": (record("error", message="boom"), "error"),
+            "rate limit by type": (
+                record("session.error", errorType="rate_limit", message="x"),
+                "rate_limited",
+            ),
+            "rate limit by status": (
+                record("session.error", statusCode=429, message="x"),
+                "rate_limited",
+            ),
+            "rate limit by message": (
+                record("session.error", message="Too Many Requests"),
+                "rate_limited",
+            ),
+            "recovered error": (error + answer, None),
+            "unknown final record": (error + record("mystery.kind"), None),
+            "plain output": ("firewall ready\nnot json\n", None),
+            "malformed": ('{"type":"session.error", broken\n', None),
+            "empty": ("", None),
+            "missing file": (None, None),
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            for name, (content, expected) in cases.items():
+                with self.subTest(name=name):
+                    log = Path(tmp) / "copilot.log"
+                    log.unlink(missing_ok=True)
+                    if content is not None:
+                        log.write_text(content, encoding="utf-8")
+                    self.assertEqual(
+                        observability.copilot_json_stream_failure(log), expected
+                    )
+        self.assertIsNone(observability.copilot_json_stream_failure(None))
+
     def test_recovered_early_429_does_not_reclassify_a_later_failure(self) -> None:
         # Only the end of the log decides: a 429 the agent retried through and
         # recovered from must not turn an unrelated failure into exit 75, which

@@ -148,8 +148,8 @@ single one, pass `--only SUITE`; `--list` prints the accepted suite names:
 ```
 
 `--all-tests` runs every suite, including all opt-in ones. It implies
-`--with-agent-proxy`, `--with-internet-proxy`, `--with-proxy-endpoints`, and
-`--with-build-proxy`, and exits early (64) unless `--internet-proxy-dir` and
+`--with-agent-proxy`, `--with-internet-proxy`, `--with-proxy-endpoints`,
+`--with-build-proxy`, and `--with-copilot`, and exits early (64) unless `--internet-proxy-dir` and
 `--agentgateway-dir` are supplied (and `--no-build` is not). These suites are
 billable and destructive:
 
@@ -162,8 +162,8 @@ The Internet isolation audit expects the proxy to deny `--blocked-url`, which
 defaults to `https://example.com`; pass it only to check a different URL.
 
 Naming an opt-in suite with `--only` is itself the opt-in, so `--only
-proxy-endpoints`, `--only agent-proxy`, `--only agent-proxy-isolation`, and `--only
-internet-proxy-isolation` run without their corresponding `--with-*` flags
+proxy-endpoints`, `--only agent-proxy`, `--only agent-proxy-isolation`, `--only
+copilot`, and `--only internet-proxy-isolation` run without their corresponding `--with-*` flags
 (the destructive Internet audit still requires its `--internet-proxy-dir` and
 `--agentgateway-dir` arguments).
 Availability gates still apply: a selected suite that needs a container
@@ -229,6 +229,49 @@ Internet proxy control defaults to `uv run ipl {action}`, while Agentgateway
 continues to use `./run.py {action}`. Both can be overridden on the standalone
 script when an installation uses a different lifecycle command; by default we
 assume the internetproxy-locally and agentgateway-locally examples.
+
+### GitHub Copilot suite
+
+The `copilot` suite (`scripts/e2e-copilot.py`) runs real GitHub Copilot CLI
+sessions, so it is opt-in and **billable**: each check except the bash half of
+`isolation` sends Copilot requests that count against the account's premium
+request allowance. It runs only with `--with-copilot`, `--only copilot`, or
+`--all-tests`; a default run skips it without any token lookup.
+
+Prerequisites: a Copilot subscription, a real container runtime, and a token the
+CLI can resolve, either a fine-grained PAT with only "Copilot Requests" in pass
+(`pass insert copilot-github-token`, or `copilot-github-token/<tenant>.ghe.com`)
+or a `gh auth login --hostname <host>`.
+
+| Check | Account | Verifies |
+|---|---|---|
+| `headless-ok` | personal | a trivial prompt exits 0, the JSONL parses, the transcript renders |
+| `headless-fail` | personal | an invalid `--model` gives a nonzero CLI exit; prints the raw exit and final record |
+| `trusted-folder` | personal | no trust prompt/error in a `-p` run; `config.json` lists `/workspace` |
+| `isolation` | personal | Copilot API reachable, `example.com` blocked, no built-in MCP tools; a bash session has no token mount or env |
+| `tenant` | GHE.com tenant | tenant token resolution and a headless run through the pinned tenant hosts; `copilot-api.<tenant>` reachable |
+
+```bash
+# Personal account (tenant check reported as skipped)
+./scripts/run-e2e-tests.sh --only copilot --runtime docker
+uv run python scripts/e2e-copilot.py --runtime docker
+
+# Also exercise a GHE.com data-residency tenant
+./scripts/run-e2e-tests.sh --only copilot --runtime docker --copilot-host acme.ghe.com
+uv run python scripts/e2e-copilot.py --runtime docker --copilot-host acme.ghe.com
+
+# One check, keeping redacted captures
+uv run python scripts/e2e-copilot.py --check headless-fail --capture-dir /tmp/copilot-captures
+```
+
+`--capture-dir DIR` writes `<check>.jsonl` (the session's JSON records) and
+`<check>.exit.json` (exit code, record count, final record) per check, with the
+token replaced by `[REDACTED]`; `--copilot-capture-dir` forwards it from the
+runner. Copilot's JSONL schema and failed-run exit codes are undocumented, so
+these captures are the source for `tests/fixtures` transcript fixtures and for
+tightening the renderer in `transcript.py` and the exit reclassification in
+`observability.copilot_json_stream_failure`. `--output-tail N` controls how many
+redacted lines of CLI output a failing check prints (default 40).
 
 Use the unified host-side entry point for full local verification:
 

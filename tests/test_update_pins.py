@@ -331,6 +331,69 @@ class NpmPinUpdateTests(TestCase):
                 config_agents_path.read_text(encoding="utf-8"),
             )
 
+    def test_collect_npm_updates_requires_copilot_pin(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            template = Path(tmp) / "Dockerfile.j2"
+            text = update_pins.DOCKERFILE_TEMPLATE.read_text(encoding="utf-8")
+            match = next(
+                match
+                for match in update_pins.NPM_PIN_RE.finditer(text)
+                if match.group("package") == "@github/copilot"
+            )
+            text = text.replace(match.group(0), "npm install -g @github/copilot")
+            template.write_text(text, encoding="utf-8")
+
+            with (
+                patch.object(update_pins, "DOCKERFILE_TEMPLATE", template),
+                self.assertRaisesRegex(RuntimeError, "@github/copilot"),
+            ):
+                update_pins.collect_npm_updates()
+
+    def test_collect_npm_updates_can_update_copilot_pin(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            template = Path(tmp) / "Dockerfile.j2"
+            template.write_text(
+                update_pins.DOCKERFILE_TEMPLATE.read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            current_versions = {
+                match.group("package"): match.group("version")
+                for match in update_pins.NPM_PIN_RE.finditer(
+                    template.read_text(encoding="utf-8")
+                )
+            }
+            package = "@github/copilot"
+            self.assertIn(package, current_versions)
+            latest = "999.0.0"
+
+            def fake_latest_npm_releases(
+                name: str,
+            ) -> list[update_pins.UpstreamRelease]:
+                version = latest if name == package else current_versions[name]
+                return [
+                    update_pins.UpstreamRelease(
+                        version,
+                        datetime.now(UTC) - timedelta(days=2),
+                    )
+                ]
+
+            with (
+                patch.object(update_pins, "DOCKERFILE_TEMPLATE", template),
+                patch.object(
+                    update_pins,
+                    "latest_npm_releases",
+                    side_effect=fake_latest_npm_releases,
+                ),
+            ):
+                updates = update_pins.collect_npm_updates()
+                self.assertEqual([u.label for u in updates], [f"npm {package}"])
+                updates[0].apply()
+
+            self.assertIn(
+                f"RUN npm install -g {package}@{latest}\n",
+                template.read_text(encoding="utf-8"),
+            )
+
     def test_config_agents_pi_pin_matches_dockerfile_template(self) -> None:
         # Regression: config_agents._PI_NPM_VERSION_PIN is a second, manually
         # maintained copy of the pi-coding-agent npm pin (used to populate

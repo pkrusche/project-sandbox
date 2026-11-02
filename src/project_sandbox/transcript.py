@@ -3,7 +3,9 @@
 Headless claude runs emit newline-delimited JSON (one event per line) via
 `claude -p --output-format stream-json --verbose`; headless Codex runs emit
 newline-delimited JSON via `codex exec --json`; headless Pi runs emit
-newline-delimited JSON via `pi --mode json`. The session log also holds
+newline-delimited JSON via `pi --mode json`; headless Copilot runs emit
+newline-delimited JSON via `copilot -p ... --output-format json`. The session
+log also holds
 plain-text preamble from the container entrypoint and firewall, so the parser
 tolerates and skips any line that is not a JSON object.
 """
@@ -16,15 +18,21 @@ from pathlib import Path
 _MAX_BLOCK_CHARS = 2000
 
 
-def log_to_markdown(log_path: Path) -> Path | None:
+def log_to_markdown(log_path: Path, agent: str | None = None) -> Path | None:
     """Parse a headless JSON session log and write a markdown sidecar next to it.
 
-    Returns the markdown path on success, or None if the log held no parseable
-    agent events (e.g. a non-JSON agent or a run that never started).
+    ``agent`` selects the renderer directly when known; otherwise the format is
+    detected from the events. Returns the markdown path on success, or None if
+    the log held no parseable agent events (e.g. a non-JSON agent or a run that
+    never started).
     """
     events = _parse_events(log_path.read_text(encoding="utf-8", errors="replace"))
     markdown: str | None
-    if _has_claude_events(events):
+    if agent == "copilot":
+        if not events:
+            return None
+        markdown = render_copilot_markdown(events)
+    elif _has_claude_events(events):
         markdown = render_markdown(events)
     elif _has_codex_events(events):
         markdown = render_codex_markdown(events)
@@ -32,6 +40,8 @@ def log_to_markdown(log_path: Path) -> Path | None:
         markdown = render_pi_markdown(events)
     elif _has_opencode_events(events):
         markdown = render_opencode_markdown(events)
+    elif _has_copilot_events(events):
+        markdown = render_copilot_markdown(events)
     else:
         return None
     md_path = log_path.with_suffix(".md")
@@ -79,6 +89,120 @@ def _has_opencode_events(events: list[dict]) -> bool:
     )
 
 
+# Copilot's JSONL schema is not documented. These dotted kinds follow the
+# Copilot SDK session events; anything else is rendered as raw JSON.
+_COPILOT_PREFIXES = ("session.", "assistant.", "tool.", "user.")
+# Streaming fragments and lifecycle markers that carry nothing a transcript
+# needs (the complete message/tool records repeat their content).
+COPILOT_QUIET_KINDS = frozenset(
+    (
+        "assistant.message_delta",
+        "assistant.reasoning_delta",
+        "assistant.turn_start",
+        "assistant.turn_end",
+        "assistant.usage",
+        "session.idle",
+        "session.shutdown",
+        "tool.execution_partial_result",
+        "tool.execution_progress",
+    )
+)
+COPILOT_ERROR_KINDS = frozenset(("error", "session.error"))
+
+
+def _has_copilot_events(events: list[dict]) -> bool:
+    return any(
+        isinstance(e.get("type"), str) and e["type"].startswith(_COPILOT_PREFIXES)
+        for e in events
+    )
+
+
+def copilot_payload(event: dict) -> dict:
+    """Return the record's payload: its ``data`` object, or the record itself."""
+    data = event.get("data")
+    return data if isinstance(data, dict) else event
+
+
+def copilot_error_message(event: dict) -> str:
+    payload = copilot_payload(event)
+    for value in (payload.get("message"), payload.get("error"), event.get("message")):
+        if isinstance(value, dict):
+            value = value.get("message")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def render_copilot_markdown(events: list[dict]) -> str:
+    parts: list[str] = ["# Copilot session transcript", ""]
+    for event in events:
+        parts.extend(_render_copilot_event(event))
+    text = "\n".join(parts)
+    while "\n\n\n" in text:
+        text = text.replace("\n\n\n", "\n\n")
+    return text.strip() + "\n"
+
+
+def _render_copilot_event(event: dict) -> list[str]:
+    """Render one Copilot record; never raises, unknown kinds become raw JSON."""
+    try:
+        return _render_copilot_known(event)
+    except Exception:  # noqa: BLE001 - defensive: schema is undocumented
+        return _render_raw_json(event)
+
+
+def _render_copilot_known(event: dict) -> list[str]:
+    etype = event.get("type")
+    payload = copilot_payload(event)
+    if etype in COPILOT_QUIET_KINDS or etype == "user.message":
+        return []
+    if etype == "session.start":
+        rows = []
+        for key, label in (("sessionId", "Session"), ("selectedModel", "Model")):
+            value = payload.get(key)
+            if isinstance(value, str) and value:
+                rows.append(f"- **{label}:** `{value}`")
+        return [*rows, "", "---", ""] if rows else []
+    if etype in ("assistant.message", "assistant.reasoning"):
+        value = payload.get("content")
+        if not isinstance(value, str) or not value.strip():
+            return []
+        if etype == "assistant.reasoning":
+            return ["## Assistant (thinking)", "", _blockquote(value.strip()), ""]
+        return ["## Assistant", "", value.strip(), ""]
+    if etype == "tool.execution_start":
+        name = str(payload.get("toolName") or payload.get("name") or "tool")
+        return _render_tool_use(name, payload.get("arguments", {}))
+    if etype == "tool.execution_complete":
+        name = str(payload.get("toolName") or payload.get("name") or "tool")
+        failed = payload.get("success") is False or bool(payload.get("error"))
+        result = payload.get("result")
+        if isinstance(result, dict):
+            result = result.get("content", result)
+        if failed and not result:
+            result = copilot_error_message(event)
+        body = result if isinstance(result, str) else _tool_result_text(result)
+        return [
+            f"### ↳ {name} {'error' if failed else 'result'}",
+            "",
+            *_code_block(_truncate(body)),
+            "",
+        ]
+    if etype in COPILOT_ERROR_KINDS:
+        message = copilot_error_message(event)
+        out = ["---", "", "## Result", "", "- **Status:** error", ""]
+        return [*out, message, ""] if message else out
+    return _render_raw_json(event)
+
+
+def _render_raw_json(event: object) -> list[str]:
+    try:
+        rendered = json.dumps(event, ensure_ascii=False, sort_keys=True)
+    except (TypeError, ValueError):
+        rendered = repr(event)
+    return [*_code_block(_truncate(rendered), "json"), ""]
+
+
 class LiveMarkdown:
     """Translate one agent JSONL record at a time while retaining raw logs."""
 
@@ -116,6 +240,8 @@ class LiveMarkdown:
                 return _render_pi_assistant(message)
         elif self.agent == "opencode":
             return _render_opencode_event(event)
+        elif self.agent == "copilot":
+            return _render_copilot_event(event)
         return []
 
 

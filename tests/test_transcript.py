@@ -351,3 +351,111 @@ class TranscriptLogToMarkdownTests(TestCase):
             self.assertIn("### ↳ read result", text)
             self.assertIn("- **Status:** error", text)
             self.assertIn("provider unreachable", text)
+
+
+# Synthetic Copilot JSONL records. The schema is undocumented; these follow the
+# Copilot SDK session-event shape and are replaced by e2e captures later.
+COPILOT_EVENTS = [
+    {"type": "session.start", "data": {"sessionId": "s-1", "selectedModel": "gpt-5"}},
+    {"type": "user.message", "data": {"content": "say hi"}},
+    {"type": "assistant.message_delta", "data": {"deltaContent": "Hel"}},
+    {"type": "assistant.reasoning", "data": {"content": "Thinking it over."}},
+    {"type": "assistant.message", "data": {"content": "Running a command."}},
+    {
+        "type": "tool.execution_start",
+        "data": {"toolName": "bash", "arguments": {"command": "ls"}},
+    },
+    {
+        "type": "tool.execution_complete",
+        "data": {"toolName": "bash", "success": True, "result": {"content": "a.txt"}},
+    },
+    {
+        "type": "tool.execution_complete",
+        "data": {"toolName": "edit", "success": False, "error": {"message": "denied"}},
+    },
+    {"type": "assistant.message", "data": {"content": "Hi!"}},
+    {"type": "session.idle", "data": {}},
+]
+
+
+class CopilotTranscriptTests(TestCase):
+    def test_renders_known_copilot_records(self) -> None:
+        md = transcript.render_copilot_markdown(COPILOT_EVENTS)
+        self.assertTrue(md.startswith("# Copilot session transcript\n"))
+        self.assertIn("- **Session:** `s-1`", md)
+        self.assertIn("## Assistant (thinking)\n\n> Thinking it over.", md)
+        self.assertIn("## Assistant\n\nRunning a command.", md)
+        self.assertIn("### 🔧 bash", md)
+        self.assertIn('"command": "ls"', md)
+        self.assertIn("### ↳ bash result\n\n```\na.txt\n```", md)
+        self.assertIn("### ↳ edit error\n\n```\ndenied\n```", md)
+        self.assertIn("Hi!", md)
+        # Prompt echo, deltas, and lifecycle markers are not repeated.
+        self.assertNotIn("say hi", md)
+        self.assertNotIn("Hel\n", md)
+        self.assertNotIn("session.idle", md)
+
+    def test_error_record_renders_result_section(self) -> None:
+        md = transcript.render_copilot_markdown(
+            [{"type": "session.error", "data": {"message": "model not found"}}]
+        )
+        self.assertIn("## Result\n\n- **Status:** error\n\nmodel not found", md)
+
+    def test_unknown_and_odd_records_become_raw_json_without_raising(self) -> None:
+        events = [
+            {"type": "mystery.kind", "data": {"x": 1}},
+            {"type": "result", "exitCode": 0},
+            # Wrong-typed payloads for known kinds must not raise.
+            {"type": "assistant.message", "data": "not a dict"},
+            {"type": "tool.execution_start", "data": {"arguments": object()}},
+            {"type": "tool.execution_complete", "data": {"result": 42}},
+        ]
+        md = transcript.render_copilot_markdown(events)
+        self.assertIn('```json\n{"data": {"x": 1}, "type": "mystery.kind"}\n```', md)
+        self.assertIn('{"exitCode": 0, "type": "result"}', md)
+        self.assertIn("### ↳ tool result", md)
+
+    def test_log_to_markdown_with_agent_hint_skips_malformed_lines(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "copilot-main.log"
+            log_path.write_text(
+                "Firewall initialized.\n{not json\n"
+                + "".join(json.dumps(e) + "\n" for e in COPILOT_EVENTS),
+                encoding="utf-8",
+            )
+            md_path = transcript.log_to_markdown(log_path, "copilot")
+            assert md_path is not None
+            text = md_path.read_text(encoding="utf-8")
+        self.assertIn("# Copilot session transcript", text)
+        self.assertNotIn("Firewall initialized", text)
+
+    def test_log_to_markdown_detects_copilot_without_hint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "copilot-main.log"
+            log_path.write_text(
+                "".join(json.dumps(e) + "\n" for e in COPILOT_EVENTS), encoding="utf-8"
+            )
+            md_path = transcript.log_to_markdown(log_path)
+            assert md_path is not None
+            self.assertIn("Copilot", md_path.read_text(encoding="utf-8"))
+
+    def test_log_to_markdown_copilot_hint_with_no_records_writes_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "copilot-main.log"
+            log_path.write_text("plain text only\n", encoding="utf-8")
+            self.assertIsNone(transcript.log_to_markdown(log_path, "copilot"))
+
+    def test_live_markdown_translates_copilot_records(self) -> None:
+        formatter = transcript.LiveMarkdown("copilot")
+        self.assertIn(
+            "## Assistant",
+            formatter.feed(json.dumps(COPILOT_EVENTS[4]), preserve_plain=False),
+        )
+        self.assertEqual(
+            formatter.feed(json.dumps(COPILOT_EVENTS[2]), preserve_plain=False), ""
+        )
+        self.assertIn(
+            "mystery",
+            formatter.feed('{"type": "mystery"}\n', preserve_plain=False),
+        )
+        self.assertEqual(formatter.feed("{broken\n", preserve_plain=False), "")

@@ -34,7 +34,9 @@ BUILD_PROXY_FIXTURE = ROOT / "scripts/fixtures/build-proxy.Dockerfile.j2"
 CONFIG_AGENTS = ROOT / "src/project_sandbox/config_agents.py"
 
 PI_NPM_PACKAGE = "@earendil-works/pi-coding-agent"
-REQUIRED_NPM_PACKAGE_PINS = frozenset(("@ai-sdk/openai",))
+# Pins whose absence from the Dockerfile template is an error rather than a
+# silently skipped update.
+REQUIRED_NPM_PACKAGE_PINS = frozenset(("@ai-sdk/openai", "@github/copilot"))
 
 USER_AGENT = "project-sandbox-update-pins"
 

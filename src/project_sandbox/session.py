@@ -4,9 +4,12 @@ import shlex
 import signal
 import subprocess
 import threading
+from collections.abc import Sequence
 from pathlib import Path
 
 from project_sandbox import transcript
+
+REDACTED = "[REDACTED]"
 
 
 def merged_env(env: dict[str, str] | None) -> dict[str, str] | None:
@@ -47,7 +50,13 @@ def run(
     verbose: bool = False,
     markdown_agent: str | None = None,
     env: dict[str, str] | None = None,
+    redact: Sequence[str] = (),
 ) -> int:
+    """Run a headless session, teeing its output into ``log_path``.
+
+    Every value in ``redact`` (e.g. a resolved Copilot token) is replaced by
+    ``[REDACTED]`` before a line reaches the log file or the console.
+    """
     if dry_run:
         redirect = "2>&1 | tee" if verbose else ">"
         print(shlex.join(argv), redirect, shlex.quote(str(log_path)))
@@ -74,7 +83,7 @@ def run(
         assert proc.stdout is not None
         output_thread = threading.Thread(
             target=_tee_output,
-            args=(proc.stdout, handle, verbose, markdown_agent),
+            args=(proc.stdout, handle, verbose, markdown_agent, tuple(redact)),
             daemon=True,
         )
         output_thread.start()
@@ -151,11 +160,23 @@ def _signal_group_or_child(
         pass
 
 
+def redact_text(text: str, secrets: Sequence[str]) -> str:
+    for secret in secrets:
+        if secret:
+            text = text.replace(secret, REDACTED)
+    return text
+
+
 def _tee_output(
-    stream, handle, verbose: bool = True, markdown_agent: str | None = None
+    stream,
+    handle,
+    verbose: bool = True,
+    markdown_agent: str | None = None,
+    redact: Sequence[str] = (),
 ) -> None:
     formatter = transcript.LiveMarkdown(markdown_agent) if markdown_agent else None
     for line in stream:
+        line = redact_text(line, redact)
         handle.write(line)
         handle.flush()
         if formatter is not None:

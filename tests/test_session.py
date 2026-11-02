@@ -77,6 +77,38 @@ class SessionTests(TestCase):
             self.assertIn("top-secret-value", log_path.read_text(encoding="utf-8"))
             self.assertNotIn("top-secret-value", " ".join(argv))
 
+    def test_redacted_values_never_reach_log_or_terminal(self) -> None:
+        secret = "github_pat_sessionsecret"
+        for verbose, agent in ((True, None), (True, "copilot"), (False, None)):
+            with self.subTest(verbose=verbose, agent=agent):
+                with tempfile.TemporaryDirectory() as tmp:
+                    log_path = Path(tmp) / "session.log"
+                    out = io.StringIO()
+                    with contextlib.redirect_stdout(out):
+                        rc = session.run(
+                            [
+                                sys.executable,
+                                "-c",
+                                (
+                                    "import json; "
+                                    f"print('token={secret}'); "
+                                    "print(json.dumps({'type': 'mystery', "
+                                    f"'v': '{secret}'}}))"
+                                ),
+                            ],
+                            log_path=log_path,
+                            verbose=verbose,
+                            markdown_agent=agent,
+                            redact=(secret,),
+                        )
+                    log_text = log_path.read_text(encoding="utf-8")
+                self.assertEqual(rc, 0)
+                self.assertNotIn(secret, log_text)
+                self.assertNotIn(secret, out.getvalue())
+                self.assertIn("token=[REDACTED]", log_text)
+                if verbose:
+                    self.assertIn("[REDACTED]", out.getvalue())
+
     def test_verbose_run_echoes_to_terminal(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             log_path = Path(tmp) / "session.log"

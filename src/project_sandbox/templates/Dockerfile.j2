@@ -85,6 +85,9 @@ RUN npm install -g @ai-sdk/openai@4.0.106
 {% if install_pi %}
 RUN npm install -g @earendil-works/pi-coding-agent@1.4.0
 {% endif %}
+{% if install_copilot %}
+RUN npm install -g @github/copilot@1.0.98
+{% endif %}
 
 {% if source_after_dependencies -%}
 {{ source_after_dependencies }}

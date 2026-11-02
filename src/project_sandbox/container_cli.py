@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import config_agents, session
+from . import config_agents, copilot_auth, session
 from .git_identity import GitIdentity
 from .paths import WORKSPACE_NODE_MODULES_TARGET
 
@@ -205,6 +205,8 @@ def build_mount_specs(
     opencode_credentials_dir: Path | None,
     pi_credentials_dir: Path | None = None,
     pi_cfg: Path | None = None,
+    copilot_credentials_dir: Path | None = None,
+    copilot_cfg: Path | None = None,
     extra_mounts: Sequence[str] = (),
     forward_credentials: bool = True,
     agent: str,
@@ -227,6 +229,14 @@ def build_mount_specs(
             MountSpec(
                 pi_cfg.parent.resolve(strict=False),
                 "/project-sandbox-config/pi",
+                True,
+            )
+        )
+    if copilot_cfg is not None:
+        mounts.append(
+            MountSpec(
+                copilot_cfg.parent.resolve(strict=False),
+                copilot_auth.CONFIG_TARGET,
                 True,
             )
         )
@@ -261,6 +271,16 @@ def build_mount_specs(
                 MountSpec(
                     pi_credentials_dir.resolve(strict=False),
                     "/project-sandbox-secrets/pi",
+                    True,
+                )
+            )
+        # The Copilot token is a GitHub token: config_agents never authorizes
+        # it for bash, so only a copilot/copilot-headless run mounts it.
+        if "copilot" in allowed_credentials and copilot_credentials_dir is not None:
+            mounts.append(
+                MountSpec(
+                    copilot_credentials_dir.resolve(strict=False),
+                    copilot_auth.SECRETS_TARGET,
                     True,
                 )
             )
@@ -362,6 +382,9 @@ def build_run_argv(
     opencode_credentials_dir: Path | None = None,
     pi_credentials_dir: Path | None = None,
     pi_cfg: Path | None = None,
+    copilot_credentials_dir: Path | None = None,
+    copilot_cfg: Path | None = None,
+    copilot_host: str = copilot_auth.DEFAULT_HOST,
     container_name: str | None = None,
     forward_credentials: bool = True,
     add_hosts: Sequence[str] = (),
@@ -412,6 +435,8 @@ def build_run_argv(
         opencode_credentials_dir=opencode_credentials_dir,
         pi_credentials_dir=pi_credentials_dir,
         pi_cfg=pi_cfg,
+        copilot_credentials_dir=copilot_credentials_dir,
+        copilot_cfg=copilot_cfg,
         extra_mounts=extra_mounts,
         forward_credentials=forward_credentials,
         agent=agent,
@@ -432,6 +457,9 @@ def build_run_argv(
         "--env",
         "OPENSPEC_TELEMETRY=0",
     ]
+    if agent.removesuffix("-headless") == "copilot":
+        for env in copilot_auth.container_env(copilot_host):
+            argv += ["--env", env]
     if not firewall_enabled:
         argv += ["--env", "PROJECT_SANDBOX_NO_FIREWALL=1"]
     for env in extra_env:

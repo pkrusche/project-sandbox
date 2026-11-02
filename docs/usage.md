@@ -166,6 +166,92 @@ Environment-based secrets can appear in container runtime metadata or logs, so
 prefer this only for explicit API-key sessions where mounted agent credentials
 are intentionally disabled.
 
+## GitHub Copilot
+
+`--agent copilot` runs the [GitHub Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli)
+(`@github/copilot`, pinned in the image) on your Copilot subscription:
+
+```bash
+uv run project-sandbox --agent copilot /absolute/path/to/repo python:3.12-slim
+uv run project-sandbox --agent copilot --model gpt-5-mini --effort high \
+  --prompt-text "Summarize this repository" /absolute/path/to/repo python:3.12-slim
+```
+
+Copilot runs only on a Copilot subscription: `--agent-proxy` and `--fast` are
+rejected. It is not offered in the generated devcontainer.
+
+### Host
+
+`--copilot-host HOST` picks the GitHub host that issues the token:
+
+- `github.com` (default) covers personal, Copilot Business, and Copilot
+  Enterprise accounts on GitHub.com (GitHub Enterprise Cloud). No flag is needed.
+- `<tenant>.ghe.com` covers GitHub Enterprise Cloud with data residency, for
+  example `--copilot-host acme.ghe.com`. The container then sets
+  `COPILOT_GH_HOST`, and the firewall also pins the tenant's hosts.
+
+Any other host, including self-hosted GitHub Enterprise Server, is rejected.
+
+### Token
+
+The token is resolved on the host at every launch, in this order:
+
+1. `pass show <entry>`. The default entry is `copilot-github-token` for
+   github.com and `copilot-github-token/<host>` for a tenant, so a github.com
+   token is never sent to a tenant. `--copilot-token-pass ENTRY` names a
+   different entry; an explicitly named entry that fails is an error and never
+   falls back to `gh`.
+2. `gh auth token --hostname <host>`. This GitHub CLI token is often broadly
+   scoped (for example `repo` and `workflow`), so every run that uses it prints
+   a `[W]` warning; see [Security](security.md#github-copilot-token).
+3. Otherwise the CLI exits and names both remedies.
+
+The recommended setup is a fine-grained personal access token with only the
+**Copilot Requests** permission (Settings → Developer settings → Fine-grained
+tokens; for a tenant, create it on the tenant host). Store it in pass:
+
+```bash
+pass insert copilot-github-token                  # github.com
+pass insert copilot-github-token/acme.ghe.com     # a GHE.com tenant
+```
+
+Only the first line of the entry is used. Classic `ghp_` tokens are rejected
+because Copilot does not accept them. To use the GitHub CLI fallback instead,
+run `gh auth login --hostname <host>` once.
+
+The token is written to a mode-0600 file in a private directory under
+`/tmp/project-sandbox-<uid>/` (never into the project), mounted read-only at
+`/project-sandbox-secrets/copilot` for Copilot sessions only, and removed when
+the session ends. The entrypoint exports it as `COPILOT_GITHUB_TOKEN` just for
+the Copilot process. `--no-forward-credentials` skips the lookup entirely;
+Copilot then starts unauthenticated and you can log in inside the sandbox.
+
+`--dry-run` shows the planned token source, mount, environment, and firewall
+additions without calling `pass` or `gh`:
+
+```bash
+uv run project-sandbox --dry-run --agent copilot /absolute/path/to/repo python:3.12-slim
+uv run project-sandbox --dry-run --agent copilot --copilot-host acme.ghe.com \
+  --prompt-text "hi" /absolute/path/to/repo python:3.12-slim
+```
+
+### Behaviour in the sandbox
+
+- `--agent copilot` implies `--allow-github` (see the firewall notes in
+  [Security](security.md#network-firewall)).
+- `$COPILOT_HOME` is `/home/agent/.copilot`, seeded with a `config.json` whose
+  `trusted_folders` lists `/workspace`, so no folder-trust prompt appears.
+  `COPILOT_AUTO_UPDATE=false` and `--no-auto-update` keep the pinned version.
+- Interactive runs execute `copilot --allow-all --no-auto-update
+  --disable-builtin-mcps`; headless runs add `-p "$PROMPT" --no-ask-user
+  --output-format json`. The built-in GitHub MCP server is disabled because it
+  would act on GitHub with the same token.
+- `--model` and `--effort` become Copilot's own `--model` and `--effort` flags.
+
+Migrating from `--agent bash --prompt-text 'copilot …'`: that form no longer
+opens GitHub network access (the prompt heuristic was removed) and never
+receives a Copilot token. Use `--agent copilot --prompt-text '…'` instead.
+
 ## Python + uv Projects
 
 For a Python project managed with uv, create a `Dockerfile` at the project root
@@ -504,16 +590,18 @@ uv run project-sandbox \
 - `--prompt-text "..."` writes the prompt under `.project-sandbox/prompts/`,
   bind-mounts that directory read-only, and reads it from
   `/project-sandbox-prompt/prompt.txt`.
-- `--agent {claude,codex,opencode,pi,bash}` selects which agent to run. If
-  omitted, the CLI only initializes generated config files unless a prompt is
-  supplied. Claude, Codex, OpenCode, and Pi require their host config
-  directories; Bash is always available.
+- `--agent {claude,codex,opencode,pi,copilot,bash}` selects which agent to run.
+  If omitted, the CLI only initializes generated config files unless a prompt
+  is supplied. Claude, Codex, OpenCode, and Pi require their host config
+  directories; Copilot needs a token from pass or `gh` (see
+  [GitHub Copilot](#github-copilot)); Bash is always available.
 - `--model MODEL_ID` selects the agent model and `--effort {low,medium,high,xhigh,max}`
   selects the reasoning effort. Both apply to interactive and headless runs: the
   CLI forwards them as `PROJECT_SANDBOX_MODEL` / `PROJECT_SANDBOX_EFFORT`, and the
   entrypoint turns them into each agent's own flags — `--model` plus `--effort`
   for Claude, `--model` plus `-c model_reasoning_effort=...` for Codex, `--model`
-  plus `--variant` for OpenCode, and `--model` plus `--thinking` for Pi. Pi model
+  plus `--variant` for OpenCode, `--model` plus `--thinking` for Pi, and
+  separate `--model` and `--effort` flags for Copilot. Pi model
   values are never rewritten, so `provider/id[:thinking]` forms remain intact,
   and every `--effort` level maps onto a Pi thinking level. They are ignored for
   Bash.
@@ -522,7 +610,7 @@ uv run project-sandbox \
   entrypoint adds `--settings '{"fastMode":true}'` for Claude or
   `-c service_tier="fast"` for Codex. Fast mode bills at a higher rate and only
   works with models and plans that offer it; the agent decides what happens
-  otherwise. `--fast` is rejected for OpenCode, Pi, and Bash. It combines with
+  otherwise. `--fast` is rejected for OpenCode, Pi, Copilot, and Bash. It combines with
   `--model` and `--effort`, e.g. `--agent claude --model opus --fast`.
 - `--pi-tools TOOLS` sets Pi's comma-separated tool allowlist; pass
   `--pi-tools read,grep,find,ls` for a read-only session. Only meaningful with
@@ -589,7 +677,7 @@ uv run project-sandbox \
   container. The agent uses `jj` there, not `git`. A kept workspace that is
   colocated (created by jj >= 0.46 before this rule) is rejected on reuse with
   the commands to recreate it; its work is left untouched.
-- Headless Claude, Codex, Pi, and OpenCode runs retain their raw JSON event log,
+- Headless Claude, Codex, Pi, OpenCode, and Copilot runs retain their raw JSON event log,
   translate completed messages and tool activity to Markdown on the terminal as
   the session runs, and render the same readable transcript beside the log.
   Transcript generation is best-effort: a parse failure prints a warning but
@@ -616,14 +704,19 @@ uv run project-sandbox \
   JSON output mode always exits 0, so a headless Pi run whose last assistant
   message ended in `error`/`aborted` is reported as exit `1` (or `75` when the
   log identifies a rate limit); an errored turn that a later auto-retry
-  recovered from stays a success.
+  recovered from stays a success. Copilot's JSONL schema and failed-run exit
+  codes are undocumented, so an exit-0 headless Copilot run is reported as
+  exit `1` (or `75` for a rate limit) only when the final record of its stream
+  is an error record; anything ambiguous keeps the original exit code.
 
 Unsupervised sessions skip the interactive `-it` flags and switch dispatch to
 `<agent>-headless` for all supported agents. Claude runs with
 `--dangerously-skip-permissions`, Codex uses `approval_policy = "never"`,
 OpenCode runs via `opencode run --format json`, Pi runs with
 `-p --mode json --approve` (Pi has no interactive trust prompt to answer
-headlessly, so `--approve` is always passed), and Bash runs with `bash -lc`.
+headlessly, so `--approve` is always passed), Copilot runs with
+`-p "$PROMPT" --allow-all --no-ask-user --output-format json`, and Bash runs
+with `bash -lc`.
 The container is still the sandbox boundary; review the diff before
 integrating.
 

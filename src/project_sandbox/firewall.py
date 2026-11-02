@@ -1,4 +1,5 @@
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -73,14 +74,23 @@ def render(
     policy: str = NORMAL,
     local_destinations: list[LocalTcpDestination] | None = None,
     devcontainer_destinations: list[LocalTcpDestination] | None = None,
+    copilot_tenant_hosts: Sequence[str] = (),
 ) -> Path:
     """Render the sandbox and devcontainer firewall scripts.
 
     ``devcontainer_destinations`` defaults to ``local_destinations``; it differs
     when the sandbox reaches an endpoint through a host relay that devcontainer
     tooling, which builds and runs outside project-sandbox, does not have.
+
+    ``copilot_tenant_hosts`` are DNS-pinned GHE.com tenant hosts for
+    ``--agent copilot --copilot-host <tenant>.ghe.com``. They go only into the
+    sandbox script: Copilot is not offered in the devcontainer.
     """
     _validate_domains(extra_domains)
+    tenant_hosts = list(copilot_tenant_hosts)
+    for host in tenant_hosts:
+        if not _HOSTNAME_RE.fullmatch(host):
+            raise ValueError(f"Invalid Copilot tenant host {host!r}")
     if policy not in (NORMAL, INTERNET_PROXY):
         raise ValueError(f"Unknown firewall policy: {policy}")
     destinations = list(local_destinations or [])
@@ -111,6 +121,7 @@ def render(
         agent_proxy_url=agent_proxy_url,
         policy=policy,
         local_destinations=destinations,
+        copilot_tenant_hosts=tenant_hosts,
     )
     _write(
         tmpl,
@@ -127,6 +138,7 @@ def render(
         agent_proxy_url=agent_proxy_url,
         policy=policy,
         local_destinations=devcontainer,
+        copilot_tenant_hosts=[],
     )
     return container
 
@@ -145,6 +157,7 @@ def _write(
     agent_proxy_url: str,
     policy: str,
     local_destinations: list[LocalTcpDestination],
+    copilot_tenant_hosts: list[str],
 ) -> Path:
     out.write_text(
         tmpl.render(
@@ -162,6 +175,7 @@ def _write(
             policy=policy,
             local_destinations=local_destinations,
             endpoint_hosts=list(dict.fromkeys(d.hostname for d in local_destinations)),
+            copilot_tenant_hosts=copilot_tenant_hosts,
         )
         + "\n",
         encoding="utf-8",

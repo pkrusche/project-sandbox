@@ -61,8 +61,13 @@ CREDENTIALS_ROOT = Path("/tmp")
 # without it the sandbox re-prompts with the managed settings dialog each run.
 CLAUDE_MANAGED_SETTINGS_CONSENT = "remote-settings-consent.json"
 
-_CONFIGURED_AGENTS = ("claude", "codex", "opencode", "pi")
+_CONFIGURED_AGENTS = ("claude", "codex", "opencode", "pi", "copilot")
 SUPPORTED_CREDENTIAL_AGENTS = frozenset(_CONFIGURED_AGENTS)
+# Credential families a bash session must never receive. The Copilot token is a
+# GitHub token that can act on GitHub while it is reachable, so it reaches only
+# the Copilot process (this deliberately breaks the multi-agent bash convention).
+_AGENT_ONLY_CREDENTIALS = frozenset(("copilot",))
+COPILOT_TRUSTED_FOLDERS = ("/workspace",)
 
 
 def allowed_credential_agents(runtime_agent: str) -> frozenset[str]:
@@ -73,7 +78,7 @@ def allowed_credential_agents(runtime_agent: str) -> frozenset[str]:
     """
     base_agent = runtime_agent.removesuffix("-headless")
     if base_agent == "bash":
-        return SUPPORTED_CREDENTIAL_AGENTS
+        return SUPPORTED_CREDENTIAL_AGENTS - _AGENT_ONLY_CREDENTIALS
     if base_agent in SUPPORTED_CREDENTIAL_AGENTS:
         return frozenset((base_agent,))
     return frozenset()
@@ -106,14 +111,20 @@ def _agent_host_paths(home: Path) -> dict[str, Path]:
         "codex": home / ".codex",
         "opencode": home / ".config" / "opencode",
         "pi": home / ".pi" / "agent",
+        # Copilot's token comes from pass/gh, not this dir; it only marks that
+        # Copilot has been used on this host (see cli for --agent copilot).
+        "copilot": home / ".copilot",
     }
 
 
 def available_agents(home: Path | None = None) -> tuple[str, ...]:
     """Return agents present on this host. Always includes 'bash'."""
     _home = home or Path.home()
+    host_paths = _agent_host_paths(_home)
     present = tuple(
-        a for a in _CONFIGURED_AGENTS if _agent_host_paths(_home)[a].exists()
+        a
+        for a in _CONFIGURED_AGENTS
+        if (path := host_paths.get(a)) is not None and path.exists()
     )
     return (*present, "bash")
 
@@ -172,6 +183,10 @@ def render(
     else:
         settings_out.write_text(_pi_settings_json(), encoding="utf-8")
     paths["pi"] = settings_out
+    copilot_dir = _ensure_project_subdir(context_dir, "copilot")
+    copilot_out = copilot_dir / "config.json"
+    copilot_out.write_text(_copilot_config_json(), encoding="utf-8")
+    paths["copilot"] = copilot_out
     if agent_proxy and agent_proxy[3] in ("opencode", "bash"):
         base_url, models, key, _agent = agent_proxy
         out = opencode_dir / "opencode.json"
@@ -309,6 +324,12 @@ def _codex_config_toml(approval_policy: str) -> str:
         "[feedback]\n"
         "enabled = false\n"
     )
+
+
+def _copilot_config_json() -> str:
+    # Secret-free: the token is never written here or into $COPILOT_HOME.
+    config = {"trusted_folders": list(COPILOT_TRUSTED_FOLDERS)}
+    return json.dumps(config, indent=2) + "\n"
 
 
 def _pi_ollama_models_json(
@@ -532,6 +553,11 @@ def _ensure_project_subdir(context_dir: Path, name: str) -> Path:
     _reject_symlinked_project_path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     return out_dir
+
+
+def ensure_private_dir(path: Path) -> None:
+    """Create a 0700 credential dir (and its two parents), refusing symlinks."""
+    _ensure_private_dir(path)
 
 
 def _ensure_private_dir(path: Path) -> None:

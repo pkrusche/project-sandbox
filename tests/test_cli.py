@@ -16,7 +16,7 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from project_sandbox import cli, container_cli
+from project_sandbox import cli, container_cli, firewall
 from project_sandbox import worktree as worktree_mod
 from project_sandbox.git_identity import GitIdentity
 
@@ -1334,20 +1334,72 @@ class CliTests(TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("bash-headless", out.getvalue())
 
-    def test_github_allowlist_is_enabled_for_headless_copilot_cli_command(self) -> None:
+    def test_bash_prompt_invoking_copilot_no_longer_enables_github(self) -> None:
         parser = cli.build_parser()
-        args = parser.parse_args(
+        for prompt in ("copilot -p 'summarize this repo'", "copilot"):
+            with self.subTest(prompt=prompt):
+                args = parser.parse_args(
+                    [
+                        "--agent",
+                        "bash",
+                        "--prompt-text",
+                        prompt,
+                        "/tmp/project",
+                        "python:3.12-slim",
+                    ]
+                )
+                self.assertFalse(cli._allow_github(args, "bash"))
+
+    def test_bash_prompt_file_invoking_copilot_no_longer_enables_github(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            prompt = Path(tmp) / "prompt.txt"
+            prompt.write_text("copilot -p hi\n", encoding="utf-8")
+            args = cli.build_parser().parse_args(
+                ["--agent", "bash", "--prompt", str(prompt), tmp, "python:3.12-slim"]
+            )
+            self.assertFalse(cli._allow_github(args, "bash"))
+
+    def test_copilot_agent_enables_github_allowlist(self) -> None:
+        parser = cli.build_parser()
+        interactive = parser.parse_args(
+            ["--agent", "copilot", "/tmp/project", "python:3.12-slim"]
+        )
+        headless = parser.parse_args(
             [
                 "--agent",
-                "bash",
+                "copilot",
                 "--prompt-text",
-                "copilot -p 'summarize this repo'",
+                "hi",
                 "/tmp/project",
                 "python:3.12-slim",
             ]
         )
+        self.assertTrue(cli._allow_github(interactive, "copilot"))
+        self.assertTrue(cli._allow_github(headless, "copilot"))
 
-        self.assertTrue(cli._allow_github(args, "bash"))
+    def test_bash_copilot_prompt_renders_firewall_without_github(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            args = cli.build_parser().parse_args(
+                [
+                    "--agent",
+                    "bash",
+                    "--prompt-text",
+                    "copilot -p hi",
+                    tmp,
+                    "python:3.12-slim",
+                ]
+            )
+            firewall.render(
+                context,
+                extra_domains=[],
+                allow_github=cli._allow_github(args, "bash"),
+            )
+            script = (context / "init-firewall.sh").read_text(encoding="utf-8")
+            self.assertNotIn('"api.githubcopilot.com"', script)
+            self.assertNotIn('"github.com"', script)
 
     def test_github_allowlist_is_explicit_for_non_copilot_commands(self) -> None:
         parser = cli.build_parser()
@@ -2238,22 +2290,8 @@ class CliTests(TestCase):
                 log_path, Path("/fake/home/for/test/sandbox-logs/session.log")
             )
 
-    def test_uses_github_copilot_cli_ignores_unsupported_agent_value(self) -> None:
-        """ "copilot" is not a valid --agent value (SUPPORTED_AGENTS has no such
-        entry), so detection only happens via the bash + prompt-text path."""
-        parser = cli.build_parser()
-        args = parser.parse_args(
-            [
-                "--agent",
-                "bash",
-                "--prompt-text",
-                "copilot -p 'hi'",
-                "/tmp/project",
-                "python:3.12-slim",
-            ]
-        )
-        self.assertFalse(cli._uses_github_copilot_cli(args, "copilot"))
-        self.assertTrue(cli._uses_github_copilot_cli(args, "bash"))
+    def test_copilot_prompt_heuristic_is_removed(self) -> None:
+        self.assertFalse(hasattr(cli, "_uses_github_copilot_cli"))
 
     def test_effort_help_does_not_claim_a_forced_default(self) -> None:
         with (
@@ -6497,3 +6535,521 @@ class TerminationSignalTests(TestCase):
             with self.assertRaises(SystemExit) as caught:
                 cli.main([])
         self.assertEqual(caught.exception.code, 128 + signal.SIGTERM)
+
+
+COPILOT_PAT = "github_pat_11COPILOTTEST0secretvalue"
+
+
+class _CopilotRunner:
+    """Fake subprocess.run for pass/gh; records each argv in ``calls``."""
+
+    def __init__(self, *, pass_result=None, gh_result=None):
+        self.pass_result = pass_result
+        self.gh_result = gh_result
+        self.calls: list[list[str]] = []
+
+    def __call__(self, argv, **kwargs):
+        self.calls.append(list(argv))
+        result = self.pass_result if argv[0] == "pass" else self.gh_result
+        if result is None:
+            raise FileNotFoundError(argv[0])
+        code, stdout = result
+        return subprocess.CompletedProcess(argv, code, stdout=stdout, stderr="")
+
+
+_copilot_runner = _CopilotRunner
+
+
+class CopilotAgentTests(TestCase):
+    """--agent copilot: validation, dry-run, token staging, dispatch, exits."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.project = self.root / "project"
+        self.project.mkdir()
+        (self.project / "README.md").write_text("# demo\n", encoding="utf-8")
+        self.cred_root = self.root / "creds"
+        patcher = patch.object(cli.config_agents, "CREDENTIALS_ROOT", self.cred_root)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _patches(self, out, runner=None):
+        real_resolve = cli.copilot_auth.resolve_token
+        resolve = Mock(
+            side_effect=lambda host, entry=None: real_resolve(host, entry, run=runner)
+        )
+        self.resolve = resolve
+        stack = contextlib.ExitStack()
+        stack.enter_context(
+            patch.object(
+                cli, "read_identity", return_value=GitIdentity("Ada", "a@example.com")
+            )
+        )
+        stack.enter_context(
+            patch.object(
+                cli.config_agents,
+                "_agent_host_paths",
+                return_value=_agent_paths(self.root / "home"),
+            )
+        )
+        stack.enter_context(patch.object(cli.copilot_auth, "resolve_token", resolve))
+        stack.enter_context(
+            patch.dict(os.environ, {"XDG_STATE_HOME": str(self.root / "state")})
+        )
+        stack.enter_context(contextlib.redirect_stdout(out))
+        return stack
+
+    def _dry_run(self, *extra: str) -> str:
+        out = io.StringIO()
+        with self._patches(out):
+            rc = cli.main(
+                [
+                    "--dry-run",
+                    "--no-build",
+                    "--agent",
+                    "copilot",
+                    *extra,
+                    str(self.project),
+                    "python:3.12-slim",
+                ]
+            )
+        self.assertEqual(rc, 0)
+        self.resolve.assert_not_called()
+        self.assertFalse((self.project / ".project-sandbox").exists())
+        self.assertFalse(self.cred_root.exists())
+        return out.getvalue()
+
+    def _launch(self, *extra: str, runner, log_lines=(), exit_code=0):
+        captured: dict = {}
+
+        def fake_run(cmd, *, log_path, **kwargs):
+            captured["cmd"] = cmd
+            captured["kwargs"] = kwargs
+            token_dir = cli.copilot_auth.staged_token_dir(
+                self.project.resolve() / ".project-sandbox"
+            )
+            token_file = token_dir / "token"
+            captured["token_mode"] = token_file.stat().st_mode & 0o777
+            captured["dir_mode"] = token_dir.stat().st_mode & 0o777
+            captured["token"] = token_file.read_text(encoding="utf-8")
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_path.write_text(
+                "".join(line + "\n" for line in log_lines), encoding="utf-8"
+            )
+            captured["log_path"] = log_path
+            return exit_code
+
+        out = io.StringIO()
+        with (
+            self._patches(out, runner),
+            patch.object(
+                cli.container_cli,
+                "select_runtime",
+                return_value=cli.container_cli.DOCKER,
+            ),
+            patch.object(cli.container_cli, "ensure_system_started", return_value=0),
+            patch.object(cli.container_cli, "image_exists", return_value=True),
+            patch.object(cli.session, "run", side_effect=fake_run),
+        ):
+            rc = cli.main(
+                [
+                    "--no-build",
+                    "--agent",
+                    "copilot",
+                    "--prompt-text",
+                    "fix this",
+                    *extra,
+                    str(self.project),
+                    "python:3.12-slim",
+                ]
+            )
+        captured["out"] = out.getvalue()
+        return rc, captured
+
+    # --- 2.1 registration and incompatible options -------------------------
+
+    def test_copilot_is_a_supported_agent_but_not_fast_mode(self) -> None:
+        self.assertIn("copilot", cli.SUPPORTED_AGENTS)
+        self.assertNotIn("copilot", cli.FAST_MODE_AGENTS)
+        self.assertIn("copilot", cli.config_agents._CONFIGURED_AGENTS)
+
+    def test_headless_copilot_dry_run_uses_headless_dispatch(self) -> None:
+        output = self._dry_run("--prompt-text", "fix this")
+        self.assertIn("project-sandbox-run copilot-headless", output)
+        self.assertIn("target=/project-sandbox-secrets/copilot,readonly", output)
+        self.assertIn("target=/project-sandbox-config/copilot,readonly", output)
+        self.assertIn("COPILOT_HOME=/home/agent/.copilot", output)
+        self.assertIn("COPILOT_AUTO_UPDATE=false", output)
+        self.assertNotIn("COPILOT_GH_HOST", output)
+        self.assertIn(
+            "pass show copilot-github-token, falling back to gh auth token "
+            "--hostname github.com",
+            output,
+        )
+        self.assertIn("implied by --agent copilot", output)
+        self.assertNotIn("tenant hosts", output)
+
+    def test_interactive_copilot_dry_run(self) -> None:
+        output = self._dry_run()
+        self.assertIn("project-sandbox-run copilot", output)
+        self.assertNotIn("copilot-headless", output)
+        self.assertIn("target=/project-sandbox-secrets/copilot,readonly", output)
+
+    def test_tenant_dry_run_sets_gh_host_and_pins_tenant_hosts(self) -> None:
+        output = self._dry_run("--copilot-host", " Acme.GHE.com ", "--prompt-text", "x")
+        self.assertIn("COPILOT_GH_HOST=acme.ghe.com", output)
+        self.assertIn("pass show copilot-github-token/acme.ghe.com", output)
+        self.assertIn("gh auth token --hostname acme.ghe.com", output)
+        self.assertIn(
+            "Would DNS-pin Copilot tenant hosts: acme.ghe.com, api.acme.ghe.com, "
+            "copilot-api.acme.ghe.com, copilot-telemetry-service.acme.ghe.com",
+            output,
+        )
+
+    def test_explicit_pass_entry_dry_run_has_no_gh_fallback(self) -> None:
+        output = self._dry_run("--copilot-token-pass", "work/copilot")
+        self.assertIn("pass show work/copilot", output)
+        self.assertNotIn("gh auth token", output)
+
+    def test_no_forward_credentials_dry_run_mounts_no_token(self) -> None:
+        output = self._dry_run("--no-forward-credentials", "--prompt-text", "x")
+        self.assertNotIn("/project-sandbox-secrets/copilot", output)
+        self.assertIn("Would not resolve or mount a Copilot token", output)
+
+    def _assert_rejected_before_any_work(self, extra: list[str], message: str) -> None:
+        out = io.StringIO()
+        with self._patches(out), self.assertRaises(SystemExit) as ctx:
+            cli.main(
+                [
+                    "--no-build",
+                    "--agent",
+                    "copilot",
+                    *extra,
+                    str(self.project),
+                    "python:3.12-slim",
+                ]
+            )
+        self.assertIn(message, str(ctx.exception))
+        self.resolve.assert_not_called()
+        self.assertFalse((self.project / ".project-sandbox").exists())
+        self.assertFalse(self.cred_root.exists())
+
+    def test_agent_proxy_is_rejected(self) -> None:
+        self._assert_rejected_before_any_work(
+            ["--agent-proxy", "http://127.0.0.1:4000/v1", "--model", "m"],
+            "--agent copilot cannot be combined with --agent-proxy",
+        )
+
+    def test_fast_is_rejected(self) -> None:
+        self._assert_rejected_before_any_work(
+            ["--fast"], "--fast supports only --agent claude or --agent codex"
+        )
+
+    # --- 3.1 host validation -------------------------------------------------
+
+    def test_unsupported_hosts_are_rejected(self) -> None:
+        for host in ("ghe.corp.example", "a.b.ghe.com", "evil.example"):
+            with self.subTest(host=host):
+                self._assert_rejected_before_any_work(
+                    ["--copilot-host", host], "<tenant>.ghe.com"
+                )
+
+    def test_copilot_options_require_copilot_agent(self) -> None:
+        for extra in (
+            ["--copilot-host", "acme.ghe.com"],
+            ["--copilot-token-pass", "work/copilot"],
+        ):
+            with self.subTest(extra=extra):
+                out = io.StringIO()
+                with self._patches(out), self.assertRaises(SystemExit) as ctx:
+                    cli.main(
+                        ["--dry-run", "--agent", "bash", *extra, str(self.project)]
+                    )
+                self.assertIn("require --agent copilot", str(ctx.exception))
+
+    # --- 2.3 model / effort ---------------------------------------------------
+
+    def test_model_injected_for_copilot_headless(self) -> None:
+        output = self._dry_run("--prompt-text", "x", "--model", "gpt-5-mini")
+        self.assertIn("PROJECT_SANDBOX_MODEL=gpt-5-mini", output)
+
+    def test_effort_injected_for_copilot_headless(self) -> None:
+        for effort in ("low", "high", "max"):
+            with self.subTest(effort=effort):
+                output = self._dry_run("--prompt-text", "x", "--effort", effort)
+                self.assertIn(f"PROJECT_SANDBOX_EFFORT={effort}", output)
+
+    def test_copilot_model_and_effort_can_be_combined(self) -> None:
+        output = self._dry_run(
+            "--prompt-text", "x", "--model", "gpt-5-mini", "--effort", "high"
+        )
+        self.assertIn("PROJECT_SANDBOX_MODEL=gpt-5-mini", output)
+        self.assertIn("PROJECT_SANDBOX_EFFORT=high", output)
+
+    def test_help_has_copilot_model_and_effort_examples(self) -> None:
+        with (
+            patch.dict(os.environ, {"COLUMNS": "400"}),
+            self.assertRaises(SystemExit),
+            contextlib.redirect_stdout(io.StringIO()) as stdout,
+        ):
+            cli.main(["--help"])
+        help_text = " ".join(stdout.getvalue().split())
+        self.assertIn(
+            "Example for Copilot: --agent copilot --model gpt-5-mini", help_text
+        )
+        self.assertIn("Examples for Copilot: --agent copilot --model", help_text)
+        self.assertIn("--copilot-host HOST", help_text)
+        self.assertIn("--copilot-token-pass ENTRY", help_text)
+
+    # --- 3.3 / 4.1 resolution, staging, redaction ------------------------------
+
+    def test_pass_token_is_staged_mounted_redacted_and_removed(self) -> None:
+        runner = _copilot_runner(
+            pass_result=(0, COPILOT_PAT + "\n"), gh_result=(0, "x")
+        )
+        rc, run = self._launch(runner=runner)
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(runner.calls, [["pass", "show", "copilot-github-token"]])
+        self.assertNotIn("[W] Copilot is using your GitHub CLI token", run["out"])
+        self.assertEqual(run["token"], COPILOT_PAT + "\n")
+        self.assertEqual(run["token_mode"], 0o600)
+        self.assertEqual(run["dir_mode"], 0o700)
+        self.assertEqual(run["kwargs"]["redact"], (COPILOT_PAT,))
+        self.assertEqual(run["kwargs"]["markdown_agent"], "copilot")
+        cmd = run["cmd"]
+        self.assertNotIn(COPILOT_PAT, " ".join(cmd))
+        self.assertIn("copilot-headless", cmd)
+        token_dir = cli.copilot_auth.staged_token_dir(
+            self.project.resolve() / ".project-sandbox"
+        )
+        self.assertIn(
+            f"type=bind,source={token_dir.resolve()},"
+            "target=/project-sandbox-secrets/copilot,readonly",
+            cmd,
+        )
+        # Removed best-effort at session end.
+        self.assertFalse((token_dir / "token").exists())
+        # Nothing under the project holds the token.
+        for path in self.project.rglob("*"):
+            if path.is_file():
+                self.assertNotIn(
+                    COPILOT_PAT, path.read_text(encoding="utf-8", errors="replace")
+                )
+        config = json.loads(
+            (self.project / ".project-sandbox" / "copilot" / "config.json").read_text()
+        )
+        self.assertEqual(config, {"trusted_folders": ["/workspace"]})
+
+    def test_gh_fallback_prints_scope_warning(self) -> None:
+        runner = _copilot_runner(
+            pass_result=(1, ""), gh_result=(0, "gho_fallbacktoken")
+        )
+        rc, run = self._launch(runner=runner)
+        self.assertEqual(rc, 0)
+        self.assertEqual([c[0] for c in runner.calls], ["pass", "gh"])
+        self.assertIn(
+            "[W] Copilot is using your GitHub CLI token, which may have repo or "
+            "workflow scope",
+            run["out"],
+        )
+        self.assertIn("docs/security.md", run["out"])
+        self.assertIn("pass insert copilot-github-token", run["out"])
+        self.assertEqual(run["token"], "gho_fallbacktoken\n")
+
+    def test_missing_token_fails_before_rendering_or_container_start(self) -> None:
+        runner = _copilot_runner(pass_result=(1, ""), gh_result=(1, ""))
+        with (
+            patch.object(cli.container_cli, "run") as run_container,
+            self.assertRaises(SystemExit) as ctx,
+        ):
+            self._launch(runner=runner)
+        self.assertIn("pass insert copilot-github-token", str(ctx.exception))
+        self.assertIn("gh auth login --hostname github.com", str(ctx.exception))
+        run_container.assert_not_called()
+        self.assertFalse(self.cred_root.exists())
+        self.assertFalse((self.project / ".project-sandbox" / "Dockerfile").exists())
+
+    def test_explicit_entry_failure_does_not_invoke_gh(self) -> None:
+        runner = _copilot_runner(pass_result=(1, ""), gh_result=(0, "gho_x"))
+        with self.assertRaises(SystemExit):
+            self._launch("--copilot-token-pass", "work/copilot", runner=runner)
+        self.assertEqual(runner.calls, [["pass", "show", "work/copilot"]])
+
+    def test_verbose_launch_never_prints_the_token(self) -> None:
+        runner = _copilot_runner(pass_result=(0, COPILOT_PAT))
+        rc, run = self._launch("--verbose", runner=runner)
+        self.assertEqual(rc, 0)
+        self.assertNotIn(COPILOT_PAT, run["out"])
+        self.assertIn("Copilot token: pass entry copilot-github-token", run["out"])
+        self.assertTrue(run["kwargs"]["verbose"])
+        self.assertEqual(run["kwargs"]["redact"], (COPILOT_PAT,))
+
+    def test_tenant_launch_renders_tenant_firewall_hosts(self) -> None:
+        runner = _copilot_runner(pass_result=(0, COPILOT_PAT))
+        rc, run = self._launch("--copilot-host", "acme.ghe.com", runner=runner)
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            runner.calls, [["pass", "show", "copilot-github-token/acme.ghe.com"]]
+        )
+        self.assertIn("COPILOT_GH_HOST=acme.ghe.com", run["cmd"])
+        context = self.project / ".project-sandbox"
+        sandbox = (context / "init-firewall.sh").read_text(encoding="utf-8")
+        devcontainer = (context / "init-firewall-devcontainer.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("copilot-api.acme.ghe.com", sandbox)
+        self.assertIn('"api.individual.githubcopilot.com"', sandbox)
+        self.assertNotIn("acme.ghe.com", devcontainer)
+
+    def test_launch_installs_copilot_in_image(self) -> None:
+        runner = _copilot_runner(pass_result=(0, COPILOT_PAT))
+        self._launch(runner=runner)
+        dockerfile_text = (self.project / ".project-sandbox" / "Dockerfile").read_text()
+        self.assertIn("npm install -g @github/copilot@", dockerfile_text)
+
+    def test_no_forward_credentials_launch_skips_lookup_and_mount(self) -> None:
+        out = io.StringIO()
+        captured = {}
+
+        def fake_run(cmd, *, log_path, **kwargs):
+            captured["cmd"] = cmd
+            captured["kwargs"] = kwargs
+            return 0
+
+        with (
+            self._patches(out),
+            patch.object(
+                cli.container_cli,
+                "select_runtime",
+                return_value=cli.container_cli.DOCKER,
+            ),
+            patch.object(cli.container_cli, "ensure_system_started", return_value=0),
+            patch.object(cli.container_cli, "image_exists", return_value=True),
+            patch.object(cli.session, "run", side_effect=fake_run),
+        ):
+            rc = cli.main(
+                [
+                    "--no-build",
+                    "--no-forward-credentials",
+                    "--agent",
+                    "copilot",
+                    "--prompt-text",
+                    "x",
+                    str(self.project),
+                    "python:3.12-slim",
+                ]
+            )
+        self.assertEqual(rc, 0)
+        self.resolve.assert_not_called()
+        self.assertNotIn("/project-sandbox-secrets/copilot", " ".join(captured["cmd"]))
+        self.assertEqual(captured["kwargs"]["redact"], ())
+
+    # --- 6.2 exit reclassification ---------------------------------------------
+
+    def _events(self, *events: dict) -> list[str]:
+        return [json.dumps(event) for event in events]
+
+    def test_exit_zero_with_final_error_record_reports_one(self) -> None:
+        runner = _copilot_runner(pass_result=(0, COPILOT_PAT))
+        rc, run = self._launch(
+            runner=runner,
+            log_lines=self._events(
+                {"type": "assistant.message", "data": {"content": "working"}},
+                {"type": "session.error", "data": {"message": "model not found"}},
+                {"type": "session.idle", "data": {}},
+            ),
+        )
+        self.assertEqual(rc, 1)
+        self.assertIn("Copilot reported a failed run", run["out"])
+        self.assertTrue(run["log_path"].with_suffix(".md").exists())
+
+    def test_exit_zero_with_final_rate_limit_error_reports_75(self) -> None:
+        runner = _copilot_runner(pass_result=(0, COPILOT_PAT))
+        rc, _run = self._launch(
+            runner=runner,
+            log_lines=self._events(
+                {
+                    "type": "session.error",
+                    "data": {"errorType": "rate_limit", "message": "slow down"},
+                }
+            ),
+        )
+        self.assertEqual(rc, 75)
+        records = []
+        with patch.dict(os.environ, {"XDG_STATE_HOME": str(self.root / "state")}):
+            records = cli.observability.list_records()
+        self.assertTrue(records[-1]["rate_limited"])
+
+    def test_recovered_error_keeps_exit_zero(self) -> None:
+        runner = _copilot_runner(pass_result=(0, COPILOT_PAT))
+        rc, _run = self._launch(
+            runner=runner,
+            log_lines=self._events(
+                {"type": "session.error", "data": {"message": "transient"}},
+                {"type": "assistant.message", "data": {"content": "done"}},
+            ),
+        )
+        self.assertEqual(rc, 0)
+
+    def test_ambiguous_stream_keeps_exit_zero(self) -> None:
+        runner = _copilot_runner(pass_result=(0, COPILOT_PAT))
+        rc, _run = self._launch(
+            runner=runner, log_lines=["not json", '{"type": "mystery"}']
+        )
+        self.assertEqual(rc, 0)
+
+    def test_nonzero_exit_passes_through(self) -> None:
+        runner = _copilot_runner(pass_result=(0, COPILOT_PAT))
+        rc, _run = self._launch(
+            runner=runner,
+            exit_code=3,
+            log_lines=self._events({"type": "assistant.message", "data": {}}),
+        )
+        self.assertEqual(rc, 3)
+
+
+class CopilotBashIsolationTests(TestCase):
+    def test_bash_session_never_mounts_copilot_token(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp) / ".project-sandbox"
+            credential_dirs = {
+                "claude": Path(tmp) / "claude",
+                "copilot": Path(tmp) / "copilot",
+            }
+            for forward in (True, False):
+                for prompt in ([], ["--prompt-text", "copilot -p hi"]):
+                    with self.subTest(forward=forward, prompt=prompt):
+                        args = cli.build_parser().parse_args(
+                            [
+                                "--agent",
+                                "bash",
+                                *prompt,
+                                *([] if forward else ["--no-forward-credentials"]),
+                                tmp,
+                                "python:3.12-slim",
+                            ]
+                        )
+                        args.image_tag = "project-sandbox-test:latest"
+                        with contextlib.redirect_stdout(io.StringIO()):
+                            cmd, *_ = cli._build_session_command(
+                                args,
+                                project=Path(tmp),
+                                context_dir=context,
+                                workspace=Path(tmp),
+                                worktree=None,
+                                identity=GitIdentity(None, None),
+                                run_agent="bash",
+                                claude_cfg=context / "claude" / "settings.json",
+                                credential_dirs=credential_dirs,
+                                codex_cfg=context / "codex" / "config.toml",
+                                copilot_cfg=context / "copilot" / "config.json",
+                                runtime=cli.container_cli.DOCKER,
+                                create_prompt_files=False,
+                            )
+                        joined = " ".join(cmd)
+                        self.assertNotIn("/project-sandbox-secrets/copilot", joined)
+                        self.assertNotIn("COPILOT_GITHUB_TOKEN", joined)
+                        self.assertNotIn("COPILOT_HOME", joined)
