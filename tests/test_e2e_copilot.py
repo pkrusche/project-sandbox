@@ -201,6 +201,79 @@ class E2ECopilotRedactionTests(unittest.TestCase):
         compile(self.script.AUDIT_SOURCE, "copilot-audit.py", "exec")
 
 
+def _shell_output(text: str) -> dict:
+    return {"type": "tool.shell_output", "data": {"stream": "stdout", "text": text}}
+
+
+def _mcp_loaded(status: str) -> dict:
+    return {
+        "type": "session.mcp_servers_loaded",
+        "data": {
+            "servers": [
+                {"name": "github-copilot-browser", "status": "disabled"},
+                {"name": "github-mcp-server", "status": status, "source": "builtin"},
+            ]
+        },
+    }
+
+
+class E2ECopilotRecordCheckTests(unittest.TestCase):
+    """Regression: checks must read Copilot's real records, not substrings."""
+
+    def setUp(self) -> None:
+        self.script = _load_script()
+
+    def test_config_rewritten_by_copilot_lists_workspace(self) -> None:
+        # Copilot migrates the seeded key to camelCase and adds comments.
+        text = (
+            "// User settings belong in settings.json.\n"
+            "// This file is managed automatically.\n"
+            '{\n  "trustedFolders": [\n    "/workspace"\n  ],\n'
+            '  "firstLaunchAt": "2026-03-11T00:00:00.000Z"\n}\n'
+        )
+        self.assertTrue(self.script.config_lists_workspace([_shell_output(text)]))
+
+    def test_seeded_config_key_lists_workspace(self) -> None:
+        text = json.dumps({"trusted_folders": ["/workspace"]})
+        self.assertTrue(self.script.config_lists_workspace([_shell_output(text)]))
+
+    def test_config_without_workspace_fails(self) -> None:
+        for text in (
+            json.dumps({"trustedFolders": ["/tmp"]}),
+            "cat: /workspace/config.json: No such file or directory",
+        ):
+            with self.subTest(text=text):
+                self.assertFalse(
+                    self.script.config_lists_workspace([_shell_output(text)])
+                )
+        # /workspace elsewhere in the stream (e.g. the prompt) does not count.
+        self.assertFalse(
+            self.script.config_lists_workspace(
+                [{"type": "user.message", "data": {"content": "/workspace"}}]
+            )
+        )
+
+    def test_disabled_builtin_mcp_server_listing_passes(self) -> None:
+        records = [
+            _mcp_loaded("disabled"),
+            {"type": "tool.execution_start", "data": {"toolName": "bash"}},
+        ]
+        self.assertEqual(self.script.builtin_mcp_violations(records), [])
+
+    def test_enabled_or_used_builtin_mcp_server_fails(self) -> None:
+        self.assertEqual(
+            len(self.script.builtin_mcp_violations([_mcp_loaded("connected")])), 1
+        )
+        used = {
+            "type": "tool.execution_start",
+            "data": {"toolName": "github-mcp-server-get_file_contents"},
+        }
+        self.assertEqual(
+            len(self.script.builtin_mcp_violations([_mcp_loaded("disabled"), used])),
+            1,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
 

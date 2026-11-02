@@ -43,7 +43,8 @@ PERSONAL_HOST = copilot_auth.DEFAULT_HOST
 OK_MARKER = "COPILOT_E2E_OK_51F3"
 INVALID_MODEL = "project-sandbox-e2e-no-such-model"
 # Built-in GitHub MCP tools are named after their server; with
-# --disable-builtin-mcps none may appear in a run's tool calls.
+# --disable-builtin-mcps the server is listed as disabled and none of its
+# tools may appear in a run's records.
 BUILTIN_MCP_MARKER = "github-mcp-server"
 
 # Runs inside the sandbox (via Copilot's shell tool, or a bash session) and
@@ -219,6 +220,68 @@ def json_records(text: str) -> list[dict]:
     return records
 
 
+def _config_trusted_folders(text: str) -> list[str]:
+    """Trusted folders from a `cat config.json` output, or [] if unparseable.
+
+    Copilot keeps `//` comment lines at the top of the file and rewrites the
+    seeded `trusted_folders` key as `trustedFolders`, so accept both.
+    """
+    body = "\n".join(
+        line for line in text.splitlines() if not line.lstrip().startswith("//")
+    )
+    try:
+        config = json.loads(body)
+    except ValueError:
+        return []
+    if not isinstance(config, dict):
+        return []
+    folders: list[str] = []
+    for key in ("trustedFolders", "trusted_folders"):
+        value = config.get(key)
+        if isinstance(value, list):
+            folders += [item for item in value if isinstance(item, str)]
+    return folders
+
+
+def config_lists_workspace(records: list[dict]) -> bool:
+    """True if a shell tool output in the stream is a config.json trusting /workspace."""
+    for record in records:
+        data = record.get("data")
+        if record.get("type") != "tool.shell_output" or not isinstance(data, dict):
+            continue
+        text = data.get("text")
+        if isinstance(text, str) and "/workspace" in _config_trusted_folders(text):
+            return True
+    return False
+
+
+def builtin_mcp_violations(records: list[dict]) -> list[str]:
+    """Signs that the built-in GitHub MCP server was enabled or used.
+
+    `session.mcp_servers_loaded` always lists the built-in server; it must be
+    reported as disabled. Any other record naming it means a tool call went
+    through it.
+    """
+    violations = []
+    for record in records:
+        kind = record.get("type")
+        if kind == "session.mcp_servers_loaded":
+            data = record.get("data")
+            servers = data.get("servers", []) if isinstance(data, dict) else []
+            for server in servers:
+                if (
+                    isinstance(server, dict)
+                    and server.get("name") == BUILTIN_MCP_MARKER
+                    and server.get("status") != "disabled"
+                ):
+                    violations.append(
+                        f"{BUILTIN_MCP_MARKER} status {server.get('status')!r}"
+                    )
+        elif BUILTIN_MCP_MARKER in json.dumps(record):
+            violations.append(f"{BUILTIN_MCP_MARKER} named in a {kind} record")
+    return violations
+
+
 def build_command(
     args: argparse.Namespace,
     project: Path,
@@ -385,14 +448,15 @@ class Suite:
             ),
             model=self.args.model,
         )
-        log = self.log_text(run).lower()
+        text = self.log_text(run)
+        log = text.lower()
         failures = []
         if run.returncode != 0:
             failures.append(f"exit {run.returncode}")
         for marker in ("do you trust", "not trusted", "trust this folder"):
             if marker in log:
                 failures.append(f"trust prompt/error in the stream: {marker!r}")
-        if "trusted_folders" not in log or "/workspace" not in log:
+        if not config_lists_workspace(json_records(text)):
             failures.append("config.json output did not list /workspace")
         return run, failures
 
@@ -411,8 +475,10 @@ class Suite:
         if copilot.returncode != 0:
             failures.append(f"copilot run exit {copilot.returncode}")
         failures += [f"copilot: {f}" for f in self.audit("copilot")["failures"]]
-        if BUILTIN_MCP_MARKER in self.log_text(copilot):
-            failures.append("a built-in GitHub MCP tool appeared in the stream")
+        failures += [
+            f"built-in MCP: {v}"
+            for v in builtin_mcp_violations(json_records(self.log_text(copilot)))
+        ]
         bash = self.run(
             "isolation-bash",
             agent="bash",
