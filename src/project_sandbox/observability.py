@@ -8,6 +8,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from . import transcript
+
 RATE_LIMIT_EXIT_CODE = 75  # EX_TEMPFAIL: callers should retry after a backoff.
 TIMEOUT_EXIT_CODE = 124  # Matches session.run()'s timeout exit code.
 # How much of the end of a session log is searched for rate-limit markers.
@@ -192,6 +194,66 @@ def pi_json_stream_failed(path: Path | None) -> bool:
     except OSError:
         return False
     return last_stop_reason in ("error", "aborted")
+
+
+COPILOT_FAILED = "error"
+COPILOT_RATE_LIMITED = "rate_limited"
+_COPILOT_RATE_LIMIT_MARKERS = (
+    "429",
+    "rate limit",
+    "rate_limit",
+    "ratelimit",
+    "too many requests",
+)
+
+
+def copilot_json_stream_failure(path: Path | None) -> str | None:
+    """Classify a Copilot JSONL stream whose process still exited 0.
+
+    Copilot's JSONL schema and failed-run exit codes are undocumented, so this
+    is deliberately conservative: only when the final meaningful record (after
+    skipping streaming/lifecycle markers) is an error record does it report
+    ``"error"`` — or ``"rate_limited"`` when that record names a rate limit.
+    A recovered error (followed by more output) or an ambiguous stream yields
+    None, and the original exit code stands.
+    """
+    if path is None:
+        return None
+    last: dict | None = None
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line.startswith("{"):
+                    continue
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(event, dict) or not isinstance(
+                    event.get("type"), str
+                ):
+                    continue
+                if event["type"] in transcript.COPILOT_QUIET_KINDS:
+                    continue
+                last = event
+    except OSError:
+        return None
+    if last is None or last["type"] not in transcript.COPILOT_ERROR_KINDS:
+        return None
+    payload = transcript.copilot_payload(last)
+    text = " ".join(
+        str(value)
+        for value in (
+            payload.get("errorType"),
+            payload.get("statusCode"),
+            transcript.copilot_error_message(last),
+        )
+        if value is not None
+    ).lower()
+    if any(marker in text for marker in _COPILOT_RATE_LIMIT_MARKERS):
+        return COPILOT_RATE_LIMITED
+    return COPILOT_FAILED
 
 
 def log_is_rate_limited(path: Path) -> bool:

@@ -18,6 +18,7 @@
 #  14. proxy-endpoints          — controlled remote HTTP/TLS fixtures (explicit opt-in)
 #  15. build-proxy              — build access through TLS-intercepting Squid (explicit opt-in;
 #                                 on Podman the Squid fixture runs on Docker)
+#  16. copilot                  — real GitHub Copilot CLI sessions (explicit opt-in; billable)
 #
 # The console shows one progress line per suite. Each suite's output is captured
 # in its own temp log file; a failing suite's log is kept and its path reported,
@@ -30,6 +31,8 @@
 #                            [--with-agent-proxy] [--with-internet-proxy]
 #                            [--with-proxy-endpoints --proxy-fixture-host IP]
 #                            [--with-build-proxy --internet-proxy-dir DIR]
+#                            [--with-copilot [--copilot-host TENANT.ghe.com]
+#                             [--copilot-capture-dir DIR]]
 #                            [--proxy-fixture-ipv6-host IP]
 #                            [--proxy-fixture-hostname NAME]
 #                            [--ca-cert PATH ...]
@@ -42,11 +45,12 @@
 #   --only SUITE     run just one suite by name (default: run every available suite).
 #                    Naming an opt-in suite is itself the opt-in, so --only agent-proxy,
 #                    --only agent-proxy-isolation, --only internet-proxy-isolation,
-#                    --only proxy-endpoints, and --only build-proxy need no additional --with-* flag.
+#                    --only proxy-endpoints, --only build-proxy, and --only copilot need no
+#                    additional --with-* flag.
 #   --list           print the suite names accepted by --only and exit
 #   --all-tests      run every suite, including all opt-in ones (implies
 #                    --with-agent-proxy, --with-internet-proxy,
-#                    --with-proxy-endpoints, and --with-build-proxy). Requires
+#                    --with-proxy-endpoints, --with-build-proxy, and --with-copilot). Requires
 #                    --internet-proxy-dir and --agentgateway-dir,
 #                    a real container runtime (build-proxy on Podman also needs
 #                    Docker for its fixture), and builds enabled; billable and destructive
@@ -67,6 +71,14 @@
 #                    run build/CA and runtime isolation checks using IPL Squid;
 #                    requires Docker, Apple container, or Podman (plus Docker
 #                    for the fixture), --internet-proxy-dir, and builds enabled
+#   --with-copilot   run the billable GitHub Copilot CLI checks (scripts/e2e-copilot.py);
+#                    needs a Copilot subscription and a token from pass
+#                    (copilot-github-token) or `gh auth login`. Without this flag
+#                    (or --only copilot / --all-tests) no token lookup happens
+#   --copilot-host HOST
+#                    also run the Copilot `tenant` check against a <tenant>.ghe.com host
+#   --copilot-capture-dir DIR
+#                    keep each Copilot check's redacted JSONL stream and exit code in DIR
 #   --proxy-fixture-host IP
 #                    override local fixture IP (default: outbound IPv4 source address)
 #   --proxy-fixture-ipv6-host IP
@@ -94,6 +106,7 @@ SUITES=(
   agent-proxy
   proxy-endpoints
   build-proxy
+  copilot
 )
 
 RUNTIME="auto"
@@ -105,6 +118,9 @@ WITH_AGENT_PROXY=0
 WITH_INTERNET_PROXY=0
 WITH_PROXY_ENDPOINTS=0
 WITH_BUILD_PROXY=0
+WITH_COPILOT=0
+COPILOT_HOST=""
+COPILOT_CAPTURE_DIR=""
 ALL_TESTS=0
 PROXY_FIXTURE_HOST=""
 PROXY_FIXTURE_IPV6_HOST=""
@@ -131,6 +147,9 @@ while [ $# -gt 0 ]; do
     --with-internet-proxy) WITH_INTERNET_PROXY=1; shift ;;
     --with-build-proxy) WITH_BUILD_PROXY=1; shift ;;
     --with-proxy-endpoints) WITH_PROXY_ENDPOINTS=1; shift ;;
+    --with-copilot) WITH_COPILOT=1; shift ;;
+    --copilot-host) COPILOT_HOST="${2:?--copilot-host needs a value}"; shift 2 ;;
+    --copilot-capture-dir) COPILOT_CAPTURE_DIR="${2:?--copilot-capture-dir needs a value}"; shift 2 ;;
     --proxy-fixture-host) PROXY_FIXTURE_HOST="${2:?--proxy-fixture-host needs a value}"; shift 2 ;;
     --proxy-fixture-ipv6-host) PROXY_FIXTURE_IPV6_HOST="${2:?--proxy-fixture-ipv6-host needs a value}"; shift 2 ;;
     --proxy-fixture-hostname) PROXY_FIXTURE_HOSTNAME="${2:?--proxy-fixture-hostname needs a value}"; shift 2 ;;
@@ -148,6 +167,7 @@ if [ "$ALL_TESTS" = 1 ]; then
   WITH_INTERNET_PROXY=1
   WITH_PROXY_ENDPOINTS=1
   WITH_BUILD_PROXY=1
+  WITH_COPILOT=1
   missing=()
   [ -n "$INTERNET_PROXY_DIR" ] || missing+=(--internet-proxy-dir)
   [ -n "$AGENTGATEWAY_DIR" ] || missing+=(--agentgateway-dir)
@@ -177,6 +197,7 @@ if [ -n "$ONLY" ]; then
     internet-proxy-isolation) WITH_INTERNET_PROXY=1 ;;
     proxy-endpoints) WITH_PROXY_ENDPOINTS=1 ;;
     build-proxy) WITH_BUILD_PROXY=1 ;;
+    copilot) WITH_COPILOT=1 ;;
   esac
 fi
 
@@ -472,6 +493,25 @@ if selected build-proxy; then
     fi
   else
     skip_suite "build-proxy" "pass --with-build-proxy, --internet-proxy-dir,"
+  fi
+fi
+
+# 16. Real Copilot sessions are billable and need a token, so they never run
+# just because one is available; without the opt-in nothing is looked up.
+if selected copilot; then
+  if [ "$WITH_COPILOT" = 1 ]; then
+    if [ -z "$CONTAINER_RUNTIME" ]; then
+      fail_suite "copilot" "select apple-container, docker, podman, or an available auto runtime"
+    else
+      COPILOT_ARGS=(--runtime "$CONTAINER_RUNTIME" --base-image "$BASE_IMAGE")
+      [ -n "$COPILOT_HOST" ] && COPILOT_ARGS+=(--copilot-host "$COPILOT_HOST")
+      [ -n "$COPILOT_CAPTURE_DIR" ] && COPILOT_ARGS+=(--capture-dir "$COPILOT_CAPTURE_DIR")
+      [ "$NO_BUILD" = 1 ] && COPILOT_ARGS+=(--no-build)
+      [ "$KEEP" = 1 ] && COPILOT_ARGS+=(--keep)
+      run_suite "copilot" uv run python "$ROOT/scripts/e2e-copilot.py" "${COPILOT_ARGS[@]}"
+    fi
+  else
+    skip_suite "copilot" "pass --with-copilot; makes billable Copilot requests"
   fi
 fi
 

@@ -173,6 +173,9 @@ DOMAINS=(
   "collector.github.com"
   "default.exp-tas.com"
 {% endif %}
+{% for domain in copilot_tenant_hosts %}
+  {{ domain | shlex_quote }}
+{% endfor %}
 {% for domain in extra_domains %}
   {{ domain | shlex_quote }}
 {% endfor %}

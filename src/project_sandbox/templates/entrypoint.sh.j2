@@ -58,6 +58,18 @@ load_project_sandbox_prompt() {
   fi
 }
 
+# Copilot reads its GitHub token from COPILOT_GITHUB_TOKEN. The token file is
+# mounted only into Copilot containers; it is read here, right before the exec,
+# so the variable exists only in the Copilot process (never in bash sessions,
+# never copied into $COPILOT_HOME). Without a staged token (e.g. with
+# --no-forward-credentials) Copilot starts unauthenticated.
+export_project_sandbox_copilot_token() {
+  if [ -s /project-sandbox-secrets/copilot/token ]; then
+    COPILOT_GITHUB_TOKEN="$(head -n 1 /project-sandbox-secrets/copilot/token)"
+    export COPILOT_GITHUB_TOKEN
+  fi
+}
+
 # When --verbose is requested, echo the coding agent's resolved config and the
 # exact argv it is launched with (to stderr, so the stream-json stdout stays
 # clean). This makes it visible whether --model / --effort / --fast actually
@@ -139,6 +151,20 @@ case "${1:-bash}" in
         log_project_sandbox_agent_command pi "$@"
         exec pi "$@"
         ;;
+      copilot)
+        shift
+        export COPILOT_AUTO_UPDATE=false
+        set -- --allow-all --no-auto-update --disable-builtin-mcps "$@"
+        if [ -n "${PROJECT_SANDBOX_EFFORT:-}" ]; then
+          set -- --effort "$PROJECT_SANDBOX_EFFORT" "$@"
+        fi
+        if [ -n "${PROJECT_SANDBOX_MODEL:-}" ]; then
+          set -- --model "$PROJECT_SANDBOX_MODEL" "$@"
+        fi
+        log_project_sandbox_agent_command copilot "$@"
+        export_project_sandbox_copilot_token
+        exec copilot "$@"
+        ;;
       bash) shift; exec bash "$@" ;;
       claude-headless)
         shift
@@ -201,6 +227,21 @@ case "${1:-bash}" in
         fi
         log_project_sandbox_agent_command pi "$@"
         exec pi "$@"
+        ;;
+      copilot-headless)
+        shift
+        export COPILOT_AUTO_UPDATE=false
+        load_project_sandbox_prompt copilot-headless || exit $?
+        set -- -p "$PROMPT" --allow-all --no-ask-user --output-format json --no-auto-update --disable-builtin-mcps
+        if [ -n "${PROJECT_SANDBOX_EFFORT:-}" ]; then
+          set -- "$@" --effort "$PROJECT_SANDBOX_EFFORT"
+        fi
+        if [ -n "${PROJECT_SANDBOX_MODEL:-}" ]; then
+          set -- "$@" --model "$PROJECT_SANDBOX_MODEL"
+        fi
+        log_project_sandbox_agent_command copilot "$@"
+        export_project_sandbox_copilot_token
+        exec copilot "$@"
         ;;
       bash-headless)
         shift

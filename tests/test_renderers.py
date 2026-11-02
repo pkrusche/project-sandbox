@@ -3248,3 +3248,207 @@ class NodeNpmDockerfileTests(TestCase):
             )
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertEqual((dst / "package").read_text(), "session")
+
+
+class CopilotRendererTests(TestCase):
+    """Copilot image install, baked config, provisioning, dispatch, firewall."""
+
+    def _dockerfile(self, install_agents: tuple[str, ...]) -> str:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            dockerfile.render(
+                context, base_image="python:3.12-slim", install_agents=install_agents
+            )
+            return (context / "Dockerfile").read_text(encoding="utf-8")
+
+    def test_dockerfile_installs_pinned_copilot_only_when_selected(self) -> None:
+        self.assertRegex(
+            self._dockerfile(("claude", "copilot")),
+            r"RUN npm install -g @github/copilot@\d+\.\d+\.\d+\n",
+        )
+        self.assertNotIn("@github/copilot", self._dockerfile(("claude", "pi")))
+
+    def test_config_render_trusts_workspace_without_secrets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = config_agents.render(Path(tmp))
+            config_path = paths["copilot"]
+            self.assertEqual(config_path, Path(tmp) / "copilot" / "config.json")
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+        self.assertEqual(config, {"trusted_folders": ["/workspace"]})
+
+    def _entrypoint(self, tmp: Path) -> str:
+        return dockerfile.render_entrypoint(tmp).read_text(encoding="utf-8")
+
+    def test_provision_seeds_writable_copilot_home_and_never_copies_token(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            text = self._entrypoint(Path(tmp))
+        provision = text[: text.index('case "${1:-bash}" in')]
+        self.assertIn('COPILOT_HOME="${COPILOT_HOME:-$HOME/.copilot}"', provision)
+        self.assertIn(
+            'cp "/project-sandbox-config/copilot/config.json" '
+            '"$COPILOT_HOME/config.json"',
+            provision,
+        )
+        self.assertNotIn(
+            "/project-sandbox-secrets/copilot",
+            provision.split("export_project_sandbox_copilot_token()")[0],
+        )
+
+    def _run_dispatch(
+        self, *args: str, env: dict[str, str] | None = None, token: str | None = None
+    ) -> tuple[list[str], str]:
+        """Run the rendered dispatch with a fake copilot printing argv + token."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            text = self._entrypoint(root)
+            start = text.index("load_project_sandbox_prompt() {")
+            dispatch = text[start:]
+            secret_dir = root / "secrets"
+            secret_dir.mkdir()
+            if token is not None:
+                (secret_dir / "token").write_text(token + "\n", encoding="utf-8")
+            dispatch = dispatch.replace(
+                "/project-sandbox-secrets/copilot", str(secret_dir)
+            )
+            bindir = root / "bin"
+            bindir.mkdir()
+            fake = bindir / "copilot"
+            fake.write_text(
+                '#!/bin/sh\nprintf "%s\\n" "$@"\n'
+                'printf "TOKEN=%s\\n" "${COPILOT_GITHUB_TOKEN:-<unset>}"\n'
+                'printf "AUTO_UPDATE=%s\\n" "${COPILOT_AUTO_UPDATE:-<unset>}"\n'
+            )
+            fake.chmod(0o755)
+            prompt = root / "prompt.txt"
+            prompt.write_text("say hi", encoding="utf-8")
+            script = root / "dispatch.sh"
+            script.write_text("set -eu\n" + dispatch)
+            result = subprocess.run(
+                ["/bin/sh", str(script), "project-sandbox-run", *args],
+                env={
+                    "PATH": f"{bindir}:/usr/bin:/bin",
+                    "PROJECT_SANDBOX_PROMPT_FILE": str(prompt),
+                    **(env or {}),
+                },
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+        return result.stdout.splitlines(), result.stderr
+
+    def test_headless_copilot_argv_and_token_export(self) -> None:
+        lines, _stderr = self._run_dispatch(
+            "copilot-headless",
+            env={
+                "PROJECT_SANDBOX_MODEL": "gpt-5-mini",
+                "PROJECT_SANDBOX_EFFORT": "high",
+            },
+            token="github_pat_secret",
+        )
+        self.assertEqual(
+            lines,
+            [
+                "-p",
+                "say hi",
+                "--allow-all",
+                "--no-ask-user",
+                "--output-format",
+                "json",
+                "--no-auto-update",
+                "--disable-builtin-mcps",
+                "--effort",
+                "high",
+                "--model",
+                "gpt-5-mini",
+                "TOKEN=github_pat_secret",
+                "AUTO_UPDATE=false",
+            ],
+        )
+
+    def test_interactive_copilot_argv_has_no_prompt_flag(self) -> None:
+        lines, _stderr = self._run_dispatch("copilot", "--resume", token="tok")
+        self.assertEqual(
+            lines,
+            [
+                "--allow-all",
+                "--no-auto-update",
+                "--disable-builtin-mcps",
+                "--resume",
+                "TOKEN=tok",
+                "AUTO_UPDATE=false",
+            ],
+        )
+
+    def test_copilot_without_staged_token_starts_unauthenticated(self) -> None:
+        lines, _stderr = self._run_dispatch("copilot-headless")
+        self.assertIn("TOKEN=<unset>", lines)
+
+    def test_verbose_command_log_never_includes_token(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            text = self._entrypoint(Path(tmp))
+        for arm in ("copilot", "copilot-headless"):
+            body = text.split(f"\n      {arm})\n", 1)[1].split("\n        ;;\n", 1)[0]
+            log_at = body.index("log_project_sandbox_agent_command")
+            export_at = body.index("export_project_sandbox_copilot_token")
+            self.assertLess(log_at, export_at, arm)
+            self.assertLess(export_at, body.index("exec copilot"), arm)
+
+    def test_bash_arms_never_read_the_copilot_secret(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            text = self._entrypoint(Path(tmp))
+        for arm in ("bash", "bash-headless"):
+            marker = f"\n      {arm})"
+            body = text.split(marker, 1)[1].split(";;", 1)[0]
+            self.assertNotIn("copilot", body)
+        # The token path is read in exactly one helper.
+        self.assertEqual(text.count("/project-sandbox-secrets/copilot/token"), 2)
+        lines, _stderr = self._run_dispatch(
+            "bash", "-c", 'echo "TOKEN=${COPILOT_GITHUB_TOKEN:-<unset>}"', token="tok"
+        )
+        self.assertEqual(lines, ["TOKEN=<unset>"])
+
+    def test_firewall_pins_tenant_hosts_only_in_sandbox_script(self) -> None:
+        hosts = (
+            "acme.ghe.com",
+            "api.acme.ghe.com",
+            "copilot-api.acme.ghe.com",
+            "copilot-telemetry-service.acme.ghe.com",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            firewall.render(
+                context,
+                extra_domains=[],
+                allow_github=True,
+                copilot_tenant_hosts=hosts,
+            )
+            sandbox = (context / "init-firewall.sh").read_text(encoding="utf-8")
+            devcontainer = (context / "init-firewall-devcontainer.sh").read_text(
+                encoding="utf-8"
+            )
+        domains = sandbox[sandbox.index("DOMAINS=(") : sandbox.index("\n)\n")]
+        for host in hosts:
+            self.assertIn(f"\n  {host}\n", domains)
+            self.assertNotIn(host, devcontainer)
+        # Pinned through the same DNS-pinning loop as the GitHub hosts.
+        self.assertIn('for domain in "${DOMAINS[@]}"; do', sandbox)
+
+    def test_firewall_without_tenant_has_no_ghe_hosts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            firewall.render(context, extra_domains=[], allow_github=True)
+            for name in ("init-firewall.sh", "init-firewall-devcontainer.sh"):
+                self.assertNotIn(
+                    "ghe.com", (context / name).read_text(encoding="utf-8")
+                )
+
+    def test_firewall_rejects_unsafe_tenant_hosts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(ValueError):
+                firewall.render(
+                    Path(tmp),
+                    extra_domains=[],
+                    copilot_tenant_hosts=["$(touch /tmp/x).ghe.com"],
+                )

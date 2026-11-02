@@ -3,6 +3,7 @@ import inspect
 import io
 import sys
 import tempfile
+from itertools import pairwise
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TypedDict
@@ -938,3 +939,111 @@ class NodeNpmRunArgvTests(TestCase):
                 cmd = self._argv(runtime)
                 self.assertNotIn("--tmpfs", cmd)
                 self.assertNotIn("--shm-size", cmd)
+
+
+class CopilotMountTests(TestCase):
+    """The Copilot token mount and env exist only for Copilot runs."""
+
+    SECRET = "/project-sandbox-secrets/copilot"
+    CONFIG = "/project-sandbox-config/copilot"
+
+    def _argv(
+        self,
+        agent: str,
+        *,
+        host: str = "github.com",
+        forward_credentials: bool = True,
+        copilot_cfg: bool = True,
+    ) -> tuple[list[str], Path]:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            argv = build_run_argv(
+                runtime=DOCKER,
+                image="project-sandbox:test",
+                project_abs=root / "workspace",
+                claude_cfg=root / "claude/settings.json",
+                claude_credentials_dir=root / "creds/claude",
+                codex_cfg=root / "codex/config.toml",
+                codex_credentials_dir=root / "creds/codex",
+                opencode_credentials_dir=root / "creds/opencode",
+                pi_credentials_dir=root / "creds/pi",
+                copilot_credentials_dir=root / "creds/copilot",
+                copilot_cfg=root / "copilot/config.json" if copilot_cfg else None,
+                copilot_host=host,
+                identity=GitIdentity(None, None),
+                memory="8g",
+                cpus=4,
+                extra_mounts=[],
+                agent=agent,
+                firewall_enabled=True,
+                interactive=not agent.endswith("-headless"),
+                forward_credentials=forward_credentials,
+            )
+        return argv, root
+
+    def _mount_targets(self, argv: list[str]) -> list[str]:
+        return [
+            value.split("target=", 1)[1].split(",", 1)[0]
+            for flag, value in pairwise(argv)
+            if flag == "--mount" and "target=" in value
+        ]
+
+    def _envs(self, argv: list[str]) -> list[str]:
+        return [value for flag, value in pairwise(argv) if flag == "--env"]
+
+    def test_copilot_github_com_mounts_token_and_sets_env(self) -> None:
+        for agent in ("copilot", "copilot-headless"):
+            with self.subTest(agent=agent):
+                argv, root = self._argv(agent)
+                self.assertIn(
+                    f"type=bind,source={(root / 'creds/copilot').resolve()},"
+                    f"target={self.SECRET},readonly",
+                    argv,
+                )
+                self.assertIn(self.CONFIG, self._mount_targets(argv))
+                envs = self._envs(argv)
+                self.assertIn("COPILOT_HOME=/home/agent/.copilot", envs)
+                self.assertIn("COPILOT_AUTO_UPDATE=false", envs)
+                self.assertFalse(any(e.startswith("COPILOT_GH_HOST") for e in envs))
+                self.assertFalse(any("COPILOT_GITHUB_TOKEN" in a for a in argv))
+                # Only the selected agent's credential family is mounted.
+                targets = self._mount_targets(argv)
+                for other in ("claude", "codex", "opencode", "pi"):
+                    self.assertNotIn(f"/project-sandbox-secrets/{other}", targets)
+
+    def test_copilot_tenant_sets_gh_host(self) -> None:
+        argv, _root = self._argv("copilot-headless", host="acme.ghe.com")
+        self.assertIn("COPILOT_GH_HOST=acme.ghe.com", self._envs(argv))
+        self.assertIn(self.SECRET, self._mount_targets(argv))
+
+    def test_copilot_without_forwarding_mounts_no_token(self) -> None:
+        argv, _root = self._argv("copilot", forward_credentials=False)
+        self.assertNotIn(self.SECRET, self._mount_targets(argv))
+        self.assertIn(self.CONFIG, self._mount_targets(argv))
+
+    def test_bash_never_mounts_copilot_token_or_env(self) -> None:
+        for agent in ("bash", "bash-headless"):
+            for forward in (True, False):
+                with self.subTest(agent=agent, forward=forward):
+                    argv, _root = self._argv(agent, forward_credentials=forward)
+                    self.assertNotIn(self.SECRET, self._mount_targets(argv))
+                    self.assertFalse(
+                        any(e.startswith("COPILOT_") for e in self._envs(argv))
+                    )
+                    if forward:
+                        # Other families still follow the multi-agent convention.
+                        self.assertIn(
+                            "/project-sandbox-secrets/claude", self._mount_targets(argv)
+                        )
+
+    def test_other_agents_never_mount_copilot_token_or_env(self) -> None:
+        for agent in ("claude", "codex", "opencode", "pi"):
+            for mode in (agent, f"{agent}-headless"):
+                with self.subTest(mode=mode):
+                    argv, _root = self._argv(mode, copilot_cfg=False)
+                    targets = self._mount_targets(argv)
+                    self.assertNotIn(self.SECRET, targets)
+                    self.assertNotIn(self.CONFIG, targets)
+                    self.assertFalse(
+                        any(e.startswith("COPILOT_") for e in self._envs(argv))
+                    )

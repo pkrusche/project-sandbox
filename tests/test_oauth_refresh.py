@@ -36,6 +36,19 @@ class OAuthRefreshTests(TestCase):
             oauth_refresh.refresh_host_token("pi", home=Path("/nope"))
         run.assert_not_called()
 
+    def test_copilot_is_noop(self) -> None:
+        # Copilot's token is fetched fresh from pass/gh at every launch, so there
+        # is no delegated refresh; the copilot CLI is never invoked on the host,
+        # even when ~/.copilot exists.
+        with _home_with(".copilot") as tmp:
+            with (
+                patch.object(oauth_refresh.shutil, "which", return_value="/bin/x"),
+                patch.object(oauth_refresh.subprocess, "run") as run,
+            ):
+                oauth_refresh.refresh_host_token("copilot", home=Path(tmp))
+                oauth_refresh.refresh_host_token("copilot-headless", home=Path(tmp))
+        run.assert_not_called()
+
     def test_missing_cli_is_noop(self) -> None:
         with _home_with(".claude") as tmp:
             with (

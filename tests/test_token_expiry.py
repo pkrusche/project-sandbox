@@ -87,6 +87,18 @@ class TokenExpiryTests(TestCase):
                 token_expiry.staged_token_expiry({"pi": Path(tmp)}, "pi-headless")
             )
 
+    def test_copilot_is_unrecognized_and_returns_none(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "token").write_text("github_pat_x\n", encoding="utf-8")
+            for mode in ("copilot", "copilot-headless"):
+                self.assertIsNone(
+                    token_expiry.staged_token_expiry({"copilot": Path(tmp)}, mode)
+                )
+            # A bash session never reports a Copilot expiry either.
+            self.assertIsNone(
+                token_expiry.staged_token_expiry({"copilot": Path(tmp)}, "bash")
+            )
+
     def test_opencode_reports_soonest_oauth_provider_expiry(self) -> None:
         sooner = dt.datetime(2030, 5, 1, tzinfo=dt.UTC)
         later = dt.datetime(2030, 9, 1, tzinfo=dt.UTC)

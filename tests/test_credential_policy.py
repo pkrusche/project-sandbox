@@ -15,12 +15,25 @@ class CredentialPolicyTests(TestCase):
                 with self.subTest(mode=mode):
                     self.assertEqual(allowed_credential_agents(mode), {agent})
 
-    def test_bash_modes_allow_every_supported_credential_agent(self) -> None:
+    def test_bash_modes_allow_every_supported_credential_agent_but_copilot(
+        self,
+    ) -> None:
         for mode in ("bash", "bash-headless"):
             with self.subTest(mode=mode):
                 self.assertEqual(
-                    allowed_credential_agents(mode), SUPPORTED_CREDENTIAL_AGENTS
+                    allowed_credential_agents(mode),
+                    SUPPORTED_CREDENTIAL_AGENTS - {"copilot"},
                 )
+
+    def test_copilot_token_is_never_allowed_for_bash(self) -> None:
+        staged = {"claude": Path("/staged/claude"), "copilot": Path("/staged/copilot")}
+        for mode in ("bash", "bash-headless"):
+            with self.subTest(mode=mode):
+                self.assertNotIn("copilot", filter_credential_dirs(staged, mode))
+        self.assertEqual(
+            filter_credential_dirs(staged, "copilot-headless"),
+            {"copilot": Path("/staged/copilot")},
+        )
 
     def test_unknown_modes_fail_closed(self) -> None:
         for mode in ("unknown", "unknown-headless", "claude-devcontainer"):

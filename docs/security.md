@@ -4,14 +4,16 @@
 
 Direct named-agent runs forward only the selected agent's staged credentials:
 Claude receives Claude credentials, Codex receives Codex credentials, OpenCode
-receives OpenCode credentials, and Pi receives Pi credentials. The same rule
+receives OpenCode credentials, Pi receives Pi credentials, and Copilot receives
+only its GitHub token. The same rule
 applies to headless modes. Provisioning is presence-driven, so credential files
 are created in the container home only when the corresponding read-only secret
 mount was authorized and supplied.
 
 `--agent bash` is intentionally a multi-agent environment: every detected
 supported agent credential is mounted and can be read by any process in that
-session. Generated devcontainers are also intentionally multi-agent and receive
+session. The one exception is the Copilot token, which is never mounted into a
+bash session (see [GitHub Copilot token](#github-copilot-token)). Generated devcontainers are also intentionally multi-agent and receive
 all detected forwarded credentials. Use `--no-forward-credentials` when a bash
 session or devcontainer should start unauthenticated.
 
@@ -28,6 +30,37 @@ or the macOS Keychain entry), a sanitized `~/.claude.json`, and, when present,
 user accepted their organization's server-managed settings. Forwarding it means
 a sandboxed Claude session can skip the managed settings dialog for those same
 settings. If they change, Claude Code prompts again inside the container.
+
+## GitHub Copilot token
+
+`--agent copilot` authenticates with a GitHub token rather than an agent-specific
+credential file. The token is resolved on the host at every launch (see
+[usage](usage.md#github-copilot)), so there is no OAuth refresh or expiry
+tracking for Copilot.
+
+- **Scope.** The preferred source is a fine-grained PAT in pass with only the
+  "Copilot Requests" permission: it can call Copilot and nothing else. The
+  fallback, `gh auth token`, returns the GitHub CLI's token, which commonly has
+  `repo` and `workflow` scope. While GitHub is reachable (Copilot implies
+  `--allow-github`), an agent or a prompt injection holding that token could
+  push branches, edit workflows, or read private repositories. Every run that
+  falls back to `gh` prints a `[W]` warning naming the pass entry to fill.
+  Classic `ghp_` tokens are rejected.
+- **Where it lives.** The token is written to a 0600 file in a 0700 directory
+  under `/tmp/project-sandbox-<uid>/` (outside the repository, rewritten every
+  launch, removed best-effort at session end) and mounted read-only at
+  `/project-sandbox-secrets/copilot` only when Copilot is the selected agent. It
+  is never baked into the image, written into generated project files, passed
+  in argv, or copied into `$COPILOT_HOME`. Resolved tokens are redacted from
+  headless session logs and live output.
+- **Who can read it.** The entrypoint exports `COPILOT_GITHUB_TOKEN` only for
+  the Copilot process. That process environment is inherited by the shell
+  tools Copilot runs, so anything Copilot executes can read the token. This is
+  inherent to how Copilot CLI reads tokens; a plaintext token file in
+  `$COPILOT_HOME` would be no better. The PAT path limits what a leaked token
+  can do. Bash sessions and other agents never receive it.
+- **Built-in MCP servers are disabled** (`--disable-builtin-mcps`), because the
+  built-in GitHub MCP server would use the same token to act on GitHub.
 
 ## Unsupervised session history
 
@@ -119,7 +152,17 @@ the container and:
   `api.individual.githubcopilot.com`, `api.business.githubcopilot.com`,
   `api.enterprise.githubcopilot.com`, `copilot-proxy.githubusercontent.com`,
   `origin-tracker.githubusercontent.com`, `copilot-telemetry.githubusercontent.com`,
-  and `collector.github.com`.
+  `collector.github.com`, and `default.exp-tas.com`.
+- `--agent copilot` implies `--allow-github`. GitHub network access is enabled
+  only by that flag or by selecting Copilot, never by prompt text: earlier
+  releases opened it for `--agent bash` prompts whose first word was `copilot`.
+- With `--agent copilot --copilot-host <tenant>.ghe.com`, the sandbox script
+  also DNS-pins the tenant's hosts: `<tenant>.ghe.com`, `api.<tenant>.ghe.com`,
+  `copilot-api.<tenant>.ghe.com`, and `copilot-telemetry-service.<tenant>.ghe.com`.
+  GitHub's allowlist reference lists `*.<tenant>.ghe.com`, which a per-IP
+  firewall cannot express, so these are the concrete names Copilot CLI uses; add
+  any missing one with `--extra-domain`. The devcontainer firewall variant never
+  includes them.
 - In the devcontainer firewall variant only, allows the host gateway address so
   port-forwarding and IDE attach work. Direct CLI runs omit this host-network
   allowlist.

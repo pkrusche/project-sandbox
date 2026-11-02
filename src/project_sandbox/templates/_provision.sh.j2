@@ -65,3 +65,12 @@ fi
 if [ -f "/project-sandbox-config/pi/settings.json" ]; then
   cp "/project-sandbox-config/pi/settings.json" "$HOME/.pi/agent/settings.json"
 fi
+# Copilot writes session state and logs to $COPILOT_HOME, so seed a writable
+# copy of the read-only baked config (trusted folders). Only config is copied;
+# the token stays in the read-only secrets mount and is never written here.
+if [ -f "/project-sandbox-config/copilot/config.json" ]; then
+  COPILOT_HOME="${COPILOT_HOME:-$HOME/.copilot}"
+  mkdir -p "$COPILOT_HOME"
+  cp "/project-sandbox-config/copilot/config.json" "$COPILOT_HOME/config.json"
+  chmod 600 "$COPILOT_HOME/config.json"
+fi

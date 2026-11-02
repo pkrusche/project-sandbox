@@ -112,6 +112,8 @@ class WriteProjectSandboxGitignoreTests(TestCase):
             for keep in (
                 "!claude/settings.json",
                 "!codex/config.toml",
+                "!copilot/",
+                "!copilot/config.json",
                 "!init-firewall.sh",
                 "!Dockerfile",
                 "!entrypoint.sh",

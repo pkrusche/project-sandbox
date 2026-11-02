@@ -24,6 +24,7 @@ from . import (
     chroot,
     config_agents,
     container_cli,
+    copilot_auth,
     devcontainer,
     dockerfile,
     dockerfile_checksum,
@@ -57,7 +58,7 @@ from .paths import (
     resolve_strict,
 )
 
-SUPPORTED_AGENTS = ("claude", "codex", "opencode", "pi", "bash")
+SUPPORTED_AGENTS = ("claude", "codex", "opencode", "pi", "copilot", "bash")
 FAST_MODE_AGENTS = ("claude", "codex")
 PROMPT_MOUNT_TARGET = "/project-sandbox-prompt"
 # Headless Chromium uses /dev/shm heavily; Docker's 64m default makes it crash.
@@ -178,7 +179,7 @@ def build_parser() -> ArgumentParser:
         help=(
             "Allow GitHub and GitHub Copilot hosts at runtime. This includes "
             "GitHub's published web/API/git IP ranges and DNS-pinned GitHub "
-            "Copilot endpoints."
+            "Copilot endpoints. Implied by --agent copilot."
         ),
     )
     p.add_argument("--no-firewall", action="store_true")
@@ -264,6 +265,26 @@ def build_parser() -> ArgumentParser:
         ),
     )
     p.add_argument(
+        "--copilot-host",
+        metavar="HOST",
+        help=(
+            "GitHub host for --agent copilot: github.com (default; personal, "
+            "Business, and Enterprise Cloud accounts) or <tenant>.ghe.com "
+            "(Enterprise Cloud with data residency). Self-hosted GitHub "
+            "Enterprise Server is not supported."
+        ),
+    )
+    p.add_argument(
+        "--copilot-token-pass",
+        metavar="ENTRY",
+        help=(
+            "pass entry holding the Copilot token for --agent copilot (default: "
+            f"{copilot_auth.DEFAULT_PASS_ENTRY}, or "
+            f"{copilot_auth.DEFAULT_PASS_ENTRY}/<host> for a GHE.com tenant). "
+            "An explicit entry never falls back to `gh auth token`."
+        ),
+    )
+    p.add_argument(
         "--branch",
         help=(
             "Run the agent in a git worktree / jj workspace on this branch "
@@ -317,7 +338,9 @@ def build_parser() -> ArgumentParser:
             "--prompt-text '...'. "
             "Example for OpenCode: --agent opencode --model openai/gpt-5.4-mini "
             "--prompt-text '...'. "
-            "Example for Pi: --agent pi --model sonnet --prompt-text '...'."
+            "Example for Pi: --agent pi --model sonnet --prompt-text '...'. "
+            "Example for Copilot: --agent copilot --model gpt-5-mini "
+            "--prompt-text '...'."
         ),
     )
     p.add_argument(
@@ -326,7 +349,8 @@ def build_parser() -> ArgumentParser:
         default=None,
         metavar="LEVEL",
         help=(
-            "Reasoning effort level for Claude, Codex, OpenCode, and Pi, in both "
+            "Reasoning effort level for Claude, Codex, OpenCode, Pi, and Copilot, "
+            "in both "
             "interactive and unsupervised (batch) runs. "
             "One of: low, medium, high, xhigh, max. project-sandbox does not "
             "force a default; when omitted, the underlying agent CLI's own "
@@ -340,7 +364,10 @@ def build_parser() -> ArgumentParser:
             "--effort high. "
             "Examples for Pi: --agent pi --model anthropic/sonnet --effort low "
             "or --agent pi --model anthropic/sonnet --effort high (Pi receives "
-            "the model unchanged plus a separate --thinking flag)."
+            "the model unchanged plus a separate --thinking flag). "
+            "Examples for Copilot: --agent copilot --model gpt-5-mini --effort low "
+            "or --agent copilot --model gpt-5-mini --effort high (Copilot "
+            "receives separate --model and --effort flags)."
         ),
     )
     p.add_argument(
@@ -457,6 +484,7 @@ def _main(argv: list[str] | None = None) -> int:
     if args.build_only and args.no_build:
         raise SystemExit("--build-only and --no-build are mutually exclusive")
     run_agent = _requested_agent(args)
+    copilot_host = _validate_copilot_args(args, run_agent)
     pi_ollama_enabled = _pi_ollama_enabled(args, run_agent)
     proxy_port = _validate_agent_proxy_args(args, run_agent)
     proxy_endpoint = agent_proxy.parse(args.agent_proxy) if args.agent_proxy else None
@@ -511,6 +539,10 @@ def _main(argv: list[str] | None = None) -> int:
         and (args.no_forward_credentials or args.agent_proxy)
         and run_agent not in available_agents
     ):
+        available_agents = (*available_agents, run_agent)
+    # Copilot's credential is a GitHub token from pass/gh, not a host config
+    # dir, so selecting it is enough to install it into the image.
+    if run_agent == "copilot" and run_agent not in available_agents:
         available_agents = (*available_agents, run_agent)
 
     if run_agent is not None and args.branch:
@@ -605,6 +637,9 @@ def _main(argv: list[str] | None = None) -> int:
             "OPENAI_API_KEY": proxy_key,
             "OPENAI_MODEL": args.model,
         }
+    # Resolve the Copilot token after every other input is validated but before
+    # any worktree, rendering, or image work, so a missing token fails cleanly.
+    copilot_token = _resolve_copilot_token(args, run_agent, copilot_host)
     allow_github = _allow_github(args, run_agent)
     _warn_byok_provider_allowlist(args, run_agent)
     _warn_pi_ollama_no_firewall(args, pi_ollama_enabled)
@@ -628,6 +663,7 @@ def _main(argv: list[str] | None = None) -> int:
     # behind by an interrupt or an exception. Stays None when the session could
     # not be recorded at all, which never blocks the run.
     record_path: Path | None = None
+    copilot_token_staged = False
     try:
         if (
             run_agent is not None
@@ -698,6 +734,7 @@ def _main(argv: list[str] | None = None) -> int:
                     proxy_url=args.agent_proxy,
                     pi_ollama_enabled=pi_ollama_enabled,
                 ),
+                copilot_tenant_hosts=_copilot_tenant_hosts(run_agent, copilot_host),
             )
         else:
             chroot.render(context_dir)
@@ -908,6 +945,15 @@ def _main(argv: list[str] | None = None) -> int:
                 ),
             )
 
+        if copilot_token is not None:
+            # Staged outside the repo (0600 file, 0700 dir), rewritten every
+            # launch, and removed in the finally block below.
+            copilot_token_staged = True
+            credential_dirs = {
+                **credential_dirs,
+                "copilot": copilot_auth.stage_token(context_dir, copilot_token),
+            }
+
         services = _local_services(
             sandbox_proxy_config,
             proxy_port=(
@@ -956,6 +1002,8 @@ def _main(argv: list[str] | None = None) -> int:
             credential_dirs=credential_dirs,
             codex_cfg=cfg["codex"],
             pi_cfg=cfg.get("pi"),
+            copilot_cfg=cfg.get("copilot"),
+            copilot_host=copilot_host,
             runtime=runtime,
             create_prompt_files=True,
             api_key_values=api_key_values,
@@ -1027,11 +1075,12 @@ def _main(argv: list[str] | None = None) -> int:
                 verbose=args.verbose,
                 env=api_key_values or None,
                 markdown_agent=run_agent,
+                redact=(copilot_token,) if copilot_token else (),
             )
             if not args.verbose:
                 print(f"Wrote {session.count_lines(log_path)} lines to {log_path}")
-            if run_agent in ("claude", "codex", "opencode", "pi"):
-                _write_transcript_markdown(log_path)
+            if run_agent in ("claude", "codex", "opencode", "pi", "copilot"):
+                _write_transcript_markdown(log_path, run_agent)
             if (
                 run_agent == "pi"
                 and exit_code == 0
@@ -1040,10 +1089,16 @@ def _main(argv: list[str] | None = None) -> int:
                 # Pi's JSON output mode exits 0 even when the turn errored out.
                 exit_code = 1
                 print("[W] Pi reported a failed turn; reporting exit 1")
+            if run_agent == "copilot":
+                exit_code = _reclassify_copilot_exit(exit_code, log_path)
         else:
             exit_code = container_cli.run(cmd, env=api_key_values or None)
 
-        rate_limited = observability.is_rate_limited_failure(exit_code, log_path)
+        rate_limited = (
+            unsupervised
+            and run_agent == "copilot"
+            and exit_code == observability.RATE_LIMIT_EXIT_CODE
+        ) or observability.is_rate_limited_failure(exit_code, log_path)
         if rate_limited:
             exit_code = observability.RATE_LIMIT_EXIT_CODE
             print(
@@ -1066,6 +1121,8 @@ def _main(argv: list[str] | None = None) -> int:
             plan.close()
         if internet_proxy_relay is not None:
             internet_proxy_relay.close()
+        if copilot_token_staged:
+            copilot_auth.remove_staged_token(context_dir)
         if args.agent_proxy:
             for secret_file in (
                 context_dir / "pi" / "models.json",
@@ -1169,14 +1226,14 @@ def _write_json_summary_unguarded(
     path.write_text(line + "\n", encoding="utf-8")
 
 
-def _write_transcript_markdown(log_path: Path) -> None:
+def _write_transcript_markdown(log_path: Path, agent: str | None = None) -> None:
     """Best-effort: render a markdown transcript beside the JSON session log.
 
     Transcript generation must never fail the run, so any parsing/IO error is
     reported and swallowed.
     """
     try:
-        md_path = transcript.log_to_markdown(log_path)
+        md_path = transcript.log_to_markdown(log_path, agent)
     except Exception as exc:  # noqa: BLE001 - best-effort sidecar, never fatal
         print(f"[W] Could not write markdown transcript: {exc}")
         return
@@ -1190,6 +1247,88 @@ def _requested_agent(args) -> str | None:
     if args.prompt or args.prompt_text:
         return "claude"
     return None
+
+
+def _validate_copilot_args(args, run_agent: str | None) -> str | None:
+    """Validate Copilot options; return the normalized host for --agent copilot.
+
+    Runs before any secret lookup, file write, or container start.
+    """
+    host_value = getattr(args, "copilot_host", None)
+    pass_entry = getattr(args, "copilot_token_pass", None)
+    if run_agent != "copilot":
+        if host_value is not None or pass_entry is not None:
+            raise SystemExit(
+                "--copilot-host and --copilot-token-pass require --agent copilot"
+            )
+        return None
+    if getattr(args, "agent_proxy", None):
+        raise SystemExit(
+            "--agent copilot cannot be combined with --agent-proxy; Copilot runs "
+            "on a Copilot subscription only"
+        )
+    if getattr(args, "fast", False):
+        raise SystemExit("--fast supports only --agent claude or --agent codex")
+    if pass_entry is not None and (
+        not pass_entry.strip() or pass_entry.startswith("-")
+    ):
+        raise SystemExit(f"Invalid --copilot-token-pass entry: {pass_entry!r}")
+    host = copilot_auth.validate_host(
+        host_value if host_value is not None else copilot_auth.DEFAULT_HOST
+    )
+    args.copilot_host = host
+    return host
+
+
+def _copilot_forwards_token(args, run_agent: str | None) -> bool:
+    return run_agent == "copilot" and not getattr(args, "no_forward_credentials", False)
+
+
+def _copilot_pass_entry(args, host: str) -> str:
+    return getattr(args, "copilot_token_pass", None) or copilot_auth.default_pass_entry(
+        host
+    )
+
+
+def _resolve_copilot_token(args, run_agent: str | None, host: str | None) -> str | None:
+    """Resolve the Copilot token on the host (never under --dry-run).
+
+    With --no-forward-credentials nothing is looked up: Copilot starts
+    unauthenticated and the user logs in inside the sandbox.
+    """
+    if not _copilot_forwards_token(args, run_agent) or args.dry_run:
+        return None
+    assert host is not None
+    entry = getattr(args, "copilot_token_pass", None)
+    token, source = copilot_auth.resolve_token(host, entry)
+    if source == copilot_auth.SOURCE_GH:
+        print(copilot_auth.scope_warning(_copilot_pass_entry(args, host)))
+    elif args.verbose:
+        print(f"Copilot token: pass entry {_copilot_pass_entry(args, host)}")
+    return token
+
+
+def _copilot_tenant_hosts(run_agent: str | None, host: str | None) -> tuple[str, ...]:
+    if run_agent != "copilot" or host is None:
+        return ()
+    return copilot_auth.tenant_hosts(host)
+
+
+def _reclassify_copilot_exit(exit_code: int, log_path: Path | None) -> int:
+    """Map an exit-0 Copilot run whose stream ended in an error to 1 (or 75)."""
+    if exit_code != 0:
+        return exit_code
+    failure = observability.copilot_json_stream_failure(log_path)
+    if failure == observability.COPILOT_RATE_LIMITED:
+        print(
+            "[W] Copilot reported a rate-limited failure; returning "
+            "temporary-failure exit 75"
+        )
+        return observability.RATE_LIMIT_EXIT_CODE
+    if failure == observability.COPILOT_FAILED:
+        print("[W] Copilot reported a failed run; reporting exit 1")
+        return 1
+    return exit_code
 
 
 def _pi_ollama_enabled(args, run_agent: str | None) -> bool:
@@ -1408,6 +1547,10 @@ def _dry_run(
         },
     }
     run_agent = _requested_agent(args)
+    copilot_host = getattr(args, "copilot_host", None)
+    copilot_cfg = context_dir / "copilot" / "config.json"
+    if _copilot_forwards_token(args, run_agent):
+        credential_dirs["copilot"] = copilot_auth.staged_token_dir(context_dir)
     pi_ollama_enabled = _pi_ollama_enabled(args, run_agent)
     _warn_byok_provider_allowlist(args, run_agent)
     _warn_pi_ollama_no_firewall(args, pi_ollama_enabled)
@@ -1415,6 +1558,9 @@ def _dry_run(
         _validate_chroot_session(run_agent)
 
     print("DRY RUN: no files, worktrees, images, or containers will be created.")
+    if run_agent == "copilot":
+        assert copilot_host is not None
+        _print_copilot_dry_run(args, context_dir=context_dir, host=copilot_host)
     if args.agent_proxy:
         endpoint = agent_proxy.parse(args.agent_proxy)
         print(
@@ -1616,6 +1762,8 @@ def _dry_run(
         credential_dirs=credential_dirs,
         codex_cfg=codex_cfg,
         pi_cfg=pi_cfg,
+        copilot_cfg=copilot_cfg,
+        copilot_host=copilot_host,
         runtime=runtime,
         create_prompt_files=False,
         api_key_values=preview_api_key_values,
@@ -1635,6 +1783,39 @@ def _dry_run(
     else:
         container_cli.run(cmd, dry_run=True)
     return 0
+
+
+def _print_copilot_dry_run(args, *, context_dir: Path, host: str) -> None:
+    """Describe the Copilot token plan without invoking pass or gh."""
+    print(f"Would run GitHub Copilot CLI for host: {host}")
+    if getattr(args, "no_forward_credentials", False):
+        print(
+            "Would not resolve or mount a Copilot token (--no-forward-credentials); "
+            "log in inside the sandbox."
+        )
+    else:
+        entry = _copilot_pass_entry(args, host)
+        if getattr(args, "copilot_token_pass", None):
+            print(f"Would resolve the Copilot token from: pass show {entry}")
+        else:
+            print(
+                f"Would resolve the Copilot token from: pass show {entry}, "
+                f"falling back to gh auth token --hostname {host}"
+            )
+        token_dir = copilot_auth.staged_token_dir(context_dir)
+        print(
+            f"Would stage the Copilot token at {token_dir / copilot_auth.TOKEN_FILENAME} "
+            f"(0600) and mount it read-only at {copilot_auth.SECRETS_TARGET}"
+        )
+    print(
+        "Would set Copilot environment: " + ", ".join(copilot_auth.container_env(host))
+    )
+    if args.no_firewall:
+        return
+    print("Would allow the --allow-github host set (implied by --agent copilot)")
+    tenant = copilot_auth.tenant_hosts(host)
+    if tenant:
+        print("Would DNS-pin Copilot tenant hosts: " + ", ".join(tenant))
 
 
 def _validate_chroot_session(run_agent: str | None) -> None:
@@ -2155,32 +2336,14 @@ def _validate_session_inputs(args) -> None:
 
 
 def _allow_github(args, run_agent: str | None) -> bool:
+    """GitHub network access is an explicit choice: the flag or the agent.
+
+    Prompt text never widens the firewall. Proxy mode is gateway-only unless
+    --allow-github is given (and --agent copilot rejects --agent-proxy).
+    """
     if getattr(args, "agent_proxy", None):
-        # Proxy mode is gateway-only by default. Do not infer an exception from
-        # a Bash prompt; only the explicit --allow-github flag may widen it.
         return bool(args.allow_github)
-    return bool(args.allow_github or _uses_github_copilot_cli(args, run_agent))
-
-
-def _uses_github_copilot_cli(args, run_agent: str | None) -> bool:
-    # "copilot" is not a supported --agent value (see SUPPORTED_AGENTS); the
-    # only way to run the GitHub Copilot CLI is via `--agent bash` with a
-    # prompt that invokes it, detected below.
-    if run_agent != "bash":
-        return False
-    command = args.prompt_text
-    if command is None and args.prompt:
-        try:
-            command = resolve_strict(args.prompt).read_text(encoding="utf-8")
-        except OSError:
-            return False
-    if command is None:
-        return False
-    try:
-        words = shlex.split(command, comments=True)
-    except ValueError:
-        return False
-    return bool(words and words[0] == "copilot")
+    return bool(args.allow_github or run_agent == "copilot")
 
 
 def _warn_byok_provider_allowlist(args, run_agent: str | None) -> None:
@@ -2406,6 +2569,8 @@ def _build_session_command(
     credential_dirs: dict[str, Path],
     codex_cfg: Path,
     pi_cfg: Path | None = None,
+    copilot_cfg: Path | None = None,
+    copilot_host: str | None = None,
     runtime: container_cli.Runtime,
     create_prompt_files: bool,
     api_key_values: dict[str, str] | None = None,
@@ -2636,6 +2801,9 @@ def _build_session_command(
             opencode_credentials_dir=runtime_credential_dirs.get("opencode"),
             pi_credentials_dir=runtime_credential_dirs.get("pi"),
             pi_cfg=pi_cfg,
+            copilot_credentials_dir=runtime_credential_dirs.get("copilot"),
+            copilot_cfg=copilot_cfg if run_agent == "copilot" else None,
+            copilot_host=copilot_host or copilot_auth.DEFAULT_HOST,
             identity=identity,
             memory=args.memory,
             cpus=args.cpus,
@@ -2699,6 +2867,8 @@ def _print_agent_config(run_agent: str, args, *, unsupervised: bool) -> None:
     print(f"  agent:  {run_agent}")
     print(f"  model:  {args.model or '(agent default)'}")
     print(f"  effort: {args.effort or '(agent default)'}")
+    if run_agent == "copilot":
+        print(f"  host:   {getattr(args, 'copilot_host', None) or 'github.com'}")
     if run_agent in FAST_MODE_AGENTS:
         print(f"  fast:   {'on' if getattr(args, 'fast', False) else 'off'}")
 
@@ -2774,6 +2944,8 @@ def _write_project_sandbox_gitignore(context_dir: Path) -> None:
 !codex/config.toml
 !codex-devcontainer/
 !codex-devcontainer/config.toml
+!copilot/
+!copilot/config.json
 !init-firewall.sh
 !init-firewall-devcontainer.sh
 !Dockerfile

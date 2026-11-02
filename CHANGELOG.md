@@ -2,6 +2,33 @@
 
 Notable changes to `project-sandbox` are documented here.
 
+## [Unreleased]
+
+### Breaking
+
+- `--agent bash` no longer turns on GitHub network access when the prompt's
+  first word is `copilot`; the `_uses_github_copilot_cli` heuristic is removed.
+  Prompt text never widens the firewall. Migration: use
+  `--agent copilot --prompt-text '…'`, or pass `--allow-github` and bring your
+  own token to a bash session. Bash sessions never receive the Copilot token.
+
+### Added
+
+- `--agent copilot` runs the GitHub Copilot CLI (`@github/copilot`, pinned and
+  maintained by `scripts/update-pins.py`) on a Copilot subscription, in
+  interactive and headless runs, with `--model`/`--effort` support and a
+  Markdown transcript. See [usage](docs/usage.md#github-copilot).
+- `--copilot-host` selects `github.com` (default) or a `<tenant>.ghe.com`
+  data-residency tenant, whose hosts the firewall also pins. Self-hosted GHES is
+  rejected.
+- The Copilot token is resolved at every launch from `pass` (default entry
+  `copilot-github-token`, or `copilot-github-token/<host>`; override with
+  `--copilot-token-pass`), falling back to `gh auth token` with a scope warning.
+  It is staged as a 0600 file, mounted only into Copilot sessions, and redacted
+  from headless logs. See [security](docs/security.md#github-copilot-token).
+- Opt-in, billable `copilot` e2e suite (`scripts/e2e-copilot.py`;
+  `run-e2e-tests.sh --with-copilot`).
+
 ## [0.3.1]
 
 ### Added
