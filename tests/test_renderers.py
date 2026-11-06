@@ -4069,3 +4069,143 @@ class SquidConfigRendererTests(TestCase):
             conf,
         )
 
+
+class SidecarFirewallRendererTests(TestCase):
+    """Task 7.1/7.2: sandbox firewall and entrypoint in sidecar mode."""
+
+    def _render(self) -> tuple[str, Path]:
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        script = firewall.render(tmp, extra_domains=[], policy=firewall.SIDECAR)
+        return script.read_text(), tmp
+
+    def test_no_pinning_dns_or_provider_lists(self) -> None:
+        text, tmp = self._render()
+        for forbidden in (
+            "dig ",
+            "ipset",
+            "DOMAINS=",
+            "api.anthropic.com",
+            "api.github.com/meta",
+            "--dport 53",
+        ):
+            self.assertNotIn(forbidden, text)
+        # Sidecar mode renders no devcontainer firewall.
+        self.assertEqual([p.name for p in tmp.iterdir()], ["init-firewall.sh"])
+
+    def test_sidecar_rules(self) -> None:
+        text, _ = self._render()
+        self.assertIn(
+            'iptables -A OUTPUT -d "$SIDECAR_IP" -p tcp --dport "$PROXY_PORT" -j ACCEPT',
+            text,
+        )
+        self.assertIn(
+            'iptables -A OUTPUT -d "$SIDECAR_IP" -p tcp --dport "$port" -j ACCEPT', text
+        )
+        self.assertIn("PROXY_PORT=3128", text)
+        self.assertIn("iptables -P OUTPUT DROP", text)
+        self.assertIn("ip6tables -P OUTPUT DROP", text)
+        self.assertIn("iptables -A OUTPUT -j REJECT", text)
+        # Only the sidecar: no other ACCEPT destinations.
+        accepts = [l for l in text.splitlines() if "-j ACCEPT" in l and "OUTPUT" in l]
+        for line in accepts:
+            self.assertTrue(
+                "-o lo" in line or "ESTABLISHED" in line or '-d "$SIDECAR_IP"' in line,
+                line,
+            )
+
+    def test_reads_conf_strictly_and_writes_hosts(self) -> None:
+        text, _ = self._render()
+        self.assertIn("CONF=/project-sandbox-egress/egress.conf", text)
+        for line in text.splitlines():
+            stripped = line.strip()
+            self.assertFalse(stripped.startswith(("source ", ". ")), line)
+        self.assertIn("unknown key in $CONF", text)
+        self.assertIn(
+            "egress-proxy host.docker.internal # project-sandbox-egress", text
+        )
+
+    def test_hosts_rewritten_in_place(self) -> None:
+        # Regression: Docker bind-mounts /etc/hosts; `sed -i` fails to rename it.
+        text, _ = self._render()
+        self.assertNotRegex(text, r"sed -i[^\n]*/etc/hosts")
+        self.assertIn('cat "$HOSTS_TMP" > /etc/hosts', text)
+
+    def test_ca_installed_only_when_present(self) -> None:
+        text, _ = self._render()
+        self.assertIn('if [ -f "$CA" ]; then', text)
+        self.assertIn(
+            "/usr/local/share/ca-certificates/project-sandbox-egress.crt", text
+        )
+        self.assertIn("update-ca-certificates", text)
+        self.assertNotIn("ca-key.pem", text)
+
+    def test_upstream_ca_installed_at_start_not_in_image(self) -> None:
+        # global-egress-sidecar-macos task 6.2.
+        text, _ = self._render()
+        self.assertIn("UPSTREAM_CA=/project-sandbox-egress/upstream-ca.pem", text)
+        self.assertIn(
+            'install -m 0644 "$UPSTREAM_CA" '
+            "/usr/local/share/ca-certificates/project-sandbox-egress-upstream.crt",
+            text,
+        )
+        self.assertLess(
+            text.index('if [ -f "$UPSTREAM_CA" ]'), text.index("update-ca-certificates")
+        )
+
+    def test_script_is_valid_bash_and_executable(self) -> None:
+        _, tmp = self._render()
+        script = tmp / "init-firewall.sh"
+        self.assertEqual(script.stat().st_mode & 0o777, 0o755)
+        result = subprocess.run(
+            ["bash", "-n", str(script)], capture_output=True, text=True, check=False
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_conf_parser_accepts_valid_and_rejects_invalid(self) -> None:
+        """Run only the parsing prologue of the script against sample files."""
+        text, tmp = self._render()
+        prologue = text[: text.index("# Names resolve to the sidecar")]
+        cases = [
+            ("sidecar_ip=192.168.128.2\nforward_ports=11434 4000\n", 0),
+            ("sidecar_ip=192.168.128.2\nforward_ports=\n", 0),
+            ("sidecar_ip=192.168.128.256\nforward_ports=\n", 1),
+            ("sidecar_ip=1.2.3.4;id\nforward_ports=\n", 1),
+            ("sidecar_ip=1.2.3.4\nforward_ports=22\n", 1),
+            ("sidecar_ip=1.2.3.4\nforward_ports=$(id)\n", 1),
+            ("sidecar_ip=1.2.3.4\nextra=1\n", 1),
+        ]
+        for content, expected in cases:
+            with self.subTest(content=content):
+                conf_dir = tmp / "in"
+                conf_dir.mkdir(exist_ok=True)
+                (conf_dir / "egress.conf").write_text(content.replace("\\n", "\n"))
+                script = (
+                    prologue.replace("/project-sandbox-egress", str(conf_dir))
+                    + 'echo "OK $SIDECAR_IP $PORTS"\n'
+                )
+                result = subprocess.run(
+                    ["bash", "-c", script], capture_output=True, text=True, check=False
+                )
+                self.assertEqual(
+                    result.returncode, expected, result.stdout + result.stderr
+                )
+
+    def test_entrypoint_block_only_in_sidecar_mode(self) -> None:
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        default = dockerfile.render_entrypoint(tmp).read_text()
+        sidecar = dockerfile.render_entrypoint(tmp, egress_sidecar=True).read_text()
+        self.assertNotIn("project-sandbox-egress", default)
+        self.assertIn(
+            "if [ -f /project-sandbox-egress/ca.pem ] || "
+            "[ -f /project-sandbox-egress/upstream-ca.pem ]; then",
+            sidecar,
+        )
+        for var in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "NODE_USE_SYSTEM_CA"):
+            self.assertIn(f"export {var}=", sidecar)
+        # The block sits after the firewall step, which installs the CA.
+        self.assertLess(
+            sidecar.index("project-sandbox-init-firewall"),
+            sidecar.index("/project-sandbox-egress/ca.pem"),
+        )
