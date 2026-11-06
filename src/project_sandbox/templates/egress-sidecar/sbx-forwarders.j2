@@ -1,0 +1,77 @@
+#!/bin/sh
+# Reconcile the local-service forwarders with {{ input_dir }}/forwarders
+# (design.md Decision 5): start a socat for each listed port that is not
+# running and stop each running one that is no longer listed. Run by the
+# entrypoint at start and by the host as
+#   <runtime> exec project-sandbox-egress sbx-forwarders
+# `sbx-forwarders --list` prints the ports with a live forwarder.
+#
+# Each forwarder accepts only peers on the internal network (range=), runs as
+# nobody, and is detached with setsid so it outlives the exec session. A pid
+# file is trusted only while /proc/<pid>/cmdline is that port's socat, so a
+# stale or reused pid is never signalled.
+set -eu
+
+INPUT={{ input_dir }}
+RUN={{ state_dir }}/forwarders
+PROC=/proc
+forward_host=${SBX_FORWARD_HOST:-{{ forward_host }}}
+subnet=${SBX_INTERNAL_SUBNET:-$(cat "{{ state_dir }}/subnet" 2>/dev/null || true)}
+
+live() {  # live <port>: the forwarder for <port> is running
+  pid=$(cat "$RUN/$1.pid" 2>/dev/null) || return 1
+  case $pid in ''|*[!0-9]*) return 1 ;; esac
+  tr '\000' ' ' < "$PROC/$pid/cmdline" 2>/dev/null | grep -q "TCP-LISTEN:$1,"
+}
+
+if [ "${1:-}" = "--list" ]; then
+  for pidfile in "$RUN"/*.pid; do
+    [ -e "$pidfile" ] || continue
+    port=${pidfile##*/}
+    port=${port%.pid}
+    if live "$port"; then echo "$port"; fi
+  done
+  exit 0
+fi
+
+desired=""
+if [ -f "$INPUT/forwarders" ]; then
+  while read -r port || [ -n "$port" ]; do
+    case $port in
+      '') continue ;;
+      *[!0-9]*) echo "sbx-forwarders: invalid forward port: $port" >&2; exit 64 ;;
+    esac
+    if [ "$port" -lt {{ min_port }} ] || [ "$port" -gt 65535 ] || [ "$port" -eq {{ proxy_port }} ]; then
+      echo "sbx-forwarders: forward port out of range ({{ min_port }}-65535, not {{ proxy_port }}): $port" >&2
+      exit 64
+    fi
+    desired="$desired $port"
+  done < "$INPUT/forwarders"
+fi
+if [ -n "$desired" ] && [ -z "$subnet" ]; then
+  echo "sbx-forwarders: the internal subnet is unknown; refusing to forward" >&2
+  exit 64
+fi
+
+mkdir -p "$RUN"
+# Stop forwarders that are no longer listed.
+for pidfile in "$RUN"/*.pid; do
+  [ -e "$pidfile" ] || continue
+  port=${pidfile##*/}
+  port=${port%.pid}
+  case " $desired " in *" $port "*) continue ;; esac
+  if live "$port"; then
+    kill "$(cat "$pidfile")" 2>/dev/null || true
+  fi
+  rm -f "$pidfile"
+  echo "sbx-forwarders: stopped $port"
+done
+# Start listed forwarders that are not running.
+for port in $desired; do
+  if live "$port"; then continue; fi
+  su-exec nobody setsid socat \
+    "TCP-LISTEN:$port,fork,reuseaddr,range=$subnet" "TCP:$forward_host:$port" \
+    </dev/null >/dev/null 2>&1 &
+  echo $! > "$RUN/$port.pid"
+done
+echo "sbx-forwarders: forwarding${desired:- nothing}"
