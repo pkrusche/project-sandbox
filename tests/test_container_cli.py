@@ -1047,3 +1047,63 @@ class CopilotMountTests(TestCase):
                     self.assertFalse(
                         any(e.startswith("COPILOT_") for e in self._envs(argv))
                     )
+
+
+class EgressSidecarMountTests(TestCase):
+    """Task 7.2: the sandbox mounts only the public egress inputs."""
+
+    def _sandbox_dir(self, root: Path, bump_set) -> Path:
+        """Session inputs as a launch writes them next to the global sidecar."""
+        from project_sandbox import egress_sidecar, session_ca
+
+        sidecar = root / "egress" / "docker" / "sidecar"
+        sidecar.mkdir(parents=True)
+        ca = session_ca.generate(sidecar, bump_set, name="x")
+        session = root / "egress" / "docker" / "sessions" / "sid7"
+        session.mkdir(parents=True)
+        return egress_sidecar.write_sandbox_inputs(
+            session, sidecar_ip="172.18.0.2", forward_ports=(11434,), ca=ca
+        )
+
+    def _argv(self, root: Path, extra_mounts: list[str]) -> list[str]:
+        return build_run_argv(
+            runtime=DOCKER,
+            image="project-sandbox:test",
+            project_abs=root / "workspace",
+            claude_cfg=root / "claude/settings.json",
+            codex_cfg=root / "codex/config.toml",
+            codex_credentials_dir=None,
+            identity=GitIdentity(None, None),
+            memory="8g",
+            cpus=4,
+            extra_mounts=extra_mounts,
+            agent="bash",
+            firewall_enabled=True,
+            interactive=False,
+            network="sbx-egress",
+        )
+
+    def test_mount_present_read_only_and_key_free(self) -> None:
+        for bump_set, has_ca in ((["api.github.com"], True), ([], False)):
+            with self.subTest(bump_set=bump_set), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                from project_sandbox import egress_sidecar
+
+                sandbox_dir = self._sandbox_dir(root, bump_set)
+                argv = self._argv(root, [egress_sidecar.sandbox_mount(sandbox_dir)])
+                mounts = [argv[i + 1] for i, a in enumerate(argv) if a == "--mount"]
+                egress = [m for m in mounts if "target=/project-sandbox-egress" in m]
+                self.assertEqual(len(egress), 1)
+                self.assertIn("readonly", egress[0])
+                self.assertIn(f"source={sandbox_dir.resolve()}", egress[0])
+                self.assertEqual(sandbox_dir.name, "sandbox")
+                self.assertNotIn("ca-key.pem", " ".join(argv))
+                self.assertFalse((sandbox_dir / "ca-key.pem").exists())
+                self.assertEqual((sandbox_dir / "ca.pem").exists(), has_ca)
+                self.assertEqual(argv[argv.index("--network") + 1], "sbx-egress")
+
+    def test_no_egress_mount_outside_sidecar_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            argv = self._argv(Path(tmp), [])
+        self.assertNotIn("/project-sandbox-egress", " ".join(argv))
+        self.assertNotIn("ca-key.pem", " ".join(argv))

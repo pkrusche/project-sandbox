@@ -1,0 +1,126 @@
+#!/bin/bash
+# Sandbox firewall for --egress sidecar. Runs as root via sudo before the agent
+# starts. The sandbox may reach only the runtime's global egress sidecar: the
+# proxy port, plus the local-service ports this session uses (the sidecar may
+# forward more for other sessions; those stay closed here). No DNS, no host
+# addresses, no IP pinning. Every sidecar sandbox shares one internal network,
+# so these rules are also what keeps sandboxes from reaching each other.
+#
+# Per-session values come from the read-only mount {{ input_dir }} (sudo
+# resets the environment), written by the CLI:
+#   egress.conf      sidecar_ip=<IPv4>  forward_ports=<this session's ports>
+#   ca.pem           sidecar CA, present only when the sidecar intercepts TLS
+#   upstream-ca.pem  the upstream parent proxy's CA, when one is configured
+set -euo pipefail
+
+CONF={{ input_dir }}/egress.conf
+CA={{ input_dir }}/ca.pem
+UPSTREAM_CA={{ input_dir }}/upstream-ca.pem
+PROXY_PORT={{ proxy_port }}
+
+fail() { echo "ERROR: egress sidecar firewall: $*" >&2; exit 1; }
+
+[ -f "$CONF" ] || fail "$CONF is missing (was the sandbox started by project-sandbox --egress sidecar?)"
+
+# Parse strictly; never source a file from a mount.
+SIDECAR_IP=""
+FORWARD_PORTS=""
+while IFS='=' read -r key value; do
+  case "$key" in
+    sidecar_ip) SIDECAR_IP="$value" ;;
+    forward_ports) FORWARD_PORTS="$value" ;;
+    ''|'#'*) ;;
+    *) fail "unknown key in $CONF: $key" ;;
+  esac
+done < "$CONF"
+
+[[ "$SIDECAR_IP" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] \
+  || fail "invalid sidecar_ip: $SIDECAR_IP"
+for octet in "${BASH_REMATCH[@]:1}"; do
+  [ "$octet" -le 255 ] || fail "invalid sidecar_ip: $SIDECAR_IP"
+done
+# A plain string, not an array: empty arrays are "unbound" under set -u in
+# older bash releases.
+PORTS=""
+for port in $FORWARD_PORTS; do
+  [[ "$port" =~ ^[0-9]{1,5}$ ]] && [ "$port" -ge 1024 ] && [ "$port" -le 65535 ] \
+    || fail "invalid forward port: $port"
+  PORTS="$PORTS $port"
+done
+PORTS="${PORTS# }"
+
+# Names resolve to the sidecar: the proxy, and host.docker.internal so local
+# services (agent proxy, Ollama) keep their URLs and reach the sidecar's
+# forwarders. Replace any runtime-provided entry for these names.
+# Docker bind-mounts /etc/hosts, so it cannot be replaced (sed -i renames);
+# rewrite it in place instead.
+HOSTS_TMP=$(mktemp)
+grep -Ev '[[:space:]](egress-proxy|host\.docker\.internal)([[:space:]]|$)' /etc/hosts > "$HOSTS_TMP" || true
+printf '%s\tegress-proxy host.docker.internal # project-sandbox-egress\n' "$SIDECAR_IP" >> "$HOSTS_TMP"
+cat "$HOSTS_TMP" > /etc/hosts
+rm -f "$HOSTS_TMP"
+
+# Trust the sidecar CA only when the sidecar intercepts (Copilot's token
+# exchange on api.github.com), and the upstream parent's CA when it intercepts
+# spliced hosts. Installed at runtime, never baked into the image, so the image
+# cache does not depend on either.
+TRUST_CHANGED=0
+if [ -f "$CA" ]; then
+  install -m 0644 "$CA" /usr/local/share/ca-certificates/project-sandbox-egress.crt
+  TRUST_CHANGED=1
+fi
+if [ -f "$UPSTREAM_CA" ]; then
+  install -m 0644 "$UPSTREAM_CA" /usr/local/share/ca-certificates/project-sandbox-egress-upstream.crt
+  TRUST_CHANGED=1
+fi
+if [ "$TRUST_CHANGED" = 1 ]; then
+  update-ca-certificates >/dev/null 2>&1
+fi
+
+# IPv6 carries nothing in this mode: drop it, or disable it if ip6tables is
+# unavailable. Fail closed if neither works.
+IPV6_FW=1
+if ! ip6tables -L >/dev/null 2>&1; then
+  if sysctl -w net.ipv6.conf.all.disable_ipv6=1 \
+             net.ipv6.conf.default.disable_ipv6=1 \
+             net.ipv6.conf.lo.disable_ipv6=1 >/dev/null 2>&1 \
+     && [ "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null)" = "1" ]; then
+    IPV6_FW=0
+  else
+    fail "ip6tables unavailable and the sysctl fallback failed"
+  fi
+fi
+
+iptables -F; iptables -X
+iptables -t nat -F 2>/dev/null || true; iptables -t nat -X 2>/dev/null || true
+iptables -t mangle -F; iptables -t mangle -X
+iptables -A INPUT -i lo -j ACCEPT
+iptables -A OUTPUT -o lo -j ACCEPT
+iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+iptables -A OUTPUT -d "$SIDECAR_IP" -p tcp --dport "$PROXY_PORT" -j ACCEPT
+for port in $PORTS; do
+  iptables -A OUTPUT -d "$SIDECAR_IP" -p tcp --dport "$port" -j ACCEPT
+done
+iptables -P INPUT DROP; iptables -P FORWARD DROP; iptables -P OUTPUT DROP
+iptables -A OUTPUT -j REJECT --reject-with icmp-admin-prohibited
+iptables -A INPUT -j REJECT --reject-with icmp-admin-prohibited
+
+if [ "$IPV6_FW" = "1" ]; then
+  ip6tables -F; ip6tables -X
+  ip6tables -t nat -F 2>/dev/null || true; ip6tables -t nat -X 2>/dev/null || true
+  ip6tables -t mangle -F; ip6tables -t mangle -X
+  ip6tables -A INPUT -i lo -j ACCEPT
+  ip6tables -A OUTPUT -o lo -j ACCEPT
+  ip6tables -P INPUT DROP; ip6tables -P FORWARD DROP; ip6tables -P OUTPUT DROP
+  ip6tables -A OUTPUT -j REJECT --reject-with icmp6-adm-prohibited
+  ip6tables -A INPUT -j REJECT --reject-with icmp6-adm-prohibited
+fi
+
+# Verify the sidecar through the final rules before the agent starts.
+if ! timeout 5 bash -c "exec 3<>/dev/tcp/$SIDECAR_IP/$PROXY_PORT" 2>/dev/null; then
+  fail "the sidecar at $SIDECAR_IP:$PROXY_PORT is unreachable through the firewall"
+fi
+
+echo "Firewall initialized."
+echo "  Policy: egress sidecar only ($SIDECAR_IP:$PROXY_PORT${PORTS:+, forwarded ports $PORTS})"

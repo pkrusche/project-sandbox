@@ -283,3 +283,40 @@ class InternetProxyTests(TestCase):
                     text,
                 )
                 self.assertIn("final firewall cannot reach loopback-bound Ollama", text)
+
+
+class SidecarEnvironmentTests(TestCase):
+    """Task 7.3: proxy variables in sidecar mode."""
+
+    def test_points_at_sidecar_and_keeps_local_bypass(self) -> None:
+        values = internet_proxy.sidecar_environment(bypass_local_services=True)
+        for name in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+            self.assertEqual(values[name], "http://egress-proxy:3128")
+        no_proxy = values["NO_PROXY"].split(",")
+        self.assertEqual(values["NO_PROXY"], values["no_proxy"])
+        for host in ("localhost", "127.0.0.1", "::1", "host.docker.internal"):
+            self.assertIn(host, no_proxy)
+
+    def test_matches_firewall_mode_bypass_entries(self) -> None:
+        config = internet_proxy.parse("http://127.0.0.1:18080")
+        firewall_mode = internet_proxy.environment(
+            config, bypass_local_services=True, bypass_hosts=("gateway.example",)
+        )
+        sidecar = internet_proxy.sidecar_environment(
+            bypass_local_services=True, bypass_hosts=("gateway.example",)
+        )
+        self.assertEqual(firewall_mode["NO_PROXY"], sidecar["NO_PROXY"])
+        self.assertNotEqual(firewall_mode["HTTPS_PROXY"], sidecar["HTTPS_PROXY"])
+
+    def test_without_local_services(self) -> None:
+        values = internet_proxy.sidecar_environment(bypass_local_services=False)
+        self.assertNotIn("host.docker.internal", values["NO_PROXY"].split(","))
+
+    def test_constants_agree_with_sidecar_modules(self) -> None:
+        from project_sandbox import egress_sidecar, squid_config
+
+        self.assertEqual(firewall.SIDECAR_INPUT_DIR, egress_sidecar.SANDBOX_MOUNT)
+        self.assertEqual(firewall.SIDECAR_PROXY_PORT, squid_config.LISTEN_PORT)
+        self.assertTrue(
+            internet_proxy.SIDECAR_PROXY_URL.endswith(f":{squid_config.LISTEN_PORT}")
+        )

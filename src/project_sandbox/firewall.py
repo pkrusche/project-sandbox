@@ -50,6 +50,12 @@ LocalTcpDestination = TcpDestination
 
 NORMAL = "normal"
 INTERNET_PROXY = "internet-proxy"
+# --egress sidecar: only the per-session sidecar (design.md Decision 1).
+SIDECAR = "sidecar"
+# Read-only mount with the per-session egress.conf (and ca.pem), and the proxy
+# port; mirrors egress_sidecar.SANDBOX_MOUNT and squid_config.LISTEN_PORT.
+SIDECAR_INPUT_DIR = "/project-sandbox-egress"
+SIDECAR_PROXY_PORT = 3128
 
 
 def _validate_domains(extra_domains: list[str]) -> None:
@@ -91,8 +97,10 @@ def render(
     for host in tenant_hosts:
         if not _HOSTNAME_RE.fullmatch(host):
             raise ValueError(f"Invalid Copilot tenant host {host!r}")
-    if policy not in (NORMAL, INTERNET_PROXY):
+    if policy not in (NORMAL, INTERNET_PROXY, SIDECAR):
         raise ValueError(f"Unknown firewall policy: {policy}")
+    if policy == SIDECAR:
+        return _render_sidecar(context_dir)
     destinations = list(local_destinations or [])
     devcontainer = list(
         destinations if devcontainer_destinations is None else devcontainer_destinations
@@ -141,6 +149,21 @@ def render(
         copilot_tenant_hosts=[],
     )
     return container
+
+
+def _render_sidecar(context_dir: Path) -> Path:
+    """Write only the container script: sidecar mode renders no devcontainer.
+
+    The script holds no per-session data (it reads egress.conf at start), so the
+    image stays cacheable across sessions.
+    """
+    out = context_dir / "init-firewall.sh"
+    text = templating.get_template("init-firewall-sidecar.sh.j2").render(
+        input_dir=SIDECAR_INPUT_DIR, proxy_port=SIDECAR_PROXY_PORT
+    )
+    out.write_text(text + "\n", encoding="utf-8")
+    out.chmod(0o755)
+    return out
 
 
 def _write(

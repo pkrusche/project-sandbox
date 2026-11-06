@@ -247,3 +247,38 @@ class CliRelayTests(TestCase):
         self.assertNotIn("port", observed)
         self.assertIn("corp.proxy.example", observed["firewall"])
         self.assertNotIn("container system dns create", observed["output"])
+
+
+class RelayModeTests(TestCase):
+    """Task 6.4: per-session relay ports in sidecar mode only."""
+
+    def test_firewall_mode_binds_the_derived_port(self):
+        config = internet_proxy.parse(PROXY)
+        with patch.object(build_proxy_forwarder, "BuildProxyForwarder") as forwarder:
+            internet_proxy.relay(config, ca_certificates=(b"CA",))
+        forwarder.assert_called_once_with(
+            config.endpoint,
+            ca_certificates=(b"CA",),
+            port=internet_proxy.relay_port(config),
+            fallback=False,
+            label="Internet proxy",
+            ca_option="--ca-cert",
+        )
+
+    def test_sidecar_mode_binds_any_free_port(self):
+        config = internet_proxy.parse(PROXY)
+        with patch.object(build_proxy_forwarder, "BuildProxyForwarder") as forwarder:
+            internet_proxy.relay(config, sidecar=True)
+        self.assertEqual(forwarder.call_args.kwargs["port"], 0)
+        self.assertTrue(forwarder.call_args.kwargs["fallback"])
+
+    def test_concurrent_sidecar_sessions_get_distinct_ports(self):
+        config = internet_proxy.parse(PROXY)
+        first = internet_proxy.relay(config, sidecar=True)
+        second = internet_proxy.relay(config, sidecar=True)
+        try:
+            self.assertNotEqual(first.port, second.port)
+            self.assertNotEqual(first.port, internet_proxy.relay_port(config))
+        finally:
+            first.close()
+            second.close()

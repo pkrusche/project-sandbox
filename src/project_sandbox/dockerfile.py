@@ -1131,10 +1131,10 @@ def render_node_npm_dockerfile(
     return out
 
 
-def render_entrypoint(context_dir: Path) -> Path:
+def render_entrypoint(context_dir: Path, *, egress_sidecar: bool = False) -> Path:
     out = context_dir / "entrypoint.sh"
     tmpl = templating.get_template("entrypoint.sh.j2")
-    out.write_text(tmpl.render() + "\n", encoding="utf-8")
+    out.write_text(tmpl.render(egress_sidecar=egress_sidecar) + "\n", encoding="utf-8")
     out.chmod(0o755)
     return out
 

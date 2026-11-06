@@ -1,19 +1,20 @@
 # internet-proxy-support Specification
 
 ## Purpose
-Provide fail-closed, implementation-neutral routing of ordinary sandbox Internet traffic through a separately managed local filtering proxy while preserving independent local-service boundaries.
+Provide fail-closed, implementation-neutral routing of ordinary sandbox Internet traffic through a separately managed local HTTP or remote HTTP/HTTPS proxy while preserving independent gateway and local-service boundaries.
 
 ## Requirements
 
 ### Requirement: Internet proxy mode is explicitly configured and validated
-The CLI SHALL accept `--internet-proxy URL` only when URL is HTTP, has an explicit valid port, uses `127.0.0.1`, `localhost`, or `::1`, contains no credentials, path, query, or fragment, and a supported container runtime is selected. It SHALL reject wildcard and non-loopback hosts. It SHALL reject chroot because its shared host network namespace cannot enforce an isolated sandbox firewall. It SHALL expose no implementation-specific proxy flags and SHALL leave all behavior unchanged when the option is absent.
+
+The CLI SHALL accept `--internet-proxy URL` following the shared proxy-endpoint validation contract: HTTP for loopback and HTTP/HTTPS for remote endpoints, no userinfo/query/fragment, and no path other than empty or `/`. It SHALL reject chroot because its shared host network cannot enforce the sandbox firewall. No implementation-specific proxy flags SHALL be exposed. Absence of this option SHALL leave existing behavior unchanged.
 
 #### Scenario: Valid loopback listener is accepted
 - **WHEN** the user supplies `--internet-proxy http://127.0.0.1:18080`
 - **THEN** the CLI accepts the listener and prepares Internet proxy mode
 
 #### Scenario: Unsafe or ambiguous URL is rejected
-- **WHEN** the URL uses a non-HTTP scheme, non-loopback or wildcard host, credentials, query, fragment, missing port, or invalid port
+- **WHEN** the URL uses a unsupported scheme, HTTPS loopback host, wildcard host, credentials, query, fragment, disallowed path, or invalid port
 - **THEN** the CLI rejects it before network or container work with an actionable validation error
 
 #### Scenario: Option is absent
@@ -24,34 +25,52 @@ The CLI SHALL accept `--internet-proxy URL` only when URL is HTTP, has an explic
 - **WHEN** `--internet-proxy` is combined with `--runtime chroot`
 - **THEN** the CLI rejects the invocation before network or sandbox work and directs the user to a supported container runtime
 
+#### Scenario: Remote endpoint is accepted
+- **WHEN** the user supplies `--internet-proxy https://proxy.corp.example`
+- **THEN** the sandbox connects directly using that hostname and effective port 443 without local forwarding
+
 ### Requirement: Firewall enforcement and external policy ownership are mandatory
-Internet proxy mode SHALL require the firewall and SHALL reject `--no-firewall`, `--extra-domain`, and `--allow-github`. Conflict errors SHALL explain that environment variables are bypassable without firewall enforcement and that Internet destination policy belongs in the external proxy.
+Internet proxy mode SHALL require the firewall and SHALL reject `--no-firewall`. In firewall egress mode (the default), Internet proxy mode SHALL also reject `--extra-domain` and `--allow-github`, and conflict errors SHALL explain that environment variables are bypassable without firewall enforcement and that Internet destination policy belongs in the external proxy. In sidecar egress mode (`--egress sidecar`), `--internet-proxy` SHALL be rejected at launch. An external proxy SHALL instead be configured as the global sidecar's upstream parent in `egress.toml`, where the sidecar enforces local hostname policy in front of it.
 
 #### Scenario: Firewall is disabled
 - **WHEN** `--internet-proxy` is combined with `--no-firewall`
 - **THEN** the CLI rejects the invocation before network or container work and explains the bypass risk
 
 #### Scenario: Project-level Internet policy is requested
-- **WHEN** `--internet-proxy` is combined with `--extra-domain` or `--allow-github`
-- **THEN** the CLI rejects the invocation and directs the user to configure equivalent policy in the external filtering proxy
+- **WHEN** `--internet-proxy` is combined with `--extra-domain` or `--allow-github` without `--egress sidecar`
+- **THEN** the CLI rejects the invocation and directs the user to configure equivalent policy in the external filtering proxy, or to use `--egress sidecar` for local host policy
+
+#### Scenario: Internet proxy in sidecar mode
+- **WHEN** `--internet-proxy https://proxy.corp.example` is combined with `--egress sidecar`
+- **THEN** the CLI rejects the invocation before network or container work and names `[egress.upstream] url` in `egress.toml`
+
+#### Scenario: Local policy in front of an upstream proxy
+- **WHEN** `egress.toml` sets `[egress.upstream] url = "https://proxy.corp.example"` and allows `pypi.org`, and a sidecar-mode sandbox requests `pypi.org`
+- **THEN** the sandbox's proxy variables name the sidecar, and the sidecar forwards the allowed request to `proxy.corp.example`
 
 ### Requirement: Proxy forwarding is runtime-safe and implementation-neutral
-The system SHALL forward the configured host-loopback listener under the shared internal hostname `host.docker.internal`, preserving its port. Ollama, Agentgateway, and the Internet proxy SHALL use that single hostname so Apple `container` requires only one administrator-managed localhost DNS entry and other supported container runtimes require only one host mapping. The system SHALL map it through Apple `container` localhost DNS, Docker Desktop and compatible Podman host-gateway forwarding, or supported Linux bridge forwarding with managed per-port loopback bridges where required. It SHALL fail closed when no safe forwarding strategy exists and SHALL NOT widen a loopback bind. Chroot forwarding SHALL remain available to local services outside Internet-proxy mode but is not a supported Internet-proxy strategy.
+
+Loopback Internet proxies SHALL use the existing runtime-safe `host.docker.internal` forwarding path with their configured port. Local Ollama and local agent gateways SHALL share that mapping with distinct ports. Remote proxies SHALL connect directly and retain their URL hostname. Forwarding SHALL never widen loopback binds; unavailable safe forwarding SHALL abort startup. Chroot SHALL remain unsupported for Internet proxy mode.
 
 #### Scenario: Runtime forwarding is available
 - **WHEN** the selected runtime has a verified strategy for a loopback service
-- **THEN** `host.docker.internal` resolves or is pinned once to that strategy's endpoint for the sandbox lifetime and all enabled services use it with distinct ports
+- **THEN** `host.docker.internal` resolves or is pinned once to that strategy's endpoint for the sandbox lifetime and all enabled loopback services use it with distinct ports
 
 #### Scenario: Runtime forwarding is unavailable
 - **WHEN** the runtime cannot safely forward and enforce access to the loopback service
 - **THEN** startup fails before the sandbox starts and no wildcard listener is created
 
+#### Scenario: Remote-only Apple container session
+- **WHEN** an Apple container session uses remote proxies and no local service
+- **THEN** proxy setup neither requires a localhost DNS entry nor prints instructions to create one
+
 ### Requirement: Standard proxy environment is injected consistently
-Internet proxy mode SHALL set `HTTP_PROXY`, `HTTPS_PROXY`, `http_proxy`, and `https_proxy` to `http://host.docker.internal:<port>` for interactive, headless, and Bash sessions so generated agent processes inherit them unless an agent-specific launcher deliberately overrides a value. It SHALL set identical `NO_PROXY` and `no_proxy` lists containing `localhost`, `127.0.0.1`, `::1`, and `host.docker.internal` when an enabled local service such as Agentgateway or Ollama must bypass general proxy routing. Including the shared hostname SHALL NOT exempt ordinary Internet destinations from proxy routing.
+
+Internet proxy mode SHALL set `HTTP_PROXY`, `HTTPS_PROXY`, `http_proxy`, and `https_proxy` consistently to its effective sandbox URL in all supported launch modes. Identical `NO_PROXY` and `no_proxy` lists SHALL include loopback entries and configured direct agent-gateway hosts, plus `host.docker.internal` when local gateway or Ollama bypass is required. Values SHALL be deduplicated and SHALL NOT add wildcard or network-wide bypasses.
 
 #### Scenario: Internet proxy environment is generated
 - **WHEN** Internet proxy mode prepares a session
-- **THEN** upper- and lowercase routing variables contain the forwarded URL and upper- and lowercase bypass variables contain local loopback entries
+- **THEN** upper- and lowercase routing variables contain the effective sandbox URL, preserving HTTPS for a remote HTTPS proxy and upper- and lowercase bypass variables contain local loopback entries
 
 #### Scenario: Other local services coexist
 - **WHEN** Agentgateway, Ollama, or another explicitly supported local service is also forwarded
@@ -61,8 +80,17 @@ Internet proxy mode SHALL set `HTTP_PROXY`, `HTTPS_PROXY`, `http_proxy`, and `ht
 - **WHEN** `host.docker.internal` is present in the bypass lists and is also the configured Internet proxy host
 - **THEN** requests for ordinary Internet destinations still use the configured proxy because bypass matching applies to the requested destination
 
+#### Scenario: Remote gateway bypasses the Internet proxy
+- **WHEN** the gateway is `https://models.corp.example/v1` and an Internet proxy is enabled
+- **THEN** both bypass lists include `models.corp.example` and generated gateway traffic connects directly
+
+#### Scenario: Routing values cannot be replaced through generic injection
+- **WHEN** generic environment injection supplies conflicting proxy variables
+- **THEN** the generated policy-owned proxy and bypass values take precedence
+
 ### Requirement: Firewall collapses ordinary Internet egress onto the proxy
-With Internet proxy mode active, the firewall SHALL retain default DROP policies, loopback access, ESTABLISHED/RELATED handling, and blocked general outbound DNS. It SHALL allow new TCP connections only to the forwarded Internet-proxy address on its configured port plus separate port-scoped rules for explicitly enabled local services. It SHALL omit ordinary Internet destinations, GitHub ranges, AI-provider endpoints, extra domains, and broad host-gateway access from IPv4 and IPv6 allowlists. It SHALL enforce equivalent IPv6 denial or abort setup if the intended IPv6 policy cannot be enforced.
+
+Internet proxy mode SHALL retain default DROP, loopback, ESTABLISHED/RELATED, and blocked general DNS. It SHALL allow new TCP connections only to each configured proxy endpoint and explicit local service at its own admitted addresses and port. No ordinary provider, GitHub, extra-domain, or broad gateway exceptions SHALL be added. IPv4/IPv6 policy SHALL be enforced; failure to enforce required IPv6 denial SHALL abort setup.
 
 #### Scenario: Proxy-only egress policy is rendered
 - **WHEN** Internet proxy mode runs with the firewall enabled
@@ -70,7 +98,7 @@ With Internet proxy mode active, the firewall SHALL retain default DROP policies
 
 #### Scenario: Direct public access is not admitted
 - **WHEN** Internet proxy firewall rules are rendered
-- **THEN** no GitHub, OpenAI, Anthropic, extra-domain, ordinary public IPv4, or ordinary public IPv6 destination is directly allowlisted and general DNS remains blocked
+- **THEN** no GitHub, provider, extra-domain, or ordinary Internet destination is directly allowlisted beyond the exact configured service endpoints and general DNS remains blocked
 
 #### Scenario: IPv6 enforcement is unavailable
 - **WHEN** the selected runtime cannot enforce the required IPv6 policy
@@ -81,11 +109,12 @@ With Internet proxy mode active, the firewall SHALL retain default DROP policies
 - **THEN** direct Internet connection and DNS attempts fail under the firewall rather than falling back to unrestricted egress
 
 ### Requirement: Listener availability is preflighted without proxy management
-Before a real sandbox starts, the system SHALL perform a bounded implementation-neutral TCP or HTTP listener preflight against the original host-loopback URL without requiring an allowed public destination. It SHALL fail actionably if unavailable, skip all network preflight during dry-run, and SHALL never start, stop, restart, build, pull, repair, configure, or test implementation-specific behavior of the external proxy.
+
+Real runs SHALL check the configured endpoint on the host and through the final sandbox firewall using bounded TCP for HTTP or verified TLS for HTTPS, without requiring a public destination. Failed checks SHALL abort before agent execution. Dry-run SHALL skip network work. The system SHALL NOT start, stop, restart, build, pull, repair, configure, or inspect implementation-specific behavior of the external proxy.
 
 #### Scenario: Listener is available
-- **WHEN** a bounded connection to the configured loopback listener succeeds
-- **THEN** sandbox preparation continues and a second TCP-only check through the final port-scoped container firewall verifies the forwarded path without inspecting the proxy implementation
+- **WHEN** a bounded connection to the configured listener succeeds
+- **THEN** sandbox preparation continues and a second transport-appropriate check through the final port-scoped container firewall verifies the actual sandbox path without inspecting the proxy implementation
 
 #### Scenario: Listener is unavailable
 - **WHEN** no listener responds before the bounded preflight ends
@@ -97,7 +126,7 @@ Before a real sandbox starts, the system SHALL perform a bounded implementation-
 
 #### Scenario: Dry-run previews proxy mode
 - **WHEN** valid Internet proxy arguments include `--dry-run`
-- **THEN** sanitized forwarded environment and firewall plans are shown without network access, file writes, container starts, or forwarding-resource creation
+- **THEN** sanitized effective URLs, environment, and firewall plans are shown without network access, file writes, container starts, or forwarding-resource creation
 
 ### Requirement: Proxy and gateway failures remain independent
 If the Internet proxy becomes unavailable during a session, ordinary Internet operations SHALL fail and direct fallback SHALL remain blocked while an independently running Agentgateway remains reachable. If Agentgateway becomes unavailable, AI/MCP operations through it SHALL fail while ordinary Internet access through a running Internet proxy remains available. The system SHALL NOT restart either external service.
@@ -111,11 +140,12 @@ If the Internet proxy becomes unavailable during a session, ordinary Internet op
 - **THEN** AI/MCP requests through Agentgateway fail and permitted general Internet requests continue through the filtering proxy
 
 ### Requirement: The security boundary is documented
-The repository SHALL document that project-sandbox iptables prevents bypass, the external proxy owns Internet destination/security policy, and `agentgateway-locally` owns AI/MCP routing and provider credential isolation. Documentation SHALL state that proxy environment variables are routing hints, non-proxy-aware applications fail rather than receive transparent interception, loopback publication alone is not the boundary, and Docker and Apple `container` are the primary supported runtimes. It SHALL contain no Docker Compose setup.
+
+Documentation SHALL explain firewall bypass prevention, externally owned Internet policy, and separate gateway credential isolation. It SHALL cover independent and mixed local/remote proxy use, verified HTTPS, CA installation, session DNS pinning, tested client compatibility, and absent Internet-proxy authentication. Routing hints SHALL NOT be described as enforcement or transparent interception. Docker and Apple container SHALL remain primary runtimes; no Docker Compose setup SHALL be required.
 
 #### Scenario: User consults Internet proxy documentation
 - **WHEN** the user reads `docs/internet-proxy.md`
-- **THEN** setup responsibility, the three independent boundaries, enforcement limitations, failure behavior, primary runtimes, and the external policy repository are explicit
+- **THEN** setup responsibility, the three independent boundaries, enforcement limitations, failure behavior, primary runtimes, and externally managed policy and network connectivity are explicit
 
 ### Requirement: End-to-end filtering and bypass prevention are verifiable
 The project SHALL define acceptance checks against the external proxy test setup that distinguish allowed and rejected HTTP/HTTPS policy, reject private, link-local, metadata, IPv4, and IPv6 destinations as configured, and prove that direct TCP, direct DNS, `curl --noproxy '*'`, and removal of proxy variables cannot bypass the firewall.
@@ -127,3 +157,21 @@ The project SHALL define acceptance checks against the external proxy test setup
 #### Scenario: Direct bypass is attempted
 - **WHEN** acceptance checks use direct public IP connections, direct DNS, `--noproxy '*'`, or unset proxy variables
 - **THEN** the sandbox firewall blocks each direct path
+
+### Requirement: Internet proxy operation is independent of agent proxy configuration
+Internet proxy mode SHALL work without an agent proxy or gateway key and SHALL retain normal agent/provider credential handling in that case. It SHALL also coexist with an agent proxy or supported local Ollama configuration. Only enabling the agent proxy SHALL trigger gateway model discovery and gateway credential isolation.
+
+#### Scenario: Internet proxy without a gateway
+- **WHEN** an Internet proxy is enabled without `--agent-proxy`
+- **THEN** no gateway key or model catalog is required and proxy-aware provider requests use the Internet proxy with ordinary provider credentials
+
+#### Scenario: Both proxies are configured
+- **WHEN** both proxy options are present
+- **THEN** gateway traffic bypasses the Internet proxy and each endpoint keeps its own firewall permission and failure behavior
+
+### Requirement: Internet proxy authentication is unsupported
+The CLI SHALL reject Internet-proxy URL credentials and SHALL NOT provide proxy authentication flags, credential injection, client certificates, or authentication negotiation. Proxies requiring authentication are outside the supported scope of this version.
+
+#### Scenario: Proxy requires authentication
+- **WHEN** a configured Internet proxy returns HTTP 407 to a client request
+- **THEN** the operation fails without acquiring credentials, forwarding the agent gateway key, or falling back to direct Internet access

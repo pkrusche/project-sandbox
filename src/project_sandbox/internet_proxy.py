@@ -50,6 +50,39 @@ def relay_port(config: InternetProxy) -> int:
     return build_proxy_forwarder.preferred_port(config.endpoint, purpose=RELAY_PURPOSE)
 
 
+def relay(
+    config: InternetProxy,
+    *,
+    sidecar: bool = False,
+    ca_certificates: tuple[bytes, ...] = (),
+) -> build_proxy_forwarder.BuildProxyForwarder:
+    """Bind the host-loopback relay to a remote proxy (Apple ``container``).
+
+    Firewall mode binds the fixed port derived from the proxy URL, because the
+    image's firewall admits only that port; a busy port is an error. In sidecar
+    mode nothing baked into an image depends on the port, so each session
+    binds any free loopback port and concurrent sessions using the same proxy
+    no longer collide (design.md Decision 7).
+    """
+    if sidecar:
+        return build_proxy_forwarder.BuildProxyForwarder(
+            config.endpoint,
+            ca_certificates=ca_certificates,
+            port=0,
+            fallback=True,
+            label="Internet proxy",
+            ca_option="--ca-cert",
+        )
+    return build_proxy_forwarder.BuildProxyForwarder(
+        config.endpoint,
+        ca_certificates=ca_certificates,
+        port=relay_port(config),
+        fallback=False,
+        label="Internet proxy",
+        ca_option="--ca-cert",
+    )
+
+
 def for_runtime(
     config: InternetProxy | None, runtime: Runtime | None
 ) -> InternetProxy | None:
@@ -69,13 +102,44 @@ def for_runtime(
     return InternetProxy(config.original_url, endpoint)
 
 
+# --egress sidecar: the sandbox's proxy is its sidecar, named in /etc/hosts.
+SIDECAR_PROXY_URL = "http://egress-proxy:3128"
+
+
 def environment(
     config: InternetProxy,
     *,
     bypass_local_services: bool,
     bypass_hosts: tuple[str, ...] = (),
 ) -> dict[str, str]:
-    proxy = config.forwarded_url
+    return _proxy_environment(
+        config.forwarded_url,
+        bypass_local_services=bypass_local_services,
+        bypass_hosts=bypass_hosts,
+    )
+
+
+def sidecar_environment(
+    *, bypass_local_services: bool, bypass_hosts: tuple[str, ...] = ()
+) -> dict[str, str]:
+    """Proxy variables for a sidecar session (design.md Decision 1).
+
+    ``host.docker.internal`` keeps its NO_PROXY entry: in sidecar mode it
+    resolves to the sidecar's local-service forwarders, not through Squid.
+    """
+    return _proxy_environment(
+        SIDECAR_PROXY_URL,
+        bypass_local_services=bypass_local_services,
+        bypass_hosts=bypass_hosts,
+    )
+
+
+def _proxy_environment(
+    proxy: str,
+    *,
+    bypass_local_services: bool,
+    bypass_hosts: tuple[str, ...] = (),
+) -> dict[str, str]:
     values = {
         "HTTP_PROXY": proxy,
         "HTTPS_PROXY": proxy,

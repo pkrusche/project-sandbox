@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import math
 import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import tomllib
 import urllib.error
 import urllib.parse
@@ -32,6 +34,11 @@ DOCKERFILE_TEMPLATE = ROOT / "src/project_sandbox/templates/Dockerfile.j2"
 DOCKERFILE_HELPER = ROOT / "src/project_sandbox/dockerfile.py"
 BUILD_PROXY_FIXTURE = ROOT / "scripts/fixtures/build-proxy.Dockerfile.j2"
 CONFIG_AGENTS = ROOT / "src/project_sandbox/config_agents.py"
+SIDECAR_IMAGE = ROOT / "src/project_sandbox/sidecar_image.py"
+COPILOT_EGRESS_FIXTURE = ROOT / "scripts/fixtures/copilot-egress/Dockerfile"
+# Files that pin the Squid sidecar's Alpine base and Squid release together.
+SQUID_SIDECAR_PIN_FILES = (SIDECAR_IMAGE, COPILOT_EGRESS_FIXTURE)
+ALPINE_APK_MIRROR = "https://dl-cdn.alpinelinux.org/alpine"
 
 PI_NPM_PACKAGE = "@earendil-works/pi-coding-agent"
 # Pins whose absence from the Dockerfile template is an error rather than a
@@ -56,6 +63,16 @@ UV_IMAGE_RE = re.compile(
     r'(?P<sep>"\s*")?'
     r"@sha256:(?P<digest>[a-f0-9]{64})"
 )
+# alpine:X.Y.Z@sha256:..., also split across adjacent Python string literals
+# as in sidecar_image.py.
+ALPINE_IMAGE_RE = re.compile(
+    r"alpine:(?P<version>[0-9]+\.[0-9]+\.[0-9]+)"
+    r'(?P<sep>"\s*")?'
+    r"@sha256:(?P<digest>[a-f0-9]{64})"
+)
+# apk "~" pin of the Squid release: squid~X.Y
+SQUID_APK_RE = re.compile(r"squid~(?P<version>[0-9]+\.[0-9]+)\b")
+ALPINE_RELEASE_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 
 
 @dataclass(frozen=True)
@@ -462,7 +479,12 @@ def docker_bearer_token(www_authenticate: str) -> str:
 
 
 def ghcr_manifest_digest(repository: str, tag: str) -> str:
-    url = f"https://ghcr.io/v2/{repository}/manifests/{tag}"
+    return registry_manifest_digest("ghcr.io", repository, tag)
+
+
+def registry_manifest_digest(registry: str, repository: str, tag: str) -> str:
+    """Index (or manifest) digest of ``registry/repository:tag``, without the prefix."""
+    url = f"https://{registry}/v2/{repository}/manifests/{tag}"
     headers = {
         "Accept": (
             "application/vnd.oci.image.index.v1+json, "
@@ -489,7 +511,7 @@ def ghcr_manifest_digest(repository: str, tag: str) -> str:
     )
     if not digest:
         raise RuntimeError(
-            f"Registry response for ghcr.io/{repository}:{tag} did not include a digest"
+            f"Registry response for {registry}/{repository}:{tag} did not include a digest"
         )
     return digest.removeprefix("sha256:")
 
@@ -804,6 +826,124 @@ def collect_uv_image_update(
     return [Update("uv image tag and digest", current_value, latest_value, apply)]
 
 
+def latest_alpine_releases() -> list[UpstreamRelease]:
+    """Alpine X.Y.Z image tags from Docker Hub, dated by their last push."""
+    data = request_json(
+        "https://hub.docker.com/v2/repositories/library/alpine/tags?page_size=100"
+    )
+    if not isinstance(data, dict) or not isinstance(data.get("results"), list):
+        raise RuntimeError("Unexpected Docker Hub tag response for library/alpine")
+    releases = []
+    for tag in data["results"]:
+        if not isinstance(tag, dict):
+            continue
+        name = tag.get("name")
+        if isinstance(name, str) and ALPINE_RELEASE_RE.fullmatch(name):
+            releases.append(
+                UpstreamRelease(
+                    name,
+                    parse_timestamp(tag.get("last_updated"), "Docker Hub alpine tag"),
+                )
+            )
+    if not releases:
+        raise RuntimeError("Docker Hub returned no Alpine X.Y.Z tags")
+    return releases
+
+
+def parse_apkindex_version(index: bytes, package: str) -> str:
+    """The ``V:`` field of ``package`` in an (uncompressed) APKINDEX."""
+    for block in index.decode("utf-8", "replace").split("\n\n"):
+        fields = dict(line.split(":", 1) for line in block.splitlines() if ":" in line)
+        if fields.get("P") == package and fields.get("V"):
+            return fields["V"]
+    raise RuntimeError(f"{package} not found in APKINDEX")
+
+
+def alpine_package_version(branch: str, package: str) -> str:
+    """Current ``package`` version in Alpine ``branch``'s main repository."""
+    url = f"{ALPINE_APK_MIRROR}/v{branch}/main/x86_64/APKINDEX.tar.gz"
+    payload, _ = request_bytes(url)
+    with tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz") as archive:
+        member = archive.extractfile("APKINDEX")
+        if member is None:
+            raise RuntimeError(f"APKINDEX missing from {url}")
+        return parse_apkindex_version(member.read(), package)
+
+
+def squid_release(apk_version: str) -> str:
+    """``6.12-r0`` -> ``6.12`` (the release an apk ``~`` pin names)."""
+    match = re.match(r"^([0-9]+\.[0-9]+)", apk_version)
+    if not match:
+        raise RuntimeError(f"Unexpected squid package version: {apk_version}")
+    return match.group(1)
+
+
+def current_squid_sidecar_pins() -> tuple[str, str, str]:
+    """(alpine version, digest, squid release), consistent across pin files."""
+    images, squids = set(), set()
+    for path in SQUID_SIDECAR_PIN_FILES:
+        text = read(path)
+        image = ALPINE_IMAGE_RE.search(text)
+        squid = SQUID_APK_RE.search(text)
+        if image is None or squid is None:
+            raise RuntimeError(
+                f"Could not find the Alpine/Squid sidecar pins in {path}"
+            )
+        images.add((image.group("version"), image.group("digest")))
+        squids.add(squid.group("version"))
+    if len(images) != 1 or len(squids) != 1:
+        raise RuntimeError(
+            "Squid sidecar pins disagree across "
+            + ", ".join(
+                str(p.relative_to(ROOT) if p.is_relative_to(ROOT) else p)
+                for p in SQUID_SIDECAR_PIN_FILES
+            )
+            + "; align them manually first"
+        )
+    (version, digest), squid = next(iter(images)), next(iter(squids))
+    return version, digest, squid
+
+
+def collect_squid_sidecar_update(
+    minimum_age: timedelta = DEFAULT_MINIMUM_AGE,
+) -> list[Update]:
+    current, current_digest, current_squid = current_squid_sidecar_pins()
+    release = latest_old_enough_release(
+        latest_alpine_releases(), minimum_age, source="Alpine image"
+    )
+    if release is None:
+        return []
+    latest = release.version
+    if not pin_can_move_forward(current, release, source="Alpine image"):
+        latest = current
+    latest_digest = registry_manifest_digest(
+        "registry-1.docker.io", "library/alpine", latest
+    )
+    branch = ".".join(latest.split(".")[:2])
+    latest_squid = squid_release(alpine_package_version(branch, "squid"))
+    current_value = f"alpine:{current}@sha256:{current_digest}, squid~{current_squid}"
+    latest_value = f"alpine:{latest}@sha256:{latest_digest}, squid~{latest_squid}"
+    if current_value == latest_value:
+        print(f"Current Squid sidecar pins: {current_value}")
+        return []
+
+    def apply() -> None:
+        def image(match: re.Match[str]) -> str:
+            sep = match.group("sep") or ""
+            return f"alpine:{latest}{sep}@sha256:{latest_digest}"
+
+        for path in SQUID_SIDECAR_PIN_FILES:
+            text = ALPINE_IMAGE_RE.sub(image, read(path))
+            text = SQUID_APK_RE.sub(f"squid~{latest_squid}", text)
+            write(path, text)
+
+    return [
+        Update(
+            "Squid sidecar Alpine image and squid", current_value, latest_value, apply
+        )
+    ]
+
+
 def run_uv_lock() -> None:
     if shutil.which("uv") is None:
         print(
@@ -852,6 +992,7 @@ def main() -> int:
         collect_node_update,
         collect_jj_update,
         collect_uv_image_update,
+        collect_squid_sidecar_update,
     ]
     updates: list[Update] = []
     for collector in collectors:

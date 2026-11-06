@@ -27,9 +27,30 @@ sessions can reuse it immediately; concurrent sessions using the same proxy
 conflict and fail early. Other host processes can use the relay while it runs.
 Devcontainers connect directly because their tooling runs without this relay.
 
+`--internet-proxy` is a firewall-mode option. In sidecar mode it is rejected:
+configure the proxy as the global sidecar's parent with `[egress.upstream] url`
+in `egress.toml` instead, where the sidecar enforces a local hostname allowlist
+in front of it. On Apple `container` the sidecar then owns a single relay to
+the proxy that every sidecar sandbox shares. See
+[Egress sidecar](egress-sidecar.md#parent-proxy).
+
 For proxy access during image construction, use the separate
 [`--build-proxy URL` and `--build-ca-cert` options](build-network.md).
 They do not grant runtime firewall access.
+
+## Choosing an egress option
+
+| | Firewall (default) | Sidecar (`--egress sidecar`) | Your own proxy (`--internet-proxy`) |
+|---|---|---|---|
+| Who decides destinations | `--extra-domain`, pinned to IPs at start | The global `egress.toml`, by hostname | The external proxy |
+| Lifecycle | None | One sidecar per runtime (`project-sandbox-egress`) | Managed by you |
+| Combine with a corporate proxy | — | `[egress.upstream] url` | It is the proxy |
+
+Use `--internet-proxy` when an existing filtering proxy should own Internet
+policy; use the sidecar for a local hostname allowlist shared by many
+sandboxes; keep the firewall default for the tightest per-sandbox isolation.
+[Egress sidecar](egress-sidecar.md#choosing-an-egress-mode) compares them in
+more detail.
 
 ## Security boundaries
 

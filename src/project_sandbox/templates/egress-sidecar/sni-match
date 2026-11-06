@@ -1,0 +1,14 @@
+#!/bin/sh
+# Squid external ACL helper (design.md Decision 2): one request per line,
+# "<tls-sni> <connect-host>", each "-" when absent. Answers OK only when the
+# SNI is present and equals the CONNECT host (case-insensitive); anything else,
+# including a missing SNI, is ERR, so Squid terminates the connection.
+while read -r sni host _rest; do
+  sni=$(printf '%s' "$sni" | tr 'A-Z' 'a-z')
+  host=$(printf '%s' "$host" | tr 'A-Z' 'a-z')
+  if [ -n "$sni" ] && [ "$sni" != "-" ] && [ "$sni" = "$host" ]; then
+    echo OK
+  else
+    echo "ERR message=sni-mismatch"
+  fi
+done

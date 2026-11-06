@@ -1,8 +1,12 @@
+import contextlib
 import json
 import os
+import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 from itertools import pairwise
 from pathlib import Path
@@ -11,7 +15,14 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from project_sandbox import chroot, config_agents, dockerfile, firewall
+from project_sandbox import (
+    chroot,
+    config_agents,
+    dockerfile,
+    firewall,
+    sidecar_image,
+    squid_config,
+)
 
 
 def _credentials_root(root: Path):
@@ -3452,3 +3463,749 @@ class CopilotRendererTests(TestCase):
                     extra_domains=[],
                     copilot_tenant_hosts=["$(touch /tmp/x).ghe.com"],
                 )
+
+
+class SidecarImageRendererTests(TestCase):
+    """Squid egress sidecar build context (add-squid-egress-sidecar task 5.1)."""
+
+    def setUp(self) -> None:
+        self.files = sidecar_image.render_files()
+
+    def test_dockerfile_pins_base_and_squid(self) -> None:
+        dockerfile_text = self.files["Dockerfile"]
+        self.assertIn(f"FROM {sidecar_image.BASE_IMAGE}\n", dockerfile_text)
+        self.assertRegex(
+            sidecar_image.BASE_IMAGE, r"^alpine:\d+\.\d+\.\d+@sha256:[0-9a-f]{64}$"
+        )
+        self.assertIn(
+            f"apk add --no-cache {sidecar_image.SQUID_PACKAGE} socat su-exec",
+            dockerfile_text,
+        )
+        self.assertRegex(sidecar_image.SQUID_PACKAGE, r"^squid~\d+\.\d+$")
+        self.assertIn("security_file_certgen", dockerfile_text)
+        self.assertIn("COPY sni-match /usr/local/libexec/sni-match", dockerfile_text)
+
+    def test_copy_sources_are_files_not_directories(self) -> None:
+        # Regression: Apple container 1.4.1's builder silently copies nothing
+        # for a directory source, which left the labelled error pages out.
+        import json as _json
+
+        for line in self.files["Dockerfile"].splitlines():
+            if not line.startswith("COPY "):
+                continue
+            spec = line[len("COPY ") :]
+            sources = (
+                _json.loads(spec)[:-1] if spec.startswith("[") else spec.split()[:-1]
+            )
+            for source in sources:
+                self.assertIn(
+                    source, self.files, f"COPY source {source!r} is not a rendered file"
+                )
+        pages = [n for n in self.files if n.startswith("errors/")]
+        self.assertEqual(len(pages), 6)
+        self.assertIn(
+            _json.dumps([*sorted(pages), "/etc/squid/sbx-errors/"]),
+            self.files["Dockerfile"],
+        )
+
+    def test_entrypoint_stages_ca_and_drops_privileges(self) -> None:
+        entry = self.files["entrypoint.sh"]
+        self.assertIn('cp "$INPUT/ca.pem" "$INPUT/ca-key.pem" "$STATE/"', entry)
+        self.assertIn("STATE=/run/egress-sidecar", entry)
+        self.assertIn('chmod 0600 "$STATE/ca-key.pem"', entry)
+        self.assertIn("security_file_certgen -c -s", entry)
+        # Squid runs as PID 1 under the squid user, logging into a FIFO it owns.
+        self.assertIn('mkfifo -m 0600 "$STATE/log"', entry)
+        self.assertTrue(
+            entry.rstrip().endswith(
+                'exec su-exec squid squid -N -f /etc/squid/squid.conf >"$STATE/log" 2>&1'
+            )
+        )
+        self.assertIn(
+            "SBX_FORWARD_HOST:-host.docker.internal", self.files["sbx-forwarders"]
+        )
+
+    def test_entrypoint_runs_forwarder_reconcile(self) -> None:
+        # global-egress-sidecar-macos task 2.3: no SBX_FORWARD_PORTS any more.
+        entry = self.files["entrypoint.sh"]
+        self.assertNotIn("SBX_FORWARD_PORTS", entry)
+        self.assertIn(
+            'printf \'%s\\n\' "${SBX_INTERNAL_SUBNET:-}" > "$STATE/subnet"', entry
+        )
+        self.assertLess(
+            entry.index("/usr/local/bin/sbx-forwarders"), entry.index("exec su-exec")
+        )
+
+    def test_forwarders_are_restricted_and_detached(self) -> None:
+        script = self.files["sbx-forwarders"]
+        self.assertIn("INPUT=/project-sandbox-egress", script)
+        self.assertIn('"$INPUT/forwarders"', script)
+        self.assertIn(
+            '"TCP-LISTEN:$port,fork,reuseaddr,range=$subnet" "TCP:$forward_host:$port"',
+            script,
+        )
+        self.assertIn("su-exec nobody setsid socat", script)
+        self.assertNotIn("start-stop-daemon", script)
+        self.assertIn("command -v setsid", self.files["Dockerfile"])
+
+    def _run_forwarders(self, ports: str | None, *, subnet="10.89.0.0/24"):
+        """Run sbx-forwarders on temp paths with stub su-exec/setsid/socat."""
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)  # runs after the kill below
+        self.forwarders_root = tmp
+        bin_dir, state, inputs, proc = (
+            tmp / "bin",
+            tmp / "state",
+            tmp / "input",
+            tmp / "proc",
+        )
+        for d in (bin_dir, state, inputs, proc):
+            d.mkdir(exist_ok=True)
+        if ports is not None:
+            (inputs / "forwarders").write_text(ports)
+        (state / "subnet").write_text(subnet + "\n")
+        stubs = {
+            "su-exec": 'shift; exec "$@"',
+            "setsid": 'exec "$@"',
+            # A fake socat: record its argv as /proc/<pid>/cmdline, then idle.
+            "socat": (
+                'mkdir -p "$FAKE_PROC/$$"; '
+                'printf "socat\\000%s\\000%s\\000" "$1" "$2" > "$FAKE_PROC/$$/cmdline"; '
+                'echo "$*" >> "$FAKE_PROC/started"; exec sleep 30'
+            ),
+        }
+        for name, body in stubs.items():
+            stub = bin_dir / name
+            stub.write_text(f"#!/bin/sh\n{body}\n")
+            stub.chmod(0o755)
+        script = (
+            self.files["sbx-forwarders"]
+            .replace("INPUT=/project-sandbox-egress", f"INPUT={inputs}")
+            .replace("PROC=/proc", f"PROC={proc}")
+            .replace("/run/egress-sidecar", str(state))
+        )
+
+        def run(*args: str):
+            return subprocess.run(
+                ["sh", "-c", script, "sbx-forwarders", *args],
+                capture_output=True,
+                text=True,
+                check=False,
+                env={"PATH": f"{bin_dir}:/usr/bin:/bin", "FAKE_PROC": str(proc)},
+                timeout=20,
+            )
+
+        def cleanup():
+            # Only the fake socats registered under the fake /proc, never a
+            # pid a test planted in a pid file.
+            for entry in proc.iterdir():
+                if entry.name.isdigit() and int(entry.name) != os.getpid():
+                    with contextlib.suppress(OSError):
+                        os.kill(int(entry.name), signal.SIGKILL)
+
+        self.addCleanup(cleanup)
+        started = proc / "started"
+        return run, state / "forwarders", started
+
+    @staticmethod
+    def _started(path: Path, count: int) -> list[str]:
+        """Wait for ``count`` fake socats (they start in the background)."""
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            lines = path.read_text().splitlines() if path.exists() else []
+            procs = [p for p in path.parent.iterdir() if p.name.isdigit()]
+            if len(lines) >= count and len(procs) >= count:
+                return lines
+            time.sleep(0.05)
+        return path.read_text().splitlines() if path.exists() else []
+
+    def test_forwarders_reconcile_starts_and_stops(self) -> None:
+        run, pids, started = self._run_forwarders("8787\n11434\n")
+        result = run()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = self._started(started, 2)
+        self.assertEqual(len(lines), 2)
+        # The two background forwarders register in either order.
+        line = next(entry for entry in lines if "TCP-LISTEN:8787," in entry)
+        self.assertIn("TCP-LISTEN:8787,fork,reuseaddr,range=10.89.0.0/24", line)
+        self.assertIn("TCP:host.docker.internal:8787", line)
+        self.assertEqual(
+            sorted(p.name for p in pids.iterdir()), ["11434.pid", "8787.pid"]
+        )
+        self.assertEqual(sorted(run("--list").stdout.split()), ["11434", "8787"])
+        # Running again starts nothing new (both are live).
+        run()
+        time.sleep(0.2)
+        self.assertEqual(len(started.read_text().splitlines()), 2)
+        # Removing 11434 stops only that one.
+        (self.forwarders_root / "input" / "forwarders").write_text("8787\n")
+        result = run()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("stopped 11434", result.stdout)
+        self.assertEqual([p.name for p in pids.iterdir()], ["8787.pid"])
+        self.assertEqual(run("--list").stdout.split(), ["8787"])
+
+    def test_stale_pid_file_is_not_trusted(self) -> None:
+        run, pids, started = self._run_forwarders("8787\n")
+        pids.mkdir(parents=True)
+        # Our own pid: alive, but not a socat for 8787.
+        (pids / "8787.pid").write_text(f"{os.getpid()}\n")
+        self.assertEqual(run("--list").stdout.split(), [])
+        result = run()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self._started(started, 1)), 1)
+        self.assertNotEqual(int((pids / "8787.pid").read_text()), os.getpid())
+
+    def test_forwarders_port_validation(self) -> None:
+        for ports, message in (
+            ("80\n", "out of range"),
+            ("3128\n", "out of range"),
+            ("70000\n", "out of range"),
+            ("87a7\n", "invalid forward port"),
+        ):
+            with self.subTest(ports=ports):
+                run, _, started = self._run_forwarders(ports)
+                result = run()
+                self.assertEqual(result.returncode, 64)
+                self.assertIn(message, result.stderr)
+                self.assertFalse(started.exists())
+        run, _, started = self._run_forwarders("8787\n", subnet="")
+        result = run()
+        self.assertEqual(result.returncode, 64)
+        self.assertIn("subnet is unknown", result.stderr)
+        run, _, started = self._run_forwarders(None)
+        result = run()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(started.exists())
+
+    def test_reload_parses_before_reconfigure(self) -> None:
+        # Task 2.2: copy, squid -k parse, then squid -k reconfigure.
+        script = self.files["sbx-reload"]
+        copy = script.index('cp "$INPUT/squid.conf" "$NEXT"')
+        parse = script.index('squid -k parse -f "$NEXT"')
+        replace = script.index('mv "$NEXT" "$LIVE"')
+        reconfigure = script.index('squid -k reconfigure -f "$LIVE"')
+        self.assertLess(copy, parse)
+        self.assertLess(parse, replace)
+        self.assertLess(replace, reconfigure)
+        self.assertIn("exit 65", script)
+        dockerfile_text = self.files["Dockerfile"]
+        self.assertIn("COPY sbx-reload sbx-forwarders /usr/local/bin/", dockerfile_text)
+
+    def test_reconfigure_finds_squid_through_its_pid_file(self) -> None:
+        from project_sandbox import egress_policy
+
+        conf = squid_config.render(egress_policy.effective(egress_policy.PolicyFile()))
+        self.assertIn(f"pid_filename {squid_config.PID_FILE}\n", conf)
+        self.assertTrue(squid_config.PID_FILE.startswith(squid_config.STATE_DIR + "/"))
+
+    def test_image_tag_changes_with_the_scripts(self) -> None:
+        tag = sidecar_image.image_tag(self.files)
+        for name in ("sbx-reload", "sbx-forwarders"):
+            with self.subTest(name=name):
+                changed = {**self.files, name: self.files[name] + "# changed\n"}
+                self.assertNotEqual(sidecar_image.image_tag(changed), tag)
+                without = {k: v for k, v in self.files.items() if k != name}
+                self.assertNotEqual(sidecar_image.image_tag(without), tag)
+
+    def test_entrypoint_is_valid_posix_sh(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            for name in ("entrypoint.sh", "sni-match", "sbx-reload", "sbx-forwarders"):
+                path = Path(tmp) / name
+                path.write_text(self.files[name])
+                result = subprocess.run(
+                    ["sh", "-n", str(path)], capture_output=True, text=True, check=False
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_sni_match_helper_semantics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            helper = Path(tmp) / "sni-match"
+            helper.write_text(self.files["sni-match"])
+            cases = [
+                ("example.com example.com", "OK"),
+                ("Example.COM example.com", "OK"),
+                ("evil.example example.com", "ERR message=sni-mismatch"),
+                ("- example.com", "ERR message=sni-mismatch"),
+                ("api.github.com example.com", "ERR message=sni-mismatch"),
+                ("example.com.evil example.com", "ERR message=sni-mismatch"),
+            ]
+            result = subprocess.run(
+                ["sh", str(helper)],
+                input="".join(line + "\n" for line, _ in cases),
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+        self.assertEqual(
+            result.stdout.splitlines(), [expected for _, expected in cases]
+        )
+
+    def test_image_tag_is_content_addressed(self) -> None:
+        tag = sidecar_image.image_tag(self.files)
+        self.assertRegex(tag, r"^project-sandbox-egress-sidecar:[0-9a-f]{16}$")
+        self.assertEqual(tag, sidecar_image.image_tag())
+        with patch.object(sidecar_image, "SQUID_PACKAGE", "squid~6.13"):
+            self.assertNotEqual(tag, sidecar_image.image_tag())
+
+    def test_render_writes_context_with_modes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context, tag = sidecar_image.render(Path(tmp))
+            self.assertEqual(context.name, tag.rsplit(":", 1)[1])
+            self.assertEqual(
+                sorted(p.name for p in context.iterdir()),
+                [
+                    "Dockerfile",
+                    "entrypoint.sh",
+                    "errors",
+                    "sbx-forwarders",
+                    "sbx-reload",
+                    "sni-match",
+                ],
+            )
+            self.assertEqual(
+                sorted(p.name for p in (context / "errors").iterdir()),
+                sorted(c.page for c in squid_config.CAUSES.values() if c.page),
+            )
+            self.assertEqual((context / "entrypoint.sh").stat().st_mode & 0o777, 0o755)
+            self.assertEqual((context / "sni-match").stat().st_mode & 0o777, 0o755)
+            self.assertEqual((context / "sbx-reload").stat().st_mode & 0o777, 0o755)
+            self.assertEqual((context / "sbx-forwarders").stat().st_mode & 0o777, 0o755)
+            self.assertEqual((context / "Dockerfile").stat().st_mode & 0o777, 0o644)
+            # Idempotent: a second render reuses the same directory and tag.
+            self.assertEqual(sidecar_image.render(Path(tmp)), (context, tag))
+
+
+class SquidConfigRendererTests(TestCase):
+    """Sidecar squid.conf (add-squid-egress-sidecar tasks 5.2-5.4)."""
+
+    @staticmethod
+    def _policy(*, copilot: bool = True, allow=("pypi.org", "*.npmjs.org")):
+        from project_sandbox import egress_policy
+
+        return egress_policy.effective(
+            egress_policy.PolicyFile(allow=allow, copilot=copilot)
+        )
+
+    @staticmethod
+    def _lines(conf: str) -> list[str]:
+        return [line for line in conf.splitlines() if line and not line.startswith("#")]
+
+    def _acl_values(self, conf: str, name: str) -> list[str]:
+        for line in self._lines(conf):
+            parts = line.split()
+            if parts[:2] == ["acl", name]:
+                return [p for p in parts[3:] if not p.startswith("-")]
+        self.fail(f"acl {name} not rendered")
+
+    # --- 5.2 pipeline -------------------------------------------------------
+
+    def test_core_settings(self) -> None:
+        conf = squid_config.render(self._policy())
+        lines = self._lines(conf)
+        self.assertIn(
+            "http_port 3128 ssl-bump tls-cert=/run/egress-sidecar/ca.pem "
+            "tls-key=/run/egress-sidecar/ca-key.pem generate-host-certificates=on "
+            "dynamic_cert_mem_cache_size=4MB",
+            lines,
+        )
+        self.assertIn("cache deny all", lines)
+        self.assertIn("access_log stdio:/dev/stdout sbx", lines)
+        self.assertIn("cache_log stdio:/dev/stderr", lines)
+        self.assertIn("shutdown_lifetime 1 seconds", lines)
+        self.assertIn("forwarded_for delete", lines)
+        self.assertIn("host_verify_strict on", lines)
+        self.assertIn("error_directory /etc/squid/sbx-errors", lines)
+        self.assertTrue(any(line.startswith("logformat sbx SBX ") for line in lines))
+        self.assertNotIn("\n\n\n", conf)
+
+    def test_connect_denials_are_resets_before_any_allow_or_bump(self) -> None:
+        conf = squid_config.render(self._policy())
+        lines = self._lines(conf)
+        self.assertIn("deny_info TCP_RESET reset", lines)
+        connect_denies = [
+            i
+            for i, line in enumerate(lines)
+            if line.startswith("http_access deny CONNECT")
+        ]
+        self.assertEqual(len(connect_denies), 4)  # port, ip literal, host, private
+        for index in connect_denies:
+            self.assertTrue(lines[index].endswith(" reset"), lines[index])
+        allow_connect = lines.index("http_access allow CONNECT")
+        first_bump = next(
+            i for i, line in enumerate(lines) if line.startswith("ssl_bump")
+        )
+        self.assertLess(max(connect_denies), allow_connect)
+        self.assertLess(allow_connect, first_bump)
+        first_allow = next(
+            i for i, line in enumerate(lines) if line.startswith("http_access allow")
+        )
+        self.assertEqual(first_allow, allow_connect)
+
+    def test_cause_notes_cover_connect_denials_in_order(self) -> None:
+        lines = self._lines(squid_config.render(self._policy()))
+        notes = [
+            line.split()[2] for line in lines if line.startswith("note sbx_cause ")
+        ]
+        self.assertEqual(
+            notes,
+            [
+                "port-not-allowed",
+                "port-not-allowed",
+                "ip-literal",
+                "private-address",
+                "host-not-allowed",
+                "plain-http-intercepted",
+                "path-not-allowed",
+            ],
+        )
+        self.assertLess(
+            lines.index("note sbx_cause ip-literal ip_literal"),
+            lines.index("note sbx_cause host-not-allowed !allowed"),
+        )
+
+    def test_sni_and_raw_tunnel_handling(self) -> None:
+        conf = squid_config.render(self._policy())
+        lines = self._lines(conf)
+        self.assertIn(
+            "external_acl_type sni_match ttl=60 negative_ttl=60 children-max=4 "
+            "%ssl::>sni %>rd /usr/local/libexec/sni-match",
+            lines,
+        )
+        bump = [line for line in lines if line.startswith("ssl_bump")]
+        self.assertEqual(
+            bump,
+            [
+                "ssl_bump peek step1",
+                "ssl_bump terminate step2 !sni_ok",
+                "ssl_bump bump step2 intercepted",
+                "ssl_bump splice step2 allowed",
+                "ssl_bump terminate all",
+            ],
+        )
+        self.assertIn("on_unsupported_protocol respond all", lines)
+        self.assertNotIn("on_unsupported_protocol tunnel", conf)
+
+    def test_labelled_pages_for_plain_http_and_intercepted_denials(self) -> None:
+        lines = self._lines(squid_config.render(self._policy()))
+        for cause in squid_config.CAUSES.values():
+            if cause.page:
+                marker = "page_" + cause.label.replace("-", "_")
+                self.assertIn(f"deny_info {cause.page} {marker}", lines)
+        self.assertEqual(lines[-1], "on_unsupported_protocol respond all")
+        self.assertIn("http_access deny all page_host_not_allowed", lines)
+
+    def test_error_pages_are_labelled(self) -> None:
+        pages = squid_config.error_pages()
+        self.assertEqual(
+            set(pages), {c.page for c in squid_config.CAUSES.values() if c.page}
+        )
+        for page, html in pages.items():
+            cause = next(c for c in squid_config.CAUSES.values() if c.page == page)
+            self.assertIn(f"project-sandbox-egress: {cause.label}", html)
+            self.assertIn("%U", html)
+
+    def test_direct_mode_denies_private_destinations(self) -> None:
+        conf = squid_config.render(self._policy())
+        values = self._acl_values(conf, "private_dst")
+        for cidr in (
+            "169.254.0.0/16",
+            "127.0.0.0/8",
+            "10.0.0.0/8",
+            "fc00::/7",
+            "::1/128",
+        ):
+            self.assertIn(cidr, values)
+        # Squid stores IPv4 as mapped addresses: ::ffff:0:0/96 would be all of IPv4.
+        self.assertNotIn("::ffff:0:0/96", values)
+        self.assertIn("http_access deny CONNECT private_dst reset", conf)
+        self.assertNotIn("never_direct", conf)
+
+    def test_allowlist_rendering(self) -> None:
+        from project_sandbox import egress_policy
+
+        conf = squid_config.render(self._policy(copilot=False))
+        providers = list(egress_policy.PROVIDER_HOSTS)
+        self.assertEqual(
+            sorted(self._acl_values(conf, "allowed")),
+            sorted([".npmjs.org", "pypi.org", *providers]),
+        )
+        self.assertNotIn("acl intercepted ", conf)
+        self.assertNotIn("ssl_bump bump", conf)
+        empty = squid_config.render(egress_policy.EffectivePolicy(None, (), False, ()))
+        self.assertEqual(self._acl_values(empty, "allowed"), ["invalid"])
+
+    def test_rejects_injection(self) -> None:
+        from project_sandbox import egress_policy
+
+        bad_host = egress_policy.EffectivePolicy(
+            policy_path=None,
+            allow=("pypi.org\nhttp_access allow all",),
+            copilot=False,
+            bump_set=(),
+        )
+        with self.assertRaises(ValueError):
+            squid_config.render(bad_host)
+        with self.assertRaises(ValueError):
+            squid_config.render(self._policy(), api_paths=("^/ok", "x y"))
+        with self.assertRaises(ValueError):
+            squid_config.render(self._policy(), api_paths=())
+        with self.assertRaises(ValueError):
+            squid_config.render(
+                self._policy(), upstream=squid_config.Upstream("proxy;evil", 3128)
+            )
+
+    # --- 5.3 Copilot profile -----------------------------------------------
+
+    def test_copilot_paths_evaluated_against_urls(self) -> None:
+        import re
+
+        conf = squid_config.render(self._policy())
+        self.assertEqual(self._acl_values(conf, "intercepted"), ["api.github.com"])
+        patterns = self._acl_values(conf, "intercepted_paths")
+
+        def allowed(path: str) -> bool:  # Squid urlpath_regex -i semantics
+            return any(re.search(p, path, re.IGNORECASE) for p in patterns)
+
+        for path in (
+            "/copilot_internal/user",
+            "/copilot_internal/v2/token",
+            "/copilot_internal/managed_settings",
+        ):
+            self.assertTrue(allowed(path), path)
+        for path in (
+            "/user",
+            "/repos/o/r",
+            "/repos/o/r/contents/x",
+            "/gists",
+            "/graphql",
+            "/user/repos",
+            "/repos/github/copilot-cli/releases",
+            "/x/copilot_internal/",
+        ):
+            self.assertFalse(allowed(path), path)
+
+    def test_no_other_github_repository_host_in_any_acl(self) -> None:
+        from project_sandbox import egress_policy
+
+        conf = squid_config.render(self._policy())
+        acl_lines = [line for line in self._lines(conf) if line.startswith("acl ")]
+        tokens = {token for line in acl_lines for token in line.split()[3:]}
+        for host in egress_policy.GITHUB_REPOSITORY_HOSTS:
+            if host == "api.github.com":
+                continue
+            self.assertNotIn(host, tokens)
+            self.assertNotIn("." + host, tokens)
+        self.assertFalse([t for t in tokens if "telemetry" in t])
+
+    # --- 5.4 parent proxy ---------------------------------------------------
+
+    def test_http_parent(self) -> None:
+        conf = squid_config.render(
+            self._policy(), upstream=squid_config.Upstream("proxy.corp.example", 3128)
+        )
+        lines = self._lines(conf)
+        self.assertIn(
+            "cache_peer proxy.corp.example parent 3128 0 no-query no-digest default name=upstream",
+            lines,
+        )
+        self.assertIn("never_direct allow all", lines)
+        self.assertNotIn("private_dst", conf)  # hostname-only policy in parent mode
+        self.assertNotIn(" dst ", conf)
+        self.assertNotIn("tls_outgoing_options", conf)
+        # IP-literal and port denials stay.
+        self.assertIn("http_access deny CONNECT ip_literal reset", lines)
+        self.assertIn("http_access deny CONNECT !tls_port reset", lines)
+
+    def test_https_parent_with_ca(self) -> None:
+        conf = squid_config.render(
+            self._policy(),
+            upstream=squid_config.Upstream(
+                "proxy.corp.example", 8443, tls=True, ca_file=True
+            ),
+        )
+        lines = self._lines(conf)
+        self.assertIn(
+            "cache_peer proxy.corp.example parent 8443 0 no-query no-digest default "
+            "name=upstream tls tls-cafile=/run/egress-sidecar/upstream-ca.pem",
+            lines,
+        )
+        self.assertIn(
+            "tls_outgoing_options cafile=/run/egress-sidecar/upstream-ca.pem", lines
+        )
+
+    def test_https_parent_without_ca_uses_system_trust(self) -> None:
+        conf = squid_config.render(
+            self._policy(),
+            upstream=squid_config.Upstream("proxy.corp.example", 443, tls=True),
+        )
+        self.assertIn("name=upstream tls\n", conf)
+        self.assertNotIn("tls-cafile", conf)
+        self.assertNotIn("tls_outgoing_options", conf)
+
+    def test_upstream_for_endpoints(self) -> None:
+        from project_sandbox import proxy_endpoint
+
+        remote = proxy_endpoint.parse(
+            "https://proxy.corp.example:8443", option="--internet-proxy"
+        )
+        local = proxy_endpoint.parse(
+            "http://127.0.0.1:18080", option="--internet-proxy"
+        )
+        self.assertEqual(
+            squid_config.upstream_for(remote, ca_file=True),
+            squid_config.Upstream("proxy.corp.example", 8443, tls=True, ca_file=True),
+        )
+        self.assertEqual(
+            squid_config.upstream_for(local),
+            squid_config.Upstream("host.docker.internal", 18080),
+        )
+        # Apple relay: plain HTTP to the host relay, which re-originates TLS.
+        relay = squid_config.upstream_for(remote, relay_port=41234)
+        self.assertEqual(relay, squid_config.Upstream("host.docker.internal", 41234))
+        conf = squid_config.render(self._policy(), upstream=relay)
+        self.assertIn(
+            "cache_peer host.docker.internal parent 41234 0 no-query no-digest default name=upstream\n",
+            conf,
+        )
+
+
+class SidecarFirewallRendererTests(TestCase):
+    """Task 7.1/7.2: sandbox firewall and entrypoint in sidecar mode."""
+
+    def _render(self) -> tuple[str, Path]:
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        script = firewall.render(tmp, extra_domains=[], policy=firewall.SIDECAR)
+        return script.read_text(), tmp
+
+    def test_no_pinning_dns_or_provider_lists(self) -> None:
+        text, tmp = self._render()
+        for forbidden in (
+            "dig ",
+            "ipset",
+            "DOMAINS=",
+            "api.anthropic.com",
+            "api.github.com/meta",
+            "--dport 53",
+        ):
+            self.assertNotIn(forbidden, text)
+        # Sidecar mode renders no devcontainer firewall.
+        self.assertEqual([p.name for p in tmp.iterdir()], ["init-firewall.sh"])
+
+    def test_sidecar_rules(self) -> None:
+        text, _ = self._render()
+        self.assertIn(
+            'iptables -A OUTPUT -d "$SIDECAR_IP" -p tcp --dport "$PROXY_PORT" -j ACCEPT',
+            text,
+        )
+        self.assertIn(
+            'iptables -A OUTPUT -d "$SIDECAR_IP" -p tcp --dport "$port" -j ACCEPT', text
+        )
+        self.assertIn("PROXY_PORT=3128", text)
+        self.assertIn("iptables -P OUTPUT DROP", text)
+        self.assertIn("ip6tables -P OUTPUT DROP", text)
+        self.assertIn("iptables -A OUTPUT -j REJECT", text)
+        # Only the sidecar: no other ACCEPT destinations.
+        accepts = [l for l in text.splitlines() if "-j ACCEPT" in l and "OUTPUT" in l]
+        for line in accepts:
+            self.assertTrue(
+                "-o lo" in line or "ESTABLISHED" in line or '-d "$SIDECAR_IP"' in line,
+                line,
+            )
+
+    def test_reads_conf_strictly_and_writes_hosts(self) -> None:
+        text, _ = self._render()
+        self.assertIn("CONF=/project-sandbox-egress/egress.conf", text)
+        for line in text.splitlines():
+            stripped = line.strip()
+            self.assertFalse(stripped.startswith(("source ", ". ")), line)
+        self.assertIn("unknown key in $CONF", text)
+        self.assertIn(
+            "egress-proxy host.docker.internal # project-sandbox-egress", text
+        )
+
+    def test_hosts_rewritten_in_place(self) -> None:
+        # Regression: Docker bind-mounts /etc/hosts; `sed -i` fails to rename it.
+        text, _ = self._render()
+        self.assertNotRegex(text, r"sed -i[^\n]*/etc/hosts")
+        self.assertIn('cat "$HOSTS_TMP" > /etc/hosts', text)
+
+    def test_ca_installed_only_when_present(self) -> None:
+        text, _ = self._render()
+        self.assertIn('if [ -f "$CA" ]; then', text)
+        self.assertIn(
+            "/usr/local/share/ca-certificates/project-sandbox-egress.crt", text
+        )
+        self.assertIn("update-ca-certificates", text)
+        self.assertNotIn("ca-key.pem", text)
+
+    def test_upstream_ca_installed_at_start_not_in_image(self) -> None:
+        # global-egress-sidecar-macos task 6.2.
+        text, _ = self._render()
+        self.assertIn("UPSTREAM_CA=/project-sandbox-egress/upstream-ca.pem", text)
+        self.assertIn(
+            'install -m 0644 "$UPSTREAM_CA" '
+            "/usr/local/share/ca-certificates/project-sandbox-egress-upstream.crt",
+            text,
+        )
+        self.assertLess(
+            text.index('if [ -f "$UPSTREAM_CA" ]'), text.index("update-ca-certificates")
+        )
+
+    def test_script_is_valid_bash_and_executable(self) -> None:
+        _, tmp = self._render()
+        script = tmp / "init-firewall.sh"
+        self.assertEqual(script.stat().st_mode & 0o777, 0o755)
+        result = subprocess.run(
+            ["bash", "-n", str(script)], capture_output=True, text=True, check=False
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_conf_parser_accepts_valid_and_rejects_invalid(self) -> None:
+        """Run only the parsing prologue of the script against sample files."""
+        text, tmp = self._render()
+        prologue = text[: text.index("# Names resolve to the sidecar")]
+        cases = [
+            ("sidecar_ip=192.168.128.2\nforward_ports=11434 4000\n", 0),
+            ("sidecar_ip=192.168.128.2\nforward_ports=\n", 0),
+            ("sidecar_ip=192.168.128.256\nforward_ports=\n", 1),
+            ("sidecar_ip=1.2.3.4;id\nforward_ports=\n", 1),
+            ("sidecar_ip=1.2.3.4\nforward_ports=22\n", 1),
+            ("sidecar_ip=1.2.3.4\nforward_ports=$(id)\n", 1),
+            ("sidecar_ip=1.2.3.4\nextra=1\n", 1),
+        ]
+        for content, expected in cases:
+            with self.subTest(content=content):
+                conf_dir = tmp / "in"
+                conf_dir.mkdir(exist_ok=True)
+                (conf_dir / "egress.conf").write_text(content.replace("\\n", "\n"))
+                script = (
+                    prologue.replace("/project-sandbox-egress", str(conf_dir))
+                    + 'echo "OK $SIDECAR_IP $PORTS"\n'
+                )
+                result = subprocess.run(
+                    ["bash", "-c", script], capture_output=True, text=True, check=False
+                )
+                self.assertEqual(
+                    result.returncode, expected, result.stdout + result.stderr
+                )
+
+    def test_entrypoint_block_only_in_sidecar_mode(self) -> None:
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        default = dockerfile.render_entrypoint(tmp).read_text()
+        sidecar = dockerfile.render_entrypoint(tmp, egress_sidecar=True).read_text()
+        self.assertNotIn("project-sandbox-egress", default)
+        self.assertIn(
+            "if [ -f /project-sandbox-egress/ca.pem ] || "
+            "[ -f /project-sandbox-egress/upstream-ca.pem ]; then",
+            sidecar,
+        )
+        for var in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "NODE_USE_SYSTEM_CA"):
+            self.assertIn(f"export {var}=", sidecar)
+        # The block sits after the firewall step, which installs the CA.
+        self.assertLess(
+            sidecar.index("project-sandbox-init-firewall"),
+            sidecar.index("/project-sandbox-egress/ca.pem"),
+        )
