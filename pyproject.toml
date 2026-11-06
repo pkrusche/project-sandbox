@@ -25,6 +25,7 @@ dev = [
 
 [project.scripts]
 project-sandbox = "project_sandbox.cli:main"
+project-sandbox-egress = "project_sandbox.egress_cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/project_sandbox"]
