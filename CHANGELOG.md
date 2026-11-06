@@ -28,6 +28,21 @@ Notable changes to `project-sandbox` are documented here.
   from headless logs. See [security](docs/security.md#github-copilot-token).
 - Opt-in, billable `copilot` e2e suite (`scripts/e2e-copilot.py`;
   `run-e2e-tests.sh --with-copilot`).
+- `--egress sidecar` (opt-in): a per-session Squid sidecar enforces a hostname
+  allowlist (wildcards, SNI checks, no IP pinning) on an internal network the
+  sandbox cannot leave. Policy comes from `--extra-domain` and a TOML file
+  outside the project (`--egress-policy`, default
+  `$XDG_CONFIG_HOME/project-sandbox/egress.toml`). GitHub repository access is
+  blocked; `--agent copilot` gets a Copilot-only profile, with its telemetry and
+  update check blocked. Local services are forwarded by the sidecar.
+  `--internet-proxy` can act as the sidecar's parent proxy alongside a local
+  allowlist. A session-end summary lists denied destinations. `--dry-run` shows
+  the plan. See [egress sidecar](docs/egress-sidecar.md).
+- New runtime dependency: `cryptography` (per-session sidecar CA).
+- Opt-in e2e suites `egress-sidecar` (`scripts/e2e-egress-sidecar.py`) and
+  `copilot-egress` (`scripts/e2e-copilot-egress.py`, billable).
+- `scripts/update-pins.py` also updates the sidecar's Alpine image digest and
+  Squid release.
 
 ## [0.3.1]
 
