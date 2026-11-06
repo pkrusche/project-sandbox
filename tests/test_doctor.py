@@ -256,3 +256,51 @@ class CommandTests(TestCase):
         forbidden = {"start", "run", "build", "create", "init", "new", "stop"}
         for argv in host.calls:
             self.assertFalse(forbidden & set(argv[1:]), argv)
+
+
+class EgressSidecarTests(TestCase):
+    """global-egress-sidecar-macos task 4.7: status and legacy leftovers."""
+
+    LEGACY = (
+        '{"Names": "project-sandbox-egress-20261104t120000-bbbbbbbbbbbb", '
+        '"Labels": "project-sandbox.egress.session=20261104t120000-bbbbbbbbbbbb"}'
+    )
+
+    def _host(self, *, inspect, legacy=""):
+        return FakeHost(
+            {"docker", "git", "jj"},
+            {
+                ("docker", "version"): ok("29.0.0\n"),
+                ("docker", "inspect", "project-sandbox-egress"): inspect,
+                ("docker", "ps", "-a"): ok(legacy),
+                ("docker", "network", "ls"): ok(""),
+                **HEALTHY_VCS,
+            },
+        )
+
+    def test_reports_running_sidecar_and_legacy_without_removing(self) -> None:
+        host = self._host(
+            inspect=ok('[{"State": {"Running": true}, "Config": {"Labels": {}}}]'),
+            legacy=self.LEGACY,
+        )
+        with host.active():
+            checks = by_name(doctor.run_checks())
+        self.assertEqual(checks["docker sidecar"].status, INFO)
+        self.assertIn("project-sandbox-egress running", checks["docker sidecar"].detail)
+        legacy = checks["docker legacy"]
+        self.assertEqual(legacy.status, WARN)
+        self.assertIn("20261104t120000-bbbbbbbbbbbb", legacy.detail)
+        self.assertIn("project-sandbox-egress up --runtime docker", legacy.hint or "")
+        # Read-only: nothing is removed, started or created.
+        for argv in host.calls:
+            self.assertNotIn("rm", argv)
+            self.assertNotIn("run", argv)
+            self.assertNotIn("create", argv)
+
+    def test_absent_sidecar_and_unreachable_runtime(self) -> None:
+        host = self._host(inspect=Probe(1, "", "No such object"))
+        with host.active():
+            checks = by_name(doctor.run_checks())
+        self.assertIn("not running", checks["docker sidecar"].detail)
+        self.assertNotIn("docker legacy", checks)
+        self.assertNotIn("podman sidecar", checks)  # not on PATH

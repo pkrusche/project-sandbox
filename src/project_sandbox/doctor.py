@@ -14,7 +14,7 @@ import subprocess
 import sys
 from dataclasses import asdict, dataclass
 
-from . import __version__, container_cli, local_service_network
+from . import __version__, container_cli, egress_sidecar, local_service_network
 
 OK = "ok"
 WARN = "warn"
@@ -377,6 +377,63 @@ def auto_runtime_check(checks: list[Check]) -> Check:
     )
 
 
+def _completed(argv) -> subprocess.CompletedProcess:
+    """Adapt :func:`_run` (timeouts included) to egress_sidecar's runner shape."""
+    probe = _run(list(argv))
+    if probe is None:
+        return subprocess.CompletedProcess(argv, 1, "", "probe timed out")
+    return subprocess.CompletedProcess(
+        argv, probe.returncode, probe.stdout, probe.stderr
+    )
+
+
+def check_egress_sidecars(checks: list[Check]) -> list[Check]:
+    """The global egress sidecar of each reachable runtime, read-only.
+
+    Leftovers of the per-session sidecars of earlier versions are reported, not
+    removed: doctor never changes anything. ``project-sandbox-egress up`` (or
+    the next sidecar launch) removes those whose session has ended.
+    """
+    reachable = {
+        check.name
+        for check in checks
+        if check.section == "runtimes"
+        and check.status == OK
+        # A stopped Apple container service cannot be asked without starting it.
+        and "stopped" not in check.detail
+    }
+    result = []
+    for runtime in (
+        container_cli.APPLE_CONTAINER,
+        container_cli.DOCKER,
+        container_cli.PODMAN,
+    ):
+        if runtime.name not in reachable:
+            continue
+        info = egress_sidecar.inspect(runtime, _completed)
+        if info is None:
+            detail = "not running (the first --egress sidecar launch starts it)"
+        elif info.running:
+            detail = f"{egress_sidecar.CONTAINER} running"
+        else:
+            detail = f"{egress_sidecar.CONTAINER} stopped (the next launch replaces it)"
+        result.append(Check("egress", f"{runtime.name} sidecar", INFO, detail))
+        legacy = egress_sidecar.legacy_resources(runtime, runner=_completed)
+        if legacy:
+            result.append(
+                Check(
+                    "egress",
+                    f"{runtime.name} legacy",
+                    WARN,
+                    f"{len(legacy)} per-session egress resource(s) from an earlier "
+                    "version: " + ", ".join(sorted(set(legacy))),
+                    f"Run `project-sandbox-egress up --runtime {runtime.name}` to "
+                    "remove those whose session has ended",
+                )
+            )
+    return result
+
+
 def run_checks() -> list[Check]:
     checks = [check_python()]
     checks += check_apple_container()
@@ -389,6 +446,7 @@ def run_checks() -> list[Check]:
         checks.append(socat)
     checks += check_git()
     checks.append(check_jj())
+    checks += check_egress_sidecars(checks)
     return checks
 
 
@@ -397,6 +455,7 @@ _SECTION_TITLES = {
     "runtimes": "Container runtimes",
     "tools": "Networking tools",
     "vcs": "Version control",
+    "egress": "Egress sidecar",
 }
 
 
