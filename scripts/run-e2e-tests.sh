@@ -21,6 +21,8 @@
 #  16. copilot                  — real GitHub Copilot CLI sessions (explicit opt-in; billable)
 #  17. copilot-egress           — Copilot CLI egress capture and Copilot-only profile check
 #                                 through an intercepting Squid fixture (explicit opt-in; billable)
+#  18. egress-sidecar           — --egress sidecar policy, parent chaining and local-service
+#                                 forwarding (explicit opt-in; needs network and builds)
 #
 # The console shows one progress line per suite. Each suite's output is captured
 # in its own temp log file; a failing suite's log is kept and its path reported,
@@ -36,6 +38,7 @@
 #                            [--with-copilot [--copilot-host TENANT.ghe.com]
 #                             [--copilot-capture-dir DIR]]
 #                            [--with-copilot-egress [--copilot-egress-report-dir DIR]]
+#                            [--with-egress-sidecar]
 #                            [--proxy-fixture-ipv6-host IP]
 #                            [--proxy-fixture-hostname NAME]
 #                            [--ca-cert PATH ...]
@@ -48,8 +51,9 @@
 #   --only SUITE     run just one suite by name (default: run every available suite).
 #                    Naming an opt-in suite is itself the opt-in, so --only agent-proxy,
 #                    --only agent-proxy-isolation, --only internet-proxy-isolation,
-#                    --only proxy-endpoints, --only build-proxy, --only copilot, and
-#                    --only copilot-egress need no additional --with-* flag.
+#                    --only proxy-endpoints, --only build-proxy, --only copilot,
+#                    --only copilot-egress, and --only egress-sidecar need no additional
+#                    --with-* flag.
 #   --list           print the suite names accepted by --only and exit
 #   --all-tests      run every suite, including all opt-in ones (implies
 #                    --with-agent-proxy, --with-internet-proxy,
@@ -90,6 +94,11 @@
 #                    short Copilot requests); same token sources as --with-copilot
 #   --copilot-egress-report-dir DIR
 #                    write the copilot-egress report there (default: .project-sandbox/)
+#   --with-egress-sidecar
+#                    run scripts/e2e-egress-sidecar.py: real --egress sidecar sessions graded
+#                    from inside the sandbox and from the sidecar log, parent-proxy chaining
+#                    through an intercepting fixture, and local-service forwarding. Not
+#                    billable; needs network access and image builds
 #   --proxy-fixture-host IP
 #                    override local fixture IP (default: outbound IPv4 source address)
 #   --proxy-fixture-ipv6-host IP
@@ -119,6 +128,7 @@ SUITES=(
   build-proxy
   copilot
   copilot-egress
+  egress-sidecar
 )
 
 RUNTIME="auto"
@@ -134,6 +144,7 @@ WITH_COPILOT=0
 COPILOT_HOST=""
 COPILOT_CAPTURE_DIR=""
 WITH_COPILOT_EGRESS=0
+WITH_EGRESS_SIDECAR=0
 COPILOT_EGRESS_REPORT_DIR=""
 ALL_TESTS=0
 PROXY_FIXTURE_HOST=""
@@ -165,6 +176,7 @@ while [ $# -gt 0 ]; do
     --copilot-host) COPILOT_HOST="${2:?--copilot-host needs a value}"; shift 2 ;;
     --copilot-capture-dir) COPILOT_CAPTURE_DIR="${2:?--copilot-capture-dir needs a value}"; shift 2 ;;
     --with-copilot-egress) WITH_COPILOT_EGRESS=1; shift ;;
+    --with-egress-sidecar) WITH_EGRESS_SIDECAR=1; shift ;;
     --copilot-egress-report-dir) COPILOT_EGRESS_REPORT_DIR="${2:?--copilot-egress-report-dir needs a value}"; shift 2 ;;
     --proxy-fixture-host) PROXY_FIXTURE_HOST="${2:?--proxy-fixture-host needs a value}"; shift 2 ;;
     --proxy-fixture-ipv6-host) PROXY_FIXTURE_IPV6_HOST="${2:?--proxy-fixture-ipv6-host needs a value}"; shift 2 ;;
@@ -185,6 +197,7 @@ if [ "$ALL_TESTS" = 1 ]; then
   WITH_BUILD_PROXY=1
   WITH_COPILOT=1
   WITH_COPILOT_EGRESS=1
+  WITH_EGRESS_SIDECAR=1
   missing=()
   [ -n "$INTERNET_PROXY_DIR" ] || missing+=(--internet-proxy-dir)
   [ -n "$AGENTGATEWAY_DIR" ] || missing+=(--agentgateway-dir)
@@ -216,6 +229,7 @@ if [ -n "$ONLY" ]; then
     build-proxy) WITH_BUILD_PROXY=1 ;;
     copilot) WITH_COPILOT=1 ;;
     copilot-egress) WITH_COPILOT_EGRESS=1 ;;
+    egress-sidecar) WITH_EGRESS_SIDECAR=1 ;;
   esac
 fi
 
@@ -547,6 +561,22 @@ if selected copilot-egress; then
     fi
   else
     skip_suite "copilot-egress" "pass --with-copilot-egress; makes billable Copilot requests"
+  fi
+fi
+
+# 18. --egress sidecar end to end: needs network and builds, so opt-in.
+if selected egress-sidecar; then
+  if [ "$WITH_EGRESS_SIDECAR" = 1 ]; then
+    if [ -z "$CONTAINER_RUNTIME" ]; then
+      fail_suite "egress-sidecar" "select apple-container, docker, podman, or an available auto runtime"
+    else
+      EGRESS_SIDECAR_ARGS=(--runtime "$CONTAINER_RUNTIME" --base-image "$BASE_IMAGE")
+      [ "$NO_BUILD" = 1 ] && EGRESS_SIDECAR_ARGS+=(--no-build)
+      [ "$KEEP" = 1 ] && EGRESS_SIDECAR_ARGS+=(--keep)
+      run_suite "egress-sidecar" uv run python "$ROOT/scripts/e2e-egress-sidecar.py" "${EGRESS_SIDECAR_ARGS[@]}"
+    fi
+  else
+    skip_suite "egress-sidecar" "pass --with-egress-sidecar; needs network and builds"
   fi
 fi
 
