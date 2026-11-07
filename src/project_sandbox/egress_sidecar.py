@@ -483,15 +483,22 @@ def probe_ready(runtime: Runtime, runner: Runner) -> bool:
 def port_free(port: int) -> bool:
     """Whether nothing listens on ``127.0.0.1:port`` (or the wildcard) on the host.
 
-    Without ``SO_REUSEADDR`` a bind fails while any socket holds the port on
-    loopback or on all interfaces.
+    ``down`` with sandboxes still connected leaves the sidecar's side of those
+    connections in TIME_WAIT for up to a minute. A plain bind fails on them,
+    though the runtime can publish the port again, so bind with
+    ``SO_REUSEADDR``: that still fails on a listener bound to loopback. On
+    macOS it succeeds next to a wildcard listener, which a loopback connect
+    then finds.
     """
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             sock.bind((PUBLISH_ADDRESS, port))
         except OSError:
             return False
-    return True
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.settimeout(1.0)
+        return probe.connect_ex((PUBLISH_ADDRESS, port)) != 0
 
 
 def probe_published(port: int, *, timeout: float = 3.0) -> bool:

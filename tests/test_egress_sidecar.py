@@ -317,6 +317,29 @@ class HostHelperTests(TestCase):
             self.assertFalse(egress_sidecar.port_free(port))
         self.assertTrue(egress_sidecar.port_free(port))
 
+    def test_port_free_detects_a_wildcard_listener(self) -> None:
+        # On macOS a SO_REUSEADDR bind to 127.0.0.1 succeeds next to it.
+        with socket.socket() as listener:
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            listener.bind(("0.0.0.0", 0))
+            listener.listen()
+            self.assertFalse(egress_sidecar.port_free(listener.getsockname()[1]))
+
+    def test_port_free_ignores_time_wait_left_by_a_stopped_sidecar(self) -> None:
+        # Regression: `down` with sandboxes connected, then `up`, reported the
+        # port as in use until the server-side TIME_WAIT expired.
+        with socket.socket() as listener:
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            listener.bind(("127.0.0.1", 0))
+            listener.listen()
+            port = listener.getsockname()[1]
+            client = socket.create_connection(("127.0.0.1", port))
+            conn, _ = listener.accept()
+            conn.close()  # the server closes first, so its side enters TIME_WAIT
+            client.recv(1)
+            client.close()
+        self.assertTrue(egress_sidecar.port_free(port))
+
     def test_probe_published_needs_the_readiness_page(self) -> None:
         def serve(listener, body: bytes) -> None:
             conn, _ = listener.accept()
