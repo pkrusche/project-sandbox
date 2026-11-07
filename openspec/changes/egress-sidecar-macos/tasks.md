@@ -22,15 +22,15 @@ Reference implementation: the squid-sidecar line (`jj log -r 'ptyttxkk..rymymutp
 
 ## 4. Global sidecar orchestration (`egress_sidecar.py`)
 
-- [ ] 4.1 Port the layout, `state.json` handling and fingerprints, adding `port` to the restart inputs and dropping `subnet`, `sidecar_ip` and `forward_ports`. Verify with tests that a garbled `state.json` means "needs up", and that only the restart fingerprint changes with the port.
-- [ ] 4.2 Build the sidecar run argv: the default network, `--publish 127.0.0.1:<port>:3128` (or the spike 0.1 fallback on Apple), resource limits, `--log-opt` on Docker and Podman, the `sidecar/` mount. Verify with per-runtime argv tests, including that no `network create` or `network connect` argv exists.
-- [ ] 4.3 Port `ensure()`, `down()`, `restart()` and `reload()` without the network and forwarder steps, and add the host-side port-free check before `run`. Verify with injected-runner tests for absent, running-and-ready, stopped, unready and incomplete state; a taken port failing before `run`; two `ensure()` threads issuing exactly one `run`; and `down` deleting `ca-key.pem`.
-- [ ] 4.4 Implement drift handling: reload for allowlist differences, a warning naming each restart-only field, and port drift as a launch error. Verify with tests that a reload issues `exec … sbx-reload` and no `rm`/`run`, and that the port case raises an error naming `project-sandbox-egress restart`.
-- [ ] 4.5 Best-effort removal of a leftover `sbx-egress` network in `down`, and replacement of a `project-sandbox-egress` container whose state does not match. Verify with runner tests in which `network rm` fails and `down` still succeeds.
+- [x] 4.1 Port the layout, `state.json` handling and fingerprints, adding `port` to the restart inputs and dropping `subnet`, `sidecar_ip` and `forward_ports`. Verify with tests that a garbled `state.json` means "needs up", and that only the restart fingerprint changes with the port.
+- [x] 4.2 Build the sidecar run argv: the default network, `--publish 127.0.0.1:<port>:3128` (or the spike 0.1 fallback on Apple), resource limits, `--log-opt` on Docker and Podman, the `sidecar/` mount. Verify with per-runtime argv tests, including that no `network create` or `network connect` argv exists.
+- [x] 4.3 Port `ensure()`, `down()`, `restart()` and `reload()` without the network and forwarder steps, and add the host-side port-free check before `run`. Verify with injected-runner tests for absent, running-and-ready, stopped, unready and incomplete state; a taken port failing before `run`; two `ensure()` threads issuing exactly one `run`; and `down` deleting `ca-key.pem`.
+- [x] 4.4 Implement drift handling: reload for allowlist differences, a warning naming each restart-only field, and port drift as a launch error. Verify with tests that a reload issues `exec … sbx-reload` and no `rm`/`run`, and that the port case raises an error naming `project-sandbox-egress restart`.
+- [x] 4.5 Best-effort removal of a leftover `sbx-egress` network in `down`, and replacement of a `project-sandbox-egress` container whose state does not match. Verify with runner tests in which `network rm` fails and `down` still succeeds.
 
 ## 5. Sidecar-owned relay (Apple, remote upstream)
 
-- [ ] 5.1 Port `egress_relay.py` (foreground `BuildProxyForwarder`, `relay.lock`, `relay.pid`, `relay.port`, `relay.log`) and its supervision in `ensure()`/`down()`, including the port move with re-render and reload. Verify with `tests/test_egress_relay.py`: a CONNECT relayed through a loopback relay, SIGTERM releasing the lock, a pid without a held lock never signalled, and the port-move path.
+- [x] 5.1 Port `egress_relay.py` (foreground `BuildProxyForwarder`, `relay.lock`, `relay.pid`, `relay.port`, `relay.log`) and its supervision in `ensure()`/`down()`, including the port move with re-render and reload. Verify with `tests/test_egress_relay.py`: a CONNECT relayed through a loopback relay, SIGTERM releasing the lock, a pid without a held lock never signalled, and the port-move path.
 
 ## 6. `project-sandbox` launch integration
 
