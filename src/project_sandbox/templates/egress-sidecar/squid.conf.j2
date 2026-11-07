@@ -1,0 +1,108 @@
+# Rendered by project_sandbox.squid_config for the global --egress sidecar.
+# Applied live by sbx-reload (squid -k reconfigure); see design.md Decision 9.
+# Policy: design.md Decisions 2 (pipeline), 5 (Copilot) and 7 (parent proxy).
+http_port {{ listen_port }} ssl-bump tls-cert={{ ca_cert }} tls-key={{ ca_key }} generate-host-certificates=on dynamic_cert_mem_cache_size=4MB
+sslcrtd_program /usr/lib/squid/security_file_certgen -s {{ ssl_db }} -M 4MB
+sslcrtd_children 4
+# squid -k reconfigure (sbx-reload) finds the running Squid through this file.
+pid_filename {{ pid_file }}
+shutdown_lifetime 1 seconds
+cache deny all
+# Bound memory (spike 0.1): Squid sizes its fd table from the runtime's nofile
+# ulimit (often 1M on Docker, ~170 MB resident) and reserves cache_mem even
+# with caching off.
+cache_mem 8 MB
+max_filedescriptors 8192
+error_directory {{ error_directory }}
+logformat sbx {{ log_prefix }} %ts.%03tu %Ss/%>Hs %rm %ru sni=%ssl::>sni bump=%ssl::bump_mode err=%err_code cause=%{sbx_cause}note peer=%<a client=%>a
+access_log stdio:/dev/stdout sbx
+cache_log stdio:/dev/stderr
+host_verify_strict on
+dns_defnames off
+forwarded_for delete
+{% if upstream %}
+# Parent proxy: every request (spliced, bumped or plain HTTP) goes to it.
+cache_peer {{ upstream.host }} parent {{ upstream.port }} 0 no-query no-digest default name=upstream{% if upstream.tls %} tls{% if upstream.ca_file %} tls-cafile={{ upstream_ca }}{% endif %}{% endif %}
+
+never_direct allow all
+{% endif %}
+{% if upstream and upstream.ca_file %}
+# Trust the parent's interception CA for re-originated (bumped) TLS too.
+tls_outgoing_options cafile={{ upstream_ca }}
+{% endif %}
+
+# --- ACLs -------------------------------------------------------------------
+external_acl_type sni_match ttl=60 negative_ttl=60 children-max=4 %ssl::>sni %>rd {{ sni_helper }}
+acl sni_ok external sni_match
+acl CONNECT method CONNECT
+acl plain_http proto HTTP
+acl tls_port port 443
+acl http_port80 port 80
+acl ip_literal dstdom_regex -n ^[0-9.]+$ ^\[.*\]$ ^[0-9a-fA-F:]+$
+acl allowed dstdomain {{ allowed | join(" ") }}
+{% if not upstream %}
+acl private_dst dst {{ private_destinations | join(" ") }}
+{% endif %}
+{% if bumped %}
+acl intercepted dstdomain {{ bumped | join(" ") }}
+acl intercepted_paths urlpath_regex -i {{ paths | join(" ") }}
+{% endif %}
+acl step1 at_step SslBump1
+acl step2 at_step SslBump2
+# Always-true markers: deny_info binds a page to the last ACL on a deny line.
+acl reset src all
+{% for cause in causes.values() if cause.page %}
+acl page_{{ cause.label | replace("-", "_") }} src all
+{% endfor %}
+
+# --- Cause annotations (first match wins; logged as cause=) -----------------
+note sbx_cause port-not-allowed CONNECT !tls_port
+note sbx_cause port-not-allowed plain_http !http_port80
+note sbx_cause ip-literal ip_literal
+{% if not upstream %}
+note sbx_cause private-address private_dst
+{% endif %}
+note sbx_cause host-not-allowed !allowed
+{% if bumped %}
+note sbx_cause plain-http-intercepted plain_http intercepted
+note sbx_cause path-not-allowed !CONNECT intercepted !intercepted_paths
+{% endif %}
+
+# --- CONNECT: deny before any 200, as a reset ------------------------------
+deny_info TCP_RESET reset
+http_access deny CONNECT !tls_port reset
+http_access deny CONNECT ip_literal reset
+http_access deny CONNECT !allowed reset
+{% if not upstream %}
+http_access deny CONNECT private_dst reset
+{% endif %}
+http_access allow CONNECT
+
+# --- Plain HTTP and intercepted requests: labelled pages --------------------
+{% for cause in causes.values() if cause.page %}
+deny_info {{ cause.page }} page_{{ cause.label | replace("-", "_") }}
+{% endfor %}
+http_access deny plain_http !http_port80 page_port_not_allowed
+http_access deny ip_literal page_ip_literal
+http_access deny !allowed page_host_not_allowed
+{% if not upstream %}
+http_access deny private_dst page_private_address
+{% endif %}
+{% if bumped %}
+http_access deny plain_http intercepted page_plain_http_intercepted
+http_access deny intercepted !intercepted_paths page_path_not_allowed
+http_access allow intercepted intercepted_paths
+{% endif %}
+http_access allow plain_http
+http_access deny all page_host_not_allowed
+
+# --- TLS: peek, require SNI == CONNECT host, bump only intercepted hosts ----
+ssl_bump peek step1
+ssl_bump terminate step2 !sni_ok
+{% if bumped %}
+ssl_bump bump step2 intercepted
+{% endif %}
+ssl_bump splice step2 allowed
+ssl_bump terminate all
+# Never tunnel bytes that are not TLS (closes raw tunnels).
+on_unsupported_protocol respond all

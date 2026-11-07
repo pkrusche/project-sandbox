@@ -1,0 +1,24 @@
+#!/bin/sh
+# Apply the host's re-rendered squid.conf to the running Squid without a
+# restart (design.md Decision 9). Run by the host as
+#   <runtime> exec project-sandbox-egress sbx-reload
+# The new config is parsed before it replaces the live one, so a bad config
+# never reaches the running Squid.
+set -eu
+umask 077
+
+INPUT={{ input_dir }}
+LIVE=/etc/squid/squid.conf
+NEXT=/etc/squid/squid.conf.next
+
+cp "$INPUT/squid.conf" "$NEXT"
+chown squid:squid "$NEXT"
+if ! su-exec squid squid -k parse -f "$NEXT" >/dev/null 2>"{{ state_dir }}/parse.err"; then
+  echo "sbx-reload: the new squid.conf does not parse; the running config is unchanged:" >&2
+  tail -n 20 "{{ state_dir }}/parse.err" >&2
+  rm -f "$NEXT"
+  exit 65
+fi
+mv "$NEXT" "$LIVE"
+su-exec squid squid -k reconfigure -f "$LIVE"
+echo "sbx-reload: reconfigured"

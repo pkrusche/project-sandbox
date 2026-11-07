@@ -1,0 +1,45 @@
+# Rendered by scripts/e2e-copilot-egress.py ({{ mode }} mode).
+http_port 3128 ssl-bump tls-cert=/run/fixture-ca/ca.pem tls-key=/run/fixture-ca/ca-key.pem generate-host-certificates=on dynamic_cert_mem_cache_size=4MB
+sslcrtd_program /usr/lib/squid/security_file_certgen -s /run/fixture-ca/ssl_db -M 4MB
+sslcrtd_children 4
+pid_filename none
+cache deny all
+logformat fixture FIXTURE %ts.%03tu %Ss/%>Hs %rm %ru sni=%ssl::>sni bump=%ssl::bump_mode err=%err_code cause=%{sbx_cause}note
+access_log stdio:/dev/stdout fixture
+cache_log stdio:/dev/stderr
+
+acl CONNECT method CONNECT
+acl step1 at_step SslBump1
+{% if mode == "capture" %}
+# Capture: allow everything and intercept everything, so every request path is logged.
+http_access allow all
+ssl_bump bump all
+{% else %}
+# Verify: the sidecar Copilot-only profile. CONNECT-level denials are resets
+# with a logged cause, as in the sidecar (design.md Decision 2).
+acl tls_port port 443
+acl allowed dstdomain {{ hosts | join(" ") }}
+acl rst src all
+deny_info TCP_RESET rst
+note sbx_cause port-not-allowed CONNECT !tls_port
+note sbx_cause host-not-allowed !allowed
+http_access deny CONNECT !tls_port rst
+http_access deny CONNECT !allowed rst
+http_access deny !allowed
+http_access allow CONNECT
+{% if bump_hosts %}
+acl bumped dstdomain {{ bump_hosts | join(" ") }}
+acl bumped_paths urlpath_regex -i {{ bump_paths | join(" ") }}
+note sbx_cause path-not-allowed bumped !bumped_paths
+http_access allow bumped bumped_paths
+http_access deny bumped
+{% endif %}
+http_access allow allowed
+http_access deny all
+
+ssl_bump peek step1
+{% if bump_hosts %}
+ssl_bump bump bumped
+{% endif %}
+ssl_bump splice all
+{% endif %}

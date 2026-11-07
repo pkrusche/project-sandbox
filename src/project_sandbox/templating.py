@@ -14,5 +14,14 @@ _ENV = Environment(loader=PackageLoader("project_sandbox", "templates"))
 _ENV.filters["shlex_quote"] = shlex.quote
 
 
-def get_template(name: str):
-    return _ENV.get_template(name)
+# Line-oriented configs (squid.conf) need block tags to leave no blank lines.
+_TRIMMED_ENV = Environment(
+    loader=PackageLoader("project_sandbox", "templates"),
+    trim_blocks=True,
+    lstrip_blocks=True,
+)
+_TRIMMED_ENV.filters["shlex_quote"] = shlex.quote
+
+
+def get_template(name: str, *, trim_blocks: bool = False):
+    return (_TRIMMED_ENV if trim_blocks else _ENV).get_template(name)

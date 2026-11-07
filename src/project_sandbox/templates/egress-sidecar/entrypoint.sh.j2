@@ -1,0 +1,31 @@
+#!/bin/sh
+# Global egress sidecar entrypoint (egress-sidecar-macos, design.md
+# Decision 12). Runs as root only to stage the CA and config, then drops to the
+# unprivileged squid user.
+#
+# Read-only mount {{ input_dir }}: ca.pem, ca-key.pem, squid.conf and optionally
+# upstream-ca.pem (the parent proxy's CA bundle). The host changes squid.conf
+# live and runs sbx-reload through exec.
+set -eu
+umask 077
+
+INPUT={{ input_dir }}
+STATE={{ state_dir }}
+
+mkdir -p "$STATE"
+cp "$INPUT/ca.pem" "$INPUT/ca-key.pem" "$STATE/"
+cp "$INPUT/squid.conf" /etc/squid/squid.conf
+if [ -f "$INPUT/upstream-ca.pem" ]; then
+  cp "$INPUT/upstream-ca.pem" "$STATE/upstream-ca.pem"
+fi
+/usr/lib/squid/security_file_certgen -c -s "$STATE/ssl_db" -M 4MB >/dev/null
+chown -R squid:squid "$STATE" /etc/squid/squid.conf
+chmod 0600 "$STATE/ca-key.pem"
+
+# Squid cannot reopen a root-owned console fd after dropping privileges
+# (spike 0.2). Give it a FIFO it owns, relayed to our stdout, and keep Squid as
+# PID 1 so the runtime's stop signal reaches it directly.
+mkfifo -m 0600 "$STATE/log"
+chown squid:squid "$STATE/log"
+cat "$STATE/log" &
+exec su-exec squid squid -N -f /etc/squid/squid.conf >"$STATE/log" 2>&1

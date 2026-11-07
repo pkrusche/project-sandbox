@@ -407,3 +407,129 @@ class NpmPinUpdateTests(TestCase):
             if m.group("package") == package
         )
         self.assertEqual(match.group("version"), config_agents._PI_NPM_VERSION_PIN)
+
+
+class SquidSidecarPinTests(TestCase):
+    DIGEST = "4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1"
+
+    def test_regex_matches_split_and_contiguous_forms(self) -> None:
+        split = '    "alpine:3.22.1"\n    "@sha256:' + "a" * 64 + '"\n'
+        contiguous = "FROM alpine:3.22.1@sha256:" + "b" * 64 + "\n"
+        for text, digest in ((split, "a" * 64), (contiguous, "b" * 64)):
+            with self.subTest(text=text):
+                match = update_pins.ALPINE_IMAGE_RE.search(text)
+                self.assertEqual(match.group("version"), "3.22.1")
+                self.assertEqual(match.group("digest"), digest)
+        self.assertEqual(
+            update_pins.SQUID_APK_RE.search("apk add squid~6.12 socat").group(
+                "version"
+            ),
+            "6.12",
+        )
+
+    def test_sidecar_and_fixture_pins_agree(self) -> None:
+        version, digest, squid = update_pins.current_squid_sidecar_pins()
+        self.assertEqual(version, "3.22.1")
+        self.assertEqual(digest, self.DIGEST)
+        self.assertEqual(squid, "6.12")
+
+    def test_parse_apkindex(self) -> None:
+        index = (
+            b"C:Q1abc=\nP:socat\nV:1.8.0.3-r1\n\n"
+            b"C:Q1def=\nP:squid\nV:6.12-r1\nA:x86_64\n\n"
+        )
+        self.assertEqual(update_pins.parse_apkindex_version(index, "squid"), "6.12-r1")
+        with self.assertRaises(RuntimeError):
+            update_pins.parse_apkindex_version(index, "nginx")
+        self.assertEqual(update_pins.squid_release("6.12-r1"), "6.12")
+        self.assertEqual(update_pins.squid_release("7.0.1-r0"), "7.0")
+
+    def _temp_pin_files(self, tmp: Path) -> tuple[Path, Path]:
+        sidecar = tmp / "sidecar_image.py"
+        sidecar.write_text(
+            'BASE_IMAGE = (\n    "alpine:3.22.1"\n    "@sha256:'
+            + self.DIGEST
+            + '"\n)\n'
+            'SQUID_PACKAGE = "squid~6.12"\n'
+        )
+        fixture = tmp / "Dockerfile"
+        fixture.write_text(
+            "FROM alpine:3.22.1@sha256:" + self.DIGEST + "\n"
+            "RUN apk add --no-cache squid~6.12 openssl su-exec\n"
+        )
+        return sidecar, fixture
+
+    def test_collector_updates_both_files(self) -> None:
+        old = datetime.now(UTC) - timedelta(days=10)
+        with tempfile.TemporaryDirectory() as tmp:
+            sidecar, fixture = self._temp_pin_files(Path(tmp))
+            with (
+                patch.object(
+                    update_pins, "SQUID_SIDECAR_PIN_FILES", (sidecar, fixture)
+                ),
+                patch.object(
+                    update_pins,
+                    "latest_alpine_releases",
+                    return_value=[
+                        update_pins.UpstreamRelease("3.22.1", old),
+                        update_pins.UpstreamRelease("3.23.0", old),
+                    ],
+                ),
+                patch.object(
+                    update_pins, "registry_manifest_digest", return_value="c" * 64
+                ) as digest,
+                patch.object(
+                    update_pins, "alpine_package_version", return_value="6.14-r0"
+                ) as package,
+            ):
+                updates = update_pins.collect_squid_sidecar_update(timedelta(hours=24))
+                self.assertEqual(len(updates), 1)
+                self.assertIn("squid~6.14", updates[0].latest)
+                updates[0].apply()
+            digest.assert_called_once_with(
+                "registry-1.docker.io", "library/alpine", "3.23.0"
+            )
+            package.assert_called_once_with("3.23", "squid")
+            sidecar_text = sidecar.read_text()
+            self.assertIn(
+                '"alpine:3.23.0"\n    "@sha256:' + "c" * 64 + '"', sidecar_text
+            )
+            self.assertIn("squid~6.14", sidecar_text)
+            fixture_text = fixture.read_text()
+            self.assertIn("FROM alpine:3.23.0@sha256:" + "c" * 64, fixture_text)
+            self.assertIn("squid~6.14 openssl", fixture_text)
+
+    def test_collector_is_noop_when_current(self) -> None:
+        old = datetime.now(UTC) - timedelta(days=10)
+        with tempfile.TemporaryDirectory() as tmp:
+            sidecar, fixture = self._temp_pin_files(Path(tmp))
+            with (
+                patch.object(
+                    update_pins, "SQUID_SIDECAR_PIN_FILES", (sidecar, fixture)
+                ),
+                patch.object(
+                    update_pins,
+                    "latest_alpine_releases",
+                    return_value=[update_pins.UpstreamRelease("3.22.1", old)],
+                ),
+                patch.object(
+                    update_pins, "registry_manifest_digest", return_value=self.DIGEST
+                ),
+                patch.object(
+                    update_pins, "alpine_package_version", return_value="6.12-r3"
+                ),
+                redirect_stdout(io.StringIO()),
+            ):
+                self.assertEqual(
+                    update_pins.collect_squid_sidecar_update(timedelta(hours=24)), []
+                )
+
+    def test_collector_rejects_disagreeing_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            sidecar, fixture = self._temp_pin_files(Path(tmp))
+            fixture.write_text(fixture.read_text().replace("squid~6.12", "squid~6.11"))
+            with patch.object(
+                update_pins, "SQUID_SIDECAR_PIN_FILES", (sidecar, fixture)
+            ):
+                with self.assertRaisesRegex(RuntimeError, "disagree"):
+                    update_pins.current_squid_sidecar_pins()

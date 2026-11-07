@@ -13,8 +13,8 @@ Reference implementation: the squid-sidecar line (`jj log -r 'ptyttxkk..rymymutp
 
 ## 2. Squid config and sidecar image
 
-- [ ] 2.1 Port `squid_config.py`, `templates/egress-sidecar/squid.conf.j2`, the error pages and `sni-match` (design.md Decision 2), including the `client=%>a` log field and `pid_filename`. Verify with `tests/test_squid_config.py` for direct and parent mode, the cause notes and their order, and hostname validation.
-- [ ] 2.2 Port `sidecar_image.py`, the `Dockerfile` and `entrypoint.sh` templates and `sbx-reload`, without `socat`, `sbx-forwarders` or `SBX_INTERNAL_SUBNET`, and add the pins to `scripts/update-pins.py`. Verify with renderer tests that every `COPY` source is a rendered file, that the tag changes with any template, and with the update-pins tests.
+- [x] 2.1 Port `squid_config.py`, `templates/egress-sidecar/squid.conf.j2`, the error pages and `sni-match` (design.md Decision 2), including the `client=%>a` log field and `pid_filename`. Verify with `tests/test_squid_config.py` for direct and parent mode, the cause notes and their order, and hostname validation.
+- [x] 2.2 Port `sidecar_image.py`, the `Dockerfile` and `entrypoint.sh` templates and `sbx-reload`, without `socat`, `sbx-forwarders` or `SBX_INTERNAL_SUBNET`, and add the pins to `scripts/update-pins.py`. Verify with renderer tests that every `COPY` source is a rendered file, that the tag changes with any template, and with the update-pins tests.
 
 ## 3. Sidecar CA (`session_ca.py`)
 

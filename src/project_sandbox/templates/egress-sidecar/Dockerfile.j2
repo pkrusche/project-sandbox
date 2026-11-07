@@ -1,0 +1,20 @@
+# Squid egress sidecar for --egress sidecar (design.md Decision 12).
+# Rendered by project_sandbox.sidecar_image; the image tag is a hash of the
+# rendered build context, so a pin or template change rebuilds it.
+FROM {{ base_image }}
+# squid~X.Y accepts Alpine's security revisions of the pinned release
+# (superseded revisions are removed from the branch repository).
+RUN apk add --no-cache {{ squid_package }} su-exec \
+ && test -x /usr/lib/squid/security_file_certgen \
+ && mkdir -p {{ error_directory }} \
+ && cp /usr/share/squid/errors/templates/* {{ error_directory }}/
+# Labelled project-sandbox-egress denial pages (squid.conf error_directory).
+# Listed file by file: Apple container 1.4.1's builder silently copies nothing
+# when a COPY source is a directory.
+COPY {{ (error_page_sources + [error_directory + '/']) | tojson }}
+COPY entrypoint.sh /usr/local/bin/egress-sidecar-entrypoint
+COPY sni-match /usr/local/libexec/sni-match
+COPY sbx-reload /usr/local/bin/sbx-reload
+RUN chmod 0755 /usr/local/bin/egress-sidecar-entrypoint /usr/local/libexec/sni-match \
+      /usr/local/bin/sbx-reload
+ENTRYPOINT ["/usr/local/bin/egress-sidecar-entrypoint"]
