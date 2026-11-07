@@ -5,10 +5,13 @@ import importlib.util
 import io
 import json
 import shutil
+import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -172,6 +175,105 @@ class GradingTests(unittest.TestCase):
             "exec",
         )
         compile(self.script.LOCAL_PROBE_SOURCE, "local.py", "exec")
+
+
+class _ExitedProc:
+    """A launch that already died (e.g. its image build failed)."""
+
+    _next_pid = 90000
+
+    def __init__(self, *_args, output: str = "", **_kwargs) -> None:
+        _ExitedProc._next_pid += 1
+        self.pid = _ExitedProc._next_pid
+        self.returncode = 1
+        self.output = output
+
+    def poll(self) -> int:
+        return self.returncode
+
+    def communicate(self, timeout=None):
+        return self.output, None
+
+    def kill(self) -> None:
+        pass
+
+
+class _RunningProc(_ExitedProc):
+    def poll(self):
+        return None
+
+
+class HangRegressionTests(unittest.TestCase):
+    """Regression: a failed launch made the shared check wait out --timeout."""
+
+    def setUp(self) -> None:
+        self.script = _load()
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp)
+
+    def test_wait_files_stops_once_a_launch_exited(self) -> None:
+        started = time.monotonic()
+        ok = self.script._wait_files(
+            [self.tmp / "never"], 60, [_RunningProc(), _ExitedProc()], interval=0.01
+        )
+        self.assertFalse(ok)
+        self.assertLess(time.monotonic() - started, 5)
+
+    def test_wait_files_still_succeeds_when_the_file_landed_before_exit(self) -> None:
+        (self.tmp / "ready").write_text("")
+        self.assertTrue(
+            self.script._wait_files([self.tmp / "ready"], 60, [_ExitedProc()])
+        )
+
+    def test_wait_files_times_out_while_launches_run(self) -> None:
+        self.assertFalse(
+            self.script._wait_files(
+                [self.tmp / "never"], 0.05, [_RunningProc()], interval=0.01
+            )
+        )
+
+    def test_egress_timeout_becomes_a_failed_result(self) -> None:
+        args = self.script.parse_args(["--timeout", "7"])
+        args.runtime = "docker"
+        with mock.patch.object(
+            self.script.subprocess,
+            "run",
+            side_effect=subprocess.TimeoutExpired(["x"], 7),
+        ) as run:
+            result = self.script.egress(args, "up")
+        self.assertEqual(run.call_args.kwargs["timeout"], 7)
+        self.assertEqual(result.returncode, 124)
+        self.assertIn("project-sandbox-egress up timed out after 7s", result.stderr)
+
+    def test_shared_check_returns_promptly_when_launches_fail(self) -> None:
+        args = self.script.parse_args(["--timeout", "600"])
+        args.runtime = "apple-container"
+        error = 'Error: unknown: "open /tmp/1: read-only file system"'
+        egress_calls = []
+
+        def fake_egress(_args, *command):
+            egress_calls.append(command)
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+        work = self.tmp / "work"
+        work.mkdir()
+        started = time.monotonic()
+        with mock.patch.dict(
+            "os.environ", {"XDG_CONFIG_HOME": str(self.tmp / "config")}
+        ), mock.patch.object(
+            self.script.subprocess,
+            "Popen",
+            side_effect=lambda *a, **k: _ExitedProc(output=error),
+        ), mock.patch.object(self.script, "egress", side_effect=fake_egress):
+            results = self.script.check_shared(args, container_cli.APPLE_CONTAINER, work)
+        self.assertLess(time.monotonic() - started, 10)
+        by_name = {r.name: r for r in results}
+        self.assertFalse(by_name["shared:both-started"].ok)
+        self.assertIn("read-only file system", by_name["shared:both-started"].detail)
+        self.assertIn("exit 1", by_name["shared:both-started"].detail)
+        # The steps that need running sandboxes are skipped, not graded empty.
+        self.assertNotIn("shared:allow-add", by_name)
+        self.assertEqual(egress_calls, [("up",)])
 
 
 class IsolateXdgTests(unittest.TestCase):

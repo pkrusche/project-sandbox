@@ -57,6 +57,7 @@ import sys
 import tempfile
 import threading
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -492,22 +493,37 @@ def _policy_text(*hosts: str, upstream: str = "", port: int | None = None) -> st
 
 
 def egress(args, *command: str) -> subprocess.CompletedProcess:
-    """Run project-sandbox-egress against the selected runtime."""
-    return subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "project_sandbox.egress_cli",
-            *command,
-            "--runtime",
-            args.runtime,
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        errors="replace",
-        check=False,
-    )
+    """Run project-sandbox-egress against the selected runtime.
+
+    Bounded by ``--timeout`` (``up``/``restart`` may build the sidecar image):
+    a wedged runtime call becomes a failed result instead of a stuck suite.
+    """
+    argv = [
+        sys.executable,
+        "-m",
+        "project_sandbox.egress_cli",
+        *command,
+        "--runtime",
+        args.runtime,
+    ]
+    try:
+        return subprocess.run(
+            argv,
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            check=False,
+            timeout=args.timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(
+            argv,
+            124,
+            stdout="",
+            stderr=f"project-sandbox-egress {' '.join(command)} timed out after "
+            f"{args.timeout}s",
+        )
 
 
 def _launch_argv(args, project: Path, prompt: str, log: Path, *extra: str) -> list[str]:
@@ -674,13 +690,29 @@ def check_policy(args, runtime, work: Path) -> list[Result]:
     return results
 
 
-def _wait_files(paths: list[Path], timeout: float) -> bool:
+def _wait_files(
+    paths: list[Path],
+    timeout: float,
+    procs: Sequence[subprocess.Popen] = (),
+    *,
+    interval: float = 1.0,
+) -> bool:
+    """Wait until every path exists.
+
+    Gives up early once any of ``procs`` (the launches expected to write the
+    files) has exited with a file still missing: it can no longer appear, and
+    waiting out ``timeout`` only made a failed launch look like a hang.
+    """
     deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
+    while True:
         if all(p.exists() for p in paths):
             return True
-        time.sleep(1)
-    return False
+        if any(proc.poll() is not None for proc in procs):
+            # One last look: the file may have landed just before the exit.
+            return all(p.exists() for p in paths)
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(interval)
 
 
 def _read_json(path: Path) -> dict:
@@ -711,81 +743,12 @@ def check_shared(args, runtime, work: Path) -> list[Result]:
     ]
     results = []
     try:
-        ready = _wait_files([p / "shared-ready.json" for p in projects], args.timeout)
+        ready = _wait_files(
+            [p / "shared-ready.json" for p in projects], args.timeout, procs
+        )
         results.append(Result("shared:both-started", ready, ""))
-        status = json.loads(egress(args, "status", "--json").stdout or "{}")
-        results.append(
-            Result(
-                "shared:one-sidecar",
-                _sidecar_count(runtime) == 1,
-                f"{_sidecar_count(runtime)} sidecar containers",
-            )
-        )
-        results.append(
-            Result(
-                "shared:endpoint",
-                status.get("endpoint") == f"127.0.0.1:{PORT}",
-                str(status.get("endpoint")),
-            )
-        )
-        before = [_read_json(p / "shared-ready.json") for p in projects]
-        results.append(
-            Result(
-                "shared:allowed-before",
-                all(b.get("before") == 200 for b in before),
-                str(before),
-            )
-        )
-        results.append(
-            Result(
-                "shared:live-host-denied-before",
-                all(b.get("live_before") != 200 for b in before),
-                str(before),
-            )
-        )
-        added = egress(args, "allow", "add", LIVE_HOST)
-        results.append(Result("shared:allow-add", added.returncode == 0, added.stderr))
-        for p in projects:
-            (p / "go").write_text("")
-        _wait_files([p / "shared-live.json" for p in projects], 120)
-        live = [_read_json(p / "shared-live.json") for p in projects]
-        results.append(
-            Result(
-                "shared:allow-add-reaches-both",
-                all(isinstance(r.get("live_after"), int) for r in live),
-                str(live),
-            )
-        )
-        results.append(
-            Result(
-                "shared:no-restart",
-                _sidecar_running(runtime)
-                and status.get("started_at")
-                == json.loads(egress(args, "status", "--json").stdout or "{}").get(
-                    "started_at"
-                ),
-                "",
-            )
-        )
-        down = egress(args, "down")
-        results.append(
-            Result(
-                "shared:down",
-                down.returncode == 0 and "have lost egress" in down.stdout,
-                down.stdout[-200:],
-            )
-        )
-        for p in projects:
-            (p / "down").write_text("")
-        _wait_files([p / "shared-done.json" for p in projects], 120)
-        done = [_read_json(p / "shared-done.json") for p in projects]
-        results.append(
-            Result(
-                "shared:down-cuts-both-off",
-                all(d.get("after_down") not in (200, None) for d in done),
-                str(done),
-            )
-        )
+        if ready:
+            results += _shared_while_running(args, runtime, projects, procs)
     finally:
         for proc in procs:
             try:
@@ -795,6 +758,10 @@ def check_shared(args, runtime, work: Path) -> list[Result]:
                 out, _ = proc.communicate()
             (work / f"shared-{proc.pid}.out").write_text(out or "")
     outputs = [(work / f"shared-{proc.pid}.out").read_text() for proc in procs]
+    if not ready:
+        results[0].detail = " | ".join(
+            f"exit {proc.returncode}: {out[-200:]}" for proc, out in zip(procs, outputs)
+        )
     results.append(
         Result(
             "shared:reuse-across-launches",
@@ -804,6 +771,87 @@ def check_shared(args, runtime, work: Path) -> list[Result]:
     )
     up = egress(args, "up")  # for the later checks
     results.append(Result("shared:up-after-down", up.returncode == 0, up.stderr[-200:]))
+    return results
+
+
+def _shared_while_running(
+    args, runtime, projects: list[Path], procs: list[subprocess.Popen]
+) -> list[Result]:
+    """The shared steps that need both sandboxes up and stepping on flag files."""
+    results = []
+    status = json.loads(egress(args, "status", "--json").stdout or "{}")
+    results.append(
+        Result(
+            "shared:one-sidecar",
+            _sidecar_count(runtime) == 1,
+            f"{_sidecar_count(runtime)} sidecar containers",
+        )
+    )
+    results.append(
+        Result(
+            "shared:endpoint",
+            status.get("endpoint") == f"127.0.0.1:{PORT}",
+            str(status.get("endpoint")),
+        )
+    )
+    before = [_read_json(p / "shared-ready.json") for p in projects]
+    results.append(
+        Result(
+            "shared:allowed-before",
+            all(b.get("before") == 200 for b in before),
+            str(before),
+        )
+    )
+    results.append(
+        Result(
+            "shared:live-host-denied-before",
+            all(b.get("live_before") != 200 for b in before),
+            str(before),
+        )
+    )
+    added = egress(args, "allow", "add", LIVE_HOST)
+    results.append(Result("shared:allow-add", added.returncode == 0, added.stderr))
+    for p in projects:
+        (p / "go").write_text("")
+    _wait_files([p / "shared-live.json" for p in projects], 120, procs)
+    live = [_read_json(p / "shared-live.json") for p in projects]
+    results.append(
+        Result(
+            "shared:allow-add-reaches-both",
+            all(isinstance(r.get("live_after"), int) for r in live),
+            str(live),
+        )
+    )
+    results.append(
+        Result(
+            "shared:no-restart",
+            _sidecar_running(runtime)
+            and status.get("started_at")
+            == json.loads(egress(args, "status", "--json").stdout or "{}").get(
+                "started_at"
+            ),
+            "",
+        )
+    )
+    down = egress(args, "down")
+    results.append(
+        Result(
+            "shared:down",
+            down.returncode == 0 and "have lost egress" in down.stdout,
+            down.stdout[-200:],
+        )
+    )
+    for p in projects:
+        (p / "down").write_text("")
+    _wait_files([p / "shared-done.json" for p in projects], 120, procs)
+    done = [_read_json(p / "shared-done.json") for p in projects]
+    results.append(
+        Result(
+            "shared:down-cuts-both-off",
+            all(d.get("after_down") not in (200, None) for d in done),
+            str(done),
+        )
+    )
     return results
 
 
