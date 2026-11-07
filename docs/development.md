@@ -149,7 +149,8 @@ single one, pass `--only SUITE`; `--list` prints the accepted suite names:
 
 `--all-tests` runs every suite, including all opt-in ones. It implies
 `--with-agent-proxy`, `--with-internet-proxy`, `--with-proxy-endpoints`,
-`--with-build-proxy`, and `--with-copilot`, and exits early (64) unless `--internet-proxy-dir` and
+`--with-build-proxy`, `--with-copilot`, `--with-copilot-egress`, and
+`--with-egress-sidecar`, and exits early (64) unless `--internet-proxy-dir` and
 `--agentgateway-dir` are supplied (and `--no-build` is not). These suites are
 billable and destructive:
 
@@ -158,12 +159,44 @@ billable and destructive:
   --internet-proxy-dir DIR --agentgateway-dir DIR
 ```
 
+Two suites cover [`--egress sidecar`](egress-sidecar.md):
+
+- `egress-sidecar` (`scripts/e2e-egress-sidecar.py`, not billable): real
+  sessions on the runtime's global sidecar, which the sandbox reaches at its
+  published endpoint through local-service forwarding. Its checks:
+  - `policy`: probes graded from inside the sandbox and from the sidecar log,
+    direct egress and host ports that are not local services, the session-end
+    denial count, and the endpoint answering on host loopback only.
+  - `shared`: two concurrent sandboxes on one sidecar, reuse across launches,
+    a live `allow add`, and `down`.
+  - `parent`: chaining through an intercepting Squid fixture. On Apple
+    `container` it also checks that the sidecar-owned relay survives the first
+    session's hung-up process group.
+  - `local`: a fake agent gateway that listens only on the host's `127.0.0.1`,
+    reached through local-service forwarding rather than the sidecar.
+
+  It needs network access and image builds, uses a temporary
+  `XDG_CONFIG_HOME`/`XDG_STATE_HOME`, and refuses to start while a global
+  sidecar exists (`--replace-existing` overrides that). `--port` changes the
+  sidecar's published port (default 3129).
+- `copilot-egress` (`scripts/e2e-copilot-egress.py`, billable): captures the
+  Copilot CLI's hosts and paths through an intercepting fixture, verifies the
+  Copilot-only profile, and checks that GitHub repository access stays blocked.
+  It writes a report to `--copilot-egress-report-dir`.
+
+On Podman, leave `DOCKER_HOST` unset (or pointed at Docker) for the
+`egress-sidecar` suite. The parent fixture runs on Docker, and with
+`DOCKER_HOST` set to the Podman socket, `docker build` uses a buildx
+`docker-container` builder that does not load the image, so `parent` fails
+with a pull error.
+
 The Internet isolation audit expects the proxy to deny `--blocked-url`, which
 defaults to `https://example.com`; pass it only to check a different URL.
 
 Naming an opt-in suite with `--only` is itself the opt-in, so `--only
 proxy-endpoints`, `--only agent-proxy`, `--only agent-proxy-isolation`, `--only
-copilot`, and `--only internet-proxy-isolation` run without their corresponding `--with-*` flags
+copilot`, `--only copilot-egress`, `--only egress-sidecar`, and `--only
+internet-proxy-isolation` run without their corresponding `--with-*` flags
 (the destructive Internet audit still requires its `--internet-proxy-dir` and
 `--agentgateway-dir` arguments).
 Availability gates still apply: a selected suite that needs a container

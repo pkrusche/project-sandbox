@@ -42,6 +42,8 @@ Notable changes to `project-sandbox` are documented here.
   (comment-preserving `egress.toml` edits).
 - `scripts/update-pins.py` also updates the sidecar's Alpine image digest and
   Squid release.
+- Opt-in e2e suites `egress-sidecar` (`scripts/e2e-egress-sidecar.py`) and
+  `copilot-egress` (`scripts/e2e-copilot-egress.py`, billable).
 
 ## [0.3.1]
 
