@@ -75,6 +75,61 @@ Rootless Docker is detected from `docker info` (`SecurityOptions` contains `root
 - **[The uplink subnet collides with a host network]** → Docker allocates it from its address pools, as for any bridge. `status` shows the subnet.
 - **[A host firewall such as ufw blocks the uplink gateway]** → The readiness step probes one forwarded port from inside the sidecar and fails with a message about the host firewall.
 
+## Spike Results (2026-11-07)
+
+Host: Debian 13 (trixie), Docker Engine 29.9.2 (rootful), rootless Podman 5.4.2 with pasta (passt 0.0~git20250503.587980c). Probes used a host `http.server` and `alpine` / `python:3.12-slim` containers.
+
+### 0.1 Rootless Podman with pasta: Decision 3's premise does not hold
+
+| Container networks | Host service on `127.0.0.1` | Host service on `0.0.0.0` |
+|---|---|---|
+| netavark bridge + `--internal` network | refused | — |
+| netavark bridge only | refused | connected |
+| `--internal` only | network unreachable | — |
+| default per-container pasta | refused | connected |
+| per-container `pasta:--map-host-loopback,169.254.1.2` | connected | connected |
+| bridge + `--internal`, rootless netns with `pasta_options = ["--map-host-loopback", "169.254.1.2"]` (via `CONTAINERS_CONF_OVERRIDE`) | connected | — |
+
+- `host.containers.internal` resolves to `169.254.1.2`. Podman's default mapping (`--map-guest-addr`) reaches the host's non-loopback addresses, not host loopback, so a `127.0.0.1`-only service is refused.
+- Host loopback is reachable only with pasta's `--map-host-loopback`. For netavark networks that must be set on the **rootless network namespace**, which every rootless container on this user account shares. It takes effect only when that namespace is created, i.e. while no rootless container is running.
+- With that option, a container on an `--internal` network alone (the sandbox shape) still cannot reach `169.254.1.2`. But every rootless container on a non-internal bridge, not only the sidecar, would reach all host loopback services.
+
+#### 0.1b Reusing firewall mode's pasta forwarding
+
+Firewall mode runs each build and session with `--network pasta:-a,198.18.0.2,…,-4,-T,<port>:<port>` (`local_service_network.network_argument`), which forwards exactly the listed ports from container loopback to host loopback. Checked whether the sidecar can do the same:
+
+- `podman run --network pasta:… --network <internal>`: refused ("cannot set multiple networks without bridge network mode").
+- `podman network connect <internal>` on a pasta-mode container: refused ("pasta is not supported"). The `-T` forward itself worked inside that container.
+
+The sidecar must sit on the internal `sbx-egress` network, so per-container pasta cannot carry its forwarders.
+
+Prototype of the Docker Engine design adapted to Podman: a private uplink bridge `sbx-spike-up` (gateway `10.89.0.1`, inside the rootless netns), the sidecar on it plus an internal network, a listener started with `podman unshare --rootless-netns` on `<gateway>:<port>` with a peer check (`range=<sidecar IP>/32`), relaying over a Unix socket in `$XDG_RUNTIME_DIR` to a host-netns process that connects to `127.0.0.1:<port>`. Filesystem Unix sockets cross network namespaces.
+
+| Probe container | Result |
+|---|---|
+| sidecar (uplink + internal) | connected to the `127.0.0.1`-only host service |
+| other container on the uplink | refused by the peer check |
+| container on the default `podman` network | refused by the peer check (the gateway is reachable, as on Docker Engine) |
+| internal network only (sandbox shape) | no route |
+| default per-container pasta | no route |
+
+Observations:
+- Same security shape as Docker Engine: the peer check is the boundary, and only configured ports listen. No global `containers.conf` change, no Podman 5.3 dependency.
+- Differences from Docker Engine: the listener needs a second process inside the rootless netns, and both the bridge interface and the netns exist only while a container uses them, so the listener must start after the sidecar and restart whenever the rootless netns is recreated.
+- The rootless netns carries a copy of the host's LAN address (`bond0 192.168.1.144/24`). This may hide an upstream proxy on the host's own LAN address from the sidecar, the case `PASTA_ADDRESS` fixes in firewall mode. Not verified for sidecar mode.
+
+### 0.2 Docker Engine: the private uplink is not a reachability boundary
+
+| Probe container network | Connects to host listener on `sbx-spike-uplink` gateway (`172.18.0.1`) | Peer address seen by listener |
+|---|---|---|
+| uplink bridge | yes | `172.18.0.2` |
+| default `bridge` (`docker0`) | yes | `172.17.0.2` |
+| another user bridge | yes | (not recorded) |
+
+- The gateway address is a host address. Traffic to it takes the host's INPUT path, which Docker's inter-bridge isolation does not filter. Decision 1's "limits the listener's audience by construction" is therefore false. The proposed scenario "Other containers cannot use the forwarders" holds only through Decision 2's peer check.
+- Source addresses are preserved (no masquerading on the host-local path), so the peer check can reliably tell the sidecar's uplink IP apart from other containers.
+- ufw: not installed on this host; the ufw part of 0.2 is still open.
+
 ## Migration Plan
 
 - No user action is needed. On Docker Engine, the first `up` after upgrading creates `sbx-egress-uplink`. A running sidecar from the macOS change shows restart drift ("network layout"), and `project-sandbox-egress restart` moves it.

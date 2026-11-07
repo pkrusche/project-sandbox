@@ -2,7 +2,7 @@
 
 ## 0. Spikes (Linux host with Docker Engine and rootless Podman 5.3+; record results in design.md)
 
-- [ ] 0.1 On rootless Podman with pasta, attach a container to a netavark bridge and to an `--internal` network, and connect to `host.containers.internal:<port>` where a service listens only on host `127.0.0.1`. Record whether it connects, and on which Podman versions. If it fails, reduce the spec delta to Docker Engine before continuing (design.md Decision 3).
+- [x] 0.1 On rootless Podman with pasta, attach a container to a netavark bridge and to an `--internal` network, and connect to `host.containers.internal:<port>` where a service listens only on host `127.0.0.1`. Record whether it connects, and on which Podman versions. If it fails, reduce the spec delta to Docker Engine before continuing (design.md Decision 3).
 - [ ] 0.2 On Docker Engine, create a user bridge, bind a host listener on its gateway, and verify that a container on that bridge connects while a container on `docker0` cannot. Repeat with ufw enabled and record the result for the Decision 4 risk.
 
 ## 1. Strategy selection
