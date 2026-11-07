@@ -44,10 +44,10 @@ Reference implementation: the squid-sidecar line (`jj log -r 'ptyttxkk..rymymutp
 
 ## 7. `project-sandbox-egress` executable
 
-- [ ] 7.1 Port `egress_cli.py` without `forward`, and register it in `[project.scripts]`. Verify that `uv run project-sandbox-egress --help` lists `up`, `down`, `restart`, `status`, `reload`, `allow` and `log`, and that an unknown subcommand exits 2.
-- [ ] 7.2 Implement `up`, `down`, `restart [--new-ca]` and `status [--json]` with the published endpoint in the report. Verify with CLI tests using an injected runner, including `status` issuing no mutating argv.
-- [ ] 7.3 Implement `allow list|add|remove`, `reload` and `log [--follow] [--denied] [--since]`. Verify with tests for edit plus reload argv, the GitHub rejection with the file unchanged, and both `--since` forms.
-- [ ] 7.4 Add the sidecar status line to `project-sandbox doctor`. Verify with `tests/test_doctor.py` that doctor issues only read-only argv.
+- [x] 7.1 Port `egress_cli.py` without `forward`, and register it in `[project.scripts]`. Verify that `uv run project-sandbox-egress --help` lists `up`, `down`, `restart`, `status`, `reload`, `allow` and `log`, and that an unknown subcommand exits 2.
+- [x] 7.2 Implement `up`, `down`, `restart [--new-ca]` and `status [--json]` with the published endpoint in the report. Verify with CLI tests using an injected runner, including `status` issuing no mutating argv.
+- [x] 7.3 Implement `allow list|add|remove`, `reload` and `log [--follow] [--denied] [--since]`. Verify with tests for edit plus reload argv, the GitHub rejection with the file unchanged, and both `--since` forms.
+- [x] 7.4 Add the sidecar status line to `project-sandbox doctor`. Verify with `tests/test_doctor.py` that doctor issues only read-only argv.
 
 ## 8. Documentation
 
