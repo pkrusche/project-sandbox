@@ -4,7 +4,7 @@ Reference implementation: the squid-sidecar line (`jj log -r 'ptyttxkk..rymymutp
 
 ## 0. Spikes (macOS; record results in design.md)
 
-- [ ] 0.1 For each of Apple `container`, Docker Desktop and Podman machine: run a container that publishes `127.0.0.1:3129:3128`, then reach it from two concurrent containers through the firewall-mode local-service strategy for that runtime (`host.docker.internal`). Also check that the port answers on host loopback only. If Apple `container` cannot publish on loopback, record the result and decide the Decision 1 fallback before group 6.
+- [x] 0.1 For each of Apple `container`, Docker Desktop and Podman machine: run a container that publishes `127.0.0.1:3129:3128`, then reach it from two concurrent containers through the firewall-mode local-service strategy for that runtime (`host.docker.internal`). Also check that the port answers on host loopback only. If Apple `container` cannot publish on loopback, record the result and decide the Decision 1 fallback before group 6.
 
 ## 1. Policy file (`egress_policy.py`)
 

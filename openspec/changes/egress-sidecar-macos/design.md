@@ -56,11 +56,21 @@ The squid-sidecar implementation (`rymymutp` and its ancestors) is the reference
   - The proxy variables come from the same code as firewall mode (`HTTP(S)_PROXY=http://host.docker.internal:<port>`, `NO_PROXY` with the local-service bypass entries).
   - A remote `--agent-proxy` is admitted as in firewall mode with `--internet-proxy`: a direct, port-pinned firewall destination that does not pass through Squid.
 - **The port is baked into the sandbox image**, like any firewall-mode destination. A launch reads it from `egress.toml` before rendering. If the running sidecar publishes a different port (restart drift), the launch fails and names `project-sandbox-egress restart`, because the sandbox could not reach it.
-- **No per-session listener on these runtimes.** Each strategy reaches host loopback through a runtime alias, so concurrent sandboxes share the published port without binding anything per session. Spike 0.1 verifies this on all three runtimes, and verifies that Apple `container` 1.4.1 publishes a loopback port.
+- **No per-session listener on these runtimes.** Each strategy reaches host loopback through a runtime alias, so concurrent sandboxes share the published port without binding anything per session. Spike 0.1 verified this on all three runtimes (below).
 - **What is dropped from the squid-sidecar line:** the internal network `sbx-egress`, the in-sidecar `socat` forwarders and `sidecar/forwarders`, `[egress.sidecar] forward_ports`, `project-sandbox-egress forward`, the per-session `egress.conf` (`sidecar_ip`, `forward_ports`), the `sidecar` firewall policy and `init-firewall-sidecar.sh.j2`, the `/etc/hosts` rewrite, `SBX_INTERNAL_SUBNET` and `socat` in the image.
 - *Alternative:* the internal network with sidecar forwarders (the squid-sidecar line). Rejected: it needs a forwarder per local service inside the sidecar, and on Linux a host-side helper per runtime, one of them inside Podman's rootless network namespace (see the Linux spikes). Its one advantage, no route even if the sandbox firewall failed, is given up (Risks).
 - *Alternative:* reach the sidecar's container IP directly on the default network. Rejected: the IP changes on restart and would have to be a runtime input, and container-to-container reachability differs per runtime.
-- *Fallback, if spike 0.1 shows Apple `container` cannot publish on loopback:* publish on all interfaces is not acceptable. Instead the Apple sandbox admits the sidecar's default-network address, read from `inspect` and passed through the per-session mount (Decision 8). This is decided before group 6.
+- *Fallback, had spike 0.1 shown that Apple `container` cannot publish on loopback:* the Apple sandbox would have admitted the sidecar's default-network address, read from `inspect` and passed through the per-session mount (Decision 8); publishing on all interfaces is not acceptable. Not needed: see the spike results.
+
+**Spike 0.1 results (2026-11-07, macOS).** On each runtime, a `python:3.12-slim` HTTP server ran with `--publish 127.0.0.1:3129:3128`. Two `alpine:3.22.1` containers then fetched `http://host.docker.internal:3129/ok` five times each, concurrently, with the firewall-mode host-alias strategy: the DNS alias on Apple, `--add-host host.docker.internal:host-gateway` on Docker and Podman. The script is not kept in the repository; the `egress-sidecar` e2e suite's `policy:endpoint-loopback-only` check repeats the loopback part.
+
+| Runtime | Host listener | Host 127.0.0.1 | LAN, VM-bridge and Tailscale addresses | `host.docker.internal` in the clients | Clients |
+|---|---|---|---|---|---|
+| Apple `container` 1.4.1 | `container` on `127.0.0.1:3129` | answered | refused | `203.0.113.113` (localhost alias) | 5/5 and 5/5 |
+| Docker Desktop 29.9.2 | `com.docker.backend` on `127.0.0.1:3129` | answered | refused | `fdc4:f303:9324::254` (IPv6 host gateway, listed first) | 5/5 and 5/5 |
+| Podman machine 6.0 (applehv) | `gvproxy` on `127.0.0.1:3129` | answered | refused | `192.168.127.254` | 5/5 and 5/5 |
+
+Every runtime publishes on loopback only, and concurrent containers reach the published port through the existing local-service strategy, so Decision 1 holds as written. On Docker Desktop the host gateway resolves to IPv6 first. The `internet-proxy` firewall already pins every resolved address of each family it can enforce, so this needs no change, but the IPv6 path is what the sandbox will normally use there.
 
 ### 2. Squid policy pipeline (unchanged from the squid-sidecar line)
 
@@ -249,7 +259,7 @@ Results of the squid-sidecar line, for comparison: all policy, parent and forwar
 - **[Denials are not attributable to a sandbox]** The client address is the runtime's port forwarder. → The session-end count says "across all sandboxes"; per-sandbox attribution stays on ROADMAP.
 - **[The port is taken on the host]** → `up` checks before `run` and names `[egress.sidecar] port`.
 - **[Changing the port rebuilds sandbox images]** It is baked into the firewall like any destination. → Rare; the restart warning says so.
-- **[Apple `container` loopback publishing is unverified]** → Spike 0.1, with the fallback in Decision 1 decided before group 6.
+- **[Apple `container` loopback publishing]** → Verified by spike 0.1 on all three runtimes (Decision 1); the fallback was not needed.
 - **[CONNECT denials are resets, not pages]** → The cause is in the log and the session-end count; documented.
 - **[Hostname-only policy in parent mode]** loses IP-level SSRF protection and lets allowlisted intranet names through the parent. → Strict validation, no IP literals, documented.
 - **[The CA key lives up to 30 days on the host]** → 0600 in a 0700 directory, never mounted into a sandbox (checked every launch), constrained to `github.com` or `invalid`, deleted by `down`.
