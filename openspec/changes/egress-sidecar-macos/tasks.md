@@ -8,8 +8,8 @@ Reference implementation: the squid-sidecar line (`jj log -r 'ptyttxkk..rymymutp
 
 ## 1. Policy file (`egress_policy.py`)
 
-- [ ] 1.1 Port `egress_policy.py` and its tests: the `egress.toml` schema (`allow`, `[egress.copilot]`, `[egress.upstream]`, `[egress.ca]`, `[egress.sidecar] port|memory|cpus`), unknown-key rejection, the `[egress.github]` pointer, the GitHub repository host and wildcard rejection, and the effective allowlist with every provider host. Drop `forward_ports`. Verify with `tests/test_egress_policy.py`, including the port range and that `forward_ports` is an unknown key.
-- [ ] 1.2 Add the pinned `tomlkit` dependency and the `allow add|remove` edit helpers, re-validated before an atomic replace. Verify with tests that comments and unrelated keys survive and that an invalid edit leaves the file byte-identical.
+- [x] 1.1 Port `egress_policy.py` and its tests: the `egress.toml` schema (`allow`, `[egress.copilot]`, `[egress.upstream]`, `[egress.ca]`, `[egress.sidecar] port|memory|cpus`), unknown-key rejection, the `[egress.github]` pointer, the GitHub repository host and wildcard rejection, and the effective allowlist with every provider host. Drop `forward_ports`. Verify with `tests/test_egress_policy.py`, including the port range and that `forward_ports` is an unknown key.
+- [x] 1.2 Add the pinned `tomlkit` dependency and the `allow add|remove` edit helpers, re-validated before an atomic replace. Verify with tests that comments and unrelated keys survive and that an invalid edit leaves the file byte-identical.
 
 ## 2. Squid config and sidecar image
 
