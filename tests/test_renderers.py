@@ -3452,3 +3452,110 @@ class CopilotRendererTests(TestCase):
                     extra_domains=[],
                     copilot_tenant_hosts=["$(touch /tmp/x).ghe.com"],
                 )
+
+
+class SidecarSandboxRendererTests(TestCase):
+    """egress-sidecar-macos task 6.3: CA blocks in the sandbox firewall/entrypoint."""
+
+    PROXY = firewall.TcpDestination("Internet proxy", "host.docker.internal", 3129)
+
+    def _render(self, **kw) -> Path:
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        firewall.render(
+            tmp,
+            extra_domains=[],
+            policy=firewall.INTERNET_PROXY,
+            local_destinations=[self.PROXY],
+            **kw,
+        )
+        return tmp
+
+    def test_ca_block_only_in_sidecar_mode(self) -> None:
+        sidecar = (self._render(egress_sidecar=True) / "init-firewall.sh").read_text()
+        plain = (self._render() / "init-firewall.sh").read_text()
+        self.assertNotIn("project-sandbox-egress", plain)
+        self.assertIn('if [ -f "$EGRESS_CA" ]; then', sidecar)
+        self.assertIn(
+            'install -m 0644 "$EGRESS_UPSTREAM_CA" '
+            "/usr/local/share/ca-certificates/project-sandbox-egress-upstream.crt",
+            sidecar,
+        )
+        self.assertNotIn("ca-key.pem", sidecar)
+        # Trust is installed before any rule is changed.
+        self.assertLess(
+            sidecar.index("update-ca-certificates"), sidecar.index("iptables -F")
+        )
+        self.assertIn("Policy: egress sidecar only", sidecar)
+
+    def test_sidecar_mode_leaves_the_devcontainer_script_alone(self) -> None:
+        tmp = self._render(egress_sidecar=True)
+        self.assertEqual([p.name for p in tmp.iterdir()], ["init-firewall.sh"])
+
+    def test_sidecar_mode_needs_the_internet_proxy_policy(self) -> None:
+        with self.assertRaises(ValueError), tempfile.TemporaryDirectory() as tmp:
+            firewall.render(Path(tmp), extra_domains=[], egress_sidecar=True)
+
+    def test_sidecar_script_is_valid_bash(self) -> None:
+        script = self._render(egress_sidecar=True) / "init-firewall.sh"
+        result = subprocess.run(
+            ["bash", "-n", str(script)], capture_output=True, text=True, check=False
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_ca_block_installs_only_present_certificates(self) -> None:
+        text = (self._render(egress_sidecar=True) / "init-firewall.sh").read_text()
+        block = text[text.index("EGRESS_CA=") : text.index("# Collect all IPv4")]
+        for present in ((), ("ca.pem",), ("ca.pem", "upstream-ca.pem")):
+            with self.subTest(present=present), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / "in").mkdir()
+                (root / "store").mkdir()
+                for name in present:
+                    (root / "in" / name).write_text(name)
+                calls = root / "calls"
+                # GNU install in the sandbox; the host's BSD install differs.
+                script = 'install() { cp "$3" "$4"; }\n' + (
+                    block.replace("=/project-sandbox-egress/", f"={root / 'in'}/")
+                    .replace("/usr/local/share/ca-certificates", str(root / "store"))
+                    .replace(
+                        "update-ca-certificates >/dev/null 2>&1",
+                        f"echo update >> {calls}",
+                    )
+                )
+                result = subprocess.run(
+                    ["bash", "-euc", script],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                stored = sorted(p.name for p in (root / "store").iterdir())
+                expected = sorted(
+                    {
+                        "ca.pem": "project-sandbox-egress.crt",
+                        "upstream-ca.pem": "project-sandbox-egress-upstream.crt",
+                    }[name]
+                    for name in present
+                )
+                self.assertEqual(stored, expected)
+                self.assertEqual(calls.exists(), bool(present))
+
+    def test_entrypoint_block_only_in_sidecar_mode(self) -> None:
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        default = dockerfile.render_entrypoint(tmp).read_text()
+        sidecar = dockerfile.render_entrypoint(tmp, egress_sidecar=True).read_text()
+        self.assertNotIn("project-sandbox-egress", default)
+        self.assertIn(
+            "if [ -f /project-sandbox-egress/ca.pem ] || "
+            "[ -f /project-sandbox-egress/upstream-ca.pem ]; then",
+            sidecar,
+        )
+        for var in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "NODE_USE_SYSTEM_CA"):
+            self.assertIn(f"export {var}=", sidecar)
+        # The block sits after the firewall step, which installs the CA.
+        self.assertLess(
+            sidecar.index("project-sandbox-init-firewall"),
+            sidecar.index("/project-sandbox-egress/ca.pem"),
+        )

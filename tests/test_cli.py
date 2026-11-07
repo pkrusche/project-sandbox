@@ -11,6 +11,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from typing import ClassVar
 from unittest import TestCase
 from unittest.mock import Mock, patch
 
@@ -7053,3 +7054,817 @@ class CopilotBashIsolationTests(TestCase):
                         self.assertNotIn("/project-sandbox-secrets/copilot", joined)
                         self.assertNotIn("COPILOT_GITHUB_TOKEN", joined)
                         self.assertNotIn("COPILOT_HOME", joined)
+
+
+class EgressModeCliTests(TestCase):
+    """--egress surface (egress-sidecar-macos task 6.1)."""
+
+    def _main(self, project: Path, argv: list[str]) -> tuple[int, str, Mock]:
+        out = io.StringIO()
+        with (
+            patch.object(
+                cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")
+            ),
+            patch.object(
+                cli.config_agents,
+                "_agent_host_paths",
+                return_value=_agent_paths(project / "home"),
+            ),
+            patch.object(cli.config_agents, "sync_credentials", return_value={}),
+            patch.object(cli.config_agents, "available_agents", return_value=("bash",)),
+            patch.object(cli.container_cli, "ensure_system_started"),
+            patch.object(cli.container_cli, "build_image"),
+            patch.object(cli.container_cli, "run", return_value=0) as run,
+            contextlib.redirect_stdout(out),
+        ):
+            rc = cli.main([*argv, str(project), "python:3.12-slim"])
+        return rc, out.getvalue(), run
+
+    @staticmethod
+    def _project(tmp: str) -> Path:
+        project = Path(tmp)
+        (project / "README.md").write_text("# demo\n", encoding="utf-8")
+        return project
+
+    @staticmethod
+    def _snapshot(project: Path) -> dict[str, bytes]:
+        files: dict[str, bytes] = {}
+        for root in (".project-sandbox", ".devcontainer"):
+            base = project / root
+            for path in sorted(base.rglob("*")) if base.exists() else ():
+                if path.is_file() and not path.is_symlink():
+                    files[str(path.relative_to(project))] = path.read_bytes()
+        return files
+
+    @staticmethod
+    def _clear_generated(project: Path) -> None:
+        for name in (".project-sandbox", ".devcontainer"):
+            shutil.rmtree(project / name, ignore_errors=True)
+        (project / ".gitignore").unlink(missing_ok=True)
+
+    def test_help_lists_egress_flag(self) -> None:
+        self.assertIn("--egress {firewall,sidecar}", cli.build_parser().format_help())
+
+    def test_egress_defaults_to_firewall(self) -> None:
+        args = cli.build_parser().parse_args(["project"])
+        self.assertEqual(args.egress, "firewall")
+
+    def test_unknown_egress_mode_is_rejected(self) -> None:
+        with (
+            contextlib.redirect_stderr(io.StringIO()),
+            self.assertRaises(SystemExit),
+        ):
+            cli.build_parser().parse_args(["--egress", "squid", "project"])
+
+    def test_rejections_name_the_replacement_before_any_work(self) -> None:
+        ca = Path(__file__).parent / "fixtures" / "test-ca.pem"
+        cases = (
+            (["--no-firewall"], "cannot be combined with --no-firewall"),
+            (["--runtime", "chroot", "--agent", "bash"], "--runtime chroot"),
+            (
+                ["--extra-domain", "pypi.org"],
+                "`project-sandbox-egress allow add pypi.org`",
+            ),
+            (["--internet-proxy", "http://127.0.0.1:18080"], "[egress.upstream] url"),
+            (["--ca-cert", str(ca)], "[egress.upstream] ca_cert"),
+            (["--allow-github"], "--egress firewall --allow-github"),
+            (
+                ["--agent", "copilot", "--copilot-host", "acme.ghe.com"],
+                "--copilot-host tenants",
+            ),
+        )
+        for extra, message in cases:
+            argv = ["--egress", "sidecar", *extra]
+            with self.subTest(argv=argv), tempfile.TemporaryDirectory() as tmp:
+                project = self._project(tmp)
+                with (
+                    patch.object(
+                        cli.egress_sidecar,
+                        "default_runner",
+                        side_effect=AssertionError("no runtime calls"),
+                    ),
+                    patch.object(
+                        cli.container_cli,
+                        "select_runtime",
+                        side_effect=AssertionError("no runtime selection"),
+                    ),
+                    patch.object(
+                        cli.session_ca_module,
+                        "generate",
+                        side_effect=AssertionError("no key"),
+                    ),
+                    self.assertRaisesRegex(SystemExit, re.escape(message)),
+                ):
+                    self._main(project, argv)
+                self.assertFalse((project / ".project-sandbox").exists())
+                self.assertFalse((project / ".devcontainer").exists())
+
+    def test_linux_runtimes_are_rejected_before_container_work(self) -> None:
+        for runtime, info in (
+            (container_cli.DOCKER, {"OperatingSystem": "Ubuntu 24.04 LTS"}),
+            (
+                container_cli.PODMAN,
+                {
+                    "host": {
+                        "security": {"rootless": True},
+                        "rootlessNetworkCmd": "pasta",
+                    }
+                },
+            ),
+        ):
+            with (
+                self.subTest(runtime=runtime.name),
+                tempfile.TemporaryDirectory() as tmp,
+                patch("sys.platform", "linux"),
+            ):
+                project = self._project(tmp)
+                with (
+                    patch.object(
+                        cli.container_cli, "select_runtime", return_value=runtime
+                    ),
+                    patch.object(
+                        cli.local_service_network, "_runtime_info", return_value=info
+                    ),
+                    patch.object(
+                        cli.egress_sidecar,
+                        "default_runner",
+                        side_effect=AssertionError("no runtime calls"),
+                    ),
+                    self.assertRaisesRegex(
+                        SystemExit, "Docker Desktop and Podman machine"
+                    ),
+                ):
+                    self._main(project, ["--egress", "sidecar", "--agent", "bash"])
+                self.assertFalse((project / ".project-sandbox").exists())
+
+    def test_sidecar_dry_run_skips_devcontainer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self._project(tmp)
+            rc, out, run = self._main(
+                project, ["--dry-run", "--no-build", "--egress", "sidecar"]
+            )
+            self.assertEqual(rc, 0)
+            self.assertIn("Would not render devcontainer", out)
+            self.assertNotIn("Would render devcontainer under", out)
+            self.assertFalse((project / ".project-sandbox").exists())
+            run.assert_not_called()
+
+    def test_sidecar_skips_devcontainer_render(self) -> None:
+        args = cli.build_parser().parse_args(["--egress", "sidecar", "project"])
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertFalse(cli._renders_devcontainer(args, is_chroot=False))
+        self.assertIn("firewall egress only", out.getvalue())
+        default = cli.build_parser().parse_args(["project"])
+        self.assertTrue(cli._renders_devcontainer(default, is_chroot=False))
+        self.assertFalse(cli._renders_devcontainer(default, is_chroot=True))
+
+    def test_explicit_firewall_mode_is_byte_identical_to_default(self) -> None:
+        """Regression: omitting --egress and --egress firewall render the same files."""
+        snapshots = []
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self._project(tmp)
+            for extra in ([], ["--egress", "firewall"]):
+                self._clear_generated(project)
+                rc, _, run = self._main(project, extra)
+                self.assertEqual(rc, 0)
+                run.assert_not_called()
+                snapshots.append(self._snapshot(project))
+        self.assertTrue(snapshots[0])
+        self.assertEqual(snapshots[0], snapshots[1])
+
+    def test_explicit_firewall_mode_dry_run_argv_matches_default(self) -> None:
+        """Regression: the previewed docker run argv is unchanged by --egress firewall."""
+        outputs = []
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self._project(tmp)
+            for extra in ([], ["--egress", "firewall"]):
+                rc, out, run = self._main(
+                    project,
+                    [
+                        "--dry-run",
+                        "--no-build",
+                        "--runtime",
+                        "docker",
+                        "--agent",
+                        "bash",
+                        *extra,
+                    ],
+                )
+                self.assertEqual(rc, 0)
+                run.assert_called_once()
+                argv = " ".join(run.call_args.args[0])
+                argv = re.sub(
+                    r"project-sandbox-\d{8}t\d{6}-[0-9a-f]+", "<session>", argv
+                )
+                outputs.append((out, argv))
+        self.assertTrue(outputs[0][1].startswith("docker run"))
+        self.assertEqual(outputs[0], outputs[1])
+
+    def test_internet_proxy_policy_conflicts_depend_on_egress_mode(self) -> None:
+        base = [
+            "--internet-proxy",
+            "http://127.0.0.1:18080",
+            "--extra-domain",
+            "pypi.org",
+        ]
+        for mode in ([], ["--egress", "firewall"]):
+            with self.subTest(mode=mode):
+                args = cli.build_parser().parse_args([*base, *mode, "project"])
+                cli._validate_egress_args(args)
+                with self.assertRaisesRegex(SystemExit, "--egress sidecar"):
+                    cli._validate_internet_proxy_args(args)
+        args = cli.build_parser().parse_args([*base, "--egress", "sidecar", "project"])
+        with self.assertRaisesRegex(SystemExit, "project-sandbox-egress allow add"):
+            cli._validate_egress_args(args)
+
+
+def _mount_source(mount: str) -> Path:
+    match = re.search(r"source=([^,]+)", mount)
+    assert match is not None
+    return Path(match.group(1))
+
+
+def _fake_sidecar(runtime, *, copilot=False, port=3129, upstream_ca=None, now=None):
+    """A Sidecar as egress_sidecar.ensure returns it, with a real CA on disk."""
+    import datetime as dt
+
+    from project_sandbox import egress_sidecar, session_ca
+
+    lay = egress_sidecar.layout(runtime)
+    lay.sidecar.mkdir(parents=True, exist_ok=True)
+    session_ca.remove(lay.sidecar)
+    (lay.sidecar / egress_sidecar.UPSTREAM_CA_NAME).unlink(missing_ok=True)
+    ca = session_ca.generate(
+        lay.sidecar,
+        ["api.github.com"] if copilot else [],
+        name="project-sandbox egress test",
+        now=now or dt.datetime.now(dt.UTC),
+    )
+    if upstream_ca is not None:
+        (lay.sidecar / egress_sidecar.UPSTREAM_CA_NAME).write_bytes(upstream_ca)
+    state = {"port": port, "copilot": copilot, "upstream_url": None}
+    return egress_sidecar.Sidecar(runtime, lay, state, ca, started=False)
+
+
+class EgressSidecarLaunchTests(TestCase):
+    """--egress sidecar launches through the published sidecar (tasks 6.2-6.7)."""
+
+    DESKTOP: ClassVar[dict[str, str]] = {"OperatingSystem": "Docker Desktop"}
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.project = self.root / "project"
+        self.project.mkdir()
+        (self.project / "README.md").write_text("# demo\n", encoding="utf-8")
+        self.state = self.root / "state"
+        self.config = self.root / "config"
+        self._env = patch.dict(
+            os.environ,
+            {"XDG_STATE_HOME": str(self.state), "XDG_CONFIG_HOME": str(self.config)},
+        )
+        self._env.start()
+
+    def tearDown(self) -> None:
+        self._env.stop()
+        self._tmp.cleanup()
+
+    def _policy(self, text: str) -> Path:
+        path = self.config / "project-sandbox" / "egress.toml"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        return path
+
+    def _patches(self):
+        return [
+            patch.object(
+                cli, "read_identity", return_value=GitIdentity("Ada", "ada@example.com")
+            ),
+            patch.object(
+                cli.config_agents,
+                "_agent_host_paths",
+                return_value=_agent_paths(self.root / "home"),
+            ),
+            patch.object(cli.config_agents, "sync_credentials", return_value={}),
+            patch.object(cli.config_agents, "available_agents", return_value=("bash",)),
+            patch.object(cli.container_cli, "ensure_system_started"),
+        ]
+
+    # --- 6.7 dry-run -------------------------------------------------------
+
+    def _dry_run(self, runner, *extra):
+        out = io.StringIO()
+        with contextlib.ExitStack() as stack:
+            for p in self._patches():
+                stack.enter_context(p)
+            run = stack.enter_context(
+                patch.object(cli.container_cli, "run", return_value=0)
+            )
+            generate = stack.enter_context(
+                patch.object(
+                    cli.session_ca_module,
+                    "generate",
+                    side_effect=AssertionError("no key in dry-run"),
+                )
+            )
+            stack.enter_context(
+                patch.object(cli.egress_sidecar, "default_runner", side_effect=runner)
+            )
+            stack.enter_context(
+                patch.object(cli.shutil, "which", return_value="/usr/bin/docker")
+            )
+            stack.enter_context(contextlib.redirect_stdout(out))
+            rc = cli.main(
+                [
+                    "--dry-run",
+                    "--no-build",
+                    "--runtime",
+                    "docker",
+                    "--agent",
+                    "bash",
+                    "--egress",
+                    "sidecar",
+                    *extra,
+                    str(self.project),
+                    "python:3.12-slim",
+                ]
+            )
+        generate.assert_not_called()
+        return rc, out.getvalue(), run
+
+    def test_dry_run_previews_plan_from_read_only_inspect(self) -> None:
+        self._policy('[egress]\nallow = ["pypi.org"]\n[egress.sidecar]\nport = 3140\n')
+        calls = []
+
+        def runner(argv):
+            calls.append(list(argv))
+            return subprocess.CompletedProcess(argv, 1, "", "No such object")
+
+        before = sorted(p for p in self.root.rglob("*"))
+        rc, text, run = self._dry_run(runner)
+        self.assertEqual(rc, 0)
+        self.assertTrue(calls)
+        for argv in calls:
+            self.assertEqual(argv[1], "inspect", argv)
+        for needle in (
+            "Egress: sidecar",
+            "Policy file: " + str(self.config / "project-sandbox" / "egress.toml"),
+            "Allowed hosts: pypi.org",
+            "Agent provider hosts (always allowed): ",
+            "Copilot profile: off",
+            "GitHub repository access: blocked",
+            "TLS interception: none",
+            "Sidecar CA: constrained to 'invalid'",
+            "Published endpoint: 127.0.0.1:3140 (host loopback only)",
+            "Sidecar: would start project-sandbox-egress",
+            "--publish 127.0.0.1:3140:3128 --memory 256M --cpus 1",
+            "Would inject proxy environment: HTTP_PROXY=http://host.docker.internal:3140",
+            "Would not render devcontainer",
+        ):
+            self.assertIn(needle, text)
+        self.assertNotIn("network create", text)
+        # No file, key or container was created.
+        self.assertEqual(sorted(p for p in self.root.rglob("*")), before)
+        argv = run.call_args.args[0]
+        self.assertNotIn("--network", argv)
+        joined = " ".join(argv)
+        self.assertIn("target=/project-sandbox-egress,readonly", joined)
+        self.assertIn("/egress/docker/sessions/", joined)
+        self.assertNotIn("ca-key.pem", joined)
+
+    def test_dry_run_reports_reuse_and_drift(self) -> None:
+        from project_sandbox import egress_sidecar
+
+        self._policy("[egress.sidecar]\nport = 3140\n")
+        sidecar = _fake_sidecar(cli.container_cli.DOCKER)
+        egress_sidecar.write_state(
+            sidecar.layout,
+            {
+                "version": egress_sidecar.STATE_VERSION,
+                "image": "old:tag",
+                "restart_fingerprint": "x",
+                "restart_inputs": {},
+                "reload_fingerprint": "y",
+                "copilot": False,
+                "upstream_url": None,
+                "upstream": None,
+                "relay_port": None,
+                "port": 3129,
+                "started_at": 0,
+            },
+        )
+        inspect = json.dumps(
+            [
+                {
+                    "State": {"Running": True},
+                    "Config": {"Labels": {egress_sidecar.PORT_LABEL: "3129"}},
+                }
+            ]
+        )
+
+        def runner(argv):
+            return subprocess.CompletedProcess(argv, 0, inspect, "")
+
+        rc, text, _ = self._dry_run(runner)
+        self.assertEqual(rc, 0)
+        self.assertIn(
+            "would reuse the running project-sandbox-egress at 127.0.0.1:3129", text
+        )
+        self.assertIn(
+            "the launch would fail until `project-sandbox-egress restart`", text
+        )
+        self.assertIn("[egress.sidecar] port", text)
+
+    def test_dry_run_rejects_runtime_mutations(self) -> None:
+        runner = cli._ReadOnlyRunner()
+        for argv in (
+            ["docker", "run", "-d", "x"],
+            ["docker", "rm", "-f", "x"],
+            ["docker", "network", "rm", "sbx-egress"],
+            ["docker", "exec", "project-sandbox-egress", "sbx-reload"],
+        ):
+            with self.subTest(argv=argv), self.assertRaises(AssertionError):
+                runner(argv)
+
+    # --- 6.5 location checks ------------------------------------------------
+
+    def test_policy_reachable_through_a_mount_is_rejected(self) -> None:
+        # A mounted ~/.config, directly or through a symlink, exposes
+        # egress.toml; a mounted state dir exposes the CA key.
+        self._policy("")
+        link = self.root / "cfg-link"
+        link.symlink_to(self.config, target_is_directory=True)
+        for mount, what in (
+            (self.config, "egress policy"),
+            (link, "egress policy"),
+            (self.state, "egress sidecar state directory"),
+        ):
+            with self.subTest(mount=str(mount)):
+                args = cli.build_parser().parse_args(
+                    [
+                        "--egress",
+                        "sidecar",
+                        "--mount",
+                        f"type=bind,source={mount},target=/mnt/x",
+                        str(self.project),
+                    ]
+                )
+                with self.assertRaisesRegex(SystemExit, what):
+                    cli._egress_sidecar_policy(
+                        args,
+                        project=self.project,
+                        workspace=self.project,
+                        run_agent="bash",
+                    )
+
+    def test_policy_inside_the_project_is_rejected(self) -> None:
+        inner = self.project / ".config"
+        with patch.dict(os.environ, {"XDG_CONFIG_HOME": str(inner)}):
+            args = cli.build_parser().parse_args(
+                ["--egress", "sidecar", str(self.project)]
+            )
+            with self.assertRaisesRegex(SystemExit, "could modify the egress policy"):
+                cli._egress_sidecar_policy(
+                    args, project=self.project, workspace=self.project, run_agent="bash"
+                )
+
+    def test_copilot_agent_needs_the_profile(self) -> None:
+        args = cli.build_parser().parse_args(["--egress", "sidecar", str(self.project)])
+        with self.assertRaisesRegex(
+            SystemExit, re.escape("[egress.copilot] enabled = true")
+        ):
+            cli._egress_sidecar_policy(
+                args, project=self.project, workspace=self.project, run_agent="copilot"
+            )
+        self._policy("[egress.copilot]\nenabled = true\n")
+        policy = cli._egress_sidecar_policy(
+            args, project=self.project, workspace=self.project, run_agent="copilot"
+        )
+        self.assertTrue(policy.copilot)
+
+    # --- 6.4 ensure, port and CA checks ---------------------------------------
+
+    def _ensure(
+        self,
+        sidecar,
+        *,
+        run_agent="bash",
+        now=None,
+        port=3129,
+        answers=True,
+        ensure=None,
+    ):
+        out = io.StringIO()
+        with (
+            patch.object(cli.egress_sidecar, "ensure_image", return_value="img:tag"),
+            patch.object(
+                cli.egress_sidecar,
+                "ensure",
+                **({"side_effect": ensure} if ensure else {"return_value": sidecar}),
+            ) as called,
+            contextlib.redirect_stdout(out),
+        ):
+            cli._ensure_egress_sidecar(
+                cli.container_cli.DOCKER,
+                cli.egress_policy.PolicyFile(),
+                run_agent=run_agent,
+                port=port,
+                verbose=False,
+                now=now,
+                host_probe=lambda _port: answers,
+            )
+        self.assertEqual(called.call_args.kwargs["expected_port"], port)
+        return out.getvalue()
+
+    def test_port_drift_fails_before_the_sandbox(self) -> None:
+        from project_sandbox import egress_sidecar
+
+        def drift(*_args, **_kwargs):
+            raise egress_sidecar.SidecarError(
+                egress_sidecar.port_drift_message(3129, 3140)
+            )
+
+        with self.assertRaisesRegex(SystemExit, "project-sandbox-egress restart"):
+            self._ensure(None, port=3140, ensure=drift)
+
+    def test_unreachable_endpoint_fails_before_the_sandbox(self) -> None:
+        sidecar = _fake_sidecar(cli.container_cli.DOCKER)
+        with self.assertRaisesRegex(SystemExit, "does not answer on 127.0.0.1:3129"):
+            self._ensure(sidecar, answers=False)
+        self.assertIn("at 127.0.0.1:3129", self._ensure(sidecar))
+
+    def test_ca_warning_refusal_and_silence(self) -> None:
+        import datetime as dt
+
+        start = dt.datetime(2026, 11, 6, tzinfo=dt.UTC)
+        sidecar = _fake_sidecar(cli.container_cli.DOCKER, copilot=True, now=start)
+        self.assertNotIn("[W]", self._ensure(sidecar, now=lambda: start))
+        soon = self._ensure(sidecar, now=lambda: start + dt.timedelta(days=5, hours=18))
+        self.assertIn("CA expires in 30 hours", soon)
+        self.assertIn("project-sandbox-egress restart", soon)
+        with self.assertRaisesRegex(SystemExit, "expired"):
+            self._ensure(sidecar, now=lambda: start + dt.timedelta(days=8))
+        quiet = _fake_sidecar(cli.container_cli.DOCKER, copilot=False, now=start)
+        self.assertNotIn(
+            "CA", self._ensure(quiet, now=lambda: start + dt.timedelta(days=30))
+        )
+
+    def test_copilot_agent_needs_the_running_profile(self) -> None:
+        sidecar = _fake_sidecar(cli.container_cli.DOCKER, copilot=False)
+        with self.assertRaisesRegex(SystemExit, "project-sandbox-egress restart"):
+            self._ensure(sidecar, run_agent="copilot")
+
+    # --- 6.3 session inputs -------------------------------------------------
+
+    def test_session_inputs_hold_only_public_certificates(self) -> None:
+        for copilot in (False, True):
+            sidecar = _fake_sidecar(
+                cli.container_cli.DOCKER, copilot=copilot, upstream_ca=b"UP"
+            )
+            with self.subTest(copilot=copilot), contextlib.ExitStack() as stack:
+                mount = cli._egress_session_inputs(
+                    stack, sidecar, session_id="20261106T120000-ABCDEF123456"
+                )
+                source = _mount_source(mount)
+                self.assertTrue(
+                    mount.endswith(",target=/project-sandbox-egress,readonly")
+                )
+                expected = {"upstream-ca.pem"} | ({"ca.pem"} if copilot else set())
+                self.assertEqual({p.name for p in source.iterdir()}, expected)
+                self.assertEqual((source / "upstream-ca.pem").read_bytes(), b"UP")
+                if copilot:
+                    self.assertEqual(
+                        (source / "ca.pem").read_bytes(),
+                        sidecar.ca.cert_path.read_bytes(),
+                    )
+                self.assertEqual(source.parent.name, "20261106t120000-abcdef123456")
+            self.assertFalse(source.exists())  # removed when the session ends
+
+    # --- 6.6 denial count -----------------------------------------------------
+
+    def test_denial_count_uses_the_sidecar_clock(self) -> None:
+        sidecar = _fake_sidecar(cli.container_cli.DOCKER)
+        line = (
+            "SBX {ts}.000 TCP_DENIED/200 CONNECT x.example:443 sni=- bump=bump "
+            "err=TCP_RESET cause=host-not-allowed peer=- client=192.168.65.1"
+        )
+        log = "\n".join(line.format(ts=t) for t in (990, 1001, 1002, 1009, 1012))
+        calls = []
+
+        def runner(argv):
+            calls.append(list(argv))
+            if "date" in argv:
+                return subprocess.CompletedProcess(argv, 0, "1010\n", "")
+            return subprocess.CompletedProcess(argv, 0, log, "")
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cli._print_egress_denials(
+                cli.container_cli.DOCKER, sidecar, started_at=1000.0, runner=runner
+            )
+        text = out.getvalue()
+        self.assertIn("denied 3 requests during this session", text)
+        self.assertIn("project-sandbox-egress log --denied --since ", text)
+        logs = next(c for c in calls if c[1] == "logs")
+        self.assertEqual(logs[logs.index("--since") + 1], "940")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cli._print_egress_denials(
+                cli.container_cli.DOCKER, sidecar, started_at=1013.0, runner=runner
+            )
+        self.assertEqual(out.getvalue(), "")  # nothing denied: no summary
+
+    # --- 6.2 real launch ------------------------------------------------------
+
+    def _launch(self, *argv_extra, fail=False, sidecar=None):
+        events = []
+        sidecar = sidecar or _fake_sidecar(cli.container_cli.DOCKER)
+
+        def fake_run(argv, **kwargs):
+            mount = next(a for a in argv if "target=/project-sandbox-egress" in a)
+            source = _mount_source(mount)
+            events.append(("run", argv, kwargs.get("env"), source, source.exists()))
+            if fail:
+                raise RuntimeError("boom")
+            return 0
+
+        with contextlib.ExitStack() as stack:
+            for p in self._patches():
+                stack.enter_context(p)
+            stack.enter_context(
+                patch.object(
+                    cli.container_cli,
+                    "select_runtime",
+                    return_value=cli.container_cli.DOCKER,
+                )
+            )
+            stack.enter_context(
+                patch.object(
+                    cli.local_service_network,
+                    "_runtime_info",
+                    return_value=self.DESKTOP,
+                )
+            )
+            stack.enter_context(
+                patch.object(cli.container_cli, "build_image", return_value=0)
+            )
+            stack.enter_context(
+                patch.object(cli.container_cli, "image_exists", return_value=True)
+            )
+            stack.enter_context(
+                patch.object(cli.container_cli, "run", side_effect=fake_run)
+            )
+            stack.enter_context(
+                patch.object(
+                    cli.egress_sidecar, "ensure_image", return_value="sidecar:tag"
+                )
+            )
+            ensure = stack.enter_context(
+                patch.object(cli.egress_sidecar, "ensure", return_value=sidecar)
+            )
+            stack.enter_context(
+                patch.object(cli.egress_sidecar, "probe_published", return_value=True)
+            )
+            preflight = stack.enter_context(
+                patch.object(
+                    cli.internet_proxy,
+                    "preflight",
+                    side_effect=AssertionError("no external preflight"),
+                )
+            )
+            down = stack.enter_context(
+                patch.object(
+                    cli.egress_sidecar, "down", side_effect=AssertionError("no down")
+                )
+            )
+            stack.enter_context(
+                patch.object(
+                    cli.egress_sidecar, "sidecar_clock", side_effect=[1000.0, 1010.0]
+                )
+            )
+            stack.enter_context(
+                patch.object(
+                    cli.egress_sidecar,
+                    "fetch_logs",
+                    return_value=(
+                        "SBX 1005.000 TCP_DENIED/200 CONNECT x.example:443 sni=- "
+                        "bump=bump err=TCP_RESET cause=host-not-allowed peer=-"
+                    ),
+                )
+            )
+            out = stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+            argv = [
+                "--runtime",
+                "docker",
+                "--agent",
+                "bash",
+                "--egress",
+                "sidecar",
+                *argv_extra,
+                str(self.project),
+                "python:3.12-slim",
+            ]
+            if fail:
+                with self.assertRaises(RuntimeError):
+                    cli.main(argv)
+                rc = None
+            else:
+                rc = cli.main(argv)
+        down.assert_not_called()
+        preflight.assert_not_called()
+        ensure.assert_called_once()
+        return rc, events, out.getvalue()
+
+    def test_launch_is_firewall_mode_with_the_sidecar_as_internet_proxy(self) -> None:
+        rc, events, out = self._launch()
+        self.assertEqual(rc, 0)
+        _, argv, env, source, existed = events[0]
+        # Default network; host.docker.internal from the Docker Desktop plan.
+        self.assertNotIn("--network", argv)
+        self.assertIn("host.docker.internal:host-gateway", argv)
+        self.assertTrue(existed)
+        self.assertEqual(source.name, "sandbox")
+        self.assertEqual(
+            source.parent.parent,
+            (
+                self.state / "project-sandbox" / "egress" / "docker" / "sessions"
+            ).resolve(),
+        )
+        self.assertFalse(source.exists())  # session inputs removed at exit
+        for name in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+            self.assertEqual(env[name], "http://host.docker.internal:3129")
+        self.assertEqual(env["NO_PROXY"], "localhost,127.0.0.1,::1,[::1]")
+        self.assertIn(
+            "Egress sidecar: reusing project-sandbox-egress at 127.0.0.1:3129", out
+        )
+        self.assertIn("denied 1 request during this session", out)
+        context = self.project / ".project-sandbox"
+        script = (context / "init-firewall.sh").read_text()
+        self.assertIn("Policy: egress sidecar only", script)
+        # Only the sidecar endpoint is admitted; no DNS, no IP pinning of hosts.
+        self.assertIn("-p tcp --dport 3129 -j ACCEPT", script)
+        self.assertIn('endpoints = ["host.docker.internal"]', script)
+        self.assertIn("iptables -A OUTPUT -p udp --dport 53 -j DROP", script)
+        self.assertIn("Internet proxy mode requires enforceable IPv6", script)
+        self.assertNotIn("ipset create", script)
+        self.assertIn("/project-sandbox-egress/upstream-ca.pem", script)
+        self.assertIn(
+            "/project-sandbox-egress/upstream-ca.pem",
+            (context / "entrypoint.sh").read_text(),
+        )
+        self.assertFalse((context / "init-firewall-devcontainer.sh").exists())
+        self.assertFalse((self.project / ".devcontainer").exists())
+        self.assertIn("not rendering .devcontainer/", out)
+
+    def test_launch_uses_the_configured_port(self) -> None:
+        self._policy("[egress.sidecar]\nport = 3140\n")
+        sidecar = _fake_sidecar(cli.container_cli.DOCKER, port=3140)
+        rc, events, _ = self._launch(sidecar=sidecar)
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            events[0][2]["HTTPS_PROXY"], "http://host.docker.internal:3140"
+        )
+
+    def test_local_services_are_forwarded_as_in_firewall_mode(self) -> None:
+        services = cli._local_services(
+            cli.internet_proxy.for_sidecar(3129),
+            proxy_port=8787,
+            pi_ollama_enabled=True,
+        )
+        self.assertEqual(
+            [(s.label, s.port) for s in services],
+            [("Internet proxy", 3129), ("Agent proxy", 8787), ("Ollama", 11434)],
+        )
+        destinations = cli._local_firewall_destinations(
+            cli.internet_proxy.for_sidecar(3129),
+            proxy_port=443,
+            proxy_url="https://gateway.corp.example:8443",
+            pi_ollama_enabled=False,
+        )
+        remote = next(d for d in destinations if d.label == "Agent proxy")
+        self.assertEqual(
+            (remote.hostname, remote.port, remote.local),
+            ("gateway.corp.example", 8443, False),
+        )
+
+    def test_sandbox_failure_keeps_the_sidecar(self) -> None:
+        _, events, _ = self._launch(fail=True)
+        self.assertFalse(events[0][3].exists())
+
+    def test_image_does_not_depend_on_the_ca(self) -> None:
+        # The sidecar CA and the upstream CA are installed at start, never baked.
+        snapshots = []
+        for copilot, pem in ((False, b"CA ONE\n"), (True, b"CA TWO\n")):
+            sidecar = _fake_sidecar(
+                cli.container_cli.DOCKER, copilot=copilot, upstream_ca=pem
+            )
+            self._launch(sidecar=sidecar)
+            context = self.project / ".project-sandbox"
+            snapshots.append(
+                {
+                    name: (context / name).read_bytes()
+                    for name in ("Dockerfile", "init-firewall.sh", "entrypoint.sh")
+                }
+            )
+        self.assertEqual(snapshots[0], snapshots[1])
+        self.assertNotIn(b"CA ONE", snapshots[0]["Dockerfile"])

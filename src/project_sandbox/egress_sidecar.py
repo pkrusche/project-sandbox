@@ -134,11 +134,6 @@ def endpoint(port: int) -> str:
     return f"{PUBLISH_ADDRESS}:{port}"
 
 
-def sandbox_proxy_url(port: int) -> str:
-    """The proxy URL as a firewall-mode sandbox would configure it on the host."""
-    return f"http://{endpoint(port)}"
-
-
 # --------------------------------------------------------------------------
 # Host layout and state.json
 # --------------------------------------------------------------------------

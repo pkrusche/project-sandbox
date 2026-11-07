@@ -50,6 +50,9 @@ LocalTcpDestination = TcpDestination
 
 NORMAL = "normal"
 INTERNET_PROXY = "internet-proxy"
+# --egress sidecar: per-session CA inputs, mounted read-only into the sandbox;
+# mirrors egress_sidecar.SANDBOX_MOUNT.
+SIDECAR_INPUT_DIR = "/project-sandbox-egress"
 
 
 def _validate_domains(extra_domains: list[str]) -> None:
@@ -75,8 +78,14 @@ def render(
     local_destinations: list[LocalTcpDestination] | None = None,
     devcontainer_destinations: list[LocalTcpDestination] | None = None,
     copilot_tenant_hosts: Sequence[str] = (),
+    egress_sidecar: bool = False,
 ) -> Path:
     """Render the sandbox and devcontainer firewall scripts.
+
+    ``egress_sidecar`` (``--egress sidecar``, Internet-proxy policy only) adds a
+    block that installs the sidecar's CA and the upstream proxy's CA from the
+    per-session mount at container start, and renders no devcontainer script:
+    devcontainers stay firewall-only, so an existing one is left untouched.
 
     ``devcontainer_destinations`` defaults to ``local_destinations``; it differs
     when the sandbox reaches an endpoint through a host relay that devcontainer
@@ -93,6 +102,8 @@ def render(
             raise ValueError(f"Invalid Copilot tenant host {host!r}")
     if policy not in (NORMAL, INTERNET_PROXY):
         raise ValueError(f"Unknown firewall policy: {policy}")
+    if egress_sidecar and policy != INTERNET_PROXY:
+        raise ValueError("--egress sidecar uses the Internet-proxy firewall policy")
     destinations = list(local_destinations or [])
     devcontainer = list(
         destinations if devcontainer_destinations is None else devcontainer_destinations
@@ -122,7 +133,10 @@ def render(
         policy=policy,
         local_destinations=destinations,
         copilot_tenant_hosts=tenant_hosts,
+        egress_sidecar=egress_sidecar,
     )
+    if egress_sidecar:
+        return container
     _write(
         tmpl,
         context_dir / "init-firewall-devcontainer.sh",
@@ -158,6 +172,7 @@ def _write(
     policy: str,
     local_destinations: list[LocalTcpDestination],
     copilot_tenant_hosts: list[str],
+    egress_sidecar: bool = False,
 ) -> Path:
     out.write_text(
         tmpl.render(
@@ -176,6 +191,8 @@ def _write(
             local_destinations=local_destinations,
             endpoint_hosts=list(dict.fromkeys(d.hostname for d in local_destinations)),
             copilot_tenant_hosts=copilot_tenant_hosts,
+            egress_sidecar=egress_sidecar,
+            egress_input_dir=SIDECAR_INPUT_DIR,
         )
         + "\n",
         encoding="utf-8",

@@ -10,8 +10,8 @@ import sys
 import threading
 import time
 from argparse import ArgumentParser
-from collections.abc import Generator
-from datetime import datetime
+from collections.abc import Callable, Generator
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import NoReturn
 
@@ -29,17 +29,24 @@ from . import (
     dockerfile,
     dockerfile_checksum,
     doctor,
+    egress_log,
+    egress_policy,
+    egress_sidecar,
     firewall,
     internet_proxy,
     local_service_network,
     oauth_refresh,
     observability,
     session,
+    sidecar_image,
     token_expiry,
     transcript,
 )
 from . import (
     jj_workspace as jj_workspace_mod,
+)
+from . import (
+    session_ca as session_ca_module,
 )
 from . import (
     worktree as worktree_mod,
@@ -64,6 +71,9 @@ PROMPT_MOUNT_TARGET = "/project-sandbox-prompt"
 # Headless Chromium uses /dev/shm heavily; Docker's 64m default makes it crash.
 NODE_NPM_DEFAULT_SHM_SIZE = "2g"
 _SHM_SIZE_RE = re.compile(r"[1-9][0-9]*[bkmg]", re.IGNORECASE)
+EGRESS_FIREWALL = "firewall"
+EGRESS_SIDECAR = "sidecar"
+EGRESS_MODES = (EGRESS_FIREWALL, EGRESS_SIDECAR)
 
 
 def _default_image_tag(project: Path) -> str:
@@ -219,6 +229,18 @@ def build_parser() -> ArgumentParser:
         "--internet-proxy",
         metavar="URL",
         help="Route Internet traffic through a credential-free HTTP loopback or remote HTTP/HTTPS proxy (default ports 80/443).",
+    )
+    p.add_argument(
+        "--egress",
+        choices=EGRESS_MODES,
+        default=EGRESS_FIREWALL,
+        help=(
+            "Internet egress mode. 'firewall' (default) pins allowed domains to IPs "
+            "in the sandbox firewall. 'sidecar' routes all traffic through the "
+            "runtime's global Squid sidecar, which filters by hostname under "
+            "$XDG_CONFIG_HOME/project-sandbox/egress.toml and is managed with "
+            "project-sandbox-egress; see docs/egress-sidecar.md."
+        ),
     )
     p.add_argument(
         "--pi-ollama",
@@ -468,6 +490,8 @@ def _main(argv: list[str] | None = None) -> int:
         return doctor.main(raw_argv[1:])
     args = build_parser().parse_args(raw_argv)
 
+    _validate_egress_args(args)
+    sidecar = args.egress == EGRESS_SIDECAR
     internet_proxy_config = _validate_internet_proxy_args(args)
 
     # Expand a leading "~" once, up front, so every later use of args.log (both
@@ -527,6 +551,18 @@ def _main(argv: list[str] | None = None) -> int:
     project = _resolve_required_path(args.project, what="project path")
     if args.image_tag is None:
         args.image_tag = _default_image_tag(project)
+    # --egress sidecar: the global policy, checked to lie outside every mount
+    # before any worktree exists. The sandbox is then planned exactly like
+    # firewall mode with --internet-proxy at the sidecar's published endpoint.
+    egress: egress_policy.PolicyFile | None = None
+    if sidecar:
+        _, planned_workspace = (
+            _plan_worktree(args, project) if run_agent else (None, project)
+        )
+        egress = _egress_sidecar_policy(
+            args, project=project, workspace=planned_workspace, run_agent=run_agent
+        )
+        internet_proxy_config = internet_proxy.for_sidecar(egress.port)
     identity = read_identity()
     available_agents = config_agents.available_agents()
     # --no-forward-credentials promises to start unauthenticated and let the
@@ -554,6 +590,8 @@ def _main(argv: list[str] | None = None) -> int:
         if (run_agent is not None or args.build_only) and not args.dry_run
         else None
     )
+    if sidecar and runtime is not None and not egress_sidecar.supported(runtime):
+        raise SystemExit(egress_sidecar.unsupported_message(runtime))
     # Builds and sessions share one pasta address so host-own LAN services
     # (proxies, gateways) stay reachable from both.
     podman_pasta = runtime is not None and local_service_network.uses_local_pasta(
@@ -573,12 +611,15 @@ def _main(argv: list[str] | None = None) -> int:
             worktree=wt,
             identity=identity,
             available_agents=available_agents,
+            egress=egress,
         )
 
     # Fail before model discovery, secret loading, filesystem rendering, image
     # work, or owned forwarding resources when the external listener is down.
     # Build-only runs never start a sandbox and therefore need no listener.
-    if internet_proxy_config is not None and run_agent is not None:
+    # The egress sidecar is started (or reused) and probed right before the
+    # sandbox runs instead.
+    if internet_proxy_config is not None and run_agent is not None and not sidecar:
         internet_proxy.preflight(internet_proxy_config, ca_certificates=ca_certificates)
 
     proxy_key: str | None = None
@@ -664,6 +705,11 @@ def _main(argv: list[str] | None = None) -> int:
     # not be recorded at all, which never blocks the run.
     record_path: Path | None = None
     copilot_token_staged = False
+    # Owns this session's sidecar inputs (sessions/<sid>/) in sidecar mode; the
+    # global sidecar itself keeps running after the session.
+    egress_stack = contextlib.ExitStack()
+    egress_state: egress_sidecar.Sidecar | None = None
+    egress_started_at: float | None = None
     try:
         if (
             run_agent is not None
@@ -706,7 +752,7 @@ def _main(argv: list[str] | None = None) -> int:
         if not is_chroot and _synthesises_dockerfile(args):
             dockerfile.render_dockerignore(context_dir, build_context=build_context)
         if not is_chroot:
-            dockerfile.render_entrypoint(context_dir)
+            dockerfile.render_entrypoint(context_dir, egress_sidecar=sidecar)
             dockerfile.render_devcontainer_entrypoint(context_dir)
             firewall.render(
                 context_dir,
@@ -735,6 +781,7 @@ def _main(argv: list[str] | None = None) -> int:
                     pi_ollama_enabled=pi_ollama_enabled,
                 ),
                 copilot_tenant_hosts=_copilot_tenant_hosts(run_agent, copilot_host),
+                egress_sidecar=sidecar,
             )
         else:
             chroot.render(context_dir)
@@ -776,7 +823,7 @@ def _main(argv: list[str] | None = None) -> int:
         # The devcontainer integration targets docker-style build/run tooling
         # (VS Code "Reopen in Container"); chroot renders no Dockerfile/firewall
         # for it to reference, so skip it rather than write dangling symlinks.
-        if not is_chroot:
+        if _renders_devcontainer(args, is_chroot=is_chroot):
             devcontainer.render(
                 context_dir.parent,
                 identity=identity,
@@ -990,6 +1037,22 @@ def _main(argv: list[str] | None = None) -> int:
         session_container_name = (
             observability.container_name(session_id) if runtime.is_container else None
         )
+        egress_mount = None
+        if egress is not None:
+            assert internet_proxy_config is not None
+            egress_state = _ensure_egress_sidecar(
+                runtime,
+                egress,
+                run_agent=run_agent,
+                port=internet_proxy_config.port,
+                verbose=args.verbose,
+            )
+            egress_mount = _egress_session_inputs(
+                egress_stack, egress_state, session_id=session_id
+            )
+            egress_started_at = egress_sidecar.sidecar_clock(
+                runtime, egress_sidecar.default_runner
+            )
         cmd, log_path, unsupervised, container_stop_argv = _build_session_command(
             args,
             project=project,
@@ -1012,6 +1075,7 @@ def _main(argv: list[str] | None = None) -> int:
                 forwarding_plans, pasta=podman_pasta
             ),
             session_id=session_id,
+            egress_mount=egress_mount,
         )
         container_name = session_container_name
 
@@ -1110,6 +1174,12 @@ def _main(argv: list[str] | None = None) -> int:
         record_path = None
         return exit_code
     finally:
+        # The sandbox container has exited (--rm) by now; remove this session's
+        # sidecar inputs and count what the shared sidecar denied meanwhile.
+        egress_stack.close()
+        if egress_state is not None and agent_ran:
+            assert runtime is not None
+            _print_egress_denials(runtime, egress_state, started_at=egress_started_at)
         # An interrupted or crashed run never reaches finish_record above; close
         # the record here so it doesn't stay "running" forever (orphan detection
         # would otherwise rest on a PID that the OS is free to reuse).
@@ -1379,6 +1449,211 @@ def _validate_agent_proxy_args(args, run_agent: str | None) -> int | None:
     return port
 
 
+def _validate_egress_args(args) -> None:
+    """Reject unsupported --egress sidecar combinations before any work is done.
+
+    Each message names what to use instead: an egress.toml key, a
+    project-sandbox-egress command, or firewall egress mode.
+    """
+    if args.egress != EGRESS_SIDECAR:
+        return
+    policy_path = egress_policy.default_policy_path()
+    if args.no_firewall:
+        raise SystemExit(
+            "--egress sidecar cannot be combined with --no-firewall: the sandbox "
+            "firewall is what keeps traffic on the sidecar. Use --egress firewall "
+            "--no-firewall for an unrestricted session."
+        )
+    if args.runtime == container_cli.CHROOT.name:
+        raise SystemExit(
+            "--egress sidecar does not support --runtime chroot; use a container "
+            "runtime (apple-container, docker, or podman)"
+        )
+    if args.extra_domain:
+        raise SystemExit(
+            "--egress sidecar does not take --extra-domain: every sidecar sandbox "
+            "shares the global egress policy. Allow the host for all of them with "
+            "`project-sandbox-egress allow add "
+            + " ".join(args.extra_domain)
+            + f"` (edits {policy_path})."
+        )
+    if getattr(args, "internet_proxy", None):
+        raise SystemExit(
+            "--egress sidecar does not take --internet-proxy: the global sidecar's "
+            f"parent proxy is [egress.upstream] url in {policy_path}. Set it there, "
+            "then run `project-sandbox-egress restart`."
+        )
+    if getattr(args, "ca_cert", []):
+        raise SystemExit(
+            "--egress sidecar does not take --ca-cert: the upstream proxy's CA is "
+            f"[egress.upstream] ca_cert in {policy_path}, installed into each "
+            "sandbox at start (not baked into the image)."
+        )
+    if args.allow_github:
+        raise SystemExit(
+            "--egress sidecar blocks GitHub repository access, so --allow-github is "
+            "not supported (per-repository access is on the roadmap, see "
+            "ROADMAP.md). Use --egress firewall --allow-github for GitHub."
+        )
+    if getattr(args, "copilot_host", None) not in (None, copilot_auth.DEFAULT_HOST):
+        raise SystemExit(
+            "--egress sidecar does not support --copilot-host tenants (the Copilot "
+            "profile covers github.com accounts only); use --egress firewall"
+        )
+
+
+def _egress_sidecar_policy(
+    args, *, project: Path, workspace: Path, run_agent: str | None
+) -> egress_policy.PolicyFile:
+    """Load the global policy and check it and the sidecar state stay out of reach.
+
+    ``egress.toml`` (whether or not it exists yet) and the sidecar state
+    directory, which holds the CA key, must lie outside everything mounted into
+    the sandbox: the project, the worktree, the repository metadata and every
+    --mount source, checked after resolving symlinks.
+    """
+    protected = [project, workspace, project / ".git", project / ".jj"]
+    for value in args.extra_mounts:
+        spec = container_cli.parse_mount(value)
+        if spec.raw is None:
+            protected.append(spec.source)
+    try:
+        egress_policy.check_location(
+            egress_policy.default_policy_path(), protected, what="egress policy"
+        )
+        egress_policy.check_location(
+            session_ca_module.egress_root(),
+            protected,
+            what="egress sidecar state directory",
+        )
+        policy = egress_policy.load_global()
+    except egress_policy.EgressPolicyError as exc:
+        raise SystemExit(str(exc)) from None
+    if run_agent == "copilot" and not policy.copilot:
+        raise SystemExit(
+            "--agent copilot needs the sidecar's Copilot profile: set "
+            "[egress.copilot] enabled = true in "
+            f"{policy.path or egress_policy.default_policy_path()}, then run "
+            "`project-sandbox-egress restart`."
+        )
+    return policy
+
+
+def _ensure_egress_sidecar(
+    runtime: container_cli.Runtime,
+    policy: egress_policy.PolicyFile,
+    *,
+    run_agent: str,
+    port: int,
+    verbose: bool,
+    now: Callable[[], datetime] | None = None,
+    host_probe: Callable[[int], bool] | None = None,
+) -> egress_sidecar.Sidecar:
+    """Start or reuse the global sidecar and check it can serve this session.
+
+    ``port`` is the endpoint rendered into this sandbox's firewall and proxy
+    variables: a sidecar publishing another port is an error, and the endpoint
+    must answer from the host before the sandbox starts.
+    """
+    try:
+        image = egress_sidecar.ensure_image(
+            runtime,
+            build=lambda **kw: container_cli.build_image(verbose=verbose, **kw),
+            exists=container_cli.image_exists,
+        )
+        if egress_sidecar.read_state(egress_sidecar.layout(runtime)) is None:
+            print("Starting the egress sidecar…")
+        sidecar = egress_sidecar.ensure(
+            runtime, policy, image=image, expected_port=port
+        )
+    except egress_sidecar.SidecarError as exc:
+        raise SystemExit(f"[E] {exc}") from None
+    for message in sidecar.messages:
+        print(message)
+    print(
+        f"Egress sidecar: {'started' if sidecar.started else 'reusing'} "
+        f"{egress_sidecar.CONTAINER} at {sidecar.endpoint}"
+    )
+    if not (host_probe or egress_sidecar.probe_published)(sidecar.port):
+        raise SystemExit(
+            f"[E] The egress sidecar does not answer on {sidecar.endpoint}; check "
+            "`project-sandbox-egress status` and `project-sandbox-egress log`."
+        )
+    if run_agent == "copilot" and not sidecar.copilot:
+        raise SystemExit(
+            "--agent copilot needs the Copilot profile, but the running egress "
+            "sidecar was started without it. Run `project-sandbox-egress restart` "
+            "to apply [egress.copilot] enabled = true."
+        )
+    check = egress_sidecar.check_ca(sidecar, now=(now or (lambda: datetime.now(UTC)))())
+    if check.error:
+        raise SystemExit(f"[E] {check.error}")
+    if check.warning:
+        print(check.warning)
+    return sidecar
+
+
+def _egress_session_inputs(
+    stack: contextlib.ExitStack,
+    sidecar: egress_sidecar.Sidecar,
+    *,
+    session_id: str,
+) -> str:
+    """Write ``sessions/<sid>/sandbox/`` (removed when the stack closes)."""
+    sessions = sidecar.layout.sessions
+    session_ca_module.remove_stale(sessions)
+    directory = stack.enter_context(
+        session_ca_module.session_directory(session_id.lower(), root=sessions)
+    )
+    sandbox = egress_sidecar.write_sandbox_inputs(
+        directory, ca=sidecar.ca, upstream_ca=sidecar.upstream_ca
+    )
+    return egress_sidecar.sandbox_mount(sandbox)
+
+
+def _print_egress_denials(
+    runtime: container_cli.Runtime,
+    sidecar: egress_sidecar.Sidecar,
+    *,
+    started_at: float | None,
+    runner=None,
+) -> None:
+    """Best effort: count the sidecar's denials during this session."""
+    if started_at is None:
+        return
+    runner = runner or egress_sidecar.default_runner
+    try:
+        ended_at = egress_sidecar.sidecar_clock(runtime, runner)
+        if ended_at is None:
+            return
+        text = egress_sidecar.fetch_logs(runtime, runner, since=started_at)
+        count = egress_log.count_in_window(
+            text,
+            start=started_at,
+            # `date +%s` truncates to whole seconds: include the final second.
+            end=ended_at + 1,
+            upstream=sidecar.upstream_url is not None,
+        )
+    except (OSError, egress_sidecar.SidecarError):
+        return
+    for line in egress_log.session_summary(count, since=started_at):
+        print(line)
+
+
+def _renders_devcontainer(args, *, is_chroot: bool) -> bool:
+    """Devcontainers are firewall-only; sidecar sessions leave them untouched."""
+    if is_chroot:
+        # chroot renders no Dockerfile/firewall for a devcontainer to reference.
+        return False
+    if args.egress == EGRESS_SIDECAR:
+        print(
+            "[i] --egress sidecar: not rendering .devcontainer/ "
+            "(devcontainers support firewall egress only)"
+        )
+        return False
+    return True
+
+
 def _validate_internet_proxy_args(args) -> internet_proxy.InternetProxy | None:
     value = getattr(args, "internet_proxy", None)
     if getattr(args, "ca_cert", []) and not value and not args.agent_proxy:
@@ -1397,10 +1672,14 @@ def _validate_internet_proxy_args(args) -> internet_proxy.InternetProxy | None:
             "environment variables are bypassable without firewall enforcement"
         )
     if args.extra_domain or args.allow_github:
+        # Sidecar mode rejects --internet-proxy earlier; there the proxy is the
+        # global sidecar's [egress.upstream] parent behind local host policy.
         raise SystemExit(
             "--internet-proxy cannot be combined with --extra-domain or "
-            "--allow-github; configure Internet destination policy in "
-            "the external proxy"
+            "--allow-github in firewall egress mode; configure Internet "
+            "destination policy in the external proxy, or use --egress sidecar "
+            "with [egress.upstream] url and [egress] allow in egress.toml to "
+            "enforce local host policy in front of it"
         )
     return config
 
@@ -1525,6 +1804,7 @@ def _dry_run(
     worktree,
     identity,
     available_agents: tuple[str, ...],
+    egress: egress_policy.PolicyFile | None = None,
 ) -> int:
     asset_project = (
         workspace if (args.python_uv or args.node_npm) and args.branch else project
@@ -1606,7 +1886,12 @@ def _dry_run(
             f"Would bake CA certificate into sandbox and devcontainer images: {certificate}"
         )
     print(f"Would render sandbox assets under: {context_dir}")
-    print(f"Would render devcontainer under: {asset_project / '.devcontainer'}")
+    if egress is not None:
+        print(
+            "Would not render devcontainer (devcontainers support firewall egress only)"
+        )
+    else:
+        print(f"Would render devcontainer under: {asset_project / '.devcontainer'}")
     preview_runtime = (
         container_cli.select_runtime(args.runtime, dry_run=True)
         if run_agent or args.build_only
@@ -1678,8 +1963,15 @@ def _dry_run(
     proxy_port = (
         agent_proxy.validate_url(args.agent_proxy)[1] if args.agent_proxy else None
     )
-    external_proxy_config = _validate_internet_proxy_args(args)
+    external_proxy_config = (
+        internet_proxy.for_sidecar(egress.port)
+        if egress is not None
+        else _validate_internet_proxy_args(args)
+    )
     proxy_config = internet_proxy.for_runtime(external_proxy_config, runtime)
+    egress_mount = (
+        _print_egress_dry_run(egress, runtime=runtime) if egress is not None else None
+    )
     forwarding_plans = local_service_network.prepare_services(
         runtime,
         _local_services(
@@ -1769,6 +2061,7 @@ def _dry_run(
         api_key_values=preview_api_key_values,
         ollama_add_hosts=[p.add_host for p in forwarding_plans if p.add_host],
         network=local_service_network.network_argument(forwarding_plans),
+        egress_mount=egress_mount,
     )
     if unsupervised:
         assert log_path is not None
@@ -1783,6 +2076,131 @@ def _dry_run(
     else:
         container_cli.run(cmd, dry_run=True)
     return 0
+
+
+class _ReadOnlyRunner:
+    """The dry-run's runner: only ``inspect`` argv reach the runtime."""
+
+    ALLOWED = (("inspect",),)
+
+    def __call__(self, argv):
+        args = tuple(argv[1:])
+        if not any(args[: len(prefix)] == prefix for prefix in self.ALLOWED):
+            raise AssertionError(f"dry-run must not run {shlex.join(argv)}")
+        return egress_sidecar.default_runner(argv)
+
+
+def _print_egress_dry_run(
+    policy: egress_policy.PolicyFile, *, runtime: container_cli.Runtime
+) -> str:
+    """Describe the sidecar plan; generates no key and creates no resource.
+
+    When the runtime is reachable, a read-only ``inspect`` tells whether the
+    sidecar would be started or reused and what differs from egress.toml.
+    Returns the session-input mount the sandbox would get.
+    """
+    effective = egress_policy.effective(policy)
+    image = sidecar_image.image_tag()
+    lay = egress_sidecar.layout(runtime)
+    endpoint = egress_sidecar.endpoint(policy.port)
+    print("Egress: sidecar (global Squid sidecar per runtime; hostname policy)")
+    exists = "" if policy.path else " (missing: built-in defaults)"
+    print(
+        f"  Policy file: {policy.path or egress_policy.default_policy_path()}{exists}"
+    )
+    providers = set(egress_policy.PROVIDER_HOSTS)
+    own = [h for h in effective.allow if h not in providers]
+    print("  Allowed hosts: " + (", ".join(own) or "none"))
+    print("  Agent provider hosts (always allowed): " + ", ".join(sorted(providers)))
+    print(f"  Copilot profile: {'on' if policy.copilot else 'off'}")
+    print(
+        "  GitHub repository access: blocked"
+        + (
+            " (api.github.com only for Copilot's /copilot_internal/)"
+            if policy.copilot
+            else ""
+        )
+    )
+    constraints = session_ca_module.name_constraints_for(effective.bump_set)
+    if effective.bump_set:
+        print("  TLS interception: " + ", ".join(effective.bump_set))
+        print(
+            "  Sidecar CA: EC P-256, name constraints "
+            + ", ".join(constraints)
+            + f", {policy.ca_lifetime_days}-day lifetime; certificate trusted in "
+            "the sandbox, key stays in the sidecar"
+        )
+    else:
+        print("  TLS interception: none (everything spliced)")
+        print("  Sidecar CA: constrained to 'invalid', not mounted into the sandbox")
+    if policy.upstream_url is not None:
+        via = (
+            "the sidecar-owned host relay"
+            if egress_sidecar.needs_relay(runtime, policy.upstream_url)
+            else "a direct connection from the sidecar"
+        )
+        print(f"  Parent proxy: {policy.upstream_url} via {via}")
+    print(f"  Published endpoint: {endpoint} (host loopback only)")
+    print(f"  Resources: {policy.memory} memory, {policy.cpus} CPU(s)")
+    print(f"  Sidecar image: {image}")
+    report = None
+    if shutil.which(runtime.binary) is not None:
+        try:
+            report = egress_sidecar.status(
+                runtime,
+                policy,
+                image=image,
+                deps=egress_sidecar.Collaborators(runner=_ReadOnlyRunner()),
+                probe=False,
+            )
+        except (OSError, egress_sidecar.SidecarError):
+            report = None
+    if report is None:
+        print(f"  Sidecar: {runtime.name} not reachable; a launch would start it")
+    elif report["would"] == "reuse" or (report["running"] and "endpoint" in report):
+        print(
+            f"  Sidecar: would reuse the running {egress_sidecar.CONTAINER} at "
+            f"{report['endpoint']}"
+        )
+        drift = report["drift"]
+        if drift.get("reload"):
+            print("  Would apply egress.toml changes live (reload, no restart)")
+        if report["endpoint"] != endpoint:
+            print(
+                "  [W] The running sidecar publishes another port; the launch would "
+                "fail until `project-sandbox-egress restart`."
+            )
+        if drift.get("restart"):
+            print(
+                "  [W] Restart-only differences (not applied by a launch): "
+                + ", ".join(drift["restart"])
+            )
+    else:
+        print(f"  Sidecar: would start {egress_sidecar.CONTAINER}")
+        print(
+            "Would generate or reuse the sidecar CA and config in: " + str(lay.sidecar)
+        )
+        print(
+            "Would run: "
+            + shlex.join(
+                egress_sidecar.sidecar_run_argv(
+                    runtime,
+                    image=image,
+                    sidecar_dir=lay.sidecar,
+                    port=policy.port,
+                    memory=policy.memory,
+                    cpus=policy.cpus,
+                    restart_fingerprint="<fingerprint>",
+                )
+            )
+        )
+    session_dir = (
+        lay.sessions
+        / observability.new_session_id().lower()
+        / egress_sidecar.SANDBOX_SUBDIR
+    )
+    print(f"Would write this session's sandbox inputs to: {session_dir}")
+    return egress_sidecar.sandbox_mount(session_dir)
 
 
 def _print_copilot_dry_run(args, *, context_dir: Path, host: str) -> None:
@@ -1811,6 +2229,12 @@ def _print_copilot_dry_run(args, *, context_dir: Path, host: str) -> None:
         "Would set Copilot environment: " + ", ".join(copilot_auth.container_env(host))
     )
     if args.no_firewall:
+        return
+    if args.egress == EGRESS_SIDECAR:
+        print(
+            "Would use the sidecar Copilot profile ([egress.copilot] enabled in "
+            "egress.toml); GitHub repository access stays blocked"
+        )
         return
     print("Would allow the --allow-github host set (implied by --agent copilot)")
     tenant = copilot_auth.tenant_hosts(host)
@@ -2578,9 +3002,13 @@ def _build_session_command(
     ollama_add_hosts: list[str] | None = None,
     network: str | None = None,
     session_id: str | None = None,
+    egress_mount: str | None = None,
 ) -> tuple[list[str], Path | None, bool, list[str] | None]:
     # Agent availability is validated up front in main() via _ensure_agent_available.
     extra_mounts = list(args.extra_mounts)
+    if egress_mount is not None:
+        # --egress sidecar: this session's public CA certificates, read-only.
+        extra_mounts.append(egress_mount)
     if getattr(args, "agent_proxy", None) and run_agent in ("opencode", "bash"):
         extra_mounts.append(
             f"type=bind,source={(context_dir / 'opencode').resolve(strict=False)},"

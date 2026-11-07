@@ -1,5 +1,27 @@
 #!/bin/bash
 set -euo pipefail
+{%- if egress_sidecar %}
+
+# --egress sidecar: trust the sidecar's CA only while it intercepts TLS
+# (Copilot's token exchange on api.github.com), and the upstream parent proxy's
+# CA when one is configured. The CLI mounts only these public certificates,
+# per session, read-only; they are installed at start and never baked into the
+# image, so a CA rotation does not change the image.
+EGRESS_CA={{ egress_input_dir }}/ca.pem
+EGRESS_UPSTREAM_CA={{ egress_input_dir }}/upstream-ca.pem
+EGRESS_TRUST_CHANGED=0
+if [ -f "$EGRESS_CA" ]; then
+  install -m 0644 "$EGRESS_CA" /usr/local/share/ca-certificates/project-sandbox-egress.crt
+  EGRESS_TRUST_CHANGED=1
+fi
+if [ -f "$EGRESS_UPSTREAM_CA" ]; then
+  install -m 0644 "$EGRESS_UPSTREAM_CA" /usr/local/share/ca-certificates/project-sandbox-egress-upstream.crt
+  EGRESS_TRUST_CHANGED=1
+fi
+if [ "$EGRESS_TRUST_CHANGED" = 1 ]; then
+  update-ca-certificates >/dev/null 2>&1
+fi
+{%- endif %}
 
 # Collect all IPv4 and IPv6 nameservers
 mapfile -t DNS4_LIST < <(awk '/^nameserver/ && $2 !~ /:/ {print $2}' /etc/resolv.conf)
@@ -373,6 +395,8 @@ if [ "$IPV6_FW" = "1" ]; then
 else
   echo "  IPv6: disabled via sysctl"
 fi
+{% elif egress_sidecar %}
+echo "  Policy: egress sidecar only (IPv4 and IPv6 fail closed)"
 {% else %}
 echo "  Policy: Internet proxy only (IPv4 and IPv6 fail closed)"
 {% endif %}

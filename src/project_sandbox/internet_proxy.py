@@ -42,6 +42,18 @@ def parse(value: str) -> InternetProxy:
     return InternetProxy(value, proxy_endpoint.parse(value, option="--internet-proxy"))
 
 
+def for_sidecar(port: int) -> InternetProxy:
+    """The global egress sidecar as this session's Internet proxy.
+
+    ``--egress sidecar`` runs the sandbox exactly like firewall mode with
+    ``--internet-proxy http://127.0.0.1:<port>``: the sidecar publishes Squid on
+    host loopback, and the sandbox reaches it through the runtime's
+    local-service forwarding (egress-sidecar-macos, design.md Decision 1).
+    """
+    url = f"http://127.0.0.1:{port}"
+    return InternetProxy(url, proxy_endpoint.parse(url, option="[egress.sidecar] port"))
+
+
 # Separates the runtime relay's port from the build forwarder for the same URL.
 RELAY_PURPOSE = "internet-proxy:"
 
