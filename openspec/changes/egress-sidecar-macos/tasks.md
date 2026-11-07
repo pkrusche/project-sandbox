@@ -18,7 +18,7 @@ Reference implementation: the squid-sidecar line (`jj log -r 'ptyttxkk..rymymutp
 
 ## 3. Sidecar CA (`session_ca.py`)
 
-- [ ] 3.1 Port `session_ca.py` with the configurable lifetime (1–30 days), the runtime-named CA, the reuse check and the per-session directory with flock and stale removal. Add the pinned `cryptography` dependency. Verify with `tests/test_session_ca.py` for constraints (`github.com`, `invalid`), reuse, expiry, a constraint change, the cap and key file modes.
+- [x] 3.1 Port `session_ca.py` with the configurable lifetime (1–30 days), the runtime-named CA, the reuse check and the per-session directory with flock and stale removal. Add the pinned `cryptography` dependency. Verify with `tests/test_session_ca.py` for constraints (`github.com`, `invalid`), reuse, expiry, a constraint change, the cap and key file modes.
 
 ## 4. Global sidecar orchestration (`egress_sidecar.py`)
 
