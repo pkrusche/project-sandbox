@@ -406,3 +406,76 @@ ambient proxies and follows no redirects, keeping the bearer key on the configur
 origin. Internet proxy authentication and client certificates are unsupported;
 HTTP 407 does not trigger credential acquisition or direct fallback. See
 [proxy endpoints](proxy-endpoints.md) for TLS scope and client limitations.
+
+## Egress sidecar
+
+`--egress sidecar` replaces IP pinning with one global Squid sidecar per
+runtime that filters by hostname; see [Egress sidecar](egress-sidecar.md). The
+parts that matter for security:
+
+- **The sandbox firewall is the boundary.** A sidecar-mode sandbox runs on the
+  runtime's default network and has a route to the network, exactly like a
+  firewall-mode sandbox. What keeps it on the sidecar is its own firewall: the
+  `internet-proxy` policy of `init-firewall.sh`, run as root before the agent
+  starts. It sets `INPUT`, `FORWARD` and `OUTPUT` to default `DROP`, admits new
+  outbound TCP only to the sidecar endpoint (`host.docker.internal` on
+  `[egress.sidecar] port`, default 3129) and to this session's local services
+  or remote agent proxy, drops DNS, and fails closed when it cannot enforce
+  IPv6. The agent runs without root, so it cannot change those rules, and
+  `--no-firewall` is rejected in this mode.
+- **No routing isolation over firewall mode.** Sidecar mode filters by
+  hostname, but it does not add network isolation beyond firewall mode: if the
+  sandbox firewall failed, the sandbox could reach the network directly. Clients
+  that ignore the proxy variables fail closed instead of going around the
+  sidecar.
+- **The port is open to the host.** The sidecar publishes its proxy on the
+  host's `127.0.0.1` only, never on other host addresses. Any process on the
+  host can use it, and so can any container that can reach host loopback (on
+  Apple `container`, every container that resolves the localhost alias). Those
+  clients get only what `egress.toml` allows, and the sidecar CA is never given
+  to them. Squid's `client` log field is therefore the runtime's port forwarder,
+  not a sandbox, and the session-end denial count covers every client.
+- **One policy, out of reach.** The only policy is
+  `$XDG_CONFIG_HOME/project-sandbox/egress.toml`. It and the sidecar state
+  directory `$XDG_STATE_HOME/project-sandbox/egress/` (which holds the CA key)
+  must lie outside the project, the worktree, `.git`/`.jj` and every `--mount`
+  source. This is checked after resolving symlinks at every launch, so the
+  agent can neither widen the policy nor read the key. Rendered Squid config
+  lives in the state directory, never in the project. Every agent provider host
+  is always allowed. A hand edit of `egress.toml` applies to running sandboxes
+  at the next launch, `reload` or `allow` edit; that is intended.
+- **Squid policy.** Squid refuses IP-literal destinations, CONNECTs to ports
+  other than 443, tunnels whose TLS SNI is missing or differs from the CONNECT
+  host, and non-TLS tunnels. In direct mode it also refuses names that resolve
+  to private, loopback, link-local or metadata addresses. These denials happen
+  before any upstream connection is made.
+- **Sidecar CA.** The sidecar owns one CA per runtime: EC P-256, `pathlen:0`,
+  with critical name constraints, valid for `[egress.ca] lifetime_days`
+  (default 7 days, at most 30).
+  - The constraint is `github.com` when the Copilot profile intercepts
+    `api.github.com`. It cannot be narrower, because Squid mimics GitHub's
+    `*.github.com` certificate names.
+  - Otherwise the constraint is the reserved name `invalid`, and the CA is not
+    mounted into any sandbox.
+  - The key lives in `egress/<runtime>/sidecar/ca-key.pem`, mode 0600 in a
+    0700 directory, written with `O_EXCL | O_NOFOLLOW`. It is mounted read-only
+    into the sidecar only, never into a sandbox, and deleted by
+    `project-sandbox-egress down` or when the CA is replaced. It lives as long
+    as the sidecar keeps it, at most 30 days.
+  - The CA is reused across restarts while it has at least 2 days left and its
+    constraints match. While interception is active, launches warn within 2
+    days of expiry and refuse to start once it has expired.
+  - Only the public certificate enters a sandbox, through the read-only
+    per-session mount `/project-sandbox-egress`, and it is installed at
+    start-up, never baked into an image.
+- **GitHub.** Repository hosts cannot be allowlisted in this mode. The Copilot
+  profile admits only `/copilot_internal/` on `api.github.com`. Copilot CLI
+  telemetry and its update check are blocked.
+- **Parent proxy.** With `[egress.upstream] url`, the sidecar's policy is
+  hostname-only. The parent may reach intranet hosts, so the allowlist is the
+  only barrier to them. The upstream CA (`ca_cert`) is installed into each
+  sandbox's trust at start, not baked into its image. On Apple `container` the
+  relay to a remote parent is a host process that persists while the sidecar
+  is up and listens on `127.0.0.1` only.
+- **Restarts.** `down` and `restart` do not check for users: running sidecar
+  sandboxes lose their connections and fail closed.

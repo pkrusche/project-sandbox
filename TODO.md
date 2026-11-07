@@ -20,3 +20,22 @@
 - Re-check the `@github/copilot` pin with `scripts/update-pins.py`: 1.0.98 was
   taken from a web search because the npm registry was unreachable when it was
   added.
+
+## Egress sidecar (follow-ups from egress-sidecar-macos)
+
+- Port the DNS probes that `internet-proxy-locally` runs and
+  `scripts/e2e-egress-sidecar.py` does not (`dns-rebinding`, `dns-mixed-answers`,
+  `ptr-allowlist`): they need upstream's lab DNS fixture (egress-sidecar-macos
+  design.md Decision 15).
+- Capture the business and enterprise Copilot hosts with
+  `scripts/e2e-copilot-egress.py`: `api.{business,enterprise}.githubcopilot.com`
+  are admitted by analogy with the individual-plan capture (egress-sidecar-macos
+  design.md Decision 5).
+- `--copilot-host` GHE.com tenants in sidecar mode (rejected today): capture the
+  tenant host set and add a tenant profile (egress-sidecar-macos).
+- Sidecar egress for devcontainers. Sidecar launches leave `.devcontainer/`
+  untouched; devcontainers stay firewall-only (egress-sidecar-macos).
+- Per-sandbox denial attribution, smart GitHub repository access and upstream
+  proxy authentication are on the ROADMAP ("Egress sidecar follow-ups",
+  "Smart GitHub repository access in sidecar egress mode";
+  egress-sidecar-macos).

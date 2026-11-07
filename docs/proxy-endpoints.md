@@ -6,6 +6,12 @@ Internet option routes proxy-aware Internet requests and requires the firewall.
 Internet-only sessions retain ordinary provider credentials and need no gateway
 key or model discovery.
 
+With `--egress sidecar`, the sandbox's Internet proxy is the global sidecar at
+`http://127.0.0.1:<[egress.sidecar] port>`, forwarded like the first row below,
+and `--internet-proxy` is rejected. An external proxy becomes the sidecar's
+parent (`[egress.upstream] url`). `--agent-proxy` behaves as in firewall mode.
+See [Egress sidecar](egress-sidecar.md).
+
 | Endpoint | Accepted | Sandbox route |
 | --- | --- | --- |
 | `http://127.0.0.1:4000` or `http://localhost:4000` | Yes | Forwarded through `host.docker.internal` |

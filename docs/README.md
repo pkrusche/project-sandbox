@@ -18,6 +18,9 @@ This directory contains the detailed project-sandbox documentation.
   build/runtime separation, and the Squid acceptance test.
 - See [Internet proxy](internet-proxy.md) for routing traffic through an externally 
   managed filtering proxy.
+- [Egress sidecar](egress-sidecar.md) - `--egress sidecar`: one global Squid
+  sidecar per runtime that filters by hostname, `project-sandbox-egress`, GitHub
+  blocking and the Copilot profile, parent proxies, and troubleshooting denials.
 - [Proxy endpoints](proxy-endpoints.md) - accepted local/remote URLs, DNS pinning,
   verified TLS, and independent gateway and Internet routing.
 - [Security model](security.md) - firewall behavior, OAuth token lifetime,

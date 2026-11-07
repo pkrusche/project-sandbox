@@ -51,9 +51,9 @@ Reference implementation: the squid-sidecar line (`jj log -r 'ptyttxkk..rymymutp
 
 ## 8. Documentation
 
-- [ ] 8.1 Write `docs/egress-sidecar.md` (how it works, policy, parent proxy, managing the sidecar) and add the three-option comparison to `docs/internet-proxy.md`; link from `README.md`. Verify that every documented flag, key and command exists in the parsers and the policy schema.
-- [ ] 8.2 Document in `docs/security.md` the sidecar's boundary (the sandbox firewall, no routing isolation over firewall mode, the port open to host processes and to containers reaching host loopback) and the CA key handling. Verify that the documented paths, limits and port match the code constants.
-- [ ] 8.3 Record follow-ups in ROADMAP.md and TODO.md: per-sandbox denial attribution, smart GitHub repository access, upstream authentication, the unported DNS probes, and the business/enterprise Copilot capture. Verify that each item names this change.
+- [x] 8.1 Write `docs/egress-sidecar.md` (how it works, policy, parent proxy, managing the sidecar) and add the three-option comparison to `docs/internet-proxy.md`; link from `README.md`. Verify that every documented flag, key and command exists in the parsers and the policy schema.
+- [x] 8.2 Document in `docs/security.md` the sidecar's boundary (the sandbox firewall, no routing isolation over firewall mode, the port open to host processes and to containers reaching host loopback) and the CA key handling. Verify that the documented paths, limits and port match the code constants.
+- [x] 8.3 Record follow-ups in ROADMAP.md and TODO.md: per-sandbox denial attribution, smart GitHub repository access, upstream authentication, the unported DNS probes, and the business/enterprise Copilot capture. Verify that each item names this change.
 
 ## 9. End-to-end verification
 

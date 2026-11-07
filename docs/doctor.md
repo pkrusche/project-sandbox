@@ -27,6 +27,7 @@ reported rather than blocking the command.
 | Version control | `git` on `PATH` and its version | fail |
 | | global `user.name` / `user.email` | warn |
 | | `jj` version and `jj workspace add --no-colocate` support (jj >= 0.46) | info if absent, warn if too old |
+| Egress sidecar | For each reachable runtime: whether the global [egress sidecar](egress-sidecar.md) runs, and its published endpoint (one read-only `inspect`) | info |
 
 `--runtime auto` picks the first runtime found on `PATH` (Apple `container`,
 then Docker, then Podman on macOS; Docker, then Podman on Linux) without

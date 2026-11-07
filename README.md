@@ -19,7 +19,7 @@ Many sandboxes exist - this is the one with a feature-set / configureable agency
 * **Agent config glue**: Forward host credentials / agent subscriptions into containers selectively, update settings to bypass permissions inside the container.
 * **Devcontainer support**: Creates a matched devcontainer config for editor support (weaker isolation but integrated workflow).
 * **Unsupervised job runs** - submit batch jobs.
-* **Network access restrictions**: restrict to allowed domains, (somewhat) hardened firewall script.
+* **Network access restrictions**: restrict to allowed domains, (somewhat) hardened firewall script, or opt into the global [Squid egress sidecar](docs/egress-sidecar.md) for one hostname-based policy, managed with `project-sandbox-egress`.
 * **git/jj integration**: Managed execution with worktrees / workspaces. No credentials to push inside containers.
 * **pinned dependencies**: pre-install agents & extra tools into the image, manual upversioning.
 * **Simple workflow** (in my view).
@@ -90,6 +90,7 @@ project-sandbox --node-npm --agent claude /absolute/path/to/repo
 
 - [Usage guide](docs/usage.md)
 - [Agent proxy setup and security](docs/agent-proxy.md)
+- [Egress sidecar and `project-sandbox-egress`](docs/egress-sidecar.md)
 - [Generated files and runtime behavior](docs/runtime.md)
 - [Security model](docs/security.md)
 - [Development guide](docs/development.md)
