@@ -25,15 +25,23 @@ The CLI SHALL accept `--internet-proxy URL` only when URL is HTTP, has an explic
 - **THEN** the CLI rejects the invocation before network or sandbox work and directs the user to a supported container runtime
 
 ### Requirement: Firewall enforcement and external policy ownership are mandatory
-Internet proxy mode SHALL require the firewall and SHALL reject `--no-firewall`, `--extra-domain`, and `--allow-github`. Conflict errors SHALL explain that environment variables are bypassable without firewall enforcement and that Internet destination policy belongs in the external proxy.
+Internet proxy mode SHALL require the firewall and SHALL reject `--no-firewall`. In firewall egress mode (the default), Internet proxy mode SHALL also reject `--extra-domain` and `--allow-github`, and conflict errors SHALL explain that environment variables are bypassable without firewall enforcement and that Internet destination policy belongs in the external proxy. In sidecar egress mode (`--egress sidecar`), `--internet-proxy` SHALL be rejected at launch. An external proxy SHALL instead be configured as the global sidecar's upstream parent in `egress.toml`, where the sidecar enforces local hostname policy in front of it.
 
 #### Scenario: Firewall is disabled
 - **WHEN** `--internet-proxy` is combined with `--no-firewall`
 - **THEN** the CLI rejects the invocation before network or container work and explains the bypass risk
 
 #### Scenario: Project-level Internet policy is requested
-- **WHEN** `--internet-proxy` is combined with `--extra-domain` or `--allow-github`
-- **THEN** the CLI rejects the invocation and directs the user to configure equivalent policy in the external filtering proxy
+- **WHEN** `--internet-proxy` is combined with `--extra-domain` or `--allow-github` without `--egress sidecar`
+- **THEN** the CLI rejects the invocation and directs the user to configure equivalent policy in the external filtering proxy, or to use `--egress sidecar` for local host policy
+
+#### Scenario: Internet proxy in sidecar mode
+- **WHEN** `--internet-proxy https://proxy.corp.example` is combined with `--egress sidecar`
+- **THEN** the CLI rejects the invocation before network or container work and names `[egress.upstream] url` in `egress.toml`
+
+#### Scenario: Local policy in front of an upstream proxy
+- **WHEN** `egress.toml` sets `[egress.upstream] url = "https://proxy.corp.example"` and allows `pypi.org`, and a sidecar-mode sandbox requests `pypi.org`
+- **THEN** the sandbox's proxy variables name the sidecar, and the sidecar forwards the allowed request to `proxy.corp.example`
 
 ### Requirement: Proxy forwarding is runtime-safe and implementation-neutral
 The system SHALL forward the configured host-loopback listener under the shared internal hostname `host.docker.internal`, preserving its port. Ollama, Agentgateway, and the Internet proxy SHALL use that single hostname so Apple `container` requires only one administrator-managed localhost DNS entry and other supported container runtimes require only one host mapping. The system SHALL map it through Apple `container` localhost DNS, Docker Desktop and compatible Podman host-gateway forwarding, or supported Linux bridge forwarding with managed per-port loopback bridges where required. It SHALL fail closed when no safe forwarding strategy exists and SHALL NOT widen a loopback bind. Chroot forwarding SHALL remain available to local services outside Internet-proxy mode but is not a supported Internet-proxy strategy.
