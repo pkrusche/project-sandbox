@@ -392,4 +392,6 @@ Two opt-in e2e suites cover this mode. See the
   and `down`.
 - `scripts/run-e2e-tests.sh --only copilot-egress` (billable) captures the
   Copilot CLI's hosts and paths, verifies the Copilot profile, and checks that
-  GitHub repository access stays blocked.
+  GitHub repository access stays blocked. It then runs a Copilot session and
+  the same repository probes through the real sidecar with the Copilot profile
+  on.

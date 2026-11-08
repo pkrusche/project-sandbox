@@ -1332,20 +1332,24 @@ def check_local(args, runtime, work: Path) -> list[Result]:
     return results
 
 
-def isolate_xdg(xdg: Path, environ=os.environ) -> None:
+def isolate_xdg(
+    xdg: Path, environ=os.environ, links: Sequence[str] = ("containers",)
+) -> None:
     """Point XDG_CONFIG_HOME/XDG_STATE_HOME at ``xdg``, keeping runtime config.
 
     Podman reads its machine connections and containers.conf from
     ``$XDG_CONFIG_HOME/containers``. Without that directory, `podman` on macOS
     falls back to a local socket that does not exist and every call fails, so
-    the user's directory is linked in. Egress policy and sidecar state stay
-    isolated.
+    the user's directory is linked in. ``links`` names the config directories
+    linked this way (the copilot-egress suite adds ``gh`` for `gh auth token`).
+    Egress policy and sidecar state stay isolated.
     """
     real_config = Path(environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
     config = xdg / "config"
     config.mkdir(parents=True, exist_ok=True)
-    if (real_config / "containers").is_dir():
-        (config / "containers").symlink_to(real_config / "containers")
+    for name in links:
+        if (real_config / name).is_dir():
+            (config / name).symlink_to(real_config / name)
     environ["XDG_CONFIG_HOME"] = str(config)
     environ["XDG_STATE_HOME"] = str(xdg / "state")
 

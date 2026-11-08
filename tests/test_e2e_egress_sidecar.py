@@ -523,6 +523,17 @@ class IsolateXdgTests(unittest.TestCase):
         self.assertTrue((config / "containers" / "podman-connections.json").exists())
         self.assertFalse((config / "project-sandbox" / "egress.toml").exists())
 
+    def test_links_named_config_directories(self) -> None:
+        (self.real / "gh").mkdir()
+        (self.real / "gh" / "hosts.yml").write_text("github.com: {}\n")
+        environ = {"XDG_CONFIG_HOME": str(self.real)}
+        xdg = self.tmp / "xdg"
+        self.script.isolate_xdg(xdg, environ, links=("containers", "gh"))
+        config = Path(environ["XDG_CONFIG_HOME"])
+        self.assertTrue((config / "gh" / "hosts.yml").exists())
+        self.assertTrue((config / "containers").is_symlink())
+        self.assertFalse((config / "project-sandbox").exists())
+
     def test_without_containers_config(self) -> None:
         shutil.rmtree(self.real / "containers")
         environ = {"XDG_CONFIG_HOME": str(self.real)}

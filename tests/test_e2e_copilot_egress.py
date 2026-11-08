@@ -3,13 +3,18 @@
 import contextlib
 import importlib.util
 import io
+import json
+import shutil
 import sys
+import tempfile
+import tomllib
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from project_sandbox import egress_policy
+from project_sandbox import container_cli, egress_policy
 
 
 def _load_script():
@@ -43,7 +48,9 @@ class ArgumentTests(unittest.TestCase):
     def test_defaults(self) -> None:
         args = self.script.parse_args([])
         self.assertEqual(args.runtime, "auto")
-        self.assertEqual(args.phases, ("capture", "verify", "block"))
+        self.assertEqual(args.phases, ("capture", "verify", "block", "sidecar"))
+        self.assertEqual(args.sidecar_port, 3129)
+        self.assertFalse(args.replace_existing)
         self.assertEqual(args.variants, ("paths",))
         self.assertEqual(args.extra_host, [])
         self.assertEqual(args.api_path, [])
@@ -288,6 +295,167 @@ class LogAndReportTests(unittest.TestCase):
             "| POST | api.githubcopilot.com | `/chat/completions` | 2 | 200 |", text
         )
         self.assertIn("hosts_not_in_profile: `github.com`", text)
+
+    def test_markdown_for_a_sidecar_only_run(self) -> None:
+        # Regression: a sidecar-only run reported "none passed" for a verify
+        # phase that never ran, and marked every required block denial "no".
+        Phase = self.script.PhaseResult
+        denied = [
+            {
+                "method": "CONNECT",
+                "host": "github.com",
+                "path": "",
+                "cause": "host-not-allowed",
+                "count": 3,
+            }
+        ]
+        text = self.script.render_markdown(
+            [
+                Phase("sidecar", "shipped", ok=True),
+                Phase("sidecar-block", "shipped", ok=True, denials=denied),
+            ],
+            None,
+        )
+        self.assertIn("not checked (the verify phase did not run)", text)
+        self.assertNotIn("none passed", text)
+        self.assertIn("Denied (as required):", text)
+        self.assertIn("| CONNECT | github.com | `` | host-not-allowed | 3 |\n", text)
+        self.assertNotIn("| Expected |", text)
+        failed_verify = self.script.render_markdown(
+            [Phase("verify", "paths", ok=False)], None
+        )
+        self.assertIn("Verified profile: **none passed**", failed_verify)
+
+
+SIDECAR_COPILOT_LOG = """\
+SBX 1.0 TCP_DENIED/403 GET http://sidecar-readiness.invalid/ sni=- bump=- err=ERR_SBX_HOST_NOT_ALLOWED cause=host-not-allowed peer=- client=192.168.64.1
+SBX 2.0 TCP_TUNNEL/200 CONNECT api.individual.githubcopilot.com:443 sni=api.individual.githubcopilot.com bump=splice err=- cause=- peer=140.82.113.21 client=192.168.64.1
+SBX 2.1 TCP_MISS/200 GET https://api.github.com/copilot_internal/user sni=api.github.com bump=bump err=- cause=- peer=140.82.121.6 client=192.168.64.1
+SBX 2.2 TCP_DENIED/403 GET https://api.github.com/repos/github/copilot-cli/releases/latest sni=api.github.com bump=bump err=ERR_SBX_PATH_NOT_ALLOWED cause=path-not-allowed peer=- client=192.168.64.1
+SBX 2.3 TCP_DENIED/200 CONNECT telemetry.individual.githubcopilot.com:443 sni=- bump=- err=TCP_RESET cause=host-not-allowed peer=- client=192.168.64.1
+"""
+SIDECAR_BLOCK_LINES = (
+    "SBX 3.0 TCP_DENIED/200 CONNECT github.com:443 sni=- bump=- err=TCP_RESET cause=host-not-allowed peer=- client=192.168.64.1",
+    "SBX 3.1 NONE_NONE/200 CONNECT api.github.com:443 sni=api.github.com bump=bump err=- cause=- peer=- client=192.168.64.1",
+    "SBX 3.2 TCP_DENIED/403 GET https://api.github.com/repos/octocat/Hello-World sni=api.github.com bump=bump err=ERR_SBX_PATH_NOT_ALLOWED cause=path-not-allowed peer=- client=192.168.64.1",
+    "SBX 3.3 TCP_DENIED/200 CONNECT raw.githubusercontent.com:443 sni=- bump=- err=TCP_RESET cause=host-not-allowed peer=- client=192.168.64.1",
+)
+
+
+class SidecarPhaseTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.script = _load_script()
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp)
+
+    def test_policy_enables_the_shipped_copilot_profile(self) -> None:
+        text = self.script.sidecar_policy_text(3140, ["*.example.com"])
+        policy = egress_policy.parse(tomllib.loads(text), path=Path("egress.toml"))
+        self.assertTrue(policy.copilot)
+        self.assertEqual(policy.port, 3140)
+        self.assertEqual(policy.allow, ("*.example.com",))
+        effective = egress_policy.effective(policy)
+        self.assertEqual(effective.bump_set, (egress_policy.COPILOT_API_HOST,))
+        for host in egress_policy.COPILOT_HOSTS:
+            self.assertIn(host, effective.allow)
+
+    def test_session_command_uses_the_sidecar_and_a_separate_image(self) -> None:
+        args = self.script.parse_args(["--model", "gpt-5"])
+        args.runtime = "docker"
+        argv = self.script.sidecar_session_command(
+            args,
+            self.tmp,
+            agent="copilot",
+            prompt="hi",
+            log_path=self.tmp / "s.log",
+        )
+        self.assertEqual(argv[argv.index("--egress") + 1], "sidecar")
+        self.assertNotIn("--internet-proxy", argv)
+        self.assertNotIn("--ca-cert", argv)
+        self.assertEqual(
+            argv[argv.index("--image-tag") + 1],
+            "project-sandbox-e2e-copilot-egress-sidecar:latest",
+        )
+        self.assertEqual(argv[argv.index("--model") + 1], "gpt-5")
+        bash = self.script.sidecar_session_command(
+            args, self.tmp, agent="bash", prompt="x", log_path=self.tmp / "b.log"
+        )
+        self.assertNotIn("--model", bash)
+
+    def test_sidecar_image_tag(self) -> None:
+        tag = self.script.sidecar_image_tag
+        self.assertEqual(tag("x:1"), "x-sidecar:1")
+        self.assertEqual(tag("x"), "x-sidecar")
+        self.assertEqual(tag("localhost:5000/a/x:2"), "localhost:5000/a/x-sidecar:2")
+
+    def test_parse_log_reads_sidecar_lines_without_the_readiness_probe(self) -> None:
+        entries = self.script.parse_log(SIDECAR_COPILOT_LOG)
+        self.assertEqual(len(entries), 4)
+        self.assertNotIn("sidecar-readiness.invalid", self.script.hosts_seen(entries))
+        self.assertEqual(
+            [e.host for e in self.script.copilot_traffic(entries)],
+            ["api.individual.githubcopilot.com"],
+        )
+        unexpected = [
+            d
+            for d in self.script.denials(entries)
+            if not self.script.is_expected_denial(d)
+        ]
+        self.assertEqual(unexpected, [])
+
+    def test_new_log_lines(self) -> None:
+        before = SIDECAR_COPILOT_LOG
+        after = before + "\n".join(SIDECAR_BLOCK_LINES) + "\n"
+        self.assertEqual(
+            self.script.new_log_lines(before, after), "\n".join(SIDECAR_BLOCK_LINES)
+        )
+        # A restarted sidecar's log does not extend the old one: grade it all.
+        restarted = "\n".join(SIDECAR_BLOCK_LINES)
+        self.assertEqual(self.script.new_log_lines(before, restarted), restarted)
+
+    def _block(self, lines) -> object:
+        result_file = self.tmp / "copilot-egress-block.json"
+        result_file.write_text(json.dumps([{"probe": "x", "client": "error"}]))
+        run = self.script.Run(0, "", "")
+        return self.script.grade_block(
+            "sidecar-block",
+            "p",
+            run,
+            self.script.parse_log("\n".join(lines)),
+            result_file,
+            "sidecar",
+        )
+
+    def test_block_grading_on_the_sidecar_log(self) -> None:
+        result = self._block(SIDECAR_BLOCK_LINES)
+        self.assertTrue(result.ok, result.failures)
+        leak = self._block(
+            (
+                *SIDECAR_BLOCK_LINES,
+                "SBX 4.0 TCP_TUNNEL/200 CONNECT codeload.github.com:443 sni=codeload.github.com bump=splice err=- cause=- peer=1.2.3.4 client=-",
+            )
+        )
+        self.assertFalse(leak.ok)
+        self.assertIn("1 GitHub transaction(s) were not denied", leak.failures)
+        quiet = self._block(())
+        self.assertIn("the sidecar saw no GitHub probe traffic", quiet.failures)
+
+    def test_sidecar_only_run_needs_no_fixture_cli(self) -> None:
+        # Podman hosts the fixture on Docker; a sidecar-only run must not need it.
+        args = self.script.parse_args(["--phases", "sidecar"])
+        with mock.patch.object(self.script.shutil, "which", return_value=None):
+            suite = self.script.Suite(
+                args, container_cli.PODMAN, self.tmp, self.tmp, self.tmp, []
+            )
+        self.assertIsNone(suite.cli)
+        args = self.script.parse_args(["--phases", "capture"])
+        with (
+            mock.patch.object(self.script.shutil, "which", return_value=None),
+            self.assertRaises(SystemExit),
+        ):
+            self.script.Suite(
+                args, container_cli.PODMAN, self.tmp, self.tmp, self.tmp, []
+            )
 
 
 if __name__ == "__main__":

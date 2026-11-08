@@ -91,8 +91,10 @@
 #   --with-copilot-egress
 #                    run scripts/e2e-copilot-egress.py: capture the Copilot CLI's hosts and
 #                    paths through an intercepting Squid fixture, verify a Copilot-only
-#                    profile, and check GitHub repository access is blocked. Billable (a few
-#                    short Copilot requests); same token sources as --with-copilot
+#                    profile, check GitHub repository access is blocked, then repeat the
+#                    session and the block probes through the real --egress sidecar with
+#                    the Copilot profile on. Billable (a few short Copilot requests); same
+#                    token sources as --with-copilot
 #   --copilot-egress-report-dir DIR
 #                    write the copilot-egress report there (default: .project-sandbox/)
 #   --with-egress-sidecar

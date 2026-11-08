@@ -58,7 +58,7 @@ Reference implementation: the squid-sidecar line (`jj log -r 'ptyttxkk..rymymutp
 ## 9. End-to-end verification
 
 - [x] 9.1 Port `scripts/e2e-egress-sidecar.py` and its `run-e2e-tests.sh` wiring to the published endpoint (design.md Decision 15), adding the loopback-only local-service probe and dropping the forwarder checks. Run it on Apple `container`, Docker Desktop and Podman machine and record the results in `docs/development.md`.
-- [ ] 9.2 Port the opt-in `copilot-egress` suite and run it with `[egress.copilot] enabled = true`. Record that the Copilot session succeeds and every GitHub repository probe stays denied.
+- [x] 9.2 Port the opt-in `copilot-egress` suite and run it with `[egress.copilot] enabled = true`. Record that the Copilot session succeeds and every GitHub repository probe stays denied.
 
 ## Workflow follow-up
 

@@ -182,7 +182,13 @@ Two suites cover [`--egress sidecar`](egress-sidecar.md):
 - `copilot-egress` (`scripts/e2e-copilot-egress.py`, billable): captures the
   Copilot CLI's hosts and paths through an intercepting fixture, verifies the
   Copilot-only profile, and checks that GitHub repository access stays blocked.
-  It writes a report to `--copilot-egress-report-dir`.
+  Its `sidecar` phase then runs a Copilot session and the same block probes
+  through the real global sidecar with `[egress.copilot] enabled = true`,
+  graded on the sidecar's log. That phase uses a temporary
+  `XDG_CONFIG_HOME`/`XDG_STATE_HOME` (linking your `containers` and `gh`
+  config) and refuses to start while a global sidecar exists
+  (`--replace-existing` overrides that). It writes a report to
+  `--copilot-egress-report-dir`.
 
 On Podman, leave `DOCKER_HOST` unset (or pointed at Docker) for the
 `egress-sidecar` suite. The parent fixture runs on Docker, and with
@@ -559,3 +565,23 @@ Results (egress-sidecar-macos task 9.1, 2026-11-08, macOS):
 
 Apple `container` has one extra check, `parent:relay-survives-first-session`,
 because only Apple `container` reaches the parent proxy through the host relay.
+
+The Copilot profile through the real sidecar (egress-sidecar-macos task 9.2,
+2026-11-08, Apple `container` CLI 1.7.1, individual plan):
+
+```bash
+uv run python scripts/e2e-copilot-egress.py --runtime apple-container --phases sidecar
+```
+
+- `sidecar`: passed. The Copilot session exited 0 with the expected reply.
+  Copilot traffic went to `api.individual.githubcopilot.com`. On the
+  intercepted `api.github.com`, `/copilot_internal/user` (200) and
+  `/copilot_internal/managed_settings` (404, from GitHub) went through. The
+  only denials were the expected ones: the CLI's update check
+  `/repos/github/copilot-cli/releases` (`path-not-allowed`) and
+  `telemetry.individual.githubcopilot.com` (`host-not-allowed`).
+- `sidecar-block`: passed. Every GitHub repository probe was denied with the
+  profile on. CONNECTs to `github.com`, `raw.githubusercontent.com`,
+  `codeload.github.com` and `gist.github.com` were reset (`host-not-allowed`).
+  `api.github.com` `/repos/…` and `/gists/public` got the sidecar's labelled
+  403 (`path-not-allowed`), and `git ls-remote` exited 128.

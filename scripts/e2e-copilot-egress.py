@@ -5,9 +5,11 @@
 
 Records which hosts and paths the Copilot CLI uses, and checks that a
 Copilot-only egress profile works while GitHub repository access stays blocked.
-Every phase runs a real project-sandbox session (firewall mode) whose
---internet-proxy is a local, TLS-intercepting Squid fixture; the fixture's
-throwaway CA is baked into the test image with --ca-cert.
+The capture, verify and block phases run real project-sandbox sessions
+(firewall mode) whose --internet-proxy is a local, TLS-intercepting Squid
+fixture; the fixture's throwaway CA is baked into the test image with
+--ca-cert. The sidecar phase runs the same checks through the real global
+egress sidecar (--egress sidecar, [egress.copilot] enabled = true).
 
 Phases (default: all, in this order):
   capture  Copilot runs through an allow-all fixture that intercepts every
@@ -21,6 +23,13 @@ Phases (default: all, in this order):
   block    A bash session probes GitHub repository access (git, REST, raw,
            codeload, gists) through the winning profile. Every probe must be
            denied by the fixture.
+  sidecar  The shipped profile through the real sidecar: a Copilot session
+           with --egress sidecar must succeed with no unexpected denial in the
+           sidecar log, then a bash session runs the block probes through the
+           same sidecar and every one must be denied there. State lives in a
+           temporary XDG_CONFIG_HOME/XDG_STATE_HOME (the user's `containers`
+           and `gh` config are linked in); the suite refuses to start while a
+           global sidecar exists unless --replace-existing is given.
 
 Needs a Copilot subscription and a token the CLI can resolve, exactly as
 scripts/e2e-copilot.py: a fine-grained PAT with only "Copilot Requests" in pass
@@ -37,7 +46,9 @@ from __future__ import annotations
 import argparse
 import contextlib
 import hashlib
+import importlib.util
 import json
+import os
 import re
 import shutil
 import socket
@@ -52,11 +63,19 @@ from urllib.parse import urlsplit
 
 import jinja2
 
-from project_sandbox import container_cli, copilot_auth, egress_policy
+from project_sandbox import (
+    container_cli,
+    copilot_auth,
+    egress_log,
+    egress_policy,
+    egress_sidecar,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_DIR = ROOT / "scripts" / "fixtures" / "copilot-egress"
-PHASES = ("capture", "verify", "block")
+PHASES = ("capture", "verify", "block", "sidecar")
+# Phases that run through the Squid fixture (and so need its image and CA).
+FIXTURE_PHASES = ("capture", "verify", "block")
 VARIANTS = ("deny", "paths")
 PERSONAL_HOST = copilot_auth.DEFAULT_HOST
 OK_MARKER = "COPILOT_EGRESS_OK_7C2E"
@@ -118,8 +137,9 @@ with open("copilot-egress-block.json", "w", encoding="utf-8") as handle:
 print("BLOCK_PROBES_DONE")
 """
 
+# The fixture's and the sidecar's access logs share this format (prefix aside).
 LOG_RE = re.compile(
-    r"FIXTURE (?P<ts>\d+\.\d+) (?P<status>\S+)/(?P<code>\d+) (?P<method>\S+) "
+    r"(?:FIXTURE|SBX) (?P<ts>\d+\.\d+) (?P<status>\S+)/(?P<code>\d+) (?P<method>\S+) "
     r"(?P<url>\S+) sni=(?P<sni>\S*) bump=(?P<bump>\S*) err=(?P<err>\S*) "
     r"cause=(?P<cause>\S*)"
 )
@@ -162,7 +182,7 @@ def parser() -> argparse.ArgumentParser:
         "--phases",
         type=_csv(PHASES),
         default=PHASES,
-        help="comma-separated phases to run (default: capture,verify,block)",
+        help="comma-separated phases to run (default: capture,verify,block,sidecar)",
     )
     p.add_argument(
         "--variants",
@@ -194,6 +214,18 @@ def parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--model", help="Copilot model (default: the agent's)")
     p.add_argument("--timeout", type=int, default=300)
+    p.add_argument(
+        "--sidecar-port",
+        type=int,
+        default=3129,
+        help="[egress.sidecar] port for the sidecar phase (default 3129)",
+    )
+    p.add_argument(
+        "--replace-existing",
+        action="store_true",
+        help="run the sidecar phase even though a global egress sidecar exists "
+        "(it is replaced and stopped)",
+    )
     # No --no-build: every run bakes a fresh fixture CA into the image via --ca-cert.
     p.add_argument("--keep", action="store_true", help="keep the test project")
     return p
@@ -324,6 +356,8 @@ def parse_log(text: str) -> list[Entry]:
         else:
             parts = urlsplit(url)
             host, path = parts.hostname or "", parts.path or "/"
+        if host.lower() == egress_log.READINESS_HOST:
+            continue  # the sidecar's own readiness probe, not session traffic
         entries.append(
             Entry(
                 status=match["status"],
@@ -530,6 +564,103 @@ def wait_ready(cli: str, name: str, port: int, timeout: float = 60.0) -> None:
 
 
 # --------------------------------------------------------------------------
+# Sidecar phase helpers
+# --------------------------------------------------------------------------
+
+
+def _egress_sidecar_suite():
+    """scripts/e2e-egress-sidecar.py, for its XDG isolation."""
+    path = ROOT / "scripts" / "e2e-egress-sidecar.py"
+    spec = importlib.util.spec_from_file_location("e2e_egress_sidecar_helpers", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def sidecar_policy_text(port: int, extra_hosts=()) -> str:
+    """egress.toml for the sidecar phase: the shipped Copilot profile."""
+    hosts = [
+        egress_policy.normalize_host_pattern(h, source="--extra-host")
+        for h in extra_hosts
+    ]
+    return (
+        "[egress]\nallow = ["
+        + ", ".join(json.dumps(h) for h in hosts)
+        + "]\n[egress.copilot]\nenabled = true\n"
+        + f"[egress.sidecar]\nport = {port}\n"
+    )
+
+
+def sidecar_image_tag(tag: str) -> str:
+    """A separate tag: fixture images bake the fixture CA, sidecar ones must not."""
+    head, _, last = tag.rpartition("/")
+    name, sep, version = last.partition(":")
+    renamed = f"{name}-sidecar{sep}{version}"
+    return f"{head}/{renamed}" if head else renamed
+
+
+def sidecar_session_command(
+    args: argparse.Namespace,
+    project: Path,
+    *,
+    agent: str,
+    prompt: str,
+    log_path: Path,
+) -> list[str]:
+    """project-sandbox argv for one --egress sidecar session. Never carries the token."""
+    command = [
+        sys.executable,
+        "-m",
+        "project_sandbox",
+        "--runtime",
+        args.runtime,
+        "--image-tag",
+        sidecar_image_tag(args.image_tag),
+        "--agent",
+        agent,
+        "--egress",
+        "sidecar",
+        "--prompt-text",
+        prompt,
+        "--log",
+        str(log_path),
+        "--timeout",
+        str(args.timeout),
+    ]
+    if agent == "copilot" and args.model:
+        command += ["--model", args.model]
+    return [*command, str(project), args.base_image]
+
+
+def egress_command(args: argparse.Namespace, *command: str) -> list[str]:
+    return [
+        sys.executable,
+        "-m",
+        "project_sandbox.egress_cli",
+        *command,
+        "--runtime",
+        args.runtime,
+    ]
+
+
+def new_log_lines(before: str, after: str) -> str:
+    """The SBX lines ``after`` adds to ``before`` (the log only grows)."""
+    old = [line for line in before.splitlines() if line.startswith("SBX ")]
+    new = [line for line in after.splitlines() if line.startswith("SBX ")]
+    if new[: len(old)] != old:  # restarted underneath us: grade everything
+        return "\n".join(new)
+    return "\n".join(new[len(old) :])
+
+
+def copilot_traffic(entries: list[Entry]) -> list[Entry]:
+    """Entries for the Copilot API hosts the profile admits."""
+    hosts = set(egress_policy.COPILOT_HOSTS)
+    return [e for e in entries if e.host in hosts and not e.denied]
+
+
+# --------------------------------------------------------------------------
 # Sessions
 # --------------------------------------------------------------------------
 
@@ -585,10 +716,18 @@ def session_command(
     return [*command, str(project), args.base_image]
 
 
-def run_session(command: list[str], log_path: Path, secrets: list[str]) -> Run:
+def run_session(
+    command: list[str], log_path: Path, secrets: list[str], env=None
+) -> Run:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     completed = subprocess.run(
-        command, cwd=ROOT, capture_output=True, text=True, errors="replace", check=False
+        command,
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        errors="replace",
+        check=False,
+        env=env,
     )
     log_text = log_path.read_text(errors="replace") if log_path.exists() else ""
     return Run(
@@ -615,7 +754,13 @@ class Suite:
         self, args, runtime, project: Path, workdir: Path, report_dir: Path, secrets
     ):
         self.args = args
-        self.cli = fixture_cli(runtime)
+        self.runtime = runtime
+        # The fixture CLI is only needed by the fixture phases (Docker for Podman).
+        self.cli = (
+            fixture_cli(runtime)
+            if any(phase in args.phases for phase in FIXTURE_PHASES)
+            else None
+        )
         self.image = fixture_image_tag()
         self.project = project
         self.workdir = workdir
@@ -682,13 +827,9 @@ class Suite:
             label,
             conf,
             agent="copilot",
-            prompt=f"Reply with exactly this text and nothing else: {OK_MARKER}",
+            prompt=COPILOT_PROMPT,
         )
-        failures = []
-        if run.returncode != 0:
-            failures.append(f"copilot exit {run.returncode}")
-        if OK_MARKER not in run.log_text:
-            failures.append("reply marker missing from the session log")
+        failures = copilot_failures(run)
         if not entries:
             failures.append(
                 "the fixture logged no traffic (does the CLI honour HTTPS_PROXY?)"
@@ -745,38 +886,171 @@ class Suite:
             profile,
         )
 
-    def block(self, profile: Profile) -> PhaseResult:
+    def _write_block_probe(self) -> Path:
         (self.project / "copilot-egress-block.py").write_text(
             BLOCK_PROBE_SOURCE, encoding="utf-8"
         )
         result_file = self.project / "copilot-egress-block.json"
         result_file.unlink(missing_ok=True)
+        return result_file
+
+    def block(self, profile: Profile) -> PhaseResult:
+        result_file = self._write_block_probe()
         run, entries = self._session(
             f"block-{profile.name}",
             render_squid_conf("verify", profile),
             agent="bash",
             prompt="python3 copilot-egress-block.py",
         )
-        failures = []
-        client = []
-        try:
-            client = json.loads(result_file.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            failures.append(f"block probes did not run (session exit {run.returncode})")
-        leaks = github_leaks(entries)
-        if leaks:
-            failures.append(f"{len(leaks)} GitHub transaction(s) were not denied")
-        if not [e for e in entries if e.host in GITHUB_REPO_HOSTS]:
-            failures.append("the fixture saw no GitHub probe traffic")
-        return PhaseResult(
-            "block",
-            profile.name,
-            ok=not failures,
-            failures=failures,
-            hosts=hosts_seen(entries),
-            denials=denials(entries),
-            extra={"client": client, "leaks": leaks},
+        return grade_block("block", profile.name, run, entries, result_file, "fixture")
+
+    # -- sidecar phase -------------------------------------------------------
+
+    def sidecar(self) -> list[PhaseResult]:
+        """The shipped Copilot profile through the real global sidecar."""
+        helpers = _egress_sidecar_suite()
+        xdg = Path(tempfile.mkdtemp(prefix="copilot-egress-xdg."))
+        env = dict(os.environ)
+        helpers.isolate_xdg(xdg, env, links=("containers", "gh"))
+        policy = Path(env["XDG_CONFIG_HOME"]) / "project-sandbox" / "egress.toml"
+        policy.parent.mkdir(parents=True, exist_ok=True)
+        policy.write_text(
+            sidecar_policy_text(self.args.sidecar_port, self.args.extra_host),
+            encoding="utf-8",
         )
+        label = "shipped copilot profile"
+        results: list[PhaseResult] = []
+        try:
+            self._egress(env, "down")  # a clean slate in the isolated state
+            run = self._sidecar_session(
+                env, "sidecar-copilot", agent="copilot", prompt=COPILOT_PROMPT
+            )
+            copilot_log = self._sidecar_log(env, "sidecar-copilot")
+            entries = parse_log(copilot_log)
+            failures = copilot_failures(run)
+            if not copilot_traffic(entries):
+                failures.append("the sidecar logged no Copilot API traffic")
+            denied = denials(entries)
+            unexpected = [d for d in denied if not is_expected_denial(d)]
+            if unexpected:
+                failures.append(
+                    f"{len(unexpected)} distinct request(s) denied by the sidecar"
+                )
+            results.append(
+                PhaseResult(
+                    "sidecar",
+                    label,
+                    ok=not failures,
+                    failures=failures,
+                    hosts=hosts_seen(entries),
+                    requests=summarize_requests(entries),
+                    denials=denied,
+                )
+            )
+            result_file = self._write_block_probe()
+            block_run = self._sidecar_session(
+                env,
+                "sidecar-block",
+                agent="bash",
+                prompt="python3 copilot-egress-block.py",
+            )
+            block_log = new_log_lines(
+                copilot_log, self._sidecar_log(env, "sidecar-block")
+            )
+            results.append(
+                grade_block(
+                    "sidecar-block",
+                    label,
+                    block_run,
+                    parse_log(block_log),
+                    result_file,
+                    "sidecar",
+                )
+            )
+        finally:
+            self._egress(env, "down")
+            shutil.rmtree(xdg, ignore_errors=True)
+        return results
+
+    def _egress(self, env, *command: str) -> subprocess.CompletedProcess:
+        argv = egress_command(self.args, *command)
+        try:
+            return subprocess.run(
+                argv,
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                errors="replace",
+                check=False,
+                env=env,
+                timeout=self.args.timeout,
+            )
+        except subprocess.TimeoutExpired:
+            return subprocess.CompletedProcess(argv, 124, "", "timed out")
+
+    def _sidecar_session(self, env, label: str, *, agent: str, prompt: str) -> Run:
+        log_path = self.project / ".e2e-logs" / f"{label}.log"
+        run = run_session(
+            sidecar_session_command(
+                self.args, self.project, agent=agent, prompt=prompt, log_path=log_path
+            ),
+            log_path,
+            self.secrets,
+            env=env,
+        )
+        (self.report_dir / f"session-{label}.txt").write_text(
+            f"exit {run.returncode}\n\n{run.output}", encoding="utf-8"
+        )
+        return run
+
+    def _sidecar_log(self, env, label: str) -> str:
+        result = self._egress(env, "log")
+        text = redact(result.stdout, self.secrets)
+        (self.report_dir / f"sidecar-{label}.log").write_text(text, encoding="utf-8")
+        return text
+
+
+COPILOT_PROMPT = f"Reply with exactly this text and nothing else: {OK_MARKER}"
+
+
+def copilot_failures(run: Run) -> list[str]:
+    failures = []
+    if run.returncode != 0:
+        failures.append(f"copilot exit {run.returncode}")
+    if OK_MARKER not in run.log_text:
+        failures.append("reply marker missing from the session log")
+    return failures
+
+
+def grade_block(
+    phase: str,
+    profile: str,
+    run: Run,
+    entries: list[Entry],
+    result_file: Path,
+    oracle: str,
+) -> PhaseResult:
+    """Every GitHub repository probe must be denied, judged by ``oracle``'s log."""
+    failures = []
+    client = []
+    try:
+        client = json.loads(result_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        failures.append(f"block probes did not run (session exit {run.returncode})")
+    leaks = github_leaks(entries)
+    if leaks:
+        failures.append(f"{len(leaks)} GitHub transaction(s) were not denied")
+    if not [e for e in entries if e.host in GITHUB_REPO_HOSTS]:
+        failures.append(f"the {oracle} saw no GitHub probe traffic")
+    return PhaseResult(
+        phase,
+        profile,
+        ok=not failures,
+        failures=failures,
+        hosts=hosts_seen(entries),
+        denials=denials(entries),
+        extra={"client": client, "leaks": leaks},
+    )
 
 
 # --------------------------------------------------------------------------
@@ -786,11 +1060,12 @@ class Suite:
 
 def render_markdown(results: list[PhaseResult], winner: str | None) -> str:
     lines = ["# Copilot CLI egress report", ""]
-    lines.append(
-        f"Verified profile: **{winner}**"
-        if winner
-        else "Verified profile: **none passed**"
-    )
+    if winner:
+        lines.append(f"Verified profile: **{winner}**")
+    elif any(r.phase == "verify" for r in results):
+        lines.append("Verified profile: **none passed**")
+    else:
+        lines.append("Verified profile: not checked (the verify phase did not run)")
     lines.append("")
     for result in results:
         status = "PASS" if result.ok else "FAIL"
@@ -821,7 +1096,21 @@ def render_markdown(results: list[PhaseResult], winner: str | None) -> str:
                 for r in result.requests
             ]
             lines.append("")
-        if result.denials:
+        if result.denials and result.phase.endswith("block"):
+            # Every block probe must be denied; "expected" does not apply.
+            lines += [
+                "Denied (as required):",
+                "",
+                "| Method | Host | Path | Cause | Count |",
+                "|---|---|---|---|---|",
+            ]
+            lines += [
+                f"| {d['method']} | {d['host']} | `{d['path']}` | {d['cause']} | "
+                f"{d['count']} |"
+                for d in result.denials
+            ]
+            lines.append("")
+        elif result.denials:
             lines += [
                 "Denied:",
                 "",
@@ -870,6 +1159,17 @@ def main(argv: list[str] | None = None) -> int:
     runtime = container_cli.select_runtime(args.runtime)
     if runtime == container_cli.CHROOT:
         raise SystemExit("select apple-container, docker, or podman")
+    args.runtime = runtime.name
+    if (
+        "sidecar" in args.phases
+        and not args.replace_existing
+        and egress_sidecar.inspect(runtime, egress_sidecar.default_runner) is not None
+    ):
+        raise SystemExit(
+            f"a global egress sidecar exists on {runtime.name}; the sidecar phase "
+            "would replace and stop it. Run `project-sandbox-egress down` first, or "
+            "pass --replace-existing."
+        )
     token, source = copilot_auth.resolve_token(PERSONAL_HOST)
     if source == copilot_auth.SOURCE_GH:
         print(
@@ -892,7 +1192,8 @@ def main(argv: list[str] | None = None) -> int:
     results: list[PhaseResult] = []
     winner: Profile | None = None
     try:
-        suite.prepare()
+        if any(phase in args.phases for phase in FIXTURE_PHASES):
+            suite.prepare()
         if "capture" in args.phases:
             print("RUN:  capture", flush=True)
             results.append(suite.capture())
@@ -917,6 +1218,9 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 print(f"RUN:  block ({winner.name})", flush=True)
                 results.append(suite.block(winner))
+        if "sidecar" in args.phases:
+            print("RUN:  sidecar", flush=True)
+            results += suite.sidecar()
     finally:
         write_report(report_dir, results, winner.name if winner else None)
         shutil.rmtree(workdir, ignore_errors=True)  # includes the fixture CA key
