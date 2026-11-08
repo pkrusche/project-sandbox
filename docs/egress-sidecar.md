@@ -26,10 +26,16 @@ project-sandbox-egress allow add pypi.org      # once, for every sidecar sandbox
 project-sandbox --agent claude --egress sidecar .
 ```
 
-Sidecar mode works on Apple `container` (1.4.1 or later), Docker Desktop and
-Podman machine. On Docker Engine and rootless Podman on a Linux host it is
-rejected before any container work (see `egress-sidecar-linux` in
-[ROADMAP.md](../ROADMAP.md)).
+Sidecar mode works on Apple `container` (1.4.1 or later), Docker Desktop,
+Podman machine, Docker Engine (rootful) and rootless Podman on a Linux host.
+Rootless Docker is rejected before any container work:
+
+```
+--egress sidecar does not support rootless Docker: its network namespace cannot
+reach a sidecar on host loopback, and the setup is untested. Sidecar mode works
+on Apple container, Docker Desktop, Docker Engine (rootful), Podman machine and
+rootless Podman; use --egress firewall here.
+```
 
 ## Choosing an egress mode
 
@@ -57,10 +63,11 @@ allowlist in front of such a proxy ([Parent proxy](#parent-proxy)).
            + this session's local services  ──▶ 127.0.0.1:8787, :11434 (agent proxy, Ollama)
 ```
 
-Each runtime has **one** sidecar container, `project-sandbox-egress`, on the
-runtime's default network. It publishes Squid's port on the host's loopback
-address only, on `[egress.sidecar] port` (default `3129`; 3128 is often taken
-by a host Squid).
+Each runtime has **one** sidecar container, `project-sandbox-egress`. It
+publishes Squid's port on exactly one host address, on `[egress.sidecar] port`
+(default `3129`; 3128 is often taken by a host Squid). On most runtimes that
+address is host loopback; on Docker Engine it is the default bridge's gateway
+(see [Linux hosts](#linux-hosts)).
 
 A sidecar-mode sandbox is a firewall-mode sandbox with an Internet proxy: it is
 launched exactly as with `--internet-proxy http://127.0.0.1:3129`.
@@ -75,8 +82,9 @@ launched exactly as with `--internet-proxy http://127.0.0.1:3129`.
 - **Reaching the sidecar.** The sandbox reaches the published port through the
   runtime's local-service forwarding: the
   [localhost alias](apple-container-dns.md) on Apple `container`, and the
-  `host.docker.internal` host alias on Docker Desktop and Podman machine.
-  Concurrent sandboxes share the one published port.
+  `host.docker.internal` host alias on Docker Desktop and Podman machine. On
+  Linux hosts see [Linux hosts](#linux-hosts). Concurrent sandboxes share the
+  one published port.
 - **Started on demand.** A sidecar-mode launch starts the sidecar if it is not
   running and ready, replacing a stopped one (for example after a reboot), and
   reuses it otherwise. Concurrent launches serialize on a lock, so only one
@@ -101,7 +109,8 @@ Host state lives in `$XDG_STATE_HOME/project-sandbox/egress/<runtime>/` (mode
 
 - the rendered Squid config and the CA under `sidecar/`;
 - a `state.json` cache;
-- the Apple relay's lock, pid, port and log;
+- the lock, pid, port and log of the Apple relay or the Docker Engine parent
+  forwarder;
 - each running session's sandbox inputs under `sessions/<id>/`.
 
 Sidecar mode cannot be combined with `--no-firewall` or `--runtime chroot`. It
@@ -112,6 +121,36 @@ The first sidecar start builds a small Alpine/Squid image
 (`project-sandbox-egress-sidecar:<hash>`). Switching a project between
 `--egress firewall` and `--egress sidecar` rebuilds the sandbox image once,
 because the firewall and entrypoint scripts differ between the modes.
+
+## Linux hosts
+
+| Runtime | Sidecar network | Published on | Sandbox reaches it via | Local services |
+|---|---|---|---|---|
+| Docker Engine (rootful) | default `bridge` | `<docker0 gateway>:3129`, e.g. `172.17.0.1:3129` | `host.docker.internal` → gateway (`--add-host`), no listener | `linux-bridge-socat` |
+| Rootless Podman, pasta | pasta, private address `198.18.0.2` | `127.0.0.1:3129` | pasta `-T,3129:3129`, `host.docker.internal` → `127.0.0.1` | pasta `-T` |
+| Rootless Podman, slirp4netns | default | `127.0.0.1:3129` | `host.docker.internal:host-gateway` (Podman 5.0+) | same |
+| Rootless Docker | — | — | rejected | — |
+
+- **Docker Engine.** The sidecar publishes on the gateway of Docker's default
+  bridge (`docker network inspect bridge`), not on loopback: it does not answer
+  on `127.0.0.1:3129`. Every sandbox maps `host.docker.internal` to the gateway,
+  and the firewall admits `<gateway>:3129` only. No per-session `socat` listens
+  for the sidecar port, so concurrent sandboxes share it. Ollama and a loopback
+  `--agent-proxy` keep firewall mode's per-session `socat` on the gateway.
+  `up` checks that `<gateway>:<port>` is free. The gateway is recorded in
+  `state.json` as a restart input: when it changes, `status` reports drift
+  (`published address (Docker's default bridge gateway)`) and a launch fails
+  until `project-sandbox-egress restart`. `status` and `doctor` show the
+  endpoint as `172.17.0.1:3129 (Docker's default bridge gateway)`.
+- **Rootless Podman with pasta.** The sidecar runs on the same pasta network
+  argument as firewall-mode builds and sessions
+  (`pasta:-a,198.18.0.2,-n,24,-g,198.18.0.1`) and publishes `127.0.0.1:3129`.
+  Each sandbox's pasta network forwards exactly the sidecar port and this
+  session's local-service ports to host loopback (`-4,-T,3129:3129,…`).
+- **Host firewalls.** On Docker Engine, a host firewall such as ufw that drops
+  traffic from containers to the host blocks the gateway. The sandbox's
+  firewall then reports the sidecar as unreachable, with a hint naming ufw.
+  This case is untested.
 
 ## Policy
 
@@ -307,10 +346,27 @@ ca_cert = ["~/corp-root-ca.pem"]
   hosts, and the hostname allowlist is then the only thing between the agent
   and them.** Keep the allowlist tight.
 - **Reaching the parent:** a parent on host loopback is reached at
-  `host.docker.internal` on every runtime. Docker Desktop and Podman machine
-  dial a remote parent directly. On Apple `container`, a remote parent is
-  reached through a host-loopback relay that uses the host's VPN routes and
-  DNS.
+  `host.docker.internal` on every runtime, and never becomes reachable from
+  sandboxes. Docker Desktop, Podman machine and the Linux runtimes dial a
+  remote parent directly. On Apple `container`, a remote parent is reached
+  through a host-loopback relay that uses the host's VPN routes and DNS.
+- **Loopback parent on rootless Podman:** the sidecar's pasta network also
+  forwards the parent's port (`-T,3128:3128` for `http://127.0.0.1:3128`), and
+  `host.docker.internal` maps to `127.0.0.1` in the sidecar. Sandboxes do not
+  get this port, so `host.docker.internal:3128` is refused there.
+- **Loopback parent on Docker Engine: the parent forwarder.** A detached host
+  process owned by the sidecar (`egress_relay --forward`) listens on
+  `<gateway>:<free port>`, accepts a connection only from the sidecar's address
+  on the default bridge (for example `172.17.0.2`, read with `docker inspect`
+  after the sidecar starts), and connects to `127.0.0.1:<parent port>`. Any
+  other peer is closed before anything is connected (`refused peer <ip>` in
+  `relay.log`). The sidecar maps `host.docker.internal` to the gateway, and
+  Squid's parent is `host.docker.internal:<forwarder port>`. Sandboxes have no
+  firewall rule for that port. Every cold start restarts the forwarder,
+  because the sidecar's address may change; a launch restarts a forwarder that
+  died, and a forwarder that had to move to another port is followed with a
+  reload. `status` shows `Parent forwarder: 172.17.0.1:<port>, accepts only the
+  sidecar at 172.17.0.2`.
 - **The Apple relay** is a detached host process owned by the sidecar, so it
   outlives the session that started it. It starts with the sidecar and stops
   with `down`. A launch restarts a relay that died. If its port was taken
@@ -370,6 +426,11 @@ Other problems:
   machine is running.
 - **The firewall reports the Internet proxy as unreachable on Apple
   `container`.** Set up the [localhost alias](apple-container-dns.md).
+- **The firewall reports the sidecar as unreachable on Docker Engine.** A host
+  firewall (ufw, firewalld) may drop container traffic to the `docker0`
+  gateway; allow TCP from Docker's bridges to `<gateway>:3129`.
+- **`--egress sidecar` fails with "does not support rootless Docker".** Use the
+  rootful Docker daemon, rootless Podman, or `--egress firewall`.
 - **A launch warns about restart-only differences.** `egress.toml` or the
   installed version changed something the running sidecar picks up only on a
   restart. Run `project-sandbox-egress restart` when no sandbox needs it.

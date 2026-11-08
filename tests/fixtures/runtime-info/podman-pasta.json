@@ -1,0 +1,8 @@
+{
+  "host": {
+    "os": "linux",
+    "rootlessNetworkCmd": "pasta",
+    "security": {"rootless": true, "seccompEnabled": true, "selinuxEnabled": false}
+  },
+  "version": {"Version": "5.4.2"}
+}

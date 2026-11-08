@@ -428,13 +428,37 @@ parts that matter for security:
   sandbox firewall failed, the sandbox could reach the network directly. Clients
   that ignore the proxy variables fail closed instead of going around the
   sidecar.
-- **The port is open to the host.** The sidecar publishes its proxy on the
-  host's `127.0.0.1` only, never on other host addresses. Any process on the
-  host can use it, and so can any container that can reach host loopback (on
-  Apple `container`, every container that resolves the localhost alias). Those
-  clients get only what `egress.toml` allows, and the sidecar CA is never given
-  to them. Squid's `client` log field is therefore the runtime's port forwarder,
-  not a sandbox, and the session-end denial count covers every client.
+- **The port is open to the host.** The sidecar publishes its proxy on exactly
+  one host address: `127.0.0.1`, or on Docker Engine the default bridge's
+  gateway (for example `172.17.0.1`). Any process on the host can use it, and so
+  can any container that can reach that address (on Apple `container`, every
+  container that resolves the localhost alias; on rootless Podman, every
+  container whose pasta network forwards the port). Those clients get only what
+  `egress.toml` allows, and the sidecar CA is never given to them. Squid's
+  `client` log field is therefore the runtime's port forwarder, not a sandbox
+  (on rootless Podman it is the host's LAN address), and the session-end denial
+  count covers every client.
+- **Docker Engine: gateway listeners compared with `linux-bridge-socat`.**
+  Firewall mode reaches a host-loopback service on Docker Engine through a
+  per-session `socat` bound to the `docker0` gateway. Sidecar mode adds two
+  listeners on the same address:
+
+  | Listener | Bound to | Lifetime | Who can connect | Reaches |
+  |---|---|---|---|---|
+  | `linux-bridge-socat` (firewall mode; Ollama, agent proxy in both modes) | `<gateway>:<service port>` | one session | every container on any Docker bridge | the service on host loopback, unfiltered |
+  | Sidecar publish | `<gateway>:3129` | until `project-sandbox-egress down` | every container on any Docker bridge | Squid: only what `egress.toml` allows |
+  | Parent forwarder (loopback parent only) | `<gateway>:<free port>` | the sidecar's | the sidecar's bridge address only; every other peer is closed before any upstream connection | the parent on `127.0.0.1:<parent port>` |
+
+  A host listener on a bridge gateway is reachable from containers on every
+  bridge, because traffic to a host address takes the host's INPUT path, which
+  Docker's inter-bridge isolation does not filter. The sidecar publish is
+  therefore exposed like a `linux-bridge-socat` listener, but longer-lived, and
+  it grants less: a hostname-filtered proxy instead of a raw service. Source
+  addresses are preserved on this path, so the forwarder's peer check reliably
+  tells the sidecar apart from other containers. The forwarder connects only to
+  host loopback on the parent's port, and sandboxes have no firewall rule for
+  its port. A host firewall such as ufw may block these listeners; that case is
+  untested.
 - **One policy, out of reach.** The only policy is
   `$XDG_CONFIG_HOME/project-sandbox/egress.toml`. It and the sidecar state
   directory `$XDG_STATE_HOME/project-sandbox/egress/` (which holds the CA key)
@@ -476,6 +500,10 @@ parts that matter for security:
   only barrier to them. The upstream CA (`ca_cert`) is installed into each
   sandbox's trust at start, not baked into its image. On Apple `container` the
   relay to a remote parent is a host process that persists while the sidecar
-  is up and listens on `127.0.0.1` only.
+  is up and listens on `127.0.0.1` only. A parent on host loopback is never
+  reachable from sandboxes: on rootless Podman only the sidecar's pasta network
+  forwards its port; on Docker Engine only the sidecar passes the parent
+  forwarder's peer check.
+- **Rootless Docker** is rejected in sidecar mode before any container work.
 - **Restarts.** `down` and `restart` do not check for users: running sidecar
   sandboxes lose their connections and fail closed.

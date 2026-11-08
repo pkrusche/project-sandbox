@@ -111,9 +111,10 @@ class CommandTests(TestCase):
             now=lambda: NOW,
             sleep=lambda _s: None,
             readiness_timeout=0.0,
-            port_free=lambda port: port not in self.taken,
+            port_free=lambda port, _address: port not in self.taken,
             port_release_timeout=0.0,
-            host_probe=lambda _port: True,
+            host_probe=lambda _port, _address: True,
+            strategy=lambda _rt: egress_sidecar.Strategy(),
         )
         ctx = egress_cli.Context(
             runtime,

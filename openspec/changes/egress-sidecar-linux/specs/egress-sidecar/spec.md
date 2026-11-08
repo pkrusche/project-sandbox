@@ -17,6 +17,10 @@ The CLI SHALL accept `--egress firewall|sidecar`, defaulting to `firewall`. With
 - **WHEN** `--egress sidecar` is combined with `--no-firewall` or `--runtime chroot`
 - **THEN** the CLI exits with an error naming the conflict and performs no network, key, or container work
 
+#### Scenario: Linux runtime
+- **WHEN** `--egress sidecar` is used on Docker Engine or rootless Podman on a Linux host
+- **THEN** the CLI plans the sandbox behind that runtime's global sidecar, using the runtime's published endpoint, instead of rejecting the runtime
+
 #### Scenario: Rootless Docker
 - **WHEN** `--egress sidecar` is used with a rootless Docker daemon
 - **THEN** the CLI exits with an error naming the supported runtimes, and performs no container work

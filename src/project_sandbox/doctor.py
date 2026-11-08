@@ -414,7 +414,7 @@ def check_egress_sidecars(checks: list[Check]) -> list[Check]:
             detail = "not running (the first --egress sidecar launch starts it)"
         elif info.running:
             where = (
-                f" on {egress_sidecar.endpoint(info.port)}"
+                f" on {egress_sidecar.endpoint(info.port, info.address)}"
                 if info.port is not None
                 else " (not started by this version; the next launch replaces it)"
             )

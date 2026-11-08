@@ -39,3 +39,16 @@
   proxy authentication are on the ROADMAP ("Egress sidecar follow-ups",
   "Smart GitHub repository access in sidecar egress mode";
   egress-sidecar-macos).
+
+## Egress sidecar on Linux (follow-ups from egress-sidecar-linux)
+
+- Concurrent sessions sharing a local service on Docker Engine: firewall mode's
+  `linux-bridge-socat` binds `<docker0 gateway>:<port>` per session, so a second
+  concurrent firewall-mode or sidecar-mode session that uses the same Ollama or
+  loopback `--agent-proxy` fails its bind check ("Cannot bind the … proxy to
+  172.17.0.1:<port>"). The sidecar port itself is shared (egress-sidecar-linux).
+- ufw and other host firewalls on Docker Engine are untested: a firewall that
+  drops container traffic to the `docker0` gateway blocks the sidecar and the
+  parent forwarder. The sandbox firewall reports the sidecar as unreachable with
+  a hint naming ufw, but nothing is configured automatically
+  (egress-sidecar-linux).

@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """Opt-in end-to-end checks for the global --egress sidecar.
 
-(egress-sidecar-macos task 9.1, design.md Decision 15)
+(egress-sidecar-macos task 9.1, design.md Decision 15; Linux runtimes:
+egress-sidecar-linux task 5.1)
 
 Runs real project-sandbox launches (agent: bash, no credentials, no billable
 calls) against the runtime's global sidecar, managed with
 project-sandbox-egress, and grades each check from both sides: what the client
 inside the sandbox saw, and what the sidecar logged. The sandbox reaches the
-sidecar's published endpoint (127.0.0.1:<port> on the host) through the
-runtime's local-service forwarding, as http://host.docker.internal:<port>.
+sidecar's published endpoint (127.0.0.1:<port> on the host; on Docker Engine
+the default bridge gateway, e.g. 172.17.0.1:<port>) as
+http://host.docker.internal:<port>.
 
 Checks (default: all):
   policy     one direct-mode sidecar session with in-sandbox probes:
@@ -21,7 +23,7 @@ Checks (default: all):
                and host ports that are not local services), dns,
                github-blocked, concurrency; plus the session-end denial count,
                session-input cleanup, the sidecar outliving the session and
-               its endpoint answering on host loopback only
+               its endpoint answering on its one published address only
   intercept  a session with the Copilot profile on, so api.github.com is
              intercepted: the session CA is trusted, an allowed path reaches
              GitHub, a denied path and plain HTTP get labelled 403 pages, and
@@ -32,7 +34,13 @@ Checks (default: all):
              CA ([egress.upstream]): allowed traffic reaches the parent, denied
              traffic never does. On Apple container the parent is reached
              through the sidecar-owned host relay, which must survive the first
-             session's process group being hung up (a closed terminal).
+             session's process group being hung up (a closed terminal). On
+             Docker Engine and rootless Podman the parent listens only on host
+             loopback: it must not answer on any other host address, the
+             sandbox must be refused on the parent's port (and on Docker Engine
+             on the parent forwarder's), and on Docker Engine another container
+             on the default bridge must be closed by the forwarder's peer
+             check without the parent seeing it.
   local      a loopback-only host service (a fake agent gateway on
              127.0.0.1) reached through local-service forwarding, not through
              the sidecar
@@ -484,6 +492,15 @@ with socket.create_connection(PROXY, timeout=8) as s:
         out["unlisted"] = s.recv(64).decode(errors="replace")
     except OSError as exc:
         out["unlisted"] = type(exc).__name__
+# Linux runs: the parent (and the Docker Engine parent forwarder) must be out of
+# the sandbox's reach; any successful connect fails the check.
+out["refused"] = {}
+for host, port in __REFUSE__:
+    try:
+        socket.create_connection((host, port), timeout=5).close()
+        out["refused"][f"{host}:{port}"] = "connected"
+    except OSError as exc:
+        out["refused"][f"{host}:{port}"] = type(exc).__name__
 json.dump(out, open("egress-parent.json", "w"))
 """
 
@@ -693,6 +710,105 @@ def grade_parent(probe: dict, parent_log: str) -> list[Result]:
     ]
 
 
+def grade_parent_refusals(probe: dict) -> list[Result]:
+    """Linux: the sandbox reaches neither the loopback parent nor the forwarder."""
+    refused = probe.get("refused")
+    if not isinstance(refused, dict) or not refused:
+        return [Result("parent:sandbox-refused", False, "refusal probe did not run")]
+    return [
+        Result(f"parent:sandbox-refused:{target}", outcome != "connected", outcome)
+        for target, outcome in refused.items()
+    ]
+
+
+FORWARDER_PEER_PROBE = r"""
+import socket, sys
+try:
+    s = socket.create_connection((sys.argv[1], int(sys.argv[2])), timeout=5)
+except OSError as exc:
+    print("connect-failed", type(exc).__name__); raise SystemExit
+s.settimeout(5)
+s.sendall(b"GET http://forwarder-peer-check.invalid/ HTTP/1.0\r\n\r\n")
+try:
+    data = s.recv(64)
+    print("closed" if data == b"" else "data:" + data.decode(errors="replace"))
+except ConnectionResetError:
+    print("closed")
+except OSError as exc:
+    print("error", type(exc).__name__)
+"""
+
+
+def _check_forwarder(args, runtime, strategy, parent_port, *, logs_cli) -> list[Result]:
+    """Docker Engine: the parent forwarder is live and admits only the sidecar."""
+    state_dir = egress_sidecar.layout(runtime).root
+    control = egress_relay.RelayControl()
+    forwarder = control.port(state_dir)
+    results = [
+        Result(
+            "parent:forwarder-live",
+            forwarder is not None,
+            control.log_tail(state_dir),
+        )
+    ]
+    if forwarder is None:
+        return results
+    status = json.loads(egress(args, "status", "--json").stdout or "{}")
+    results.append(
+        Result(
+            "parent:forwarder-in-status",
+            (status.get("relay") or {}).get("mode") == "forward"
+            and (status.get("relay") or {}).get("port") == forwarder,
+            str(status.get("relay")),
+        )
+    )
+    # Another container on the default bridge: closed without an upstream connect.
+    run = subprocess.run(
+        [
+            runtime.binary,
+            "run",
+            "--rm",
+            args.base_image,
+            "python3",
+            "-c",
+            FORWARDER_PEER_PROBE,
+            strategy.address,
+            str(forwarder),
+        ],
+        capture_output=True,
+        text=True,
+        errors="replace",
+        check=False,
+        timeout=120,
+    )
+    outcome = run.stdout.strip() or run.stderr.strip()[-200:]
+    log = (state_dir / egress_relay.LOG_NAME).read_text(errors="replace")
+    results.append(
+        Result(
+            "parent:forwarder-closes-other-peers",
+            outcome == "closed" and "refused peer" in log,
+            outcome,
+        )
+    )
+    cli, name = logs_cli
+    fixture_log = subprocess.run(
+        [cli, "logs", name],
+        capture_output=True,
+        text=True,
+        errors="replace",
+        check=False,
+    )
+    results.append(
+        Result(
+            "parent:never-saw-other-peer",
+            "forwarder-peer-check.invalid"
+            not in fixture_log.stdout + fixture_log.stderr,
+            "",
+        )
+    )
+    return results
+
+
 def grade_local(probe: dict, sidecar_log: str, port: int) -> list[Result]:
     body = str(probe.get("body", ""))
     return [
@@ -722,6 +838,8 @@ def session_id_from(output: str) -> str | None:
 
 # Set by main(): the [egress.sidecar] port every policy of this run uses.
 PORT = 3129
+# The sidecar's published address on the selected runtime (main()).
+PUBLISH = "127.0.0.1"
 
 
 def _write_policy(text: str) -> None:
@@ -901,26 +1019,40 @@ def _answers(host: str, port: int) -> bool:
 
 
 def _loopback_only(
-    port: int, *, interfaces_text=_interfaces_text, answers=_answers
+    port: int,
+    *,
+    interfaces_text=_interfaces_text,
+    answers=_answers,
+    address: str = "127.0.0.1",
+    name: str | None = None,
 ) -> Result:
-    """The published port answers on 127.0.0.1 and on no other host address.
+    """The published port answers on ``address`` and on no other host address.
+
+    ``address`` is 127.0.0.1, or Docker Engine's bridge gateway, in which case
+    127.0.0.1 is one of the addresses that must not answer.
 
     The other addresses come from the interface list (LAN, VM bridges, VPNs
     such as Tailscale), not from resolving the hostname. Regression: the
     hostname often does not resolve (e.g. ``*.home`` on another network), and
     the lookup's exception threw away every result of the policy check.
     """
-    name = "policy:endpoint-loopback-only"
+    name = name or (
+        "policy:endpoint-loopback-only"
+        if address == "127.0.0.1"
+        else "policy:endpoint-gateway-only"
+    )
     try:
-        others = host_ipv4_addresses(interfaces_text())
+        others = [a for a in host_ipv4_addresses(interfaces_text()) if a != address]
     except Exception as exc:  # noqa: BLE001 - report, never abort the check
         return Result(name, False, f"could not list host addresses: {exc!r}")
+    if address != "127.0.0.1":
+        others.insert(0, "127.0.0.1")
     if not others:
         return Result(name, False, "found no non-loopback host address to check")
     open_elsewhere = [a for a in others if answers(a, port)]
     return Result(
         name,
-        answers("127.0.0.1", port) and not open_elsewhere,
+        answers(address, port) and not open_elsewhere,
         f"also open on {open_elsewhere}" if open_elsewhere else f"checked {others}",
     )
 
@@ -954,13 +1086,13 @@ def check_policy(args, runtime, work: Path) -> list[Result]:
     results.append(
         Result("policy:sidecar-outlives-session", _sidecar_running(runtime), "")
     )
-    results.append(_loopback_only(PORT))
+    results.append(_loopback_only(PORT, address=PUBLISH))
     results.append(
         Result(
             "policy:proxy-is-the-sidecar-endpoint",
-            f"Egress sidecar: started {egress_sidecar.CONTAINER} at 127.0.0.1:{PORT}"
+            f"Egress sidecar: started {egress_sidecar.CONTAINER} at {PUBLISH}:{PORT}"
             in out
-            or f"Egress sidecar: reusing {egress_sidecar.CONTAINER} at 127.0.0.1:{PORT}"
+            or f"Egress sidecar: reusing {egress_sidecar.CONTAINER} at {PUBLISH}:{PORT}"
             in out,
             "",
         )
@@ -1104,7 +1236,7 @@ def _shared_while_running(
     results.append(
         Result(
             "shared:endpoint",
-            status.get("endpoint") == f"127.0.0.1:{PORT}",
+            status.get("endpoint") == f"{PUBLISH}:{PORT}",
             str(status.get("endpoint")),
         )
     )
@@ -1198,11 +1330,12 @@ def check_parent(args, runtime, work: Path) -> list[Result]:
         [cli, "run", "--rm", "-v", f"{fixture_dir}:/fixture", image, "make-ca"]
     )
     (fixture_dir / "squid.conf").write_text(fixture.render_squid_conf("capture"))
-    probe = PARENT_PROBE_SOURCE.replace("__ALLOWED__", ALLOWED_HOST).replace(
-        "__UNLISTED__", UNLISTED_HOST
-    )
-    first, second = _project(work, "parent-1", probe), _project(work, "parent-2", probe)
     relay = runtime is container_cli.APPLE_CONTAINER
+    strategy = egress_sidecar.endpoint_strategy(runtime)
+    linux = strategy.kind in (
+        egress_sidecar.DOCKER_GATEWAY,
+        egress_sidecar.PODMAN_PASTA,
+    )
     name = f"sbx-e2e-egress-parent-{int(time.time())}"
     results: list[Result] = []
     with fixture.running_fixture(cli, image, fixture_dir, name) as (port, logs):
@@ -1223,6 +1356,28 @@ def check_parent(args, runtime, work: Path) -> list[Result]:
         results.append(
             Result("parent:restart", restart.returncode == 0, restart.stderr[-300:])
         )
+        refuse: list[tuple[str, int]] = []
+        if linux:
+            results.append(
+                _loopback_only(port, address="127.0.0.1", name="parent:loopback-only")
+            )
+            refuse.append(("host.docker.internal", port))
+        if strategy.kind == egress_sidecar.DOCKER_GATEWAY:
+            results += _check_forwarder(
+                args, runtime, strategy, port, logs_cli=(cli, name)
+            )
+            forwarder = egress_relay.RelayControl().port(
+                egress_sidecar.layout(runtime).root
+            )
+            if forwarder is not None:
+                refuse.append((strategy.address, forwarder))
+        probe = (
+            PARENT_PROBE_SOURCE.replace("__ALLOWED__", ALLOWED_HOST)
+            .replace("__UNLISTED__", UNLISTED_HOST)
+            .replace("__REFUSE__", repr(refuse))
+        )
+        first = _project(work, "parent-1", probe)
+        second = _project(work, "parent-2", probe)
         # Session 1 in its own process group; hang the group up afterwards,
         # as a closed terminal would.
         proc = subprocess.Popen(
@@ -1261,6 +1416,8 @@ def check_parent(args, runtime, work: Path) -> list[Result]:
     parent_log = "".join(logs)
     (work / "parent-fixture.log").write_text(parent_log)
     results += grade_parent(_read_json(first / "egress-parent.json"), parent_log)
+    if linux:
+        results += grade_parent_refusals(_read_json(first / "egress-parent.json"))
     # Back to direct mode for later checks.
     _write_policy(_policy_text(ALLOWED_HOST))
     egress(args, "restart")
@@ -1355,13 +1512,17 @@ def isolate_xdg(
 
 
 def main(argv: list[str] | None = None) -> int:
-    global PORT
+    global PORT, PUBLISH
     args = parse_args(argv)
     PORT = args.port
     runtime = container_cli.select_runtime(args.runtime)
     if runtime is container_cli.CHROOT:
         raise SystemExit("select apple-container, docker, or podman")
     args.runtime = runtime.name
+    try:
+        PUBLISH = egress_sidecar.endpoint_strategy(runtime).address
+    except egress_sidecar.SidecarError as exc:
+        raise SystemExit(str(exc)) from None
     if (
         egress_sidecar.inspect(runtime, egress_sidecar.default_runner) is not None
         and not args.replace_existing

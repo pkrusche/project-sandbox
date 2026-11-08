@@ -1,11 +1,20 @@
-"""The global egress sidecar of each runtime (egress-sidecar-macos).
+"""The global egress sidecar of each runtime (egress-sidecar-macos, -linux).
 
-One container ``project-sandbox-egress`` on the runtime's default network serves
-every ``--egress sidecar`` sandbox of a runtime. It publishes Squid's port on
-host loopback only (``127.0.0.1:<[egress.sidecar] port>``), and sandboxes reach
-it like any other local service, through the firewall-mode local-service
-forwarding (design.md Decision 1). It is configured only by ``egress.toml`` and
-runs until ``project-sandbox-egress down``.
+One container ``project-sandbox-egress`` serves every ``--egress sidecar``
+sandbox of a runtime. It publishes Squid's port on exactly one host address
+(:class:`Strategy`, egress-sidecar-linux design.md Decision 1):
+
+- Apple container, Docker Desktop, Podman machine, rootless Podman with
+  slirp4netns: host loopback (``127.0.0.1:<[egress.sidecar] port>``); sandboxes
+  reach it through the firewall-mode local-service forwarding.
+- Docker Engine: the default bridge's gateway (``172.17.0.1:<port>``); sandboxes
+  map ``host.docker.internal`` to the gateway, with no per-session listener.
+- Rootless Podman with pasta: host loopback, with the sidecar itself on a pasta
+  network; sandboxes get the port in their pasta ``-T`` list.
+- Rootless Docker: rejected.
+
+It is configured only by ``egress.toml`` and runs until
+``project-sandbox-egress down``.
 
 Host state, per runtime (design.md Decision 9)::
 
@@ -14,7 +23,8 @@ Host state, per runtime (design.md Decision 9)::
     │  ├─ squid.conf  upstream-ca.pem
     │  └─ ca.pem  ca-key.pem (0600)
     ├─ state.json      a cache of what the sidecar runs; every decision re-inspects
-    ├─ relay.lock relay.pid relay.port relay.log   (egress_relay, Apple only)
+    ├─ relay.lock relay.pid relay.port relay.log   (egress_relay: the Apple relay
+    │                                                 or the Docker Engine parent forwarder)
     └─ sessions/<sid>/sandbox/   one session's inputs, mounted into that sandbox
 
 :func:`ensure` (launches and ``up``), :func:`down`, :func:`restart` and
@@ -69,10 +79,19 @@ LEGACY_NETWORK = "sbx-egress"
 ROLE_LABEL = "project-sandbox.egress.role"
 FINGERPRINT_LABEL = "project-sandbox.egress.fingerprint"
 PORT_LABEL = "project-sandbox.egress.port"
+ADDRESS_LABEL = "project-sandbox.egress.address"
 LOCK_KIND = "egress-sidecar"
 # Squid listens here inside the sidecar; the host side is [egress.sidecar] port.
 CONTAINER_PORT = squid_config.LISTEN_PORT
 PUBLISH_ADDRESS = "127.0.0.1"
+
+# Endpoint strategies (egress-sidecar-linux design.md Decision 1).
+LOOPBACK = "loopback"
+DOCKER_GATEWAY = "docker-gateway"
+PODMAN_PASTA = "podman-pasta"
+# Parent-proxy relays: the Apple CONNECT relay and the Docker Engine forwarder.
+RELAY_CONNECT = "connect"
+RELAY_FORWARD = "forward"
 
 INPUT_MOUNT = squid_config.INPUT_DIR
 SIDECAR_SUBDIR = "sidecar"
@@ -107,6 +126,7 @@ RESTART_FIELDS: dict[str, str] = {
     "upstream_url": "[egress.upstream] url",
     "upstream_ca_sha256": "[egress.upstream] ca_cert",
     "port": "[egress.sidecar] port",
+    "address": "published address (Docker's default bridge gateway)",
     "memory": "[egress.sidecar] memory",
     "cpus": "[egress.sidecar] cpus",
     "log_options": "runtime log options",
@@ -129,9 +149,17 @@ def default_runner(argv: Sequence[str]) -> subprocess.CompletedProcess:
     )
 
 
-def endpoint(port: int) -> str:
+def endpoint(port: int, address: str = PUBLISH_ADDRESS) -> str:
     """The published endpoint on the host."""
-    return f"{PUBLISH_ADDRESS}:{port}"
+    return f"{address}:{port}"
+
+
+def describe_address(address: str) -> str:
+    return (
+        "host loopback"
+        if address == PUBLISH_ADDRESS
+        else "Docker's default bridge gateway"
+    )
 
 
 # --------------------------------------------------------------------------
@@ -222,6 +250,107 @@ def _complete(lay: Layout) -> bool:
 
 
 # --------------------------------------------------------------------------
+# Per-runtime endpoint strategy (egress-sidecar-linux design.md Decision 1)
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Strategy:
+    """Where the sidecar publishes and how its own network is set up."""
+
+    kind: str = LOOPBACK
+    address: str = PUBLISH_ADDRESS  # the one host address the port is published on
+
+    def describe(self) -> str:
+        return {
+            LOOPBACK: "host loopback",
+            DOCKER_GATEWAY: f"Docker's default bridge gateway {self.address}",
+            PODMAN_PASTA: "host loopback, sidecar on a pasta network",
+        }[self.kind]
+
+
+def _docker_is_rootless(info: dict) -> bool:
+    options = info.get("SecurityOptions") or info.get("securityOptions") or []
+    if not isinstance(options, list):
+        return False
+    return any("name=rootless" in str(option) for option in options)
+
+
+def rootless_docker_message() -> str:
+    return (
+        "--egress sidecar does not support rootless Docker: its network namespace "
+        "cannot reach a sidecar on host loopback, and the setup is untested. "
+        "Sidecar mode works on Apple container, Docker Desktop, Docker Engine "
+        "(rootful), Podman machine and rootless Podman; use --egress firewall here."
+    )
+
+
+def endpoint_strategy(
+    runtime: Runtime,
+    *,
+    info: Callable[[Runtime], dict] | None = None,
+    gateway: Callable[[Runtime], str] | None = None,
+) -> Strategy:
+    """Select the endpoint strategy for ``runtime`` from read-only probes.
+
+    Raises :class:`SidecarError` for rootless Docker or a failing probe.
+    """
+    if runtime.name == APPLE_CONTAINER.name:
+        return Strategy()
+    probe = info or local_service_network._runtime_info
+    try:
+        data = probe(runtime)
+        if runtime.name == DOCKER.name:
+            if local_service_network._docker_is_desktop(data):
+                return Strategy()
+            if _docker_is_rootless(data):
+                raise SidecarError(rootless_docker_message())
+            address = (gateway or local_service_network._bridge_gateway)(runtime)
+            local_service_network._validate_endpoint(address)
+            return Strategy(DOCKER_GATEWAY, address)
+        if (
+            runtime.name == PODMAN.name
+            and local_service_network._podman_uses_local_pasta(data)
+        ):
+            return Strategy(PODMAN_PASTA)
+    except SystemExit as exc:
+        raise SidecarError(str(exc)) from None
+    # Podman machine, rootless Podman with slirp4netns: firewall mode's
+    # host-alias forwarding reaches a loopback publish.
+    return Strategy()
+
+
+def recorded_strategy(state: dict | None) -> Strategy:
+    """The strategy a running sidecar was started with (``state.json``)."""
+    state = state or {}
+    kind = state.get("strategy")
+    return Strategy(
+        kind if kind in (LOOPBACK, DOCKER_GATEWAY, PODMAN_PASTA) else LOOPBACK,
+        str(state.get("address") or PUBLISH_ADDRESS),
+    )
+
+
+def sandbox_plan(
+    strategy: Strategy, port: int
+) -> local_service_network.ForwardingPlan | None:
+    """The sandbox's plan for the sidecar endpoint when it is not a socat plan.
+
+    On Docker Engine the sidecar is published on the gateway, so every sandbox
+    reaches it at ``host.docker.internal`` mapped to the gateway, and no
+    per-session listener exists for that port (design.md Decision 1).
+    """
+    if strategy.kind != DOCKER_GATEWAY:
+        return None
+    return local_service_network.ForwardingPlan(
+        "docker-gateway-published",
+        endpoint=strategy.address,
+        add_host=f"{local_service_network.HOSTNAME}:{strategy.address}",
+        port=port,
+        label="Egress sidecar",
+    )
+
+
+# --------------------------------------------------------------------------
 # Desired state and fingerprints
 # --------------------------------------------------------------------------
 
@@ -235,10 +364,19 @@ def fingerprint(inputs: dict) -> str:
 
 
 def restart_inputs(
-    runtime: Runtime, policy: egress_policy.PolicyFile, *, image: str
+    runtime: Runtime,
+    policy: egress_policy.PolicyFile,
+    *,
+    image: str,
+    address: str = PUBLISH_ADDRESS,
 ) -> dict:
-    """What only a restart can change in a running sidecar."""
+    """What only a restart can change in a running sidecar.
+
+    ``address`` is recorded only when it is not host loopback (Docker Engine's
+    gateway), so loopback sidecars keep their fingerprint.
+    """
     ca = policy.upstream_ca_bytes() if policy.upstream_url else b""
+    extra = {} if address == PUBLISH_ADDRESS else {"address": address}
     return {
         "image": image,
         "copilot": policy.copilot,
@@ -248,14 +386,41 @@ def restart_inputs(
         "memory": policy.memory,
         "cpus": policy.cpus,
         "log_options": list(LOG_OPTIONS.get(runtime.name, ())),
+        **extra,
     }
 
 
-def needs_relay(runtime: Runtime, upstream_url: str | None) -> bool:
-    """Apple ``container`` reaches a remote parent only through the host relay."""
-    if upstream_url is None or runtime.name != APPLE_CONTAINER.name:
-        return False
-    return not egress_policy._upstream_endpoint(upstream_url, path=None).local
+def relay_mode(
+    runtime: Runtime, upstream_url: str | None, strategy: Strategy | None = None
+) -> str | None:
+    """Which sidecar-owned host relay the parent proxy needs, if any.
+
+    - Apple ``container`` reaches a remote parent only through the CONNECT relay.
+    - Docker Engine reaches a parent on host loopback only through the parent
+      forwarder on the bridge gateway (egress-sidecar-linux Decision 2).
+    """
+    if upstream_url is None:
+        return None
+    local = egress_policy._upstream_endpoint(upstream_url, path=None).local
+    if runtime.name == APPLE_CONTAINER.name and not local:
+        return RELAY_CONNECT
+    if strategy is not None and strategy.kind == DOCKER_GATEWAY and local:
+        return RELAY_FORWARD
+    return None
+
+
+def needs_relay(
+    runtime: Runtime, upstream_url: str | None, strategy: Strategy | None = None
+) -> bool:
+    return relay_mode(runtime, upstream_url, strategy) is not None
+
+
+def loopback_parent_port(upstream_url: str | None) -> int | None:
+    """The parent's port when it listens on host loopback, else ``None``."""
+    if upstream_url is None:
+        return None
+    parsed = egress_policy._upstream_endpoint(upstream_url, path=None)
+    return parsed.port if parsed.local else None
 
 
 def upstream_for(
@@ -264,13 +429,16 @@ def upstream_for(
     *,
     ca_file: bool,
     relay_port: int | None,
+    strategy: Strategy | None = None,
 ) -> squid_config.Upstream | None:
     if upstream_url is None:
         return None
     parsed = egress_policy._upstream_endpoint(upstream_url, path=None)
     return squid_config.upstream_for(
         parsed,
-        relay_port=relay_port if needs_relay(runtime, upstream_url) else None,
+        relay_port=(
+            relay_port if needs_relay(runtime, upstream_url, strategy) else None
+        ),
         ca_file=ca_file,
     )
 
@@ -322,9 +490,41 @@ def sidecar_run_argv(
     memory: str,
     cpus: int,
     restart_fingerprint: str,
+    strategy: Strategy | None = None,
+    parent_port: int | None = None,
 ) -> list[str]:
-    """Run the sidecar on the default network, publishing on host loopback only."""
+    """Run the sidecar, publishing on exactly one host address.
+
+    ``parent_port`` is a parent proxy's port on host loopback: on pasta it is
+    forwarded to host loopback (``-T``); on Docker Engine the sidecar maps
+    ``host.docker.internal`` to the gateway, where the parent forwarder listens.
+    """
+    strategy = strategy or Strategy()
     mount = MountSpec(sidecar_dir, INPUT_MOUNT, readonly=True)
+    network: list[str] = []
+    if strategy.kind == PODMAN_PASTA:
+        plans = (
+            [
+                local_service_network.ForwardingPlan(
+                    local_service_network.PASTA_STRATEGY, port=parent_port
+                )
+            ]
+            if parent_port is not None
+            else []
+        )
+        value = local_service_network.network_argument(plans, pasta=True)
+        assert value is not None
+        network = [
+            "--network",
+            value,
+            "--add-host",
+            f"{local_service_network.HOSTNAME}:127.0.0.1",
+        ]
+    elif strategy.kind == DOCKER_GATEWAY and parent_port is not None:
+        network = [
+            "--add-host",
+            f"{local_service_network.HOSTNAME}:{strategy.address}",
+        ]
     argv = [
         runtime.binary,
         "run",
@@ -337,8 +537,11 @@ def sidecar_run_argv(
         f"{FINGERPRINT_LABEL}={restart_fingerprint}",
         "--label",
         f"{PORT_LABEL}={port}",
+        "--label",
+        f"{ADDRESS_LABEL}={strategy.address}",
+        *network,
         "--publish",
-        f"{PUBLISH_ADDRESS}:{port}:{CONTAINER_PORT}",
+        f"{strategy.address}:{port}:{CONTAINER_PORT}",
         "--memory",
         memory,
         "--cpus",
@@ -417,12 +620,18 @@ class ContainerInfo:
     running: bool
     labels: dict[str, str]
     raw: str
+    ip: str | None = None  # the container's address on Docker's default bridge
 
     @property
     def port(self) -> int | None:
         """The host port the container was published on (its label)."""
         value = self.labels.get(PORT_LABEL, "")
         return int(value) if value.isdigit() else None
+
+    @property
+    def address(self) -> str:
+        """The host address the container was published on (its label)."""
+        return self.labels.get(ADDRESS_LABEL) or PUBLISH_ADDRESS
 
 
 def parse_container(runtime: Runtime, text: str) -> ContainerInfo:
@@ -438,7 +647,21 @@ def parse_container(runtime: Runtime, text: str) -> ContainerInfo:
         state = record.get("State") or {}
         running = isinstance(state, dict) and state.get("Running") is True
         labels = _labels((record.get("Config") or {}).get("Labels"))
+        ip = _bridge_ip(record.get("NetworkSettings"))
+        return ContainerInfo(running=running, labels=labels, raw=text, ip=ip)
     return ContainerInfo(running=running, labels=labels, raw=text)
+
+
+def _bridge_ip(settings: object) -> str | None:
+    if not isinstance(settings, dict):
+        return None
+    networks = settings.get("Networks")
+    if isinstance(networks, dict) and isinstance(networks.get("bridge"), dict):
+        value = networks["bridge"].get("IPAddress")
+        if value:
+            return str(value)
+    value = settings.get("IPAddress")
+    return str(value) if value else None
 
 
 def inspect(runtime: Runtime, runner: Runner) -> ContainerInfo | None:
@@ -480,8 +703,8 @@ def probe_ready(runtime: Runtime, runner: Runner) -> bool:
     return READINESS_MARKER in (runner(readiness_argv(runtime)).stdout or "")
 
 
-def port_free(port: int) -> bool:
-    """Whether nothing listens on ``127.0.0.1:port`` (or the wildcard) on the host.
+def port_free(port: int, address: str = PUBLISH_ADDRESS) -> bool:
+    """Whether nothing listens on ``address:port`` (or the wildcard) on the host.
 
     ``down`` with sandboxes still connected leaves the sidecar's side of those
     connections in TIME_WAIT for up to a minute. A plain bind fails on them,
@@ -493,21 +716,23 @@ def port_free(port: int) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
-            sock.bind((PUBLISH_ADDRESS, port))
+            sock.bind((address, port))
         except OSError:
             return False
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         probe.settimeout(1.0)
-        return probe.connect_ex((PUBLISH_ADDRESS, port)) != 0
+        return probe.connect_ex((address, port)) != 0
 
 
-def probe_published(port: int, *, timeout: float = 3.0) -> bool:
+def probe_published(
+    port: int, address: str = PUBLISH_ADDRESS, *, timeout: float = 3.0
+) -> bool:
     """Whether the sidecar answers its readiness request on the host endpoint."""
     request = (
         f"GET http://{READINESS_HOST}/ HTTP/1.0\r\nHost: {READINESS_HOST}\r\n\r\n"
     ).encode()
     try:
-        with socket.create_connection((PUBLISH_ADDRESS, port), timeout=timeout) as sock:
+        with socket.create_connection((address, port), timeout=timeout) as sock:
             sock.sendall(request)
             chunks = []
             while True:
@@ -578,34 +803,6 @@ def fetch_logs(runtime: Runtime, runner: Runner, *, since: float | None = None) 
     return (result.stdout or "") + (result.stderr or "")
 
 
-def supported(
-    runtime: Runtime, *, info: Callable[[Runtime], dict] | None = None
-) -> bool:
-    """Whether sandboxes on ``runtime`` reach a port published on host loopback.
-
-    True for Apple container (localhost alias), Docker Desktop and Podman
-    machine; false for Docker Engine and rootless Podman with pasta on a Linux
-    host (egress-sidecar-linux).
-    """
-    if runtime.name == APPLE_CONTAINER.name:
-        return True
-    probe = info or local_service_network._runtime_info
-    if runtime.name == DOCKER.name:
-        return local_service_network._docker_is_desktop(probe(runtime))
-    if runtime.name == PODMAN.name:
-        return not local_service_network._podman_uses_local_pasta(probe(runtime))
-    return False
-
-
-def unsupported_message(runtime: Runtime) -> str:
-    return (
-        f"--egress sidecar is not supported on this {runtime.name} runtime yet: "
-        "Docker Engine and rootless Podman on a Linux host follow in "
-        "egress-sidecar-linux. Sidecar mode works on Apple container, Docker "
-        "Desktop and Podman machine; use --egress firewall here."
-    )
-
-
 def ensure_image(
     runtime: Runtime,
     *,
@@ -644,8 +841,16 @@ class Sidecar:
         return int(self.state["port"])
 
     @property
+    def address(self) -> str:
+        return str(self.state.get("address") or PUBLISH_ADDRESS)
+
+    @property
+    def strategy(self) -> Strategy:
+        return recorded_strategy(self.state)
+
+    @property
     def endpoint(self) -> str:
-        return endpoint(self.port)
+        return endpoint(self.port, self.address)
 
     @property
     def copilot(self) -> bool:
@@ -675,9 +880,10 @@ class Collaborators:
     clock: Callable[[], float] = time.monotonic
     sleep: Callable[[float], None] = time.sleep
     readiness_timeout: float = READINESS_TIMEOUT
-    port_free: Callable[[int], bool] = port_free
+    port_free: Callable[[int, str], bool] = port_free
     port_release_timeout: float = PORT_RELEASE_TIMEOUT
-    host_probe: Callable[[int], bool] = probe_published
+    host_probe: Callable[[int, str], bool] = probe_published
+    strategy: Callable[[Runtime], Strategy] = endpoint_strategy
 
 
 @contextlib.contextmanager
@@ -688,9 +894,21 @@ def _locked(lay: Layout):
         yield
 
 
-def port_drift_message(running: int, configured: int) -> str:
+def address_drift_message(running: str, current: str, port: int) -> str:
     return (
-        f"The running egress sidecar publishes {endpoint(running)}, but egress.toml "
+        f"The running egress sidecar publishes {endpoint(port, running)}, but "
+        f"Docker's default bridge gateway is now {current}. This sandbox reaches "
+        "the sidecar through the current gateway and could not reach it. Run "
+        "`project-sandbox-egress restart` to republish it (it interrupts every "
+        "running sidecar-mode sandbox)."
+    )
+
+
+def port_drift_message(
+    running: int, configured: int, address: str = PUBLISH_ADDRESS
+) -> str:
+    return (
+        f"The running egress sidecar publishes {endpoint(running, address)}, but egress.toml "
         f"sets [egress.sidecar] port = {configured}. This sandbox is built for the "
         "configured port and could not reach the sidecar. Run "
         "`project-sandbox-egress restart` to apply the new port (it interrupts "
@@ -706,20 +924,31 @@ def ensure(
     root: Path | None = None,
     deps: Collaborators | None = None,
     expected_port: int | None = None,
+    strategy: Strategy | None = None,
 ) -> Sidecar:
     """Reuse the running, ready sidecar or start it; apply live changes.
 
     Serialized with every other launch and ``project-sandbox-egress`` command,
     so concurrent first launches create exactly one sidecar. ``expected_port``
     is the port a launch rendered into its sandbox; a running sidecar that
-    publishes another one is an error naming ``project-sandbox-egress restart``.
+    publishes another one, or on another address than ``strategy`` (probed when
+    not given) requires, is an error naming ``project-sandbox-egress restart``.
     """
     deps = deps or Collaborators()
+    strategy = strategy or deps.strategy(runtime)
     lay = layout(runtime, root)
     with _locked(lay):
-        sidecar = _ensure_locked(runtime, policy, image=image, lay=lay, deps=deps)
+        sidecar = _ensure_locked(
+            runtime, policy, image=image, lay=lay, deps=deps, strategy=strategy
+        )
     if expected_port is not None and sidecar.port != expected_port:
-        raise SidecarError(port_drift_message(sidecar.port, expected_port))
+        raise SidecarError(
+            port_drift_message(sidecar.port, expected_port, sidecar.address)
+        )
+    if expected_port is not None and sidecar.address != strategy.address:
+        raise SidecarError(
+            address_drift_message(sidecar.address, strategy.address, sidecar.port)
+        )
     return sidecar
 
 
@@ -737,6 +966,7 @@ def _healthy(
         and state is not None
         and info.labels.get(ROLE_LABEL) == "sidecar"
         and info.port == state["port"]
+        and info.address == (state.get("address") or PUBLISH_ADDRESS)
         and _complete(lay)
         and probe_ready(runtime, runner)
     )
@@ -749,6 +979,7 @@ def _ensure_locked(
     image: str,
     lay: Layout,
     deps: Collaborators,
+    strategy: Strategy,
     new_ca: bool = False,
 ) -> Sidecar:
     messages: list[str] = []
@@ -758,13 +989,13 @@ def _ensure_locked(
         assert state is not None and info is not None
         state = _reconcile(
             runtime, policy, image=image, lay=lay, state=state, info=info,
-            deps=deps, messages=messages,
+            deps=deps, messages=messages, strategy=strategy,
         )  # fmt: skip
         started = False
     else:
         state = _cold_start(
             runtime, policy, image=image, lay=lay, deps=deps,
-            previous=state, new_ca=new_ca,
+            previous=state, new_ca=new_ca, strategy=strategy,
         )  # fmt: skip
         started = True
     return Sidecar(
@@ -777,10 +1008,12 @@ def _ensure_locked(
     )
 
 
-def port_taken_message(policy: egress_policy.PolicyFile) -> str:
+def port_taken_message(
+    policy: egress_policy.PolicyFile, address: str = PUBLISH_ADDRESS
+) -> str:
     where = policy.path or egress_policy.default_policy_path()
     return (
-        f"{endpoint(policy.port)} is already in use on the host, so the egress "
+        f"{endpoint(policy.port, address)} is already in use on the host, so the egress "
         "sidecar cannot publish its proxy there. Stop the process using it, or "
         f"choose another port with [egress.sidecar] port in {where}."
     )
@@ -795,24 +1028,31 @@ def _cold_start(
     deps: Collaborators,
     previous: dict | None,
     new_ca: bool,
+    strategy: Strategy,
 ) -> dict:
     runner = deps.runner
+    address = strategy.address
     try:
-        desired = restart_inputs(runtime, policy, image=image)
+        desired = restart_inputs(runtime, policy, image=image, address=address)
         upstream_ca = policy.upstream_ca_bytes() if policy.upstream_url else b""
+        mode = relay_mode(runtime, policy.upstream_url, strategy)
+        parent_port = loopback_parent_port(policy.upstream_url)
     except egress_policy.EgressPolicyError as exc:
         raise SidecarError(str(exc)) from None
 
     # Also clears a stopped one (after a reboot) or a leftover one whose state
     # does not match; its published port is released before the check below.
     runner(remove_container_argv(runtime))
+    if mode == RELAY_FORWARD:
+        # The sidecar's address may change, so the forwarder always restarts.
+        _stop_relay(lay, deps.relay)
     if not _wait(
-        lambda: deps.port_free(policy.port),
+        lambda: deps.port_free(policy.port, address),
         timeout=deps.port_release_timeout,
         clock=deps.clock,
         sleep=deps.sleep,
     ):
-        raise SidecarError(port_taken_message(policy))
+        raise SidecarError(port_taken_message(policy, address))
 
     lay.sidecar.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(lay.sidecar, 0o700)
@@ -835,7 +1075,7 @@ def _cold_start(
         upstream_ca_path.unlink(missing_ok=True)
 
     relay_port = None
-    if needs_relay(runtime, policy.upstream_url):
+    if mode == RELAY_CONNECT:
         assert policy.upstream_url is not None
         recorded = (previous or {}).get("relay_port")
         relay_port = _ensure_relay(
@@ -848,12 +1088,28 @@ def _cold_start(
             ),
             ca_file=upstream_ca_path if upstream_ca else None,
         )
+    elif mode == RELAY_FORWARD:
+        # Bound only after the sidecar runs (it needs the sidecar's address);
+        # Squid connects to its parent lazily, so a placeholder port is safe
+        # until the reload below.
+        assert parent_port is not None
+        relay_port = (previous or {}).get("relay_port") or parent_port
     else:
-        deps.relay.stop(lay.root)
-    upstream = upstream_for(
-        runtime, policy.upstream_url, ca_file=bool(upstream_ca), relay_port=relay_port
-    )
-    conf = render_squid_conf(policy, copilot=policy.copilot, upstream=upstream)
+        _stop_relay(lay, deps.relay)
+
+    def render(port: int | None) -> tuple[str, squid_config.Upstream | None]:
+        upstream = upstream_for(
+            runtime,
+            policy.upstream_url,
+            ca_file=bool(upstream_ca),
+            relay_port=port,
+            strategy=strategy,
+        )
+        return render_squid_conf(
+            policy, copilot=policy.copilot, upstream=upstream
+        ), upstream
+
+    conf, upstream = render(relay_port)
     _write_file(lay.sidecar / CONF_NAME, conf)
 
     restart_fp = fingerprint(desired)
@@ -867,6 +1123,8 @@ def _cold_start(
             memory=policy.memory,
             cpus=policy.cpus,
             restart_fingerprint=restart_fp,
+            strategy=strategy,
+            parent_port=parent_port,
         ),
         "starting the egress sidecar",
     )
@@ -877,15 +1135,33 @@ def _cold_start(
         clock=deps.clock,
         sleep=deps.sleep,
     )
+    sidecar_address = None
+    if mode == RELAY_FORWARD:
+        assert parent_port is not None
+        sidecar_address = _sidecar_ip(runtime, runner)
+        bound = _spawn_forwarder(
+            lay,
+            deps.relay,
+            bind=address,
+            peer=sidecar_address,
+            target_port=parent_port,
+            port=0,
+        )
+        if bound != relay_port:
+            relay_port = bound
+            conf, upstream = render(relay_port)
+            _write_file(lay.sidecar / CONF_NAME, conf)
+            _checked(runner, reload_argv(runtime), "reloading the egress sidecar")
     if not _wait(
-        lambda: deps.host_probe(policy.port),
+        lambda: deps.host_probe(policy.port, address),
         timeout=deps.readiness_timeout,
         clock=deps.clock,
         sleep=deps.sleep,
     ):
         raise SidecarError(
             "the egress sidecar is ready inside its container but does not answer "
-            f"on {endpoint(policy.port)} on the host.\n" + log_tail(runtime, runner)
+            f"on {endpoint(policy.port, address)} on the host.\n"
+            + log_tail(runtime, runner)
         )
     state = {
         "version": STATE_VERSION,
@@ -899,9 +1175,46 @@ def _cold_start(
         "relay_port": relay_port,
         "port": policy.port,
         "started_at": now.timestamp(),
+        "strategy": strategy.kind,
+        "address": address,
+        "sidecar_address": sidecar_address,
     }
     write_state(lay, state)
     return state
+
+
+def _sidecar_ip(runtime: Runtime, runner: Runner) -> str:
+    info = inspect(runtime, runner)
+    if info is None or not info.ip:
+        raise SidecarError(
+            "could not read the egress sidecar's address on Docker's default "
+            "bridge, which the parent forwarder admits as its only peer"
+        )
+    return info.ip
+
+
+def _stop_relay(lay: Layout, relay: egress_relay.RelayLike) -> None:
+    try:
+        relay.stop(lay.root)
+    except egress_relay.RelayError as exc:
+        raise SidecarError(str(exc)) from None
+
+
+def _spawn_forwarder(
+    lay: Layout,
+    relay: egress_relay.RelayLike,
+    *,
+    bind: str,
+    peer: str,
+    target_port: int,
+    port: int,
+) -> int:
+    try:
+        return relay.spawn_forward(
+            lay.root, bind=bind, peer=peer, target_port=target_port, port=port
+        )
+    except egress_relay.RelayError as exc:
+        raise SidecarError(str(exc)) from None
 
 
 def _ensure_relay(
@@ -931,17 +1244,25 @@ def _reconcile(
     info: ContainerInfo,
     deps: Collaborators,
     messages: list[str],
+    strategy: Strategy | None = None,
 ) -> dict:
-    """Apply live changes to a running sidecar; warn about restart-only ones."""
+    """Apply live changes to a running sidecar; warn about restart-only ones.
+
+    ``strategy`` is the runtime's current one (address drift is restart-only);
+    the relay follows the strategy the sidecar was started with.
+    """
     runner = deps.runner
     state = dict(state)
     upstream = _running_upstream(state)
+    running = recorded_strategy(state)
+    mode = relay_mode(runtime, state["upstream_url"], running)
 
     # Relay: respawn on the recorded port; follow a move with a reload.
-    if needs_relay(runtime, state["upstream_url"]) and upstream is not None:
+    if mode is not None and upstream is not None:
         ca_path = lay.sidecar / UPSTREAM_CA_NAME
         port = state["relay_port"] or upstream.port
-        if deps.relay.port(lay.root) is None:
+        bound = None
+        if mode == RELAY_CONNECT and deps.relay.port(lay.root) is None:
             bound = _ensure_relay(
                 lay,
                 deps.relay,
@@ -950,14 +1271,39 @@ def _reconcile(
                 ca_file=ca_path if ca_path.is_file() else None,
             )
             messages.append(f"Restarted the egress relay on 127.0.0.1:{bound}.")
-            if bound != port:
-                messages.append(
-                    f"The relay moved from port {port} to {bound}; the sidecar "
-                    "follows it without a restart."
+        elif mode == RELAY_FORWARD:
+            peer = info.ip or state.get("sidecar_address")
+            live = deps.relay.port(lay.root)
+            if live is None or peer != state.get("sidecar_address"):
+                parent = loopback_parent_port(state["upstream_url"])
+                assert parent is not None
+                if not peer:
+                    raise SidecarError(
+                        "the egress sidecar has no address on Docker's default "
+                        "bridge; run `project-sandbox-egress restart`"
+                    )
+                _stop_relay(lay, deps.relay)
+                bound = _spawn_forwarder(
+                    lay,
+                    deps.relay,
+                    bind=running.address,
+                    peer=peer,
+                    target_port=parent,
+                    port=port,
                 )
-                upstream = dataclasses.replace(upstream, port=bound)
-                state["relay_port"] = bound
-                state["upstream"] = dataclasses.asdict(upstream)
+                state["sidecar_address"] = peer
+                messages.append(
+                    f"Restarted the egress parent forwarder on "
+                    f"{running.address}:{bound}."
+                )
+        if bound is not None and bound != port:
+            messages.append(
+                f"The relay moved from port {port} to {bound}; the sidecar "
+                "follows it without a restart."
+            )
+            upstream = dataclasses.replace(upstream, port=bound)
+            state["relay_port"] = bound
+            state["upstream"] = dataclasses.asdict(upstream)
 
     # Allowlist (reload fingerprint, rendered against the running upstream and
     # Copilot setting so restart-only changes never show up here).
@@ -974,7 +1320,9 @@ def _reconcile(
 
     # Restart-only drift: warn, keep using the running sidecar.
     try:
-        desired = restart_inputs(runtime, policy, image=image)
+        desired = restart_inputs(
+            runtime, policy, image=image, address=(strategy or running).address
+        )
     except egress_policy.EgressPolicyError as exc:
         raise SidecarError(str(exc)) from None
     fields = restart_drift(state, desired, info.labels.get(FINGERPRINT_LABEL))
@@ -1010,10 +1358,7 @@ def down(
 def _down_locked(
     runtime: Runtime, lay: Layout, deps: Collaborators, *, keep_ca: bool
 ) -> None:
-    try:
-        deps.relay.stop(lay.root)
-    except egress_relay.RelayError as exc:
-        raise SidecarError(str(exc)) from None
+    _stop_relay(lay, deps.relay)
     deps.runner(remove_container_argv(runtime))
     if keep_ca:
         for name in (CONF_NAME, UPSTREAM_CA_NAME):
@@ -1034,11 +1379,18 @@ def restart(
 ) -> Sidecar:
     """``down`` without deleting a reusable CA, then ``up``."""
     deps = deps or Collaborators()
+    strategy = deps.strategy(runtime)
     lay = layout(runtime, root)
     with _locked(lay):
         _down_locked(runtime, lay, deps, keep_ca=not new_ca)
         return _ensure_locked(
-            runtime, policy, image=image, lay=lay, deps=deps, new_ca=new_ca
+            runtime,
+            policy,
+            image=image,
+            lay=lay,
+            deps=deps,
+            strategy=strategy,
+            new_ca=new_ca,
         )
 
 
@@ -1082,11 +1434,23 @@ def status(
     root: Path | None = None,
     deps: Collaborators | None = None,
     probe: bool = True,
+    strategy: Strategy | None = None,
 ) -> dict:
-    """Describe the sidecar without creating, starting, changing or removing it."""
+    """Describe the sidecar without creating, starting, changing or removing it.
+
+    ``strategy`` is the runtime's current endpoint strategy; when not given it
+    is probed (read-only) if ``probe``, and taken from ``state.json`` otherwise.
+    """
     deps = deps or Collaborators()
     lay = layout(runtime, root)
     state = read_state(lay)
+    strategy_error = None
+    if strategy is None and probe:
+        try:
+            strategy = deps.strategy(runtime)
+        except SidecarError as exc:
+            strategy_error = str(exc)
+    current = strategy or recorded_strategy(state)
     info = inspect(runtime, deps.runner)
     running = info is not None and info.running
     ready = running and probe and probe_ready(runtime, deps.runner)
@@ -1096,6 +1460,7 @@ def status(
         and state is not None
         and info is not None
         and info.port == state["port"]
+        and info.address == current.address
     )
     report: dict = {
         "runtime": runtime.name,
@@ -1106,9 +1471,13 @@ def status(
         "running": running,
         "ready": bool(ready),
         "state_dir": str(lay.root),
-        "configured_endpoint": endpoint(policy.port),
+        "configured_endpoint": endpoint(policy.port, current.address),
+        "configured_address": current.address,
+        "strategy": current.kind,
         "would": "reuse" if healthy else "start",
     }
+    if strategy_error:
+        report["strategy_error"] = strategy_error
     ca = session_ca.load(lay.sidecar)
     now = deps.now()
     if ca is not None:
@@ -1120,18 +1489,31 @@ def status(
             "expires_soon": session_ca.remaining(ca, now=now)
             < session_ca.MIN_REMAINING,
         }
-    relay_needed = needs_relay(
-        runtime, (state or {}).get("upstream_url") or policy.upstream_url
-    )
+    try:
+        mode = relay_mode(
+            runtime,
+            (state or {}).get("upstream_url") or policy.upstream_url,
+            recorded_strategy(state) if state is not None else current,
+        )
+    except egress_policy.EgressPolicyError:
+        mode = None
     report["relay"] = {
-        "needed": relay_needed,
+        "needed": mode is not None,
+        "mode": mode,
+        "address": (
+            recorded_strategy(state).address
+            if mode == RELAY_FORWARD and state is not None
+            else (current.address if mode == RELAY_FORWARD else PUBLISH_ADDRESS)
+        ),
+        "peer": (state or {}).get("sidecar_address"),
         "live": deps.relay.is_live(lay.root),
         "port": deps.relay.port(lay.root),
     }
     drift: dict = {"reload": False, "restart": []}
     if state is not None and running:
         assert info is not None
-        report["endpoint"] = endpoint(info.port or state["port"])
+        report["endpoint"] = endpoint(info.port or state["port"], info.address)
+        report["address"] = info.address
         report["image"] = state["image"]
         report["image_current"] = state["image"] == image
         report["copilot"] = state["copilot"]
@@ -1144,7 +1526,7 @@ def status(
             drift["reload"] = reload_fingerprint(conf) != state["reload_fingerprint"]
             drift["restart"] = restart_drift(
                 state,
-                restart_inputs(runtime, policy, image=image),
+                restart_inputs(runtime, policy, image=image, address=current.address),
                 info.labels.get(FINGERPRINT_LABEL),
             )
         except egress_policy.EgressPolicyError as exc:
@@ -1163,15 +1545,22 @@ def status_lines(report: dict) -> list[str]:
             state += ", ready" if report["ready"] else ", NOT ready"
         lines.append(f"  State: {state}")
     if "endpoint" in report:
-        lines.append(f"  Endpoint: {report['endpoint']} (host loopback)")
+        lines.append(
+            f"  Endpoint: {report['endpoint']} "
+            f"({describe_address(report.get('address', PUBLISH_ADDRESS))})"
+        )
         current = "current" if report["image_current"] else "STALE (restart to upgrade)"
         lines.append(f"  Image: {report['image']} ({current})")
         lines.append(f"  Copilot profile: {'on' if report['copilot'] else 'off'}")
         lines.append(f"  Upstream: {report['upstream_url'] or 'none (direct)'}")
     else:
         lines.append(
-            f"  Endpoint: {report['configured_endpoint']} (host loopback, once started)"
+            f"  Endpoint: {report['configured_endpoint']} "
+            f"({describe_address(report.get('configured_address', PUBLISH_ADDRESS))}, "
+            "once started)"
         )
+    if report.get("strategy_error"):
+        lines.append(f"  Runtime: {report['strategy_error']}")
     ca = report.get("ca")
     if ca:
         expiry = "EXPIRED" if ca["expired"] else ca["not_after"]
@@ -1186,8 +1575,14 @@ def status_lines(report: dict) -> list[str]:
         )
     relay = report["relay"]
     if relay["needed"] or relay["live"]:
-        where = f"127.0.0.1:{relay['port']}" if relay["port"] else "not running"
-        lines.append(f"  Relay: {where}")
+        address = relay.get("address") or PUBLISH_ADDRESS
+        where = f"{address}:{relay['port']}" if relay["port"] else "not running"
+        if relay.get("mode") == RELAY_FORWARD:
+            peer = relay.get("peer")
+            only = f", accepts only the sidecar at {peer}" if peer else ""
+            lines.append(f"  Parent forwarder: {where}{only}")
+        else:
+            lines.append(f"  Relay: {where}")
     drift = report["drift"]
     if drift.get("reload"):
         lines.append(

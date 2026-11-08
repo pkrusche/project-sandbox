@@ -292,6 +292,19 @@ class EgressSidecarTests(TestCase):
         for argv in host.calls:
             self.assertFalse(forbidden & set(argv[1:]), argv)
 
+    def test_reports_the_docker_engine_gateway_endpoint(self) -> None:
+        # egress-sidecar-linux: the address label names the bridge gateway.
+        host = self._host(
+            inspect=ok(
+                '[{"State": {"Running": true}, "Config": {"Labels": '
+                '{"project-sandbox.egress.port": "3129", '
+                '"project-sandbox.egress.address": "172.17.0.1"}}}]'
+            )
+        )
+        with host.active():
+            check = by_name(doctor.run_checks())["docker sidecar"]
+        self.assertIn("running on 172.17.0.1:3129", check.detail)
+
     def test_leftover_container_and_absent_sidecar(self) -> None:
         host = self._host(
             inspect=ok('[{"State": {"Running": true}, "Config": {"Labels": {}}}]')

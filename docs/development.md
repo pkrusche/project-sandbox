@@ -546,10 +546,10 @@ uv run python scripts/e2e-egress-sidecar.py --runtime podman --checks policy --k
 
 | Check | Verifies |
 |---|---|
-| `policy` | the probe set of design.md Decision 15 in direct mode: allowed splice, unlisted host, IP literals, ports, metadata by name, SNI mismatch, raw tunnels, direct egress, DNS, GitHub repository access and concurrency; also the session-end denial count, session-input cleanup, and the endpoint answering on host loopback only |
+| `policy` | the probe set of design.md Decision 15 in direct mode: allowed splice, unlisted host, IP literals, ports, metadata by name, SNI mismatch, raw tunnels, direct egress, DNS, GitHub repository access and concurrency; also the session-end denial count, session-input cleanup, and the endpoint answering on its one published address only (host loopback; on Docker Engine the default bridge gateway) |
 | `intercept` | with the Copilot profile on, the intercepted `api.github.com`: CA trust, an allowed path reaching GitHub, labelled 403 pages, a foreign or missing SNI, and raw tunnels |
 | `shared` | two concurrent sandboxes on one sidecar, reuse across launches, a live `allow add`, and `down` cutting both off |
-| `parent` | chaining through an intercepting fixture parent proxy; on Apple `container`, the host relay surviving a hung-up session |
+| `parent` | chaining through an intercepting fixture parent proxy; on Apple `container`, the host relay surviving a hung-up session; on Docker Engine and rootless Podman, a parent listening only on host loopback, refused from the sandbox, and on Docker Engine the parent forwarder (live, in `status`, closing another container on the default bridge without the parent seeing it) |
 | `local` | a service listening only on host loopback, reached through local-service forwarding rather than the sidecar |
 
 A CONNECT denial passes only if the sidecar sends zero bytes and then closes or
@@ -565,6 +565,29 @@ Results (egress-sidecar-macos task 9.1, 2026-11-08, macOS):
 
 Apple `container` has one extra check, `parent:relay-survives-first-session`,
 because only Apple `container` reaches the parent proxy through the host relay.
+
+Results (egress-sidecar-linux task 5.1, 2026-11-08, Debian 13, kernel 6.12):
+
+```bash
+uv run python scripts/e2e-egress-sidecar.py --runtime docker
+uv run python scripts/e2e-egress-sidecar.py --runtime podman
+```
+
+| Runtime | Endpoint | Result |
+|---|---|---|
+| Docker Engine 29.9.2 (rootful) | `172.17.0.1:3129` | 94/94 passed |
+| Rootless Podman 5.4.2 with pasta | `127.0.0.1:3129` | 89/89 passed |
+
+The Linux runs add `parent:loopback-only` (the fixture parent answers on
+`127.0.0.1` only) and `parent:sandbox-refused:host.docker.internal:<parent
+port>`. Docker Engine also checks `parent:forwarder-live`,
+`parent:forwarder-in-status`, `parent:forwarder-closes-other-peers` (a container
+on the default bridge gets a close and `relay.log` records `refused peer`),
+`parent:never-saw-other-peer` and `parent:sandbox-refused:172.17.0.1:<forwarder
+port>`. `policy:endpoint-loopback-only` becomes `policy:endpoint-gateway-only`
+there: the endpoint answers on the gateway and not on `127.0.0.1` or any other
+host address. The parent fixture runs on Docker in both runs. ufw was not
+installed on the test host.
 
 The Copilot profile through the real sidecar (egress-sidecar-macos task 9.2,
 2026-11-08, Apple `container` CLI 1.7.1, individual plan):

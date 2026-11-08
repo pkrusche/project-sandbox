@@ -365,6 +365,10 @@ then
   echo "For Apple container, configure the localhost domain and then restart runtime networking:" >&2
   echo "  sudo container system dns create host.docker.internal --localhost 203.0.113.113" >&2
   echo "  container system stop && container system start" >&2
+{% if egress_sidecar %}
+  echo "On Docker Engine the egress sidecar listens on the default bridge gateway; a host firewall such as ufw that drops traffic from containers to the host blocks it (a timeout instead of a refusal)." >&2
+  echo "Check \`project-sandbox-egress status\` on the host." >&2
+{% endif %}
 {% else %}
   echo "Verify sandbox connectivity and the configured endpoint's TLS trust/name." >&2
 {% endif %}

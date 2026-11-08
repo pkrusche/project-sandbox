@@ -48,6 +48,7 @@ class FakeRuntime:
         self.fail = set(fail)
         self.run_delay = run_delay
         self.log_text = "squid log line\n"
+        self.ip = "172.17.0.2"
         self._lock = threading.Lock()
 
     def kinds(self) -> list[str]:
@@ -80,6 +81,7 @@ class FakeRuntime:
             record = {
                 "State": {"Running": self.container == "running"},
                 "Config": {"Labels": self.labels},
+                "NetworkSettings": {"Networks": {"bridge": {"IPAddress": self.ip}}},
             }
         return json.dumps([record])
 
@@ -127,6 +129,7 @@ class FakeRelay:
         self._port = port
         self.bind = bind  # port spawn() binds; default: the requested one
         self.spawned: list[int] = []
+        self.forwards: list[dict] = []
         self.stopped = 0
 
     def is_live(self, state_dir):
@@ -139,6 +142,14 @@ class FakeRelay:
         self.spawned.append(port)
         self.live = True
         self._port = self.bind or port
+        return self._port
+
+    def spawn_forward(self, state_dir, *, bind, peer, target_port, port=0):
+        self.forwards.append(
+            {"bind": bind, "peer": peer, "target_port": target_port, "port": port}
+        )
+        self.live = True
+        self._port = self.bind or port or 40000 + len(self.forwards)
         return self._port
 
     def stop(self, state_dir):
@@ -166,13 +177,16 @@ class Base(TestCase):
         self.relay = FakeRelay()
         self.taken: set[int] = set()
         self.host_probes: list[int] = []
+        self.host_addresses: list[str] = []
         self.host_answers = True
+        self.strategy = egress_sidecar.Strategy()
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
-    def _host_probe(self, port: int) -> bool:
+    def _host_probe(self, port: int, address: str) -> bool:
         self.host_probes.append(port)
+        self.host_addresses.append(address)
         return self.host_answers
 
     def deps(self, **overrides) -> Collaborators:
@@ -182,9 +196,10 @@ class Base(TestCase):
             "now": lambda: NOW,
             "sleep": lambda _s: None,
             "readiness_timeout": 0.0,
-            "port_free": lambda port: port not in self.taken,
+            "port_free": lambda port, _address: port not in self.taken,
             "port_release_timeout": 0.0,
             "host_probe": self._host_probe,
+            "strategy": lambda _rt: self.strategy,
         }
         values.update(overrides)
         return Collaborators(**values)
@@ -494,7 +509,7 @@ class EnsureTests(Base):
         clock = iter(range(100))
         sidecar = self.ensure(
             deps=self.deps(
-                port_free=lambda _port: next(checks),
+                port_free=lambda _port, _address: next(checks),
                 port_release_timeout=5.0,
                 clock=lambda: next(clock),
             )
@@ -780,25 +795,379 @@ class DriftTests(Base):
         self.assertTrue(any("reloaded" in m for m in messages))
 
 
-class SupportTests(TestCase):
-    """Task 6.1 helper: loopback publishing reaches sandboxes only on macOS runtimes."""
+FIXTURES = Path(__file__).parent / "fixtures" / "runtime-info"
+GATEWAY = egress_sidecar.Strategy(egress_sidecar.DOCKER_GATEWAY, "172.17.0.1")
+PASTA = egress_sidecar.Strategy(egress_sidecar.PODMAN_PASTA)
 
-    def test_runtimes(self) -> None:
-        self.assertTrue(egress_sidecar.supported(APPLE_CONTAINER))
-        desktop = {"OperatingSystem": "Docker Desktop"}
-        engine = {"OperatingSystem": "Ubuntu 24.04 LTS"}
-        self.assertTrue(egress_sidecar.supported(DOCKER, info=lambda _rt: desktop))
-        self.assertFalse(egress_sidecar.supported(DOCKER, info=lambda _rt: engine))
-        pasta = {
-            "host": {"security": {"rootless": True}, "rootlessNetworkCmd": "pasta"}
-        }
-        with patch("sys.platform", "darwin"):
-            self.assertTrue(egress_sidecar.supported(PODMAN, info=lambda _rt: pasta))
-        with patch("sys.platform", "linux"):
-            self.assertFalse(egress_sidecar.supported(PODMAN, info=lambda _rt: pasta))
-        message = egress_sidecar.unsupported_message(DOCKER)
-        for name in ("Apple container", "Docker Desktop", "Podman machine"):
+
+def _info(name: str):
+    data = json.loads((FIXTURES / f"{name}.json").read_text())
+    return lambda _runtime: data
+
+
+class StrategyTests(TestCase):
+    """egress-sidecar-linux task 1.1: design.md Decision 1, one test per row."""
+
+    def _strategy(self, runtime, fixture, *, platform="linux", gateway="172.17.0.1"):
+        gateways: list[str] = []
+
+        def probe_gateway(rt):
+            gateways.append(rt.name)
+            return gateway
+
+        with patch("sys.platform", platform):
+            strategy = egress_sidecar.endpoint_strategy(
+                runtime, info=_info(fixture), gateway=probe_gateway
+            )
+        return strategy, gateways
+
+    def test_apple_container_publishes_on_loopback_without_probes(self) -> None:
+        def no_probe(_rt):
+            raise AssertionError("Apple container needs no probe")
+
+        self.assertEqual(
+            egress_sidecar.endpoint_strategy(
+                APPLE_CONTAINER, info=no_probe, gateway=no_probe
+            ),
+            egress_sidecar.Strategy(),
+        )
+
+    def test_docker_desktop_publishes_on_loopback(self) -> None:
+        strategy, gateways = self._strategy(DOCKER, "docker-desktop")
+        self.assertEqual(strategy, egress_sidecar.Strategy())
+        self.assertEqual(gateways, [])
+
+    def test_docker_engine_publishes_on_the_bridge_gateway(self) -> None:
+        strategy, gateways = self._strategy(DOCKER, "docker-engine")
+        self.assertEqual(strategy, GATEWAY)
+        self.assertEqual(gateways, ["docker"])
+
+    def test_docker_engine_rejects_an_unsafe_gateway(self) -> None:
+        for bad in ("127.0.0.1", "0.0.0.0", "8.8.8.8", "not-an-ip"):
+            with self.subTest(gateway=bad), self.assertRaises(SidecarError):
+                self._strategy(DOCKER, "docker-engine", gateway=bad)
+
+    def test_rootless_docker_is_rejected_naming_the_supported_runtimes(self) -> None:
+        with self.assertRaises(SidecarError) as caught:
+            self._strategy(DOCKER, "docker-rootless")
+        message = str(caught.exception)
+        self.assertIn("rootless Docker", message)
+        for name in (
+            "Apple container",
+            "Docker Desktop",
+            "Docker Engine",
+            "Podman machine",
+            "rootless Podman",
+            "--egress firewall",
+        ):
             self.assertIn(name, message)
+
+    def test_rootless_podman_with_pasta(self) -> None:
+        strategy, _ = self._strategy(PODMAN, "podman-pasta")
+        self.assertEqual(strategy, PASTA)
+        self.assertEqual(strategy.address, "127.0.0.1")
+
+    def test_rootless_podman_with_slirp4netns_uses_the_host_alias(self) -> None:
+        strategy, _ = self._strategy(PODMAN, "podman-slirp4netns")
+        self.assertEqual(strategy, egress_sidecar.Strategy())
+
+    def test_podman_machine_publishes_on_loopback(self) -> None:
+        # The client reports the VM's pasta; its loopback is not this host's.
+        strategy, _ = self._strategy(PODMAN, "podman-pasta", platform="darwin")
+        self.assertEqual(strategy, egress_sidecar.Strategy())
+
+    def test_probe_failure_is_a_sidecar_error(self) -> None:
+        def failing(_rt):
+            raise SystemExit("Could not inspect docker networking: boom")
+
+        with self.assertRaisesRegex(SidecarError, "boom"):
+            egress_sidecar.endpoint_strategy(DOCKER, info=failing)
+
+    def test_recorded_strategy_defaults_to_loopback(self) -> None:
+        self.assertEqual(
+            egress_sidecar.recorded_strategy(None), egress_sidecar.Strategy()
+        )
+        self.assertEqual(
+            egress_sidecar.recorded_strategy(
+                {"strategy": "docker-gateway", "address": "172.17.0.1"}
+            ),
+            GATEWAY,
+        )
+
+
+class LinuxArgvTests(TestCase):
+    """Tasks 2.1 and 3.1: the Docker Engine and pasta sidecar argv."""
+
+    def _run(self, strategy, *, parent_port=None, runtime=DOCKER):
+        return egress_sidecar.sidecar_run_argv(
+            runtime,
+            image=IMAGE,
+            sidecar_dir=Path("/state/sidecar"),
+            port=3129,
+            memory="256M",
+            cpus=1,
+            restart_fingerprint="feedface",
+            strategy=strategy,
+            parent_port=parent_port,
+        )
+
+    @staticmethod
+    def _values(argv, flag):
+        return [argv[i + 1] for i, a in enumerate(argv) if a == flag]
+
+    def test_docker_engine_publishes_on_the_gateway_only(self) -> None:
+        argv = self._run(GATEWAY)
+        self.assertEqual(self._values(argv, "--publish"), ["172.17.0.1:3129:3128"])
+        self.assertIn("project-sandbox.egress.address=172.17.0.1", argv)
+        self.assertNotIn("--network", argv)
+        self.assertEqual(self._values(argv, "--add-host"), [])
+
+    def test_docker_engine_loopback_parent_maps_the_alias_to_the_gateway(self) -> None:
+        argv = self._run(GATEWAY, parent_port=3128)
+        self.assertEqual(
+            self._values(argv, "--add-host"), ["host.docker.internal:172.17.0.1"]
+        )
+        self.assertNotIn("--network", argv)
+
+    def test_pasta_without_a_parent(self) -> None:
+        argv = self._run(PASTA, runtime=PODMAN)
+        self.assertEqual(
+            self._values(argv, "--network"),
+            ["pasta:-a,198.18.0.2,-n,24,-g,198.18.0.1"],
+        )
+        self.assertEqual(self._values(argv, "--publish"), ["127.0.0.1:3129:3128"])
+        self.assertEqual(
+            self._values(argv, "--add-host"), ["host.docker.internal:127.0.0.1"]
+        )
+
+    def test_pasta_with_a_loopback_parent_forwards_only_its_port(self) -> None:
+        argv = self._run(PASTA, parent_port=18080, runtime=PODMAN)
+        self.assertEqual(
+            self._values(argv, "--network"),
+            ["pasta:-a,198.18.0.2,-n,24,-g,198.18.0.1,-4,-T,18080:18080"],
+        )
+        self.assertEqual(self._values(argv, "--publish"), ["127.0.0.1:3129:3128"])
+
+    def test_sandbox_plan_on_docker_engine_has_no_listener(self) -> None:
+        plan = egress_sidecar.sandbox_plan(GATEWAY, 3129)
+        assert plan is not None
+        self.assertEqual(plan.add_host, "host.docker.internal:172.17.0.1")
+        self.assertNotEqual(plan.strategy, "linux-bridge-socat")
+        plan.start()  # no socat
+        self.assertIsNone(plan.proxy)
+        self.assertIsNone(egress_sidecar.sandbox_plan(PASTA, 3129))
+        self.assertIsNone(egress_sidecar.sandbox_plan(egress_sidecar.Strategy(), 3129))
+
+
+class DockerEngineEnsureTests(Base):
+    """Task 2.1: gateway publish, port-free check and drift; task 2.4 forwarder."""
+
+    LOOPBACK_PARENT = '[egress.upstream]\nurl = "http://127.0.0.1:3128"\n'
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.strategy = GATEWAY
+        self.free_checks: list[tuple[int, str]] = []
+
+    def deps(self, **overrides):
+        def port_free(port, address):
+            self.free_checks.append((port, address))
+            return port not in self.taken
+
+        overrides.setdefault("port_free", port_free)
+        return super().deps(**overrides)
+
+    def _run_argv(self):
+        return next(c for c in self.fake.calls if self.fake.kind(c) == "run")
+
+    def test_cold_start_publishes_and_records_the_gateway(self) -> None:
+        sidecar = self.ensure()
+        self.assertIn("--publish", self._run_argv())
+        self.assertIn("172.17.0.1:3129:3128", self._run_argv())
+        self.assertEqual(self.free_checks, [(3129, "172.17.0.1")])
+        self.assertEqual(self.host_addresses, ["172.17.0.1"])
+        self.assertEqual(sidecar.endpoint, "172.17.0.1:3129")
+        state = egress_sidecar.read_state(self.lay)
+        assert state is not None
+        self.assertEqual(state["address"], "172.17.0.1")
+        self.assertEqual(state["strategy"], "docker-gateway")
+        self.assertEqual(state["restart_inputs"]["address"], "172.17.0.1")
+        self.assertEqual(self.relay.forwards, [])  # no parent, no forwarder
+
+    def test_taken_gateway_port_fails_before_run_naming_the_key(self) -> None:
+        self.taken.add(3129)
+        with self.assertRaisesRegex(
+            SidecarError, r"172\.17\.0\.1:3129.*\[egress\.sidecar\] port"
+        ):
+            self.ensure()
+        self.assertNotIn("run", self.fake.kinds())
+
+    def test_loopback_fingerprint_is_unchanged_by_the_address_field(self) -> None:
+        policy = _policy(self.tmp)
+        loopback = egress_sidecar.restart_inputs(DOCKER, policy, image=IMAGE)
+        self.assertNotIn("address", loopback)
+        gateway = egress_sidecar.restart_inputs(
+            DOCKER, policy, image=IMAGE, address="172.17.0.1"
+        )
+        self.assertNotEqual(
+            egress_sidecar.fingerprint(loopback), egress_sidecar.fingerprint(gateway)
+        )
+
+    def test_changed_gateway_is_drift_a_launch_fails_on(self) -> None:
+        self.ensure()
+        self.strategy = egress_sidecar.Strategy(
+            egress_sidecar.DOCKER_GATEWAY, "172.18.0.1"
+        )
+        self.fake.calls.clear()
+        with self.assertRaisesRegex(SidecarError, "project-sandbox-egress restart"):
+            self.ensure(expected_port=3129)
+        self.assertNotIn("run", self.fake.kinds())
+        # `up` keeps the running sidecar and names the restart-only field.
+        sidecar = self.ensure()
+        self.assertTrue(
+            any(
+                "published address" in m and m.startswith("[W]")
+                for m in sidecar.messages
+            )
+        )
+        report = egress_sidecar.status(
+            DOCKER, _policy(self.tmp), image=IMAGE, root=self.root, deps=self.deps()
+        )
+        self.assertIn(
+            "published address (Docker's default bridge gateway)",
+            report["drift"]["restart"],
+        )
+        self.assertEqual(report["endpoint"], "172.17.0.1:3129")
+
+    def test_loopback_parent_starts_the_forwarder_after_run(self) -> None:
+        sidecar = self.ensure(_policy(self.tmp, self.LOOPBACK_PARENT))
+        kinds = self.fake.kinds()
+        self.assertLess(kinds.index("run"), kinds.index("reload"))
+        self.assertEqual(
+            self.relay.forwards,
+            [
+                {
+                    "bind": "172.17.0.1",
+                    "peer": "172.17.0.2",
+                    "target_port": 3128,
+                    "port": 0,
+                }
+            ],
+        )
+        port = sidecar.state["relay_port"]
+        self.assertEqual(port, 40001)
+        self.assertEqual(sidecar.state["sidecar_address"], "172.17.0.2")
+        conf = (self.lay.sidecar / "squid.conf").read_text()
+        self.assertIn(f"cache_peer host.docker.internal parent {port} ", conf)
+        self.assertIn("host.docker.internal:172.17.0.1", self._run_argv())
+        self.assertEqual(self.relay.spawned, [])  # never the Apple CONNECT relay
+
+    def test_cold_start_always_restarts_the_forwarder(self) -> None:
+        self.ensure(_policy(self.tmp, self.LOOPBACK_PARENT))
+        self.fake.container = "stopped"  # e.g. after a reboot
+        self.fake.ip = "172.17.0.5"
+        self.ensure(_policy(self.tmp, self.LOOPBACK_PARENT))
+        self.assertEqual(self.relay.stopped, 1)
+        self.assertEqual(
+            [f["peer"] for f in self.relay.forwards], ["172.17.0.2", "172.17.0.5"]
+        )
+
+    def test_dead_forwarder_is_respawned_by_a_launch(self) -> None:
+        self.ensure(_policy(self.tmp, self.LOOPBACK_PARENT))
+        port = self.relay._port
+        self.relay.live = False
+        self.relay.bind = port
+        self.fake.calls.clear()
+        sidecar = self.ensure(
+            _policy(self.tmp, self.LOOPBACK_PARENT), expected_port=3129
+        )
+        self.assertNotIn("run", self.fake.kinds())
+        self.assertNotIn("reload", self.fake.kinds())
+        self.assertEqual(self.relay.forwards[-1]["port"], port)  # the recorded port
+        self.assertTrue(
+            any("Restarted the egress parent forwarder" in m for m in sidecar.messages)
+        )
+
+    def test_forwarder_port_move_rerenders_and_reloads(self) -> None:
+        self.ensure(_policy(self.tmp, self.LOOPBACK_PARENT))
+        self.relay.live = False
+        self.relay.bind = 45678
+        self.fake.calls.clear()
+        sidecar = self.ensure(_policy(self.tmp, self.LOOPBACK_PARENT))
+        self.assertIn("reload", self.fake.kinds())
+        self.assertNotIn("run", self.fake.kinds())
+        self.assertEqual(sidecar.state["relay_port"], 45678)
+        conf = (self.lay.sidecar / "squid.conf").read_text()
+        self.assertIn("cache_peer host.docker.internal parent 45678 ", conf)
+        self.assertFalse(any(m.startswith("[W]") for m in sidecar.messages))
+
+    def test_down_stops_the_forwarder(self) -> None:
+        self.ensure(_policy(self.tmp, self.LOOPBACK_PARENT))
+        egress_sidecar.down(DOCKER, root=self.root, deps=self.deps())
+        self.assertFalse(self.relay.live)
+        self.assertEqual(self.relay.stopped, 1)
+
+    def test_status_reports_the_forwarder(self) -> None:
+        self.ensure(_policy(self.tmp, self.LOOPBACK_PARENT))
+        report = egress_sidecar.status(
+            DOCKER,
+            _policy(self.tmp, self.LOOPBACK_PARENT),
+            image=IMAGE,
+            root=self.root,
+            deps=self.deps(),
+        )
+        self.assertEqual(report["relay"]["mode"], "forward")
+        lines = "\n".join(egress_sidecar.status_lines(report))
+        self.assertIn(
+            "Endpoint: 172.17.0.1:3129 (Docker's default bridge gateway)", lines
+        )
+        self.assertIn(
+            "Parent forwarder: 172.17.0.1:40001, accepts only the sidecar at 172.17.0.2",
+            lines,
+        )
+        self.relay.live = False
+        report = egress_sidecar.status(
+            DOCKER,
+            _policy(self.tmp, self.LOOPBACK_PARENT),
+            image=IMAGE,
+            root=self.root,
+            deps=self.deps(),
+        )
+        self.assertIn(
+            "Parent forwarder: not running",
+            "\n".join(egress_sidecar.status_lines(report)),
+        )
+
+    def test_remote_parent_needs_no_forwarder(self) -> None:
+        self.ensure(
+            _policy(
+                self.tmp, '[egress.upstream]\nurl = "http://proxy.corp.example:3128"\n'
+            )
+        )
+        self.assertEqual(self.relay.forwards, [])
+        self.assertNotIn("--add-host", self._run_argv())
+
+
+class PastaEnsureTests(Base):
+    """Task 3.1 through ensure(): the loopback parent rides the sidecar's pasta."""
+
+    runtime = PODMAN
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.strategy = PASTA
+
+    def test_loopback_parent(self) -> None:
+        self.ensure(
+            _policy(self.tmp, '[egress.upstream]\nurl = "http://127.0.0.1:18080"\n')
+        )
+        run = next(c for c in self.fake.calls if self.fake.kind(c) == "run")
+        self.assertIn("pasta:-a,198.18.0.2,-n,24,-g,198.18.0.1,-4,-T,18080:18080", run)
+        self.assertIn("127.0.0.1:3129:3128", run)
+        self.assertEqual(self.relay.forwards, [])
+        self.assertEqual(self.relay.spawned, [])
+        conf = (self.lay.sidecar / "squid.conf").read_text()
+        self.assertIn("cache_peer host.docker.internal parent 18080 ", conf)
 
 
 class RelayIntegrationTests(Base):

@@ -167,6 +167,140 @@ class ServeTests(TestCase):
                 control.stop(self.state)
 
 
+class EchoParent:
+    """A loopback 'parent' that echoes, counting the connections it accepted."""
+
+    def __init__(self) -> None:
+        self.server = socket.create_server(("127.0.0.1", 0))
+        self.port = self.server.getsockname()[1]
+        self.accepted = 0
+        threading.Thread(target=self._serve, daemon=True).start()
+
+    def _serve(self) -> None:
+        while True:
+            try:
+                conn, _ = self.server.accept()
+            except OSError:
+                return
+            self.accepted += 1
+            with conn:
+                while chunk := conn.recv(4096):
+                    conn.sendall(chunk)
+
+    def close(self) -> None:
+        self.server.close()
+
+
+class ForwardTests(TestCase):
+    """egress-sidecar-linux task 2.3: the Docker Engine parent forwarder."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.state = Path(self._tmp.name)
+        self.parent = EchoParent()
+
+    def tearDown(self) -> None:
+        self.parent.close()
+        self._tmp.cleanup()
+
+    def _serve(self, peer: str):
+        stop = threading.Event()
+        result: dict = {}
+        thread = threading.Thread(
+            target=lambda: result.setdefault(
+                "rc",
+                egress_relay.serve_forward(
+                    self.state,
+                    bind="127.0.0.1",
+                    peer=peer,
+                    target_port=self.parent.port,
+                    stop=stop,
+                    install_signals=False,
+                ),
+            )
+        )
+        thread.start()
+        control = RelayControl()
+        self.assertTrue(_wait(lambda: control.port(self.state) is not None))
+        return stop, thread, result, control.port(self.state)
+
+    def test_allowed_peer_is_relayed(self) -> None:
+        stop, thread, result, port = self._serve("127.0.0.1")
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=5) as c:
+                c.sendall(b"GET http://x/ HTTP/1.1\r\n\r\n")
+                self.assertEqual(c.recv(4096), b"GET http://x/ HTTP/1.1\r\n\r\n")
+        finally:
+            stop.set()
+            thread.join(5)
+        self.assertEqual(result["rc"], 0)
+        self.assertEqual(self.parent.accepted, 1)
+        log = (self.state / egress_relay.LOG_NAME).read_text()
+        self.assertIn(f"to 127.0.0.1:{self.parent.port} for peer 127.0.0.1", log)
+
+    def test_wrong_peer_is_closed_without_an_upstream_connect(self) -> None:
+        stop, thread, _result, port = self._serve("172.17.0.2")
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=5) as c:
+                c.settimeout(5)
+                c.sendall(b"CONNECT pypi.org:443 HTTP/1.1\r\n\r\n")
+                try:
+                    data = c.recv(4096)
+                except ConnectionResetError:
+                    data = b""
+                self.assertEqual(data, b"")
+        finally:
+            stop.set()
+            thread.join(5)
+        self.assertEqual(self.parent.accepted, 0)
+        self.assertIn(
+            "refused peer 127.0.0.1",
+            (self.state / egress_relay.LOG_NAME).read_text(),
+        )
+
+    def test_never_listens_on_a_wildcard(self) -> None:
+        with self.assertRaises(SystemExit):
+            egress_relay.TcpForwarder(bind="0.0.0.0", peer="172.17.0.2", target_port=1)
+
+    def test_detached_forwarder_and_sigterm_release_the_lock(self) -> None:
+        control = RelayControl()
+        port = control.spawn_forward(
+            self.state, bind="127.0.0.1", peer="127.0.0.1", target_port=self.parent.port
+        )
+        self.assertGreater(port, 0)
+        self.assertTrue(control.is_live(self.state))
+        with socket.create_connection(("127.0.0.1", port), timeout=5) as c:
+            c.sendall(b"ping")
+            self.assertEqual(c.recv(16), b"ping")
+        self.assertTrue(control.stop(self.state))  # SIGTERM
+        self.assertFalse(control.is_live(self.state))
+        self.assertIsNone(control.port(self.state))
+
+    def test_spawn_forward_argv(self) -> None:
+        seen = {}
+        clock = iter([0.0, 99.0])
+        control = RelayControl(
+            popen=lambda argv, **kw: seen.update(argv=argv, **kw),
+            sleep=lambda _s: None,
+            clock=lambda: next(clock),
+            spawn_timeout=1,
+        )
+        with self.assertRaises(RelayError):
+            control.spawn_forward(
+                self.state, bind="172.17.0.1", peer="172.17.0.2", target_port=3128
+            )
+        argv = seen["argv"]
+        self.assertIn("--forward", argv)
+        for flag, value in (
+            ("--bind", "172.17.0.1"),
+            ("--peer", "172.17.0.2"),
+            ("--target-port", "3128"),
+            ("--port", "0"),
+        ):
+            self.assertEqual(argv[argv.index(flag) + 1], value)
+        self.assertTrue(seen["start_new_session"])
+
+
 class ControlTests(TestCase):
     """Fake spawner and kill: no process is started or signalled."""
 

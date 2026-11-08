@@ -7159,43 +7159,35 @@ class EgressModeCliTests(TestCase):
                 self.assertFalse((project / ".project-sandbox").exists())
                 self.assertFalse((project / ".devcontainer").exists())
 
-    def test_linux_runtimes_are_rejected_before_container_work(self) -> None:
-        for runtime, info in (
-            (container_cli.DOCKER, {"OperatingSystem": "Ubuntu 24.04 LTS"}),
-            (
-                container_cli.PODMAN,
-                {
-                    "host": {
-                        "security": {"rootless": True},
-                        "rootlessNetworkCmd": "pasta",
-                    }
-                },
-            ),
-        ):
+    def test_rootless_docker_is_rejected_before_container_work(self) -> None:
+        # egress-sidecar-linux task 1.1: Docker Engine and rootless Podman are
+        # supported now; rootless Docker is not.
+        info = {
+            "OperatingSystem": "Debian GNU/Linux 13 (trixie)",
+            "SecurityOptions": ["name=seccomp,profile=builtin", "name=rootless"],
+        }
+        with tempfile.TemporaryDirectory() as tmp, patch("sys.platform", "linux"):
+            project = self._project(tmp)
             with (
-                self.subTest(runtime=runtime.name),
-                tempfile.TemporaryDirectory() as tmp,
-                patch("sys.platform", "linux"),
+                patch.object(
+                    cli.container_cli,
+                    "select_runtime",
+                    return_value=container_cli.DOCKER,
+                ),
+                patch.object(
+                    cli.local_service_network, "_runtime_info", return_value=info
+                ),
+                patch.object(
+                    cli.egress_sidecar,
+                    "default_runner",
+                    side_effect=AssertionError("no runtime calls"),
+                ),
+                self.assertRaisesRegex(
+                    SystemExit, "does not support rootless Docker.*Docker Engine"
+                ),
             ):
-                project = self._project(tmp)
-                with (
-                    patch.object(
-                        cli.container_cli, "select_runtime", return_value=runtime
-                    ),
-                    patch.object(
-                        cli.local_service_network, "_runtime_info", return_value=info
-                    ),
-                    patch.object(
-                        cli.egress_sidecar,
-                        "default_runner",
-                        side_effect=AssertionError("no runtime calls"),
-                    ),
-                    self.assertRaisesRegex(
-                        SystemExit, "Docker Desktop and Podman machine"
-                    ),
-                ):
-                    self._main(project, ["--egress", "sidecar", "--agent", "bash"])
-                self.assertFalse((project / ".project-sandbox").exists())
+                self._main(project, ["--egress", "sidecar", "--agent", "bash"])
+            self.assertFalse((project / ".project-sandbox").exists())
 
     def test_sidecar_dry_run_skips_devcontainer(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -7415,7 +7407,10 @@ class EgressSidecarLaunchTests(TestCase):
             "GitHub repository access: blocked",
             "TLS interception: none",
             "Sidecar CA: constrained to 'invalid'",
-            "Published endpoint: 127.0.0.1:3140 (host loopback only)",
+            (
+                "Published endpoint: 127.0.0.1:3140 (host loopback only; on Docker "
+                "Engine, the default bridge gateway instead)"
+            ),
             "Sidecar: would start project-sandbox-egress",
             "--publish 127.0.0.1:3140:3128 --memory 256M --cpus 1",
             "Would inject proxy environment: HTTP_PROXY=http://host.docker.internal:3140",
@@ -7571,7 +7566,7 @@ class EgressSidecarLaunchTests(TestCase):
                 port=port,
                 verbose=False,
                 now=now,
-                host_probe=lambda _port: answers,
+                host_probe=lambda _port, _address: answers,
             )
         self.assertEqual(called.call_args.kwargs["expected_port"], port)
         return out.getvalue()
@@ -7676,9 +7671,18 @@ class EgressSidecarLaunchTests(TestCase):
 
     # --- 6.2 real launch ------------------------------------------------------
 
-    def _launch(self, *argv_extra, fail=False, sidecar=None):
+    def _launch(
+        self,
+        *argv_extra,
+        fail=False,
+        sidecar=None,
+        runtime=None,
+        info=None,
+        extra_patches=(),
+    ):
         events = []
-        sidecar = sidecar or _fake_sidecar(cli.container_cli.DOCKER)
+        runtime = runtime or cli.container_cli.DOCKER
+        sidecar = sidecar or _fake_sidecar(runtime)
 
         def fake_run(argv, **kwargs):
             mount = next(a for a in argv if "target=/project-sandbox-egress" in a)
@@ -7695,16 +7699,18 @@ class EgressSidecarLaunchTests(TestCase):
                 patch.object(
                     cli.container_cli,
                     "select_runtime",
-                    return_value=cli.container_cli.DOCKER,
+                    return_value=runtime,
                 )
             )
             stack.enter_context(
                 patch.object(
                     cli.local_service_network,
                     "_runtime_info",
-                    return_value=self.DESKTOP,
+                    return_value=info or self.DESKTOP,
                 )
             )
+            for extra in extra_patches:
+                stack.enter_context(extra)
             stack.enter_context(
                 patch.object(cli.container_cli, "build_image", return_value=0)
             )
@@ -7755,7 +7761,7 @@ class EgressSidecarLaunchTests(TestCase):
             out = stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
             argv = [
                 "--runtime",
-                "docker",
+                runtime.name,
                 "--agent",
                 "bash",
                 "--egress",
@@ -7773,6 +7779,7 @@ class EgressSidecarLaunchTests(TestCase):
         down.assert_not_called()
         preflight.assert_not_called()
         ensure.assert_called_once()
+        self.ensure_kwargs = ensure.call_args.kwargs
         return rc, events, out.getvalue()
 
     def test_launch_is_firewall_mode_with_the_sidecar_as_internet_proxy(self) -> None:
@@ -7815,6 +7822,103 @@ class EgressSidecarLaunchTests(TestCase):
         self.assertFalse((context / "init-firewall-devcontainer.sh").exists())
         self.assertFalse((self.project / ".devcontainer").exists())
         self.assertIn("not rendering .devcontainer/", out)
+
+    ENGINE: ClassVar[dict] = {
+        "OperatingSystem": "Debian GNU/Linux 13 (trixie)",
+        "SecurityOptions": ["name=seccomp,profile=builtin"],
+    }
+    PASTA: ClassVar[dict] = {
+        "host": {"security": {"rootless": True}, "rootlessNetworkCmd": "pasta"}
+    }
+
+    def _engine_patches(self, started: list):
+        def start(plan):
+            started.append((plan.strategy, plan.port))
+
+        return [
+            patch.object(
+                cli.local_service_network, "_bridge_gateway", return_value="172.17.0.1"
+            ),
+            patch.object(cli.local_service_network, "_validate_bindable"),
+            patch.object(cli.local_service_network.ForwardingPlan, "start", start),
+            patch("sys.platform", "linux"),
+        ]
+
+    @staticmethod
+    def _values(argv, flag):
+        return [argv[i + 1] for i, a in enumerate(argv) if a == flag]
+
+    def test_docker_engine_reaches_the_gateway_without_socat(self) -> None:
+        # egress-sidecar-linux task 2.2.
+        started: list = []
+        rc, events, _ = self._launch(
+            info=self.ENGINE, extra_patches=self._engine_patches(started)
+        )
+        self.assertEqual(rc, 0)
+        argv = events[0][1]
+        self.assertEqual(
+            self._values(argv, "--add-host"), ["host.docker.internal:172.17.0.1"]
+        )
+        self.assertNotIn("--network", argv)
+        self.assertNotIn(("linux-bridge-socat", 3129), started)
+        self.assertEqual(
+            self.ensure_kwargs["strategy"],
+            cli.egress_sidecar.Strategy("docker-gateway", "172.17.0.1"),
+        )
+        script = (self.project / ".project-sandbox" / "init-firewall.sh").read_text()
+        # host.docker.internal resolves to the gateway: <gateway>:3129 only.
+        self.assertIn("-p tcp --dport 3129 -j ACCEPT", script)
+        self.assertIn('endpoints = ["host.docker.internal"]', script)
+        self.assertIn("ufw", script)
+
+    def test_docker_engine_keeps_socat_for_other_local_services(self) -> None:
+        started: list = []
+        original = cli._local_services
+
+        def with_ollama(*args, **kwargs):
+            return [
+                *original(*args, **kwargs),
+                cli.local_service_network.LocalService("Ollama", 11434),
+            ]
+
+        rc, events, _ = self._launch(
+            info=self.ENGINE,
+            extra_patches=[
+                *self._engine_patches(started),
+                patch.object(cli, "_local_services", side_effect=with_ollama),
+            ],
+        )
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            started,
+            [("docker-gateway-published", 3129), ("linux-bridge-socat", 11434)],
+        )
+        self.assertEqual(
+            self._values(events[0][1], "--add-host"),
+            ["host.docker.internal:172.17.0.1"],
+        )
+
+    def test_pasta_sandbox_forwards_the_sidecar_port_never_the_parent(self) -> None:
+        # egress-sidecar-linux task 3.2.
+        sidecar = _fake_sidecar(cli.container_cli.PODMAN)
+        sidecar.state["upstream_url"] = "http://127.0.0.1:3128"
+        with patch("sys.platform", "linux"):
+            rc, events, _ = self._launch(
+                runtime=cli.container_cli.PODMAN, info=self.PASTA, sidecar=sidecar
+            )
+        self.assertEqual(rc, 0)
+        argv = events[0][1]
+        self.assertEqual(
+            self._values(argv, "--network"),
+            ["pasta:-a,198.18.0.2,-n,24,-g,198.18.0.1,-4,-T,3129:3129"],
+        )
+        self.assertNotIn("3128", " ".join(self._values(argv, "--network")))
+        self.assertEqual(
+            self._values(argv, "--add-host"), ["host.docker.internal:127.0.0.1"]
+        )
+        self.assertEqual(
+            self.ensure_kwargs["strategy"], cli.egress_sidecar.Strategy("podman-pasta")
+        )
 
     def test_launch_uses_the_configured_port(self) -> None:
         self._policy("[egress.sidecar]\nport = 3140\n")

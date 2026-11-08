@@ -1,0 +1,9 @@
+{
+  "OperatingSystem": "Debian GNU/Linux 13 (trixie)",
+  "ServerVersion": "29.9.2",
+  "SecurityOptions": [
+    "name=apparmor,profile=default",
+    "name=seccomp,profile=builtin",
+    "name=cgroupns"
+  ]
+}

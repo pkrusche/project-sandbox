@@ -590,8 +590,14 @@ def _main(argv: list[str] | None = None) -> int:
         if (run_agent is not None or args.build_only) and not args.dry_run
         else None
     )
-    if sidecar and runtime is not None and not egress_sidecar.supported(runtime):
-        raise SystemExit(egress_sidecar.unsupported_message(runtime))
+    # Where the sidecar publishes on this runtime (egress-sidecar-linux
+    # Decision 1); rootless Docker is rejected here, before any container work.
+    egress_strategy: egress_sidecar.Strategy | None = None
+    if sidecar and runtime is not None:
+        try:
+            egress_strategy = egress_sidecar.endpoint_strategy(runtime)
+        except egress_sidecar.SidecarError as exc:
+            raise SystemExit(str(exc)) from None
     # Builds and sessions share one pasta address so host-own LAN services
     # (proxies, gateways) stay reachable from both.
     podman_pasta = runtime is not None and local_service_network.uses_local_pasta(
@@ -1015,8 +1021,24 @@ def _main(argv: list[str] | None = None) -> int:
             ),
             pi_ollama_enabled=pi_ollama_enabled,
         )
-        if services:
-            forwarding_plans = local_service_network.prepare_services(runtime, services)
+        sidecar_plan = (
+            egress_sidecar.sandbox_plan(egress_strategy, sandbox_proxy_config.port)
+            if egress_strategy is not None and sandbox_proxy_config is not None
+            else None
+        )
+        if sidecar_plan is not None:
+            # Docker Engine: the sidecar is published on the bridge gateway
+            # itself, so its port gets no per-session socat listener; other
+            # local services keep linux-bridge-socat.
+            services = [s for s in services if s.label != "Internet proxy"]
+        if services or sidecar_plan is not None:
+            forwarding_plans = (
+                local_service_network.prepare_services(runtime, services)
+                if services
+                else []
+            )
+            if sidecar_plan is not None:
+                forwarding_plans.insert(0, sidecar_plan)
             if runtime == container_cli.APPLE_CONTAINER:
                 print(local_service_network.apple_setup_notice("Local service"))
             if args.verbose:
@@ -1046,6 +1068,7 @@ def _main(argv: list[str] | None = None) -> int:
                 run_agent=run_agent,
                 port=internet_proxy_config.port,
                 verbose=args.verbose,
+                strategy=egress_strategy,
             )
             egress_mount = _egress_session_inputs(
                 egress_stack, egress_state, session_id=session_id
@@ -1070,7 +1093,9 @@ def _main(argv: list[str] | None = None) -> int:
             runtime=runtime,
             create_prompt_files=True,
             api_key_values=api_key_values,
-            ollama_add_hosts=[p.add_host for p in forwarding_plans if p.add_host],
+            ollama_add_hosts=list(
+                dict.fromkeys(p.add_host for p in forwarding_plans if p.add_host)
+            ),
             network=local_service_network.network_argument(
                 forwarding_plans, pasta=podman_pasta
             ),
@@ -1547,7 +1572,8 @@ def _ensure_egress_sidecar(
     port: int,
     verbose: bool,
     now: Callable[[], datetime] | None = None,
-    host_probe: Callable[[int], bool] | None = None,
+    host_probe: Callable[[int, str], bool] | None = None,
+    strategy: egress_sidecar.Strategy | None = None,
 ) -> egress_sidecar.Sidecar:
     """Start or reuse the global sidecar and check it can serve this session.
 
@@ -1564,7 +1590,7 @@ def _ensure_egress_sidecar(
         if egress_sidecar.read_state(egress_sidecar.layout(runtime)) is None:
             print("Starting the egress sidecar…")
         sidecar = egress_sidecar.ensure(
-            runtime, policy, image=image, expected_port=port
+            runtime, policy, image=image, expected_port=port, strategy=strategy
         )
     except egress_sidecar.SidecarError as exc:
         raise SystemExit(f"[E] {exc}") from None
@@ -1574,7 +1600,9 @@ def _ensure_egress_sidecar(
         f"Egress sidecar: {'started' if sidecar.started else 'reusing'} "
         f"{egress_sidecar.CONTAINER} at {sidecar.endpoint}"
     )
-    if not (host_probe or egress_sidecar.probe_published)(sidecar.port):
+    if not (host_probe or egress_sidecar.probe_published)(
+        sidecar.port, sidecar.address
+    ):
         raise SystemExit(
             f"[E] The egress sidecar does not answer on {sidecar.endpoint}; check "
             "`project-sandbox-egress status` and `project-sandbox-egress log`."
@@ -2139,8 +2167,23 @@ def _print_egress_dry_run(
             if egress_sidecar.needs_relay(runtime, policy.upstream_url)
             else "a direct connection from the sidecar"
         )
+        if (
+            runtime == container_cli.DOCKER
+            and egress_sidecar.loopback_parent_port(policy.upstream_url) is not None
+        ):
+            via += (
+                " (on Docker Engine: the sidecar-owned parent forwarder on the "
+                "default bridge gateway)"
+            )
         print(f"  Parent proxy: {policy.upstream_url} via {via}")
-    print(f"  Published endpoint: {endpoint} (host loopback only)")
+    print(
+        f"  Published endpoint: {endpoint} (host loopback only"
+        + (
+            "; on Docker Engine, the default bridge gateway instead)"
+            if runtime == container_cli.DOCKER
+            else ")"
+        )
+    )
     print(f"  Resources: {policy.memory} memory, {policy.cpus} CPU(s)")
     print(f"  Sidecar image: {image}")
     report = None

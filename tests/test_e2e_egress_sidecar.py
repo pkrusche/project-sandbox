@@ -488,6 +488,44 @@ class LoopbackOnlyTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertIn("192.168.64.1", result.detail)
 
+    def test_gateway_endpoint_must_not_answer_on_loopback(self) -> None:
+        # egress-sidecar-linux: Docker Engine publishes on the bridge gateway.
+        ok = self.script._loopback_only(
+            3129,
+            interfaces_text=lambda: IP_ADDR,
+            answers=lambda host, _port: host == "172.17.0.1",
+            address="172.17.0.1",
+        )
+        self.assertTrue(ok.ok, ok.detail)
+        self.assertEqual(ok.name, "policy:endpoint-gateway-only")
+        bad = self.script._loopback_only(
+            3129,
+            interfaces_text=lambda: IP_ADDR,
+            answers=lambda host, _port: host in ("172.17.0.1", "127.0.0.1"),
+            address="172.17.0.1",
+        )
+        self.assertFalse(bad.ok)
+        self.assertIn("127.0.0.1", bad.detail)
+
+    def test_parent_refusal_grading(self) -> None:
+        grade = self.script.grade_parent_refusals
+        results = grade(
+            {
+                "refused": {
+                    "host.docker.internal:3128": "ConnectionRefusedError",
+                    "172.17.0.1:40001": "connected",
+                }
+            }
+        )
+        self.assertEqual(
+            [(r.name, r.ok) for r in results],
+            [
+                ("parent:sandbox-refused:host.docker.internal:3128", True),
+                ("parent:sandbox-refused:172.17.0.1:40001", False),
+            ],
+        )
+        self.assertFalse(grade({})[0].ok)
+
     def test_reports_instead_of_raising(self) -> None:
         def broken():
             raise OSError("no ifconfig")
