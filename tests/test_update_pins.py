@@ -428,10 +428,27 @@ class SquidSidecarPinTests(TestCase):
         )
 
     def test_sidecar_and_fixture_pins_agree(self) -> None:
+        # current_squid_sidecar_pins raises when the pin files disagree. Check
+        # shape, not literal values, so update-pins bumps keep this passing.
         version, digest, squid = update_pins.current_squid_sidecar_pins()
-        self.assertEqual(version, "3.22.1")
-        self.assertEqual(digest, self.DIGEST)
-        self.assertEqual(squid, "6.12")
+        self.assertRegex(version, r"^\d+\.\d+\.\d+$")
+        self.assertRegex(digest, r"^[0-9a-f]{64}$")
+        self.assertRegex(squid, r"^\d+\.\d+$")
+
+    def test_disagreeing_pins_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            files = []
+            for name, version in (("a", "3.22.1"), ("b", "3.24.3")):
+                path = Path(tmp) / name
+                path.write_text(
+                    f"FROM alpine:{version}@sha256:{self.DIGEST}\n"
+                    "RUN apk add squid~6.12\n",
+                    encoding="utf-8",
+                )
+                files.append(path)
+            with patch.object(update_pins, "SQUID_SIDECAR_PIN_FILES", files):
+                with self.assertRaisesRegex(RuntimeError, "disagree"):
+                    update_pins.current_squid_sidecar_pins()
 
     def test_parse_apkindex(self) -> None:
         index = (
