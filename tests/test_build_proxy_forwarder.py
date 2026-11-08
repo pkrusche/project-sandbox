@@ -295,7 +295,12 @@ class CliForwardingTests(TestCase):
         observed: dict[str, object] = {"constructed": constructed, "build_args": None}
         lock_held = threading.Event()
         real_lock = cli.build_cache.build_lock
-        real_forwarder = build_proxy_forwarder.BuildProxyForwarder
+
+        class OfflineForwarder(build_proxy_forwarder.BuildProxyForwarder):
+            # The liveness probe below makes the forwarder dial the fake
+            # upstream; refuse it here so no real DNS lookup happens.
+            def _connect_upstream(self):
+                return None
 
         @contextlib.contextmanager
         def build_lock(context_dir):
@@ -308,7 +313,7 @@ class CliForwardingTests(TestCase):
 
         def forwarder(*args, **kwargs):
             constructed.append(lock_held.is_set())
-            return real_forwarder(*args, **kwargs)
+            return OfflineForwarder(*args, **kwargs)
 
         def build_image(*, context_dir, build_args=(), **_kwargs):
             observed["dockerfile"] = (context_dir / "Dockerfile").read_text()
