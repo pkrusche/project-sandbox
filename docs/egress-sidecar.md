@@ -381,7 +381,12 @@ Two opt-in e2e suites cover this mode. See the
 
 - `scripts/run-e2e-tests.sh --only egress-sidecar` (not billable) runs real
   sessions and checks each policy probe both from inside the sandbox and in the
-  sidecar log. It also covers parent chaining through an intercepting fixture
+  sidecar log. A CONNECT denial passes only on zero bytes followed by a close
+  or reset; a timeout or an unreachable sidecar fails. A second session turns
+  the Copilot profile on and probes the intercepted `api.github.com`: an
+  allowed path reaches GitHub, a denied path and plain HTTP get labelled 403
+  pages, and a foreign or missing SNI and raw tunnels fail. The suite also
+  covers parent chaining through an intercepting fixture
   proxy, a local service that listens only on host loopback, and the shared
   sidecar: two concurrent sandboxes, reuse across launches, a live `allow add`,
   and `down`.

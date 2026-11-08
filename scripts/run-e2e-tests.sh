@@ -21,8 +21,9 @@
 #  16. copilot                  — real GitHub Copilot CLI sessions (explicit opt-in; billable)
 #  17. copilot-egress           — Copilot CLI egress capture and Copilot-only profile check
 #                                 through an intercepting Squid fixture (explicit opt-in; billable)
-#  18. egress-sidecar           — --egress sidecar policy, shared sidecar, parent chaining and a
-#                                 loopback-only local service (explicit opt-in; needs network and builds)
+#  18. egress-sidecar           — --egress sidecar policy, TLS interception, shared sidecar, parent
+#                                 chaining and a loopback-only local service (explicit opt-in; needs
+#                                 network and builds)
 #
 # The console shows one progress line per suite. Each suite's output is captured
 # in its own temp log file; a failing suite's log is kept and its path reported,
@@ -96,8 +97,9 @@
 #                    write the copilot-egress report there (default: .project-sandbox/)
 #   --with-egress-sidecar
 #                    run scripts/e2e-egress-sidecar.py: real --egress sidecar sessions graded
-#                    from inside the sandbox and from the sidecar log, parent-proxy chaining
-#                    through an intercepting fixture, and a loopback-only local service. Not
+#                    from inside the sandbox and from the sidecar log, the intercepted
+#                    api.github.com (Copilot profile), parent-proxy chaining through an
+#                    intercepting fixture, and a loopback-only local service. Not
 #                    billable; needs network access and image builds
 #   --proxy-fixture-host IP
 #                    override local fixture IP (default: outbound IPv4 source address)

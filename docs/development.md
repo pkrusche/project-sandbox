@@ -521,3 +521,41 @@ CA trust, blocked access without `--internet-proxy`, and successful access with 
 while direct bypass remains blocked. It needs no LLM credentials or API calls.
 Setup failures are failures, not skips. Logs and structured results are retained
 on failure; `--keep` also retains successful artifacts and tagged test images.
+
+## Egress sidecar verification
+
+The opt-in `egress-sidecar` suite (`scripts/e2e-egress-sidecar.py`) runs real
+`--egress sidecar` sessions (agent `bash`, no credentials, not billable) against
+the runtime's global sidecar. It grades every probe twice: from inside the
+sandbox, and in the sidecar's access log. It needs network access, a container
+runtime and image builds. All of its state lives in a temporary
+`XDG_CONFIG_HOME`/`XDG_STATE_HOME`. The suite refuses to start while a global
+sidecar exists on that runtime, unless you pass `--replace-existing`.
+
+```bash
+./scripts/run-e2e-tests.sh --only egress-sidecar --with-egress-sidecar --runtime docker
+# One check, keeping the test projects and logs
+uv run python scripts/e2e-egress-sidecar.py --runtime podman --checks policy --keep
+```
+
+| Check | Verifies |
+|---|---|
+| `policy` | the probe set of design.md Decision 15 in direct mode: allowed splice, unlisted host, IP literals, ports, metadata by name, SNI mismatch, raw tunnels, direct egress, DNS, GitHub repository access and concurrency; also the session-end denial count, session-input cleanup, and the endpoint answering on host loopback only |
+| `intercept` | with the Copilot profile on, the intercepted `api.github.com`: CA trust, an allowed path reaching GitHub, labelled 403 pages, a foreign or missing SNI, and raw tunnels |
+| `shared` | two concurrent sandboxes on one sidecar, reuse across launches, a live `allow add`, and `down` cutting both off |
+| `parent` | chaining through an intercepting fixture parent proxy; on Apple `container`, the host relay surviving a hung-up session |
+| `local` | a service listening only on host loopback, reached through local-service forwarding rather than the sidecar |
+
+A CONNECT denial passes only if the sidecar sends zero bytes and then closes or
+resets the connection. A reply, a timeout or an unreachable sidecar fails it.
+
+Results (egress-sidecar-macos task 9.1, 2026-11-08, macOS):
+
+| Runtime | Result |
+|---|---|
+| Apple `container` CLI 1.7.1 | 88/88 passed |
+| Docker Desktop 4.98.0 (Engine 29.9.2) | 87/87 passed |
+| Podman machine, rootless (client 6.0.0, server 6.0.1) | 87/87 passed |
+
+Apple `container` has one extra check, `parent:relay-survives-first-session`,
+because only Apple `container` reaches the parent proxy through the host relay.

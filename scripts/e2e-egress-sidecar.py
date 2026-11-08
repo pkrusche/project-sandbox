@@ -11,14 +11,21 @@ sidecar's published endpoint (127.0.0.1:<port> on the host) through the
 runtime's local-service forwarding, as http://host.docker.internal:<port>.
 
 Checks (default: all):
-  policy     one sidecar session with in-sandbox probes:
-               allowed-splice, unlisted-connect, unlisted-http, ip-literal,
-               port, metadata (literal, and a name resolving to it),
-               sni-mismatch, no-sni, raw-tunnel, direct-egress (public
-               addresses and host ports that are not local services), dns,
+  policy     one direct-mode sidecar session with in-sandbox probes:
+               allowed-splice (and an HTTP request inside it), unlisted host
+               (CONNECT and plain HTTP), IP literals (public, loopback,
+               RFC 1918, link-local, private IPv6, metadata; plus a port-80
+               sample), port, metadata by name (nip.io, sslip.io), SNI
+               mismatch (foreign, unlisted, missing; with a control), raw
+               tunnels (plaintext and SSH), direct-egress (public addresses
+               and host ports that are not local services), dns,
                github-blocked, concurrency; plus the session-end denial count,
                session-input cleanup, the sidecar outliving the session and
                its endpoint answering on host loopback only
+  intercept  a session with the Copilot profile on, so api.github.com is
+             intercepted: the session CA is trusted, an allowed path reaches
+             GitHub, a denied path and plain HTTP get labelled 403 pages, and
+             a foreign or missing SNI and raw tunnels (plaintext, SSH) fail
   shared     two concurrent sandboxes on one sidecar, reuse across launches, a
              live `allow add` reaching both, and `down` cutting both off
   parent     sessions behind an intercepting fixture parent proxy with its own
@@ -36,6 +43,11 @@ into the temporary config home, so `podman` still finds its machine
 connection. The global sidecar's name is fixed per runtime, so the
 suite refuses to start while one exists (it would be replaced and stopped)
 unless --replace-existing is given.
+
+CONNECT denials pass only on zero bytes followed by a close or reset (design.md
+Decision 15); a reply, a timeout, or not reaching the sidecar fails.
+Plain-HTTP and intercepted denials pass only on a 403 carrying the expected
+`project-sandbox-egress:` label.
 
 Needs network access, a container runtime and builds. The parent check builds
 the Squid fixture from scripts/fixtures/copilot-egress (on Docker for Podman).
@@ -64,36 +76,65 @@ from pathlib import Path
 from project_sandbox import (
     container_cli,
     egress_log,
+    egress_policy,
     egress_relay,
     egress_sidecar,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
-CHECKS = ("policy", "shared", "parent", "local")
+CHECKS = ("policy", "intercept", "shared", "parent", "local")
 ALLOWED_HOST = "pypi.org"
 SECOND_ALLOWED_HOST = "files.pythonhosted.org"
 UNLISTED_HOST = "example.com"
 # Allowed live (`allow add`) while the shared sandboxes run.
 LIVE_HOST = "example.org"
-METADATA_NAME = "169.254.169.254.nip.io"
+# Allowlisted names that resolve to the metadata address (direct mode only).
+METADATA_NAMES = ("169.254.169.254.nip.io", "169.254.169.254.sslip.io")
+# IP-literal CONNECT targets on port 443, so the port rule cannot mask the
+# ip-literal rule (Decision 15): probe name -> address.
+IP_LITERALS = (
+    ("ip-literal-public", "1.1.1.1"),
+    ("ip-literal-loopback", "127.0.0.1"),
+    ("ip-literal-loopback6", "::1"),
+    ("ip-literal-rfc1918", "10.0.0.1"),
+    ("ip-literal-link-local", "169.254.1.1"),
+    ("ip-literal-metadata", "169.254.169.254"),
+    ("ip-literal-private6", "fd00::1"),
+)
+# The port-80 sample: a plain-HTTP request to an IP literal gets the labelled page.
+PORT80_LITERAL = "192.168.0.1"
+# Intercepted only with the Copilot profile on (egress_policy.derive_bump_set).
+INTERCEPTED_HOST = egress_policy.COPILOT_API_HOST
+INTERCEPTED_ALLOWED_PATH = "/copilot_internal/user"
+INTERCEPTED_DENIED_PATH = "/repos/octocat/Hello-World"
+SSH_BANNER = "SSH-2.0-OpenSSH_9.6\r\n"
 
-# Runs inside the sandbox; stdlib only. Writes egress-probe.json.
-PROBE_SOURCE = r'''#!/usr/bin/env python3
-import concurrent.futures, json, os, socket, ssl, subprocess, urllib.error, urllib.request
 
-# The sidecar endpoint, as the launch configured it (http://host:port).
-_proxy = os.environ["HTTPS_PROXY"].removeprefix("http://").rstrip("/")
-PROXY = (_proxy.rsplit(":", 1)[0], int(_proxy.rsplit(":", 1)[1]))
-ALLOWED, SECOND, UNLISTED, METADATA = __HOSTS__
-results = {}
+def _connect_target(host: str, port: int = 443) -> str:
+    return f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+
+
+# Shared by the in-sandbox probes; stdlib only. Expects the globals PROXY
+# (sidecar endpoint) and results (name -> {"ok", "detail"}).
+PROBE_HELPERS = r'''
+import socket, ssl, urllib.error, urllib.request
 
 
 def record(name, ok, detail):
     results[name] = {"ok": bool(ok), "detail": str(detail)[:300]}
 
 
+def _opener():
+    proxy = f"http://{PROXY[0]}:{PROXY[1]}"
+    return urllib.request.build_opener(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
+
+
 def connect_reply(target, timeout=8):
-    """Send CONNECT; return the bytes received before close (b'' = reset/close)."""
+    """Send CONNECT; return (bytes received, how the read ended).
+
+    The end is "closed" (EOF), "reset" (RST) or "timeout"; a failure to reach
+    the sidecar at all raises OSError.
+    """
     with socket.create_connection(PROXY, timeout=timeout) as s:
         s.sendall(f"CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n".encode())
         data = b""
@@ -101,11 +142,27 @@ def connect_reply(target, timeout=8):
             while b"\r\n\r\n" not in data:
                 chunk = s.recv(4096)
                 if not chunk:
-                    break
+                    return data, "closed"
                 data += chunk
-        except (ConnectionResetError, socket.timeout):
-            pass
-        return data
+        except ConnectionResetError:
+            return data, "reset"
+        except socket.timeout:
+            return data, "timeout"
+        return data, "reply"
+
+
+def denied_connect(name, target):
+    """Decision 15: a CONNECT denial is zero bytes, then a close or reset.
+
+    A reply of any kind (a 200 or an error page), a timeout, or not reaching
+    the sidecar fails: none of them shows the sidecar refusing the tunnel.
+    """
+    try:
+        data, end = connect_reply(target)
+    except OSError as exc:
+        record(name, False, f"could not reach the sidecar: {type(exc).__name__}")
+        return
+    record(name, data == b"" and end in ("closed", "reset"), f"{end} after {data[:40]!r}")
 
 
 def tunnel(target):
@@ -120,8 +177,13 @@ def tunnel(target):
     return s, head
 
 
-def tls_via_tunnel(target, sni, verify=True):
-    s, head = tunnel(target)
+def tls_via_tunnel(target, sni, verify=True, request=None):
+    """Open a TLS session through a tunnel; with ``request``, send it and
+    append the reply's status line to the outcome."""
+    try:
+        s, head = tunnel(target)
+    except OSError as exc:
+        return f"no tunnel: {type(exc).__name__}"
     if not head.startswith(b"HTTP/1.1 200"):
         s.close()
         return f"no tunnel: {head[:40]!r}"
@@ -133,62 +195,94 @@ def tls_via_tunnel(target, sni, verify=True):
         ctx.verify_mode = ssl.CERT_NONE
     try:
         with ctx.wrap_socket(s, server_hostname=sni) as t:
-            return f"handshake ok ({t.version()})"
+            outcome = f"handshake ok ({t.version()})"
+            if request is not None:
+                t.sendall(request)
+                status = t.recv(64).split(b"\r\n", 1)[0]
+                outcome += f"; reply {status!r}"
+            return outcome
     except (ssl.SSLError, OSError) as exc:
         return f"handshake failed: {type(exc).__name__}"
 
 
-def denied_connect(name, target):
+def raw_tunnel(name, target, payload):
+    """Non-TLS bytes through an established tunnel must get nothing back."""
     try:
-        data = connect_reply(target)
-        record(name, not data.startswith(b"HTTP/1.1 200"), data[:40] or "no bytes (reset)")
+        s, head = tunnel(target)
+        s.sendall(payload)
+        s.settimeout(6)
+        try:
+            reply = s.recv(4096)
+        except (ConnectionResetError, socket.timeout):
+            reply = b""
+        s.close()
+        record(name, head.startswith(b"HTTP/1.1 200") and reply == b"", f"head={head[:20]!r} reply={reply[:40]!r}")
     except OSError as exc:
-        record(name, True, f"{type(exc).__name__}")
+        record(name, False, repr(exc))
 
 
-# allowed splice
+def labelled_403(name, url, label):
+    """Decision 15: a 403 whose body carries the label; any other answer fails."""
+    try:
+        _opener().open(url, timeout=15)
+        record(name, False, "reached the origin")
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode(errors="replace")
+        record(name, exc.code == 403 and f"project-sandbox-egress: {label}" in body, f"{exc.code} {body[:80]}")
+    except Exception as exc:
+        record(name, False, repr(exc))
+'''
+
+_PROBE_HEADER = r"""#!/usr/bin/env python3
+import concurrent.futures, json, os, subprocess
+
+# The sidecar endpoint, as the launch configured it (http://host:port).
+_proxy = os.environ["HTTPS_PROXY"].removeprefix("http://").rstrip("/")
+PROXY = (_proxy.rsplit(":", 1)[0], int(_proxy.rsplit(":", 1)[1]))
+CFG = __CONFIG__
+results = {}
+"""
+
+# Direct-mode policy session. Writes egress-probe.json.
+PROBE_SOURCE = (
+    _PROBE_HEADER
+    + PROBE_HELPERS
+    + r"""
+ALLOWED, SECOND, UNLISTED = CFG["allowed"], CFG["second"], CFG["unlisted"]
+
+# allowed splice: the default trust store verifies the origin (nothing bumped)
 try:
     with urllib.request.urlopen(f"https://{ALLOWED}/simple/", timeout=20) as r:
         record("allowed-splice", r.status == 200, r.status)
 except Exception as exc:
     record("allowed-splice", False, repr(exc))
+inner = tls_via_tunnel(f"{ALLOWED}:443", ALLOWED,
+                       request=f"GET /simple/ HTTP/1.1\r\nHost: {ALLOWED}\r\nConnection: close\r\n\r\n".encode())
+record("allowed-splice-http", "reply b'HTTP/1.1 200" in inner, inner)
 
 denied_connect("unlisted-connect", f"{UNLISTED}:443")
-try:
-    urllib.request.urlopen(f"http://{UNLISTED}/", timeout=10)
-    record("unlisted-http", False, "reached the origin")
-except urllib.error.HTTPError as exc:
-    body = exc.read().decode(errors="replace")
-    record("unlisted-http", exc.code == 403 and "project-sandbox-egress: host-not-allowed" in body, f"{exc.code} {body[:80]}")
-except Exception as exc:
-    record("unlisted-http", False, repr(exc))
+labelled_403("unlisted-http", f"http://{UNLISTED}/", "host-not-allowed")
 
-for name, target in (("ip-literal-public", "1.1.1.1:443"), ("ip-literal-metadata", "169.254.169.254:443"),
-                     ("ip-literal-loopback6", "[::1]:443"), ("port", f"{ALLOWED}:8443")):
+for name, target in CFG["ip_literals"]:
     denied_connect(name, target)
+labelled_403("ip-literal-port80", f"http://{CFG['port80_literal']}/", "ip-literal")
+denied_connect("port", f"{ALLOWED}:8443")
 
 # metadata by name: allowlisted but resolves to 169.254.169.254 -> no successful TLS
-outcome = tls_via_tunnel(f"{METADATA}:443", METADATA)
-record("metadata-name", not outcome.startswith("handshake ok"), outcome)
+for metadata in CFG["metadata"]:
+    outcome = tls_via_tunnel(f"{metadata}:443", metadata)
+    record("metadata-name-" + metadata.removeprefix("169.254.169.254."), not outcome.startswith("handshake ok"), outcome)
 
 ok = tls_via_tunnel(f"{ALLOWED}:443", ALLOWED)
 mismatch = tls_via_tunnel(f"{ALLOWED}:443", SECOND, verify=False)
 record("sni-mismatch", ok.startswith("handshake ok") and not mismatch.startswith("handshake ok"), f"control={ok}; mismatch={mismatch}")
+unlisted_sni = tls_via_tunnel(f"{ALLOWED}:443", UNLISTED, verify=False)
+record("sni-unlisted", ok.startswith("handshake ok") and not unlisted_sni.startswith("handshake ok"), f"control={ok}; unlisted={unlisted_sni}")
 nosni = tls_via_tunnel(f"{ALLOWED}:443", None, verify=False)
 record("no-sni", not nosni.startswith("handshake ok"), nosni)
 
-try:
-    s, head = tunnel(f"{ALLOWED}:443")
-    s.sendall(f"GET / HTTP/1.1\r\nHost: {ALLOWED}\r\n\r\n".encode())
-    s.settimeout(6)
-    try:
-        reply = s.recv(4096)
-    except (ConnectionResetError, socket.timeout):
-        reply = b""
-    s.close()
-    record("raw-tunnel", head.startswith(b"HTTP/1.1 200") and reply == b"", f"head={head[:20]!r} reply={reply[:40]!r}")
-except OSError as exc:
-    record("raw-tunnel", False, repr(exc))
+raw_tunnel("raw-tunnel", f"{ALLOWED}:443", f"GET / HTTP/1.1\r\nHost: {ALLOWED}\r\n\r\n".encode())
+raw_tunnel("raw-tunnel-ssh", f"{ALLOWED}:443", CFG["ssh_banner"].encode())
 
 direct = []
 for host, port in (("1.1.1.1", 443), ("2606:4700:4700::1111", 443)):
@@ -231,25 +325,146 @@ if git.returncode == 0:
     reached.append("git ls-remote succeeded")
 record("github-blocked", not reached, reached or "all blocked")
 
+def concurrent_head(_i):
+    try:
+        return connect_reply(f"{ALLOWED}:443")[0]
+    except OSError:
+        return b""
+
+
 with concurrent.futures.ThreadPoolExecutor(10) as pool:
-    heads = list(pool.map(lambda _i: connect_reply(f"{ALLOWED}:443"), range(10)))
+    heads = list(pool.map(concurrent_head, range(10)))
 record("concurrency", all(h.startswith(b"HTTP/1.1 200") for h in heads), sum(h.startswith(b"HTTP/1.1 200") for h in heads))
 
 with open("egress-probe.json", "w", encoding="utf-8") as fh:
     json.dump(results, fh, indent=2)
 print("EGRESS_PROBE_DONE")
-'''
+"""
+)
+
+# Every probe the policy session must report, in report order.
+PROBE_NAMES = (
+    "allowed-splice",
+    "allowed-splice-http",
+    "unlisted-connect",
+    "unlisted-http",
+    *(name for name, _ in IP_LITERALS),
+    "ip-literal-port80",
+    "port",
+    *("metadata-name-" + m.removeprefix("169.254.169.254.") for m in METADATA_NAMES),
+    "sni-mismatch",
+    "sni-unlisted",
+    "no-sni",
+    "raw-tunnel",
+    "raw-tunnel-ssh",
+    "direct-egress",
+    "dns",
+    "github-blocked",
+    "concurrency",
+)
+
+
+def probe_source() -> str:
+    """The policy session's probe with its configuration filled in."""
+    config = {
+        "allowed": ALLOWED_HOST,
+        "second": SECOND_ALLOWED_HOST,
+        "unlisted": UNLISTED_HOST,
+        "metadata": list(METADATA_NAMES),
+        "ip_literals": [(name, _connect_target(ip)) for name, ip in IP_LITERALS],
+        "port80_literal": PORT80_LITERAL,
+        "ssh_banner": SSH_BANNER,
+    }
+    return PROBE_SOURCE.replace("__CONFIG__", repr(config))
+
 
 # Causes the sidecar must have logged for the policy probes (host -> cause).
 EXPECTED_LOG_CAUSES = (
     (UNLISTED_HOST, "host-not-allowed"),
-    ("1.1.1.1", "ip-literal"),
-    ("169.254.169.254", "ip-literal"),
+    *((ip, "ip-literal") for _, ip in IP_LITERALS),
+    (PORT80_LITERAL, "ip-literal"),
     (ALLOWED_HOST, "port-not-allowed"),
-    (METADATA_NAME, "private-address"),
+    *((m, "private-address") for m in METADATA_NAMES),
     (ALLOWED_HOST, "sni-mismatch"),
     (ALLOWED_HOST, "non-tls-tunnel"),
     ("github.com", "host-not-allowed"),
+)
+# SNIs the sidecar must have terminated on the allowed host ("-" = no SNI).
+EXPECTED_TERMINATIONS = (SECOND_ALLOWED_HOST, UNLISTED_HOST, "-")
+# CONNECT targets that must never show an established tunnel in the log.
+DENIED_TUNNEL_TARGETS = (
+    _connect_target(UNLISTED_HOST),
+    _connect_target("github.com"),
+    *(_connect_target(ip) for _, ip in IP_LITERALS),
+    *(_connect_target(m) for m in METADATA_NAMES),
+)
+
+# Intercepted-host session (Copilot profile on). Writes egress-intercept.json.
+INTERCEPT_PROBE_SOURCE = (
+    _PROBE_HEADER
+    + PROBE_HELPERS
+    + r"""
+HOST, FOREIGN = CFG["host"], CFG["foreign_sni"]
+
+# Matching control: the sidecar's certificate, trusted through the session CA.
+control = tls_via_tunnel(f"{HOST}:443", HOST)
+record("intercept:control", control.startswith("handshake ok"), control)
+
+# An allowed path is bumped and re-originated to GitHub.
+try:
+    with _opener().open(f"https://{HOST}{CFG['allowed_path']}", timeout=20) as r:
+        code, server = r.status, r.headers.get("Server", "")
+except urllib.error.HTTPError as exc:
+    code, server = exc.code, exc.headers.get("Server", "")
+except Exception as exc:
+    code, server = repr(exc), ""
+record("intercept:allowed-path-reaches-origin", server == "github.com", f"{code} server={server}")
+
+labelled_403("intercept:path-denied", f"https://{HOST}{CFG['denied_path']}", "path-not-allowed")
+labelled_403("intercept:plain-http", f"http://{HOST}/", "plain-http-intercepted")
+
+foreign = tls_via_tunnel(f"{HOST}:443", FOREIGN, verify=False)
+record("intercept:sni-foreign", control.startswith("handshake ok") and not foreign.startswith("handshake ok"), f"control={control}; foreign={foreign}")
+nosni = tls_via_tunnel(f"{HOST}:443", None, verify=False)
+record("intercept:no-sni", not nosni.startswith("handshake ok"), nosni)
+
+raw_tunnel("intercept:raw-tunnel", f"{HOST}:443", f"GET / HTTP/1.1\r\nHost: {HOST}\r\n\r\n".encode())
+raw_tunnel("intercept:raw-tunnel-ssh", f"{HOST}:443", CFG["ssh_banner"].encode())
+
+with open("egress-intercept.json", "w", encoding="utf-8") as fh:
+    json.dump(results, fh, indent=2)
+print("EGRESS_PROBE_DONE")
+"""
+)
+
+INTERCEPT_PROBE_NAMES = (
+    "intercept:control",
+    "intercept:allowed-path-reaches-origin",
+    "intercept:path-denied",
+    "intercept:plain-http",
+    "intercept:sni-foreign",
+    "intercept:no-sni",
+    "intercept:raw-tunnel",
+    "intercept:raw-tunnel-ssh",
+)
+
+
+def intercept_probe_source() -> str:
+    config = {
+        "host": INTERCEPTED_HOST,
+        "foreign_sni": ALLOWED_HOST,
+        "allowed_path": INTERCEPTED_ALLOWED_PATH,
+        "denied_path": INTERCEPTED_DENIED_PATH,
+        "ssh_banner": SSH_BANNER,
+    }
+    return INTERCEPT_PROBE_SOURCE.replace("__CONFIG__", repr(config))
+
+
+INTERCEPT_LOG_CAUSES = (
+    (INTERCEPTED_HOST, "path-not-allowed"),
+    (INTERCEPTED_HOST, "plain-http-intercepted"),
+    (INTERCEPTED_HOST, "sni-mismatch"),
+    (INTERCEPTED_HOST, "non-tls-tunnel"),
 )
 
 # Parent-chain probes: allowed through, unlisted reset locally.
@@ -370,26 +585,9 @@ class Result:
     detail: str = ""
 
 
-def grade_probes(probes: dict) -> list[Result]:
-    expected = (
-        "allowed-splice",
-        "unlisted-connect",
-        "unlisted-http",
-        "ip-literal-public",
-        "ip-literal-metadata",
-        "ip-literal-loopback6",
-        "port",
-        "metadata-name",
-        "sni-mismatch",
-        "no-sni",
-        "raw-tunnel",
-        "direct-egress",
-        "dns",
-        "github-blocked",
-        "concurrency",
-    )
+def grade_probes(probes: dict, names: Sequence[str] = PROBE_NAMES) -> list[Result]:
     results = []
-    for name in expected:
+    for name in names:
         entry = probes.get(name)
         if entry is None:
             results.append(Result(name, False, "probe did not run"))
@@ -398,26 +596,73 @@ def grade_probes(probes: dict) -> list[Result]:
     return results
 
 
+def grade_causes(
+    text: str, expected: Sequence[tuple[str, str]], prefix: str = "log"
+) -> list[Result]:
+    """One result per expected (host, cause) denial in the sidecar log."""
+    seen = {(d.target.split("/")[0], d.cause) for d in egress_log.denials(text)}
+    return [
+        Result(
+            f"{prefix}:{cause}:{host}",
+            (host, cause) in seen,
+            "" if (host, cause) in seen else "not logged",
+        )
+        for host, cause in expected
+    ]
+
+
+def _sbx_lines(text: str) -> list[str]:
+    return [line for line in text.splitlines() if line.startswith("SBX ")]
+
+
 def grade_log(text: str) -> list[Result]:
-    counts = egress_log.denials(text)
-    seen = {(d.target.split("/")[0], d.cause) for d in counts}
-    results = []
-    for host, cause in EXPECTED_LOG_CAUSES:
+    results = grade_causes(text, EXPECTED_LOG_CAUSES)
+    lines = _sbx_lines(text)
+    allowed = re.escape(ALLOWED_HOST)
+    for sni in EXPECTED_TERMINATIONS:
+        pattern = rf" CONNECT {allowed}:443 sni={re.escape(sni)} bump=terminate "
+        found = any(re.search(pattern, line) for line in lines)
         results.append(
             Result(
-                f"log:{cause}:{host}",
-                (host, cause) in seen,
-                "" if (host, cause) in seen else "not logged",
+                f"log:terminated:{ALLOWED_HOST}:sni={sni}",
+                found,
+                "" if found else "not logged",
             )
         )
+    splice = rf"TCP_TUNNEL/200 CONNECT {allowed}:443 sni={allowed} bump=splice "
+    results.append(
+        Result(
+            f"log:splice:{ALLOWED_HOST}",
+            any(re.search(splice, line) for line in lines),
+            "",
+        )
+    )
     leaked = [
         line
-        for line in text.splitlines()
-        if line.startswith("SBX ")
-        and re.search(r"TCP_TUNNEL/200 CONNECT (example\.com|github\.com):", line)
+        for line in lines
+        if any(f"TCP_TUNNEL/200 CONNECT {t} " in line for t in DENIED_TUNNEL_TARGETS)
     ]
     results.append(
         Result("log:no-tunnel-to-denied-hosts", not leaked, "; ".join(leaked[:2]))
+    )
+    return results
+
+
+def grade_intercept_log(text: str) -> list[Result]:
+    results = grade_causes(text, INTERCEPT_LOG_CAUSES, prefix="intercept:log")
+    host = re.escape(INTERCEPTED_HOST)
+    path = re.escape(INTERCEPTED_ALLOWED_PATH)
+    bumped = [
+        line
+        for line in _sbx_lines(text)
+        if re.search(rf" GET https://{host}{path} ", line) and "TCP_DENIED" not in line
+    ]
+    results.append(
+        Result(
+            f"intercept:log:bumped:{INTERCEPTED_HOST}{INTERCEPTED_ALLOWED_PATH}",
+            bool(bumped),
+            "" if bumped else "no allowed bumped request logged",
+        )
     )
     return results
 
@@ -430,9 +675,10 @@ def grade_parent(probe: dict, parent_log: str) -> list[Result]:
             str(probe.get("allowed")),
         ),
         Result(
+            # Decision 15: zero bytes, then a close ("") or a reset.
             "parent:unlisted-reset-locally",
-            not str(probe.get("unlisted", "")).startswith("HTTP/1.1 200"),
-            str(probe.get("unlisted")),
+            probe.get("unlisted") in ("", "ConnectionResetError"),
+            repr(probe.get("unlisted")),
         ),
         Result(
             "parent:saw-allowed-host",
@@ -484,10 +730,14 @@ def _write_policy(text: str) -> None:
     path.write_text(text)
 
 
-def _policy_text(*hosts: str, upstream: str = "", port: int | None = None) -> str:
+def _policy_text(
+    *hosts: str, upstream: str = "", port: int | None = None, copilot: bool = False
+) -> str:
     text = "[egress]\nallow = [" + ", ".join(json.dumps(h) for h in hosts) + "]\n"
     if upstream:
         text += upstream
+    if copilot:
+        text += "[egress.copilot]\nenabled = true\n"
     text += f"[egress.sidecar]\nport = {PORT if port is None else port}\n"
     return text
 
@@ -614,26 +864,63 @@ def _sidecar_count(runtime: container_cli.Runtime) -> int:
     )
 
 
-def _loopback_only(port: int) -> Result:
-    """The published port answers on 127.0.0.1 and on no other host address."""
+_INET_RE = re.compile(r"\binet (\d{1,3}(?:\.\d{1,3}){3})\b")
+
+
+def host_ipv4_addresses(interfaces_text: str) -> list[str]:
+    """Non-loopback IPv4 addresses from ``ifconfig`` or ``ip -o -4 addr`` output."""
+    addresses: list[str] = []
+    for address in _INET_RE.findall(interfaces_text):
+        if not address.startswith("127.") and address not in addresses:
+            addresses.append(address)
+    return addresses
+
+
+def _interfaces_text() -> str:
+    """Interface listing from ``ifconfig`` (macOS) or ``ip`` (Linux); "" if neither."""
+    for argv in (["ifconfig"], ["ip", "-o", "-4", "addr", "show"]):
+        try:
+            run = subprocess.run(
+                argv, capture_output=True, text=True, check=False, timeout=10
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if run.returncode == 0 and run.stdout:
+            return run.stdout
+    return ""
+
+
+def _answers(host: str, port: int) -> bool:
     import socket
 
-    def answers(host: str) -> bool:
-        try:
-            socket.create_connection((host, port), timeout=3).close()
-        except OSError:
-            return False
-        return True
+    try:
+        socket.create_connection((host, port), timeout=3).close()
+    except OSError:
+        return False
+    return True
 
-    others = []
-    for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
-        address = info[4][0]
-        if not address.startswith("127.") and address not in others:
-            others.append(address)
-    open_elsewhere = [a for a in others if answers(a)]
+
+def _loopback_only(
+    port: int, *, interfaces_text=_interfaces_text, answers=_answers
+) -> Result:
+    """The published port answers on 127.0.0.1 and on no other host address.
+
+    The other addresses come from the interface list (LAN, VM bridges, VPNs
+    such as Tailscale), not from resolving the hostname. Regression: the
+    hostname often does not resolve (e.g. ``*.home`` on another network), and
+    the lookup's exception threw away every result of the policy check.
+    """
+    name = "policy:endpoint-loopback-only"
+    try:
+        others = host_ipv4_addresses(interfaces_text())
+    except Exception as exc:  # noqa: BLE001 - report, never abort the check
+        return Result(name, False, f"could not list host addresses: {exc!r}")
+    if not others:
+        return Result(name, False, "found no non-loopback host address to check")
+    open_elsewhere = [a for a in others if answers(a, port)]
     return Result(
-        "policy:endpoint-loopback-only",
-        answers("127.0.0.1") and not open_elsewhere,
+        name,
+        answers("127.0.0.1", port) and not open_elsewhere,
         f"also open on {open_elsewhere}" if open_elsewhere else f"checked {others}",
     )
 
@@ -643,9 +930,8 @@ def _session_dir(runtime: container_cli.Runtime, session_id: str) -> Path:
 
 
 def check_policy(args, runtime, work: Path) -> list[Result]:
-    hosts = (ALLOWED_HOST, SECOND_ALLOWED_HOST, UNLISTED_HOST, METADATA_NAME)
-    _write_policy(_policy_text(ALLOWED_HOST, SECOND_ALLOWED_HOST, METADATA_NAME))
-    project = _project(work, "policy", PROBE_SOURCE.replace("__HOSTS__", repr(hosts)))
+    _write_policy(_policy_text(ALLOWED_HOST, SECOND_ALLOWED_HOST, *METADATA_NAMES))
+    project = _project(work, "policy", probe_source())
     run = _launch(args, project, "python3 probe.py", work / "policy.log")
     out = run.stdout + run.stderr
     (work / "policy.out").write_text(out)
@@ -687,6 +973,34 @@ def check_policy(args, runtime, work: Path) -> list[Result]:
             session_id or "no 'Session:' line in output",
         )
     )
+    return results
+
+
+def check_intercept(args, runtime, work: Path) -> list[Result]:
+    """Probes against the one intercepted host, which needs the Copilot profile.
+
+    The profile changes the bump set and the CA, which only a restart applies;
+    the check restores the direct policy (and restarts) afterwards.
+    """
+    _write_policy(_policy_text(ALLOWED_HOST, copilot=True))
+    results: list[Result] = []
+    try:
+        restart = egress(args, "restart")
+        results.append(
+            Result("intercept:restart", restart.returncode == 0, restart.stderr[-300:])
+        )
+        project = _project(work, "intercept", intercept_probe_source())
+        run = _launch(args, project, "python3 probe.py", work / "intercept.log")
+        out = run.stdout + run.stderr
+        (work / "intercept.out").write_text(out)
+        results.append(Result("intercept:launch", run.returncode == 0, out[-400:]))
+        results += grade_probes(
+            _read_json(project / "egress-intercept.json"), INTERCEPT_PROBE_NAMES
+        )
+        results += grade_intercept_log(egress(args, "log").stdout)
+    finally:
+        _write_policy(_policy_text(ALLOWED_HOST))
+        egress(args, "restart")
     return results
 
 
@@ -1069,6 +1383,7 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 results += {
                     "policy": check_policy,
+                    "intercept": check_intercept,
                     "shared": check_shared,
                     "parent": check_parent,
                     "local": check_local,
