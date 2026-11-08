@@ -41,7 +41,7 @@ Unit tests use real sockets on `127.0.0.1` and real `flock`s in a temporary stat
 ## 5. Integration verification
 
 - [x] 5.1 Run `uv run python -m compileall src tests` and `uv run pytest -q`, and verify both pass.
-- [ ] 5.2 On a Docker Engine host without `socat` on `PATH`, start two concurrent `--agent pi --pi-ollama` sessions, and check each of the following:
+- [x] 5.2 On a Docker Engine host without `socat` on `PATH`, start two concurrent `--agent pi --pi-ollama` sessions, and check each of the following:
   - both reach Ollama;
   - ending the first does not break the second;
   - the forwarder process is gone a few seconds after the second ends;

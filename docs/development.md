@@ -610,3 +610,33 @@ uv run python scripts/e2e-copilot-egress.py --runtime apple-container --phases s
   `codeload.github.com` and `gist.github.com` were reset (`host-not-allowed`).
   `api.github.com` `/repos/…` and `/gists/public` got the sidecar's labelled
   403 (`path-not-allowed`), and `git ls-remote` exited 128.
+
+## Shared local-service forwarder verification
+
+Manual check for the shared bridge forwarder (OpenSpec change
+`share-local-service-forwarders`, task 5.2). Run on 2026-11-08 on Debian 13 with
+Docker Engine 29.9.3 and Ollama 0.34.0 (`qwen3.5:9b`). A stub `socat` that logs
+every call came first on `PATH`; it was never called.
+
+Each session ran `--agent pi --pi-ollama --prompt-text …` and asked Pi to probe
+`http://host.docker.internal:11434/api/version` once a second. A host-side loop
+recorded forwarder processes and listeners on port 11434 every second.
+
+- Both sessions reach Ollama: passed. Both selected `linux-bridge-forwarder`
+  (`172.17.0.1:11434 -> 127.0.0.1:11434`) and shared a single forwarder process.
+  Session A got 30/30 probes and session B got 90/90, and both model turns
+  completed.
+- Ending the first session does not break the second: passed. B's probes and its
+  final model turn after A exited all succeeded.
+- The forwarder goes away after the last session ends: passed. It exited 1–2 s
+  after the last session ended (`no session holds a lease; stopping` in
+  `fwd.log`), and the `172.17.0.1:11434` listener went with it.
+- `kill -9` releases correctly: partly verified. Killing one of two concurrent
+  sessions' CLI left the forwarder running for the survivor, which got 60/60
+  probes. The forwarder stopped 1 s after the survivor ended. The killed
+  session's container stayed running as an orphan but did not keep the
+  forwarder alive. Killing the only session, and then attaching a fresh session,
+  was not run (see TODO.md).
+
+Pre-build images for this check with a session run, not `--build-only` (see
+TODO.md): an image built without `--agent pi` lacks the Ollama firewall rule.
