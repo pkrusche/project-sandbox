@@ -6499,7 +6499,7 @@ class NodeNpmFlagTests(TestCase):
 class TerminationSignalTests(TestCase):
     def test_sigterm_unwinds_main_so_cleanup_runs(self) -> None:
         # Regression: a SIGTERMed sandbox skipped its finally block and leaked
-        # socat forwarders bound to the bridge gateway.
+        # the bridge listeners it had started.
         cleaned_up = []
 
         def fake_main(_argv):
@@ -7848,7 +7848,7 @@ class EgressSidecarLaunchTests(TestCase):
     def _values(argv, flag):
         return [argv[i + 1] for i, a in enumerate(argv) if a == flag]
 
-    def test_docker_engine_reaches_the_gateway_without_socat(self) -> None:
+    def test_docker_engine_reaches_the_gateway_without_a_forwarder(self) -> None:
         # egress-sidecar-linux task 2.2.
         started: list = []
         rc, events, _ = self._launch(
@@ -7860,7 +7860,7 @@ class EgressSidecarLaunchTests(TestCase):
             self._values(argv, "--add-host"), ["host.docker.internal:172.17.0.1"]
         )
         self.assertNotIn("--network", argv)
-        self.assertNotIn(("linux-bridge-socat", 3129), started)
+        self.assertNotIn(("linux-bridge-forwarder", 3129), started)
         self.assertEqual(
             self.ensure_kwargs["strategy"],
             cli.egress_sidecar.Strategy("docker-gateway", "172.17.0.1"),
@@ -7871,7 +7871,7 @@ class EgressSidecarLaunchTests(TestCase):
         self.assertIn('endpoints = ["host.docker.internal"]', script)
         self.assertIn("ufw", script)
 
-    def test_docker_engine_keeps_socat_for_other_local_services(self) -> None:
+    def test_docker_engine_forwards_other_local_services(self) -> None:
         started: list = []
         original = cli._local_services
 
@@ -7891,7 +7891,7 @@ class EgressSidecarLaunchTests(TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(
             started,
-            [("docker-gateway-published", 3129), ("linux-bridge-socat", 11434)],
+            [("docker-gateway-published", 3129), ("linux-bridge-forwarder", 11434)],
         )
         self.assertEqual(
             self._values(events[0][1], "--add-host"),
@@ -7972,3 +7972,63 @@ class EgressSidecarLaunchTests(TestCase):
             )
         self.assertEqual(snapshots[0], snapshots[1])
         self.assertNotIn(b"CA ONE", snapshots[0]["Dockerfile"])
+
+
+class LocalForwarderDryRunTests(TestCase):
+    """share-local-service-forwarders task 3.3: dry-run never touches forwarders."""
+
+    def test_docker_dry_run_spawns_nothing_and_creates_no_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project = root / "project"
+            project.mkdir()
+            (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            state = root / "state"
+            paths = _agent_paths(root / "home")
+            for key in paths:
+                paths[key].mkdir(parents=True, exist_ok=True)
+            out = io.StringIO()
+            with (
+                patch.dict(os.environ, {"XDG_STATE_HOME": str(state)}),
+                patch.object(
+                    cli, "read_identity", return_value=GitIdentity("Ada", "a@b.c")
+                ),
+                patch.object(
+                    cli.config_agents, "_agent_host_paths", return_value=paths
+                ),
+                patch.object(
+                    cli.local_service_network.subprocess,
+                    "run",
+                    side_effect=AssertionError("runtime probed"),
+                ),
+                patch(
+                    "project_sandbox.local_forwarder.attach",
+                    side_effect=AssertionError("forwarder attached"),
+                ),
+                patch(
+                    "project_sandbox.egress_relay.RelayControl._start",
+                    side_effect=AssertionError("forwarder spawned"),
+                ),
+                contextlib.redirect_stdout(out),
+            ):
+                rc = cli.main(
+                    [
+                        "--dry-run",
+                        "--no-build",
+                        "--runtime",
+                        "docker",
+                        "--agent",
+                        "pi",
+                        "--pi-ollama",
+                        "--prompt-text",
+                        "x",
+                        str(project),
+                        "python:3.12-slim",
+                    ]
+                )
+            self.assertEqual(rc, 0)
+            self.assertIn(
+                "Would use Ollama forwarding strategy: runtime-probe-required",
+                out.getvalue(),
+            )
+            self.assertFalse((state / "project-sandbox" / "local-forward").exists())

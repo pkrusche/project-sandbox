@@ -1,7 +1,10 @@
 """Check the e2e cleanup script without a container runtime."""
 
+import fcntl
 import importlib.util
 import json
+import os
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import TestCase
@@ -109,20 +112,61 @@ class ContainerMatchTests(TestCase):
         self.assertTrue(cleanup.is_e2e_container(entry))
 
 
+def _forwarder(state: str, *extra: str) -> str:
+    return " ".join(
+        [
+            "/home/u/.venv/bin/python -m project_sandbox.egress_relay",
+            f"--state-dir {state} --forward",
+            *extra,
+            "--bind 172.17.0.1 --target-host 127.0.0.1 --target-port 11434",
+            "--port 11434",
+        ]
+    )
+
+
+LOCAL = "/home/u/.local/state/project-sandbox/local-forward"
+
+
 class ProcessTests(TestCase):
-    def test_only_orphaned_socat_forwarders_are_selected(self) -> None:
-        socat = "/usr/bin/socat TCP-LISTEN:11434,bind=172.17.0.1,reuseaddr,fork TCP:127.0.0.1:11434"
+    def test_only_unleased_local_forwarders_are_selected(self) -> None:
+        leased = f"{LOCAL}/172.17.0.1-4000"
         table = {
             1: (0, "/sbin/init"),
-            100: (1, socat),
+            100: (1, _forwarder(f"{LOCAL}/172.17.0.1-11434", "--lease --exact-port")),
+            101: (1, _forwarder(leased, "--lease --exact-port")),
+            # The egress sidecar's parent forwarder and relay are not ours.
             200: (
                 1,
-                "/home/u/project-sandbox/.venv/bin/python /home/u/.venv/bin/project-sandbox run",
+                _forwarder(
+                    "/home/u/.local/state/project-sandbox/egress/docker",
+                    "--peer 172.17.0.2",
+                ),
             ),
-            201: (200, socat),
-            300: (1, "socat - TCP:example.com:80"),
+            201: (1, _forwarder("/tmp/x/local-forward-ish/a", "--lease --exact-port")),
+            300: (1, "socat TCP-LISTEN:1,bind=10.0.0.1,reuseaddr,fork TCP:127.0.0.1:1"),
         }
-        self.assertEqual(cleanup.orphaned_forwarders(table), [100])
+        probed = []
+
+        def in_use(state: Path) -> bool:
+            probed.append(state)
+            return str(state) == leased
+
+        self.assertEqual(cleanup.orphaned_forwarders(table, in_use=in_use), [100])
+        self.assertEqual(
+            sorted(map(str, probed)), [f"{LOCAL}/172.17.0.1-11434", leased]
+        )
+
+    def test_lease_probe_reads_the_lease_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp)
+            self.assertFalse(cleanup.lease_held(state))
+            fd = os.open(state / "lease", os.O_RDWR | os.O_CREAT, 0o600)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_SH)
+                self.assertTrue(cleanup.lease_held(state))
+            finally:
+                os.close(fd)
+            self.assertFalse(cleanup.lease_held(state))
 
     def test_detects_running_e2e_scripts_but_not_itself(self) -> None:
         table = {
@@ -193,7 +237,9 @@ class MainTests(TestCase):
             code = self._main(
                 calls,
                 ["--runtime", "docker", "--dry-run"],
-                ps="100 1 socat TCP-LISTEN:1,bind=10.0.0.1,reuseaddr,fork TCP:127.0.0.1:1\n",
+                ps="100 1 "
+                + _forwarder("/nonexistent/local-forward/10.0.0.1-1", "--lease")
+                + "\n",
                 docker_inspect=[_docker_entry(SESSION, E2E_IMAGE)],
             )
         self.assertEqual(code, 0)

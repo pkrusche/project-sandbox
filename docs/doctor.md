@@ -23,7 +23,6 @@ reported rather than blocking the command.
 | | Podman: `podman info` succeeds and reports rootless (rootful Podman, including a rootful Podman machine, is unsupported and refused at startup) | warn |
 | | `chroot` (Linux): `unshare --map-root-user --mount` works | warn |
 | | `auto`: which runtime `--runtime auto` would select, and whether it works | fail |
-| Networking tools | `socat` (Linux; needed for `--pi-ollama` and host-local proxies on bridge networks) | info |
 | Version control | `git` on `PATH` and its version | fail |
 | | global `user.name` / `user.email` | warn |
 | | `jj` version and `jj workspace add --no-colocate` support (jj >= 0.46) | info if absent, warn if too old |

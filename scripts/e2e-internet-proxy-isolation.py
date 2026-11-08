@@ -401,8 +401,8 @@ def _run(
         if "gateway" in stopped:
             control(args.agentgateway_control, "restart", args.agentgateway_dir)
         if process is not None and process.poll() is None:
-            # SIGTERM lets the sandbox stop its container and socat forwarders;
-            # wait for that so the next suite finds the bridge ports free.
+            # SIGTERM lets the sandbox stop its container and release its bridge
+            # forwarder leases; wait for that so the next suite starts clean.
             process.terminate()
             try:
                 process.wait(timeout=60)

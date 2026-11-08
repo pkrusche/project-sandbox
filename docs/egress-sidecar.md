@@ -126,7 +126,7 @@ because the firewall and entrypoint scripts differ between the modes.
 
 | Runtime | Sidecar network | Published on | Sandbox reaches it via | Local services |
 |---|---|---|---|---|
-| Docker Engine (rootful) | default `bridge` | `<docker0 gateway>:3129`, e.g. `172.17.0.1:3129` | `host.docker.internal` → gateway (`--add-host`), no listener | `linux-bridge-socat` |
+| Docker Engine (rootful) | default `bridge` | `<docker0 gateway>:3129`, e.g. `172.17.0.1:3129` | `host.docker.internal` → gateway (`--add-host`), no listener | `linux-bridge-forwarder` |
 | Rootless Podman, pasta | pasta, private address `198.18.0.2` | `127.0.0.1:3129` | pasta `-T,3129:3129`, `host.docker.internal` → `127.0.0.1` | pasta `-T` |
 | Rootless Podman, slirp4netns | default | `127.0.0.1:3129` | `host.docker.internal:host-gateway` (Podman 5.0+) | same |
 | Rootless Docker | — | — | rejected | — |
@@ -134,9 +134,10 @@ because the firewall and entrypoint scripts differ between the modes.
 - **Docker Engine.** The sidecar publishes on the gateway of Docker's default
   bridge (`docker network inspect bridge`), not on loopback: it does not answer
   on `127.0.0.1:3129`. Every sandbox maps `host.docker.internal` to the gateway,
-  and the firewall admits `<gateway>:3129` only. No per-session `socat` listens
+  and the firewall admits `<gateway>:3129` only. No bridge forwarder listens
   for the sidecar port, so concurrent sandboxes share it. Ollama and a loopback
-  `--agent-proxy` keep firewall mode's per-session `socat` on the gateway.
+  `--agent-proxy` use firewall mode's shared bridge forwarder on the gateway,
+  which concurrent sessions also share.
   `up` checks that `<gateway>:<port>` is free. The gateway is recorded in
   `state.json` as a restart input: when it changes, `status` reports drift
   (`published address (Docker's default bridge gateway)`) and a launch fails

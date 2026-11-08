@@ -952,9 +952,9 @@ class LinuxArgvTests(TestCase):
         plan = egress_sidecar.sandbox_plan(GATEWAY, 3129)
         assert plan is not None
         self.assertEqual(plan.add_host, "host.docker.internal:172.17.0.1")
-        self.assertNotEqual(plan.strategy, "linux-bridge-socat")
-        plan.start()  # no socat
-        self.assertIsNone(plan.proxy)
+        self.assertNotEqual(plan.strategy, "linux-bridge-forwarder")
+        plan.start()  # no bridge forwarder
+        self.assertIsNone(plan.lease)
         self.assertIsNone(egress_sidecar.sandbox_plan(PASTA, 3129))
         self.assertIsNone(egress_sidecar.sandbox_plan(egress_sidecar.Strategy(), 3129))
 

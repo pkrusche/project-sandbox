@@ -7,7 +7,8 @@ Run after ``scripts/run-e2e-tests.sh`` (or an interrupted e2e script) to sweep:
 * Squid fixture containers that ``e2e-build-proxy.py`` started through IPL,
   recognised by their config mount inside a ``project-sandbox-build-proxy.*``
   temp directory, so a real IPL proxy is never touched;
-* socat forwarders whose project-sandbox CLI is gone;
+* shared local-service forwarders (``project_sandbox.egress_relay --lease``
+  with a ``local-forward`` state directory) that no session leases any more;
 * images tagged by the e2e suites, either explicitly or derived from their
   temporary project directories.
 
@@ -27,10 +28,11 @@ import shutil
 import signal
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from project_sandbox import container_cli
+from project_sandbox import container_cli, local_forwarder, session_ca
 
 RUNTIMES = (container_cli.APPLE_CONTAINER, container_cli.DOCKER, container_cli.PODMAN)
 
@@ -75,7 +77,6 @@ ACTIVE_E2E = re.compile(
     r"(?:^|/)(?:run-e2e-tests\.sh|verify-timeout-teardown\.sh|check-agent-proxy\.py"
     r"|e2e-(?!cleanup\.py|reap-orphans\.py)[\w-]+\.(?:sh|py))(?:\s|$)"
 )
-SOCAT_LISTEN = re.compile(r"TCP-LISTEN:\d+,bind=[^,]+,reuseaddr,fork")
 
 
 def _run(argv: list[str]) -> subprocess.CompletedProcess[str]:
@@ -201,18 +202,37 @@ def active_e2e(table: dict[int, tuple[int, str]]) -> list[str]:
     ]
 
 
-def orphaned_forwarders(table: dict[int, tuple[int, str]]) -> list[int]:
-    """socat bridges started by local_service_network whose CLI has exited."""
+def local_forward_state_dir(args: str) -> Path | None:
+    """The state directory of a shared local-service forwarder's command line."""
+    argv = args.split()
+    if "project_sandbox.egress_relay" not in argv or "--lease" not in argv:
+        return None
+    try:
+        state = Path(argv[argv.index("--state-dir") + 1])
+    except (ValueError, IndexError):
+        return None
+    return state if state.parent.name == local_forwarder.root().name else None
+
+
+def lease_held(state_dir: Path) -> bool:
+    """Whether a session still leases the forwarder (unreadable: assume yes)."""
+    return session_ca.lock_held(state_dir / local_forwarder.LEASE_NAME)
+
+
+def orphaned_forwarders(
+    table: dict[int, tuple[int, str]],
+    *,
+    in_use: Callable[[Path], bool] = lease_held,
+) -> list[int]:
+    """Shared local-service forwarders that no session leases.
+
+    A leased forwarder serves a live session (possibly a real one, not an e2e
+    run) and is left alone; an unleased one should have exited on its own.
+    """
     orphans = []
-    for pid, (ppid, args) in table.items():
-        argv = args.split()
-        if (
-            len(argv) == 3
-            and Path(argv[0]).name == "socat"
-            and SOCAT_LISTEN.fullmatch(argv[1])
-            and re.match(r"TCP6?:", argv[2])
-            and "project-sandbox" not in table.get(ppid, (0, ""))[1]
-        ):
+    for pid, (_ppid, args) in table.items():
+        state = local_forward_state_dir(args)
+        if state is not None and not in_use(state):
             orphans.append(pid)
     return sorted(orphans)
 

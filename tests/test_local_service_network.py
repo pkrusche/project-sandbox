@@ -1,59 +1,78 @@
 import os
-import signal
 import socket
 import subprocess
 import sys
-import textwrap
-import time
-import unittest
+import tempfile
+import threading
 from pathlib import Path
 from unittest import TestCase
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from forwarder_test_support import (
+    BIND,
+    Echo,
+    requires_second_loopback,
+    roundtrip,
+    wait_for,
+)
+
+from project_sandbox import egress_relay, local_forwarder
 from project_sandbox import local_service_network as ollama_network
 from project_sandbox.container_cli import APPLE_CONTAINER, CHROOT, DOCKER, PODMAN
 
 
 class OllamaNetworkTests(TestCase):
-    def test_socat_start_failure_names_the_requested_service(self) -> None:
-        plan = ollama_network.ForwardingPlan(
-            "linux-bridge-socat",
-            endpoint="172.17.0.1",
-            port=18080,
-            label="Internet proxy",
-        )
-        with (
-            patch.object(ollama_network.shutil, "which", return_value="/usr/bin/socat"),
-            patch.object(
-                ollama_network.subprocess,
-                "Popen",
-                side_effect=OSError("cannot execute"),
-            ),
-            self.assertRaisesRegex(SystemExit, "Internet proxy socat proxy"),
-        ):
-            plan.start()
+    def setUp(self) -> None:
+        # Forwarder state lookups (read-only in prepare) stay out of $HOME.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.state_home = Path(tmp.name)
+        env = patch.dict(os.environ, {"XDG_STATE_HOME": tmp.name})
+        env.start()
+        self.addCleanup(env.stop)
 
-    def test_linux_socat_preserves_ipv6_loopback_upstream(self) -> None:
-        process = MagicMock()
-        process.poll.return_value = None
+    def test_bridge_plan_attaches_and_releases_a_lease_without_socat(self) -> None:
+        lease = MagicMock()
         plan = ollama_network.ForwardingPlan(
-            "linux-bridge-socat",
+            "linux-bridge-forwarder",
             endpoint="172.17.0.1",
             port=18080,
             label="Internet proxy",
             loopback_host="::1",
         )
         with (
-            patch.object(ollama_network.shutil, "which", return_value="/usr/bin/socat"),
-            patch.object(
-                ollama_network.subprocess, "Popen", return_value=process
-            ) as popen,
-            patch.object(ollama_network.time, "sleep"),
+            patch.object(local_forwarder, "attach", return_value=lease) as attach,
+            patch.object(ollama_network.subprocess, "Popen") as popen,
         ):
             plan.start()
-        self.assertEqual(popen.call_args.args[0][-1], "TCP6:[::1]:18080")
+            plan.start()  # idempotent: one lease per plan
+            plan.close()
+            plan.close()
+        attach.assert_called_once_with(
+            "172.17.0.1", 18080, target_host="::1", label="Internet proxy"
+        )
+        popen.assert_not_called()  # no socat (or any other) child process
+        lease.release.assert_called_once()
+        self.assertIsNone(plan.lease)
+
+    def test_bridge_attach_failure_propagates_without_a_lease(self) -> None:
+        plan = ollama_network.ForwardingPlan(
+            "linux-bridge-forwarder", endpoint="172.17.0.1", label="Agent proxy"
+        )
+        error = local_forwarder.ForwarderError("Cannot bind the Agent proxy proxy")
+        with (
+            patch.object(local_forwarder, "attach", side_effect=error),
+            self.assertRaisesRegex(SystemExit, "Agent proxy"),
+        ):
+            plan.start()
+        self.assertIsNone(plan.lease)
+        plan.close()
+
+    def test_no_parent_death_hook_remains(self) -> None:
+        # The shared forwarder must outlive the session that spawned it.
+        self.assertFalse(hasattr(ollama_network, "_die_with_parent_hook"))
 
     def test_multiple_services_share_mapping_and_reject_duplicate_ports(self) -> None:
         with patch.object(
@@ -185,7 +204,7 @@ class OllamaNetworkTests(TestCase):
         )
         for plan in plans:
             plan.start()  # no host-side forwarder process
-            self.assertIsNone(plan.proxy)
+            self.assertIsNone(plan.lease)
 
     def test_pasta_sessions_and_builds_get_their_own_address(self) -> None:
         # Regression: pasta copied the host's LAN address into the container,
@@ -296,66 +315,9 @@ class OllamaNetworkTests(TestCase):
             patch.object(ollama_network, "_validate_bindable"),
         ):
             plan = ollama_network.prepare(DOCKER)
-        self.assertEqual(plan.strategy, "linux-bridge-socat")
+        self.assertEqual(plan.strategy, "linux-bridge-forwarder")
         self.assertEqual(plan.endpoint, "172.17.0.1")
         self.assertNotIn("0.0.0.0", plan.add_host or "")
-
-    def test_bridge_proxy_requires_socat(self) -> None:
-        plan = ollama_network.ForwardingPlan(
-            "linux-bridge-socat", endpoint="172.17.0.1"
-        )
-        with patch.object(ollama_network.shutil, "which", return_value=None):
-            with self.assertRaisesRegex(SystemExit, "requires socat"):
-                plan.start()
-
-    def test_bridge_proxy_argv_and_cleanup(self) -> None:
-        proc = MagicMock()
-        proc.poll.return_value = None
-        with (
-            patch.object(ollama_network.shutil, "which", return_value="/usr/bin/socat"),
-            patch.object(
-                ollama_network.subprocess, "Popen", return_value=proc
-            ) as popen,
-            patch.object(ollama_network.time, "sleep"),
-        ):
-            plan = ollama_network.ForwardingPlan(
-                "linux-bridge-socat", endpoint="172.17.0.1"
-            )
-            plan.start()
-            plan.close()
-        argv = popen.call_args.args[0]
-        self.assertIn("bind=172.17.0.1", argv[1])
-        self.assertNotIn("0.0.0.0", " ".join(argv))
-        proc.terminate.assert_called_once()
-        proc.wait.assert_called()
-
-    def test_immediate_proxy_failure_is_reported(self) -> None:
-        proc = MagicMock()
-        proc.poll.return_value = 1
-        proc.stderr.read.return_value = "Address already in use"
-        with (
-            patch.object(ollama_network.shutil, "which", return_value="socat"),
-            patch.object(ollama_network.subprocess, "Popen", return_value=proc),
-            patch.object(ollama_network.time, "sleep"),
-        ):
-            plan = ollama_network.ForwardingPlan(
-                "linux-bridge-socat", endpoint="172.17.0.1"
-            )
-            with self.assertRaisesRegex(SystemExit, "Address already in use"):
-                plan.start()
-            plan.close()
-        proc.wait.assert_called_once_with(timeout=5)
-        proc.terminate.assert_not_called()
-
-    def test_cleanup_reaps_proxy_that_exited_independently(self) -> None:
-        proc = MagicMock()
-        proc.poll.return_value = 1
-        plan = ollama_network.ForwardingPlan("linux-bridge-socat", proxy=proc)
-
-        plan.close()
-
-        proc.wait.assert_called_once_with(timeout=5)
-        proc.terminate.assert_not_called()
 
     def test_context_cleanup_runs_when_session_raises(self) -> None:
         plan = ollama_network.ForwardingPlan("podman-native-host-alias")
@@ -365,13 +327,91 @@ class OllamaNetworkTests(TestCase):
                     raise RuntimeError("session failed")
         close.assert_called_once()
 
-    def test_occupied_bridge_port_is_reported(self) -> None:
-        probe = MagicMock()
-        probe.bind.side_effect = OSError("Address already in use")
-        with patch.object(ollama_network.socket, "socket", return_value=probe):
-            with self.assertRaisesRegex(SystemExit, "Address already in use"):
-                ollama_network._validate_bindable("172.17.0.1")
-        probe.close.assert_called_once()
+    @requires_second_loopback
+    def test_foreign_listener_is_refused_early(self) -> None:
+        with socket.create_server((BIND, 0)) as foreign:
+            port = foreign.getsockname()[1]
+            with self.assertRaisesRegex(
+                SystemExit,
+                rf"Cannot bind the Ollama proxy to {BIND}:{port}: another process",
+            ):
+                ollama_network._validate_bindable(BIND, port=port)
+        self.assertFalse((self.state_home / "project-sandbox").exists())
+
+    @requires_second_loopback
+    def test_matching_live_forwarder_is_accepted(self) -> None:
+        echo = Echo()
+        self.addCleanup(echo.close)
+        lease = local_forwarder.attach(BIND, echo.port, idle_poll=0.2)
+        self.addCleanup(lease.release)
+        ollama_network._validate_bindable(BIND, port=echo.port)
+        with self.assertRaisesRegex(SystemExit, r"\[::1\]"):
+            ollama_network._validate_bindable(BIND, port=echo.port, loopback_host="::1")
+        lease.release()
+        control = egress_relay.RelayControl(files=local_forwarder.FILES)
+        directory = local_forwarder.state_dir(BIND, echo.port)
+        self.assertTrue(
+            wait_for(lambda: not control.is_live(directory)), "forwarder stayed"
+        )
+
+    @requires_second_loopback
+    def test_two_prepared_sessions_share_one_ollama_forwarder(self) -> None:
+        # Regression (share-local-service-forwarders): a second concurrent
+        # session failed its bind check because the first session's socat
+        # held <gateway>:11434.
+        echo = Echo()
+        self.addCleanup(echo.close)
+        servers: list[threading.Thread] = []
+
+        def fake_spawn(control, state_dir, **kwargs):
+            # The forwarder, run in a thread instead of a detached process.
+            thread = threading.Thread(
+                target=local_forwarder.serve,
+                args=(state_dir,),
+                kwargs={
+                    "bind": kwargs["bind"],
+                    "port": kwargs["port"],
+                    "target_host": kwargs["target_host"],
+                    "target_port": kwargs["target_port"],
+                    "idle_poll": 0.05,
+                    "install_signals": False,
+                },
+                daemon=True,
+            )
+            thread.start()
+            servers.append(thread)
+            self.assertTrue(wait_for(lambda: control.port(state_dir) is not None))
+            return control.port(state_dir)
+
+        def session() -> list[ollama_network.ForwardingPlan]:
+            return ollama_network.prepare_services(
+                DOCKER, [ollama_network.LocalService("Ollama", echo.port)]
+            )
+
+        with (
+            patch.object(ollama_network, "_runtime_info", return_value={}),
+            patch.object(ollama_network, "_bridge_gateway", return_value=BIND),
+            patch.object(ollama_network, "_validate_endpoint"),
+            patch.object(egress_relay.RelayControl, "spawn_local_forward", fake_spawn),
+        ):
+            first = session()
+            for plan in first:
+                plan.start()
+            second = session()  # prepared while the first session runs
+            for plan in second:
+                plan.start()
+        self.assertEqual(len(servers), 1)  # one forwarder for both sessions
+        self.assertEqual(
+            [plan.strategy for plan in first + second],
+            ["linux-bridge-forwarder"] * 2,
+        )
+        for plan in first:
+            plan.close()  # the session that started the forwarder ends first
+        self.assertEqual(roundtrip(echo.port), b"ping")
+        for plan in second:
+            plan.close()
+        servers[0].join(5)
+        self.assertFalse(servers[0].is_alive())
 
     def test_bind_probe_ignores_time_wait_but_not_live_listener(self) -> None:
         # Regression: a session that just closed connections on the bridge
@@ -396,70 +436,24 @@ class OllamaNetworkTests(TestCase):
         self.assertEqual(plan.strategy, "runtime-probe-required")
         run.assert_not_called()
 
-    def test_bridge_proxy_is_spawned_with_parent_death_hook(self) -> None:
-        proc = MagicMock()
-        proc.poll.return_value = None
-        sentinel = object()
-        with (
-            patch.object(ollama_network.shutil, "which", return_value="/usr/bin/socat"),
-            patch.object(
-                ollama_network.subprocess, "Popen", return_value=proc
-            ) as popen,
-            patch.object(ollama_network.time, "sleep"),
-            patch.object(
-                ollama_network, "_die_with_parent_hook", return_value=sentinel
+
+class DescribeTests(TestCase):
+    def test_bridge_forwarder_names_its_upstream_and_sharing(self) -> None:
+        plan = ollama_network.ForwardingPlan(
+            "linux-bridge-forwarder",
+            endpoint="172.17.0.1",
+            port=4000,
+            label="Agent proxy",
+            loopback_host="::1",
+        )
+        self.assertEqual(
+            ollama_network.describe(plan),
+            "Agent proxy forwarding strategy: linux-bridge-forwarder "
+            "(172.17.0.1:4000 -> [::1]:4000, shared with concurrent sessions)",
+        )
+        self.assertEqual(
+            ollama_network.describe(
+                ollama_network.ForwardingPlan("docker-desktop-host-alias")
             ),
-        ):
-            ollama_network.ForwardingPlan(
-                "linux-bridge-socat", endpoint="172.17.0.1"
-            ).start()
-        self.assertIs(popen.call_args.kwargs["preexec_fn"], sentinel)
-        self.assertTrue(popen.call_args.kwargs["start_new_session"])
-
-    @unittest.skipUnless(
-        sys.platform.startswith("linux"), "PR_SET_PDEATHSIG is Linux-only"
-    )
-    def test_parent_death_hook_kills_orphaned_child(self) -> None:
-        # Regression: a SIGKILLed sandbox left socat holding the bridge port.
-        script = textwrap.dedent(
-            """
-            import subprocess, sys, time
-            from project_sandbox import local_service_network as lsn
-            child = subprocess.Popen(
-                ["sleep", "60"],
-                start_new_session=True,
-                preexec_fn=lsn._die_with_parent_hook(),
-            )
-            print(child.pid, flush=True)
-            time.sleep(60)
-            """
+            "Ollama forwarding strategy: docker-desktop-host-alias",
         )
-        src = str(Path(__file__).resolve().parents[1] / "src")
-        parent = subprocess.Popen(
-            [sys.executable, "-c", script],
-            stdout=subprocess.PIPE,
-            text=True,
-            env={**os.environ, "PYTHONPATH": src},
-        )
-        try:
-            assert parent.stdout is not None
-            child_pid = int(parent.stdout.readline())
-        finally:
-            parent.kill()
-            parent.wait()
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline and _pid_alive(child_pid):
-            time.sleep(0.05)
-        alive = _pid_alive(child_pid)
-        if alive:
-            os.kill(child_pid, signal.SIGKILL)
-        self.assertFalse(alive, "child outlived its SIGKILLed parent")
-
-
-def _pid_alive(pid: int) -> bool:
-    # The orphan is reparented to init, which reaps it; a zombie counts as dead.
-    try:
-        with open(f"/proc/{pid}/stat", encoding="ascii") as handle:
-            return handle.read().split(")")[-1].split()[0] != "Z"
-    except (FileNotFoundError, ProcessLookupError):
-        return False

@@ -628,7 +628,12 @@ uv run project-sandbox \
   mapped to the container's `127.0.0.1`) for Podman on Linux with pasta (the
   default), uses native host-loopback forwarding for other Podman setups
   (slirp4netns, Podman machine) and Docker Desktop, and an
-  exact-bridge `socat` proxy for local Linux Docker. VM-backed native aliases
+  exact-bridge forwarder for local Linux Docker. That forwarder is part of
+  project-sandbox (no `socat` needed) and is shared: concurrent sessions that
+  use the same service share one forwarder on `<gateway>:<port>`, which exits
+  shortly after the last of them ends. If another program already listens on
+  that address and port, startup fails with "Cannot bind … another process
+  owns that address and port". VM-backed native aliases
   are accepted only when the container startup probe reaches Ollama. Unsupported modes fail
   closed; project-sandbox never falls back to `0.0.0.0`.
 

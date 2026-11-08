@@ -42,7 +42,11 @@ When launching Codex manually from a sandbox shell or devcontainer, use
 With `--agent pi --pi-ollama`, a runtime networking adapter is selected before
 step 4. Native host-loopback forwarding is preferred; rootless Podman on Linux
 with pasta forwards only the planned ports to host loopback over IPv4, and local
-Linux bridge modes start a short-lived `socat` proxy on the exact bridge address. Agent-proxy and
+Linux bridge modes (Docker Engine) lease a shared project-sandbox forwarder on the
+exact bridge address: one detached forwarder per bridge address and port, shared
+by concurrent sessions and exiting about two seconds after the last session ends
+(see [`docs/security.md`](security.md)). No external tool such as `socat` is
+needed. Agent-proxy and
 Ollama sessions on Apple `container` use a user-configured
 `host.docker.internal` localhost DNS mapping; see the setup and restart warning
 in `docs/usage.md`.

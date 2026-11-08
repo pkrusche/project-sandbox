@@ -2,21 +2,17 @@
 
 from __future__ import annotations
 
-import ctypes
 import ipaddress
 import json
-import os
-import shutil
-import signal
-import socket
 import subprocess
 import sys
-import time
-from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Self
+from typing import TYPE_CHECKING, Self
 
 from .container_cli import APPLE_CONTAINER, CHROOT, DOCKER, PODMAN, Runtime
+
+if TYPE_CHECKING:
+    from . import local_forwarder
 
 HOSTNAME = "host.docker.internal"
 PORT = 11434
@@ -28,6 +24,9 @@ APPLE_SETUP_COMMAND = (
 APPLE_DELETE_COMMAND = f"sudo container system dns delete {HOSTNAME}"
 APPLE_RESTART_COMMAND = "container system stop && container system start"
 PASTA_STRATEGY = "podman-pasta-forward"
+# Docker Engine: one shared, leased forwarder per (gateway, port), see
+# local_forwarder (share-local-service-forwarders).
+BRIDGE_STRATEGY = "linux-bridge-forwarder"
 # pasta otherwise copies the host's own addresses into the container, so a
 # service on the host's LAN address (a proxy, a gateway) is unreachable from
 # builds and sandboxes. 198.18.0.0/15 is reserved for benchmarking (RFC 2544),
@@ -58,68 +57,39 @@ class ForwardingPlan:
     strategy: str
     endpoint: str | None = None
     add_host: str | None = None
-    proxy: subprocess.Popen[str] | None = None
+    # This session's lease on the shared bridge forwarder (BRIDGE_STRATEGY).
+    lease: local_forwarder.Lease | None = None
     hostname: str = HOSTNAME
     port: int = PORT
     label: str = "Ollama"
     loopback_host: str = "127.0.0.1"
 
     def start(self) -> None:
-        if self.strategy != "linux-bridge-socat":
+        """Attach to (or start) the shared bridge forwarder and lease it.
+
+        The forwarder is detached and shared with concurrent sessions; it exits
+        on its own shortly after the last lease is released.
+        """
+        if self.strategy != BRIDGE_STRATEGY or self.lease is not None:
             return
         if not self.endpoint:
             raise SystemExit(f"Internal error: {self.label} bridge endpoint is missing")
-        socat = shutil.which("socat")
-        if socat is None:
-            raise SystemExit(
-                f"{self.label} requires socat for this Linux bridge runtime; "
-                "install socat and retry."
-            )
-        upstream = (
-            f"TCP6:[{self.loopback_host}]:{self.port}"
-            if ":" in self.loopback_host
-            else f"TCP:{self.loopback_host}:{self.port}"
+        # Imported here: local_forwarder -> egress_relay -> proxy_endpoint
+        # imports this module.
+        from . import local_forwarder
+
+        self.lease = local_forwarder.attach(
+            self.endpoint,
+            self.port,
+            target_host=self.loopback_host,
+            label=self.label,
         )
-        argv = [
-            socat,
-            f"TCP-LISTEN:{self.port},bind={self.endpoint},reuseaddr,fork",
-            upstream,
-        ]
-        try:
-            self.proxy = subprocess.Popen(
-                argv,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                text=True,
-                start_new_session=True,
-                # The listener sits in its own session, so a SIGKILL of this
-                # process would orphan it and keep the bridge port bound.
-                # cli starts forwarders before any helper thread exists.
-                preexec_fn=_die_with_parent_hook(),  # noqa: PLW1509
-            )
-        except OSError as exc:
-            raise SystemExit(
-                f"Could not start {self.label} socat proxy: {exc}"
-            ) from exc
-        time.sleep(0.1)
-        if self.proxy.poll() is not None:
-            stderr = self.proxy.stderr.read().strip() if self.proxy.stderr else ""
-            detail = f": {stderr}" if stderr else ""
-            raise SystemExit(f"{self.label} socat proxy failed to start{detail}")
 
     def close(self) -> None:
-        proc = self.proxy
-        self.proxy = None
-        if proc is None:
-            return
-        if proc.poll() is None:
-            proc.terminate()
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
+        """Release this session's lease; the forwarder itself is never killed."""
+        lease, self.lease = self.lease, None
+        if lease is not None:
+            lease.release()
 
     def __enter__(self) -> Self:
         self.start()
@@ -127,32 +97,6 @@ class ForwardingPlan:
 
     def __exit__(self, *_exc) -> None:
         self.close()
-
-
-_PR_SET_PDEATHSIG = 1
-
-
-def _die_with_parent_hook() -> Callable[[], None] | None:
-    """Return a ``preexec_fn`` that SIGTERMs the child when this process dies.
-
-    Linux-only (``prctl(PR_SET_PDEATHSIG)``); elsewhere returns None. libc is
-    resolved here, in the parent, so the forked child only makes the syscall.
-    """
-    if not sys.platform.startswith("linux"):
-        return None
-    try:
-        prctl = ctypes.CDLL(None, use_errno=True).prctl
-    except (OSError, AttributeError):
-        return None
-    parent = os.getpid()
-
-    def hook() -> None:
-        prctl(_PR_SET_PDEATHSIG, signal.SIGTERM, 0, 0, 0)
-        # The parent may have died between fork and prctl.
-        if os.getppid() != parent:
-            os._exit(1)
-
-    return hook
 
 
 def prepare(
@@ -236,9 +180,9 @@ def prepare(
 
     endpoint = _bridge_gateway(runtime)
     _validate_endpoint(endpoint)
-    _validate_bindable(endpoint, port=port, label=label)
+    _validate_bindable(endpoint, port=port, label=label, loopback_host=loopback_host)
     return ForwardingPlan(
-        "linux-bridge-socat",
+        BRIDGE_STRATEGY,
         endpoint=endpoint,
         add_host=f"{hostname}:{endpoint}",
         hostname=hostname,
@@ -285,10 +229,15 @@ def prepare_services(
     plans = [base]
     for service in services[1:]:
         # Runtime strategy and hostname endpoint are sandbox-wide decisions.
-        # Linux still needs one bindability check and socat listener per port.
-        if base.strategy == "linux-bridge-socat":
+        # Docker Engine still needs one check and one shared forwarder per port.
+        if base.strategy == BRIDGE_STRATEGY:
             assert base.endpoint is not None
-            _validate_bindable(base.endpoint, port=service.port, label=service.label)
+            _validate_bindable(
+                base.endpoint,
+                port=service.port,
+                label=service.label,
+                loopback_host=service.loopback_host,
+            )
         plans.append(
             ForwardingPlan(
                 base.strategy,
@@ -326,7 +275,18 @@ def network_argument(plans: list[ForwardingPlan], *, pasta: bool = False) -> str
 
 
 def describe(plan: ForwardingPlan) -> str:
-    suffix = f" ({plan.endpoint})" if plan.endpoint else ""
+    if plan.strategy == BRIDGE_STRATEGY and plan.endpoint:
+        upstream = (
+            f"[{plan.loopback_host}]"
+            if ":" in plan.loopback_host
+            else plan.loopback_host
+        )
+        suffix = (
+            f" ({plan.endpoint}:{plan.port} -> {upstream}:{plan.port}, "
+            "shared with concurrent sessions)"
+        )
+    else:
+        suffix = f" ({plan.endpoint})" if plan.endpoint else ""
     return f"{plan.label} forwarding strategy: {plan.strategy}{suffix}"
 
 
@@ -469,17 +429,20 @@ def _validate_endpoint(value: str, *, allow_documentation: bool = False) -> None
 
 
 def _validate_bindable(
-    endpoint: str, *, port: int = PORT, label: str = "Ollama"
+    endpoint: str,
+    *,
+    port: int = PORT,
+    label: str = "Ollama",
+    loopback_host: str = "127.0.0.1",
 ) -> None:
-    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        # Match socat's `reuseaddr`: TIME_WAIT sockets left by a previous
-        # session must not fail the probe, while a live listener still does.
-        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        probe.bind((endpoint, port))
-    except OSError as exc:
-        raise SystemExit(
-            f"Cannot bind the {label} proxy to {endpoint}:{port}: {exc}"
-        ) from exc
-    finally:
-        probe.close()
+    """Early, pre-build check: ``endpoint:port`` is free or already served by a
+    live project-sandbox forwarder to ``loopback_host:port``.
+
+    A foreign listener fails here, before the image build; attaching repeats
+    the check under the forwarder's control lock.
+    """
+    from . import local_forwarder  # see ForwardingPlan.start
+
+    local_forwarder.check_available(
+        endpoint, port, target_host=loopback_host, label=label
+    )

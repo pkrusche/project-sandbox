@@ -452,8 +452,8 @@ def _exit_on_termination_signals() -> Generator[None]:
     """Turn SIGTERM/SIGHUP into SystemExit so cleanup ``finally`` blocks run.
 
     Python's default SIGTERM action exits without unwinding, which would leave
-    socat forwarders and headless containers behind. After the first signal,
-    further ones are ignored so teardown itself is not interrupted.
+    headless containers behind. After the first signal, further ones are
+    ignored so teardown itself is not interrupted.
     """
     if threading.current_thread() is not threading.main_thread():
         yield
@@ -1028,8 +1028,8 @@ def _main(argv: list[str] | None = None) -> int:
         )
         if sidecar_plan is not None:
             # Docker Engine: the sidecar is published on the bridge gateway
-            # itself, so its port gets no per-session socat listener; other
-            # local services keep linux-bridge-socat.
+            # itself, so its port needs no bridge forwarder; other local
+            # services use the shared linux-bridge-forwarder.
             services = [s for s in services if s.label != "Internet proxy"]
         if services or sidecar_plan is not None:
             forwarding_plans = (
@@ -1134,8 +1134,7 @@ def _main(argv: list[str] | None = None) -> int:
                 f"visible to {runtime.name}"
             )
 
-        # Spawn socat forwarders before the relay thread exists: their
-        # preexec_fn is only fork-safe in a single-threaded parent.
+        # Lease (or start) the shared bridge forwarders; released in finally.
         for plan in forwarding_plans:
             plan.start()
         if internet_proxy_relay is not None:

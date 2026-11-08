@@ -7,7 +7,8 @@ also use this alias through a host relay. Build proxies use the corresponding
 rootless Podman the runtime provides that name natively (on Linux, rootless
 Podman maps it to the container's loopback and forwards the service ports over
 pasta), and on Linux bridge
-runtimes project-sandbox starts a `socat` listener for it. Apple `container`
+runtimes (Docker Engine) project-sandbox leases a shared forwarder bound to the
+bridge gateway. Apple `container`
 has neither path: it depends on an administrator-managed localhost DNS domain
 plus the packet-filter redirect that domain installs. project-sandbox verifies
 the mapping but never invokes `sudo` and never creates or removes host-wide

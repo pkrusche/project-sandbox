@@ -333,7 +333,7 @@ def recorded_strategy(state: dict | None) -> Strategy:
 def sandbox_plan(
     strategy: Strategy, port: int
 ) -> local_service_network.ForwardingPlan | None:
-    """The sandbox's plan for the sidecar endpoint when it is not a socat plan.
+    """The sandbox's plan for the sidecar endpoint when it needs no bridge forwarder.
 
     On Docker Engine the sidecar is published on the gateway, so every sandbox
     reaches it at ``host.docker.internal`` mapped to the gateway, and no

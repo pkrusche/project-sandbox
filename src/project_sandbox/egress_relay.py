@@ -20,6 +20,12 @@ default bridge's gateway (``--port``, ``0`` for a free one), closes every
 connection whose peer is not the sidecar without connecting anywhere, and
 forwards the sidecar's connections to ``127.0.0.1:P``.
 
+The shared local-service forwarder (``local_forwarder``, share-local-service-
+forwarders design.md Decision 3) is the same forwarder with ``--exact-port``
+(bind only ``--port``, no free-port fallback), no ``--peer`` filter, a
+``--target-host`` of ``127.0.0.1`` or ``::1``, and ``--lease``: it uses the
+``fwd.*`` state files and exits once no session holds a lease.
+
 :class:`RelayControl` is the host side: spawn the relay detached
 (``start_new_session``), check liveness through the lock (never through a pid,
 which may have been reused), and stop it.
@@ -39,6 +45,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, Self
 
@@ -48,6 +55,19 @@ LOCK_NAME = "relay.lock"
 PID_NAME = "relay.pid"
 PORT_NAME = "relay.port"
 LOG_NAME = "relay.log"
+
+
+@dataclass(frozen=True)
+class StateFiles:
+    """The names of a relay-model process's state files inside its directory."""
+
+    lock: str
+    pid: str
+    port: str
+    log: str
+
+
+RELAY_FILES = StateFiles(lock=LOCK_NAME, pid=PID_NAME, port=PORT_NAME, log=LOG_NAME)
 # Separates the relay's preferred port from the build and session forwarders.
 PORT_PURPOSE = "egress-relay:"
 SPAWN_TIMEOUT = 10.0
@@ -55,6 +75,8 @@ STOP_TIMEOUT = 10.0
 EXIT_ALREADY_RUNNING = 3
 # The forwarder connects only here, on the parent's port.
 FORWARD_TARGET_HOST = "127.0.0.1"
+# The only upstream hosts a forwarder connects to: host loopback, either family.
+FORWARD_TARGET_HOSTS = ("127.0.0.1", "::1")
 FORWARD_CONNECT_TIMEOUT = 10.0
 FORWARD_POLL_INTERVAL = 0.2
 
@@ -79,11 +101,23 @@ def preferred_port(endpoint: proxy_endpoint.ProxyEndpoint) -> int:
     return build_proxy_forwarder.preferred_port(endpoint, purpose=PORT_PURPOSE)
 
 
+def _open_private(path: Path, flags: int) -> int:
+    """``os.open`` a ``0600`` state file, never following a symlink."""
+    fd = os.open(path, flags | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    try:
+        os.fchmod(fd, 0o600)  # independent of the umask and of an older file
+    except OSError:
+        os.close(fd)
+        raise
+    return fd
+
+
 def _write_atomic(path: Path, text: str) -> None:
     tmp = path.with_name(f".{path.name}.tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, path)
+    fd = _open_private(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(text)
+    os.replace(tmp, path)  # replaces a planted symlink itself, never its target
 
 
 def _read_int(path: Path) -> int | None:
@@ -104,23 +138,37 @@ def _run_locked(
     *,
     stop: threading.Event | None,
     install_signals: bool,
+    files: StateFiles = RELAY_FILES,
+    idle: Callable[[], bool] | None = None,
+    idle_poll: float = 2.0,
+    on_ready: Callable[[_RelayServer], None] | None = None,
 ) -> int:
-    """Hold ``relay.lock`` and run the server ``start(note)`` builds until stopped.
+    """Hold ``files.lock`` and run the server ``start(note)`` builds until stopped.
 
     ``start`` returns a context manager with a ``port`` and a ``describe()``
     line, or raises ``SystemExit``/``OSError`` when it cannot bind.
+
+    ``on_ready(server)`` runs once the server is serving and before the port
+    file (the readiness signal ``RelayControl`` waits for) is written. With
+    ``idle``, the server also stops when ``idle()`` returns true; it is called
+    every ``idle_poll`` seconds.
     """
     state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-    lock_fd = os.open(
-        state_dir / LOCK_NAME, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600
-    )
+    lock_fd = _open_private(state_dir / files.lock, os.O_RDWR | os.O_CREAT)
     try:
         # Not a single LOCK_NB attempt: RelayControl's liveness probes (spawn
         # polls them while this process starts) take the lock for an instant.
         if not session_ca.acquire_exclusive(lock_fd):
             print("egress relay: already running", file=sys.stderr)
             return EXIT_ALREADY_RUNNING
-        with (state_dir / LOG_NAME).open("w", encoding="utf-8") as log:
+        try:
+            log_fd = _open_private(
+                state_dir / files.log, os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+            )
+        except OSError as exc:  # e.g. a planted symlink (ELOOP)
+            print(f"egress relay: cannot open {exc.filename}: {exc}", file=sys.stderr)
+            return 1
+        with os.fdopen(log_fd, "w", encoding="utf-8") as log:
 
             def note(message: str) -> None:
                 log.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S')} {message}\n")
@@ -136,12 +184,23 @@ def _run_locked(
                 for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
                     signal.signal(signum, lambda *_: stop.set())
             with server:
-                _write_atomic(state_dir / PID_NAME, f"{os.getpid()}\n")
-                _write_atomic(state_dir / PORT_NAME, f"{server.port}\n")
+                _write_atomic(state_dir / files.pid, f"{os.getpid()}\n")
+                if on_ready is not None:
+                    on_ready(server)
+                _write_atomic(state_dir / files.port, f"{server.port}\n")
                 note(server.describe())
-                stop.wait()  # the with block started the server
-                note("stopping")
-            for name in (PID_NAME, PORT_NAME):
+                # The with block started the server.
+                if idle is None:
+                    stop.wait()
+                    note("stopping")
+                else:
+                    while not stop.wait(idle_poll):
+                        if idle():
+                            note("no session holds a lease; stopping")
+                            break
+                    else:
+                        note("stopping")
+            for name in (files.pid, files.port):
                 (state_dir / name).unlink(missing_ok=True)
             return 0
     finally:
@@ -188,30 +247,47 @@ def serve(
     return _run_locked(state_dir, start, stop=stop, install_signals=install_signals)
 
 
-class TcpForwarder:
-    """Forward the sidecar's connections from the gateway to a loopback parent.
+def validate_target_host(value: str) -> str:
+    """``value`` if it is ``127.0.0.1`` or ``::1``; ``SystemExit`` otherwise."""
+    if value not in FORWARD_TARGET_HOSTS:
+        raise SystemExit(
+            f"the forwarder connects only to host loopback "
+            f"({' or '.join(FORWARD_TARGET_HOSTS)}), not {value!r}"
+        )
+    return value
 
-    Binds ``bind:port`` on construction (``port`` busy: a free one). Each
-    accepted connection whose peer address is not ``peer`` is closed before
-    anything is connected upstream (design.md Decision 2).
+
+class TcpForwarder:
+    """Forward connections from a bridge gateway address to host loopback.
+
+    Binds ``bind:port`` on construction (``port`` busy: a free one, unless
+    ``exact_port``, which fails instead). With a ``peer``, each accepted
+    connection whose peer address is not ``peer`` is closed before anything is
+    connected upstream (egress-sidecar-linux design.md Decision 2); without
+    one, every peer is forwarded, as the local-service forwarder does.
     """
 
     def __init__(
         self,
         *,
         bind: str,
-        peer: str,
+        peer: str | None,
         target_port: int,
         port: int = 0,
         note: Callable[[str], None] = lambda _m: None,
         target_host: str = FORWARD_TARGET_HOST,
+        exact_port: bool = False,
     ) -> None:
-        ipaddress.ip_address(bind)  # an address, never a name or wildcard
-        if ipaddress.ip_address(bind).is_unspecified:
+        address = ipaddress.ip_address(bind)  # an address, never a name
+        if address.is_unspecified:
             raise SystemExit("the parent forwarder must not listen on a wildcard")
-        self._peer = str(ipaddress.ip_address(peer))
+        if exact_port and not port:
+            raise SystemExit("an exact-port forwarder needs a non-zero port")
+        self._peer = str(ipaddress.ip_address(peer)) if peer is not None else None
         self._bind_address = bind
-        self._target = (target_host, target_port)
+        self._family = socket.AF_INET6 if address.version == 6 else socket.AF_INET
+        self._target = (validate_target_host(target_host), target_port)
+        self._exact_port = exact_port
         self._note = note
         self._stop = threading.Event()
         self._lock = threading.Lock()
@@ -222,17 +298,25 @@ class TcpForwarder:
         self.refused = 0
 
     def _bind(self, port: int) -> socket.socket:
-        for candidate in (port, 0) if port else (0,):
-            listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        if self._exact_port:
+            candidates: tuple[int, ...] = (port,)
+        else:
+            candidates = (port, 0) if port else (0,)
+        for candidate in candidates:
+            listener = socket.socket(self._family, socket.SOCK_STREAM)
             try:
+                # Like socat's reuseaddr: TIME_WAIT sockets left by a forwarder
+                # that just exited must not block its replacement. A live
+                # listener on the address still fails the bind.
+                listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 listener.bind((self._bind_address, candidate))
                 listener.listen(socket.SOMAXCONN)
             except OSError as exc:
                 listener.close()
-                if candidate == 0:
+                if candidate == 0 or self._exact_port:
                     raise SystemExit(
-                        "Could not start the egress parent forwarder on "
-                        f"{self._bind_address}: {exc}"
+                        "Could not start the forwarder on "
+                        f"{self._bind_address}:{candidate}: {exc}"
                     ) from exc
                 self._note(f"port {candidate} is in use; using a free port")
                 continue
@@ -241,10 +325,9 @@ class TcpForwarder:
 
     def describe(self) -> str:
         host, port = self._target
-        return (
-            f"forwarding {self._bind_address}:{self.port} to {host}:{port} "
-            f"for peer {self._peer} only"
-        )
+        target = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+        peers = f"peer {self._peer} only" if self._peer else "any peer"
+        return f"forwarding {self._bind_address}:{self.port} to {target} for {peers}"
 
     def start(self) -> None:
         if self._thread is None:
@@ -297,7 +380,7 @@ class TcpForwarder:
                     client, address = self._listener.accept()
                 except OSError:
                     continue
-                if address[0] != self._peer:
+                if self._peer is not None and address[0] != self._peer:
                     # Every container on any bridge reaches the gateway; only
                     # the sidecar may use the parent.
                     self.refused += 1
@@ -337,20 +420,41 @@ def serve_forward(
     state_dir: Path,
     *,
     bind: str,
-    peer: str,
+    peer: str | None,
     target_port: int,
     port: int = 0,
+    target_host: str = FORWARD_TARGET_HOST,
+    exact_port: bool = False,
     stop: threading.Event | None = None,
     install_signals: bool = True,
+    files: StateFiles = RELAY_FILES,
+    idle: Callable[[], bool] | None = None,
+    idle_poll: float = 2.0,
+    on_ready: Callable[[_RelayServer], None] | None = None,
 ) -> int:
-    """Run the Docker Engine parent forwarder under the relay's process model."""
+    """Run a TCP forwarder (sidecar parent or local service) as a relay process."""
 
     def start(note: Callable[[str], None]) -> _RelayServer:
         return TcpForwarder(
-            bind=bind, peer=peer, target_port=target_port, port=port, note=note
+            bind=bind,
+            peer=peer,
+            target_port=target_port,
+            port=port,
+            note=note,
+            target_host=target_host,
+            exact_port=exact_port,
         )
 
-    return _run_locked(state_dir, start, stop=stop, install_signals=install_signals)
+    return _run_locked(
+        state_dir,
+        start,
+        stop=stop,
+        install_signals=install_signals,
+        files=files,
+        idle=idle,
+        idle_poll=idle_poll,
+        on_ready=on_ready,
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -363,17 +467,46 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--bind")
     parser.add_argument("--peer")
     parser.add_argument("--target-port", type=int)
+    parser.add_argument(
+        "--target-host", choices=FORWARD_TARGET_HOSTS, default=FORWARD_TARGET_HOST
+    )
+    parser.add_argument("--exact-port", action="store_true")
+    parser.add_argument("--lease", action="store_true")
+    parser.add_argument("--idle-poll", type=float)
     args = parser.parse_args(argv)
     if args.forward:
-        if not (args.bind and args.peer and args.target_port):
-            parser.error("--forward needs --bind, --peer and --target-port")
+        if not (args.bind and args.target_port):
+            parser.error("--forward needs --bind and --target-port")
+        # Only an exact-port forwarder may drop the peer filter, so the sidecar
+        # parent forwarder cannot lose it by accident.
+        if not args.peer and not args.exact_port:
+            parser.error("--forward needs --peer unless --exact-port is given")
+        if args.exact_port and not args.port:
+            parser.error("--exact-port needs a non-zero --port")
+        if args.lease:
+            if args.peer or not args.exact_port:
+                parser.error("--lease needs --exact-port and no --peer")
+            from . import local_forwarder  # imports this module
+
+            return local_forwarder.serve(
+                args.state_dir,
+                bind=args.bind,
+                port=args.port,
+                target_host=args.target_host,
+                target_port=args.target_port,
+                idle_poll=args.idle_poll or local_forwarder.IDLE_POLL,
+            )
         return serve_forward(
             args.state_dir,
             bind=args.bind,
             peer=args.peer,
             target_port=args.target_port,
             port=args.port,
+            target_host=args.target_host,
+            exact_port=args.exact_port,
         )
+    if args.lease:
+        parser.error("--lease needs --forward")
     if not args.upstream:
         parser.error("--upstream is required")
     return serve(
@@ -428,7 +561,9 @@ class RelayControl:
         stop_timeout: float = STOP_TIMEOUT,
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
+        files: StateFiles = RELAY_FILES,
     ) -> None:
+        self._files = files
         self._popen = popen
         self._kill = kill
         self._python = python
@@ -438,11 +573,13 @@ class RelayControl:
         self._clock = clock
 
     def is_live(self, state_dir: Path) -> bool:
-        return session_ca.lock_held(state_dir / LOCK_NAME)
+        return session_ca.lock_held(state_dir / self._files.lock)
 
     def port(self, state_dir: Path) -> int | None:
         """The bound port of a live relay, or ``None``."""
-        return _read_int(state_dir / PORT_NAME) if self.is_live(state_dir) else None
+        if not self.is_live(state_dir):
+            return None
+        return _read_int(state_dir / self._files.port)
 
     def spawn(
         self,
@@ -496,11 +633,50 @@ class RelayControl:
         ]
         return self._start(state_dir, argv)
 
+    def spawn_local_forward(
+        self,
+        state_dir: Path,
+        *,
+        bind: str,
+        port: int,
+        target_host: str,
+        target_port: int,
+        idle_poll: float | None = None,
+    ) -> int:
+        """Start a shared local-service forwarder detached; return its port.
+
+        It binds exactly ``bind:port``, forwards every peer to
+        ``target_host:target_port``, and exits once no session holds a lease
+        (see ``local_forwarder``).
+        """
+        argv = [
+            self._python,
+            "-m",
+            "project_sandbox.egress_relay",
+            "--state-dir",
+            str(state_dir),
+            "--forward",
+            "--lease",
+            "--exact-port",
+            "--bind",
+            bind,
+            "--target-host",
+            validate_target_host(target_host),
+            "--target-port",
+            str(target_port),
+            "--port",
+            str(port),
+        ]
+        if idle_poll is not None:
+            argv += ["--idle-poll", str(idle_poll)]
+        return self._start(state_dir, argv)
+
     def _start(self, state_dir: Path, argv: list[str]) -> int:
-        (state_dir / PORT_NAME).unlink(missing_ok=True)
+        (state_dir / self._files.port).unlink(missing_ok=True)
         # A new session: terminal signals and the CLI's own signal handling do
-        # not reach it, and it outlives the launching CLI.
-        self._popen(
+        # not reach it, and it outlives the launching CLI. No preexec_fn, so
+        # spawning is fork-safe from a multi-threaded parent.
+        process = self._popen(
             argv,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
@@ -513,6 +689,13 @@ class RelayControl:
             bound = self.port(state_dir)
             if bound is not None:
                 return bound
+            poll = getattr(process, "poll", None)
+            returncode = poll() if callable(poll) else None
+            if returncode is not None:
+                raise RelayError(
+                    f"the egress relay exited with status {returncode} "
+                    "before it was ready.\n" + self.log_tail(state_dir)
+                )
             if self._clock() >= deadline:
                 raise RelayError(
                     "the egress relay did not start within "
@@ -528,10 +711,11 @@ class RelayControl:
         """
         if not self.is_live(state_dir):
             return False
-        pid = _read_int(state_dir / PID_NAME)
+        pid = _read_int(state_dir / self._files.pid)
         if pid is None or pid <= 1:
             raise RelayError(
-                f"the egress relay holds {state_dir / LOCK_NAME} but has no pid file"
+                f"the egress relay holds {state_dir / self._files.lock} "
+                "but has no pid file"
             )
         try:
             self._kill(pid, signal.SIGTERM)
@@ -544,10 +728,11 @@ class RelayControl:
             self._sleep(0.1)
         return True
 
-    @staticmethod
-    def log_tail(state_dir: Path, lines: int = 10) -> str:
+    def log_tail(self, state_dir: Path, lines: int = 10) -> str:
         try:
-            text = (state_dir / LOG_NAME).read_text(encoding="utf-8", errors="replace")
+            text = (state_dir / self._files.log).read_text(
+                encoding="utf-8", errors="replace"
+            )
         except OSError:
             return "Relay log: (none)"
         tail = text.strip().splitlines()[-lines:]

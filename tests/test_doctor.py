@@ -162,7 +162,7 @@ class AppleContainerTests(TestCase):
 
     def test_linux_skips_apple_and_probes_chroot(self) -> None:
         host = FakeHost(
-            {"docker", "unshare", "socat", "git", "jj"},
+            {"docker", "unshare", "git", "jj"},
             {
                 ("docker", "version"): ok("28.1.1\n"),
                 ("unshare",): Probe(1, "", "unshare: Operation not permitted\n"),
@@ -174,7 +174,8 @@ class AppleContainerTests(TestCase):
         self.assertEqual(checks["apple-container"].status, INFO)
         self.assertNotIn(["container", "--version"], host.calls)
         self.assertEqual(checks["chroot"].status, WARN)
-        self.assertEqual(checks["socat"].status, OK)
+        # Bridge forwarding needs no external tool (share-local-service-forwarders).
+        self.assertNotIn("socat", checks)
 
 
 class VcsTests(TestCase):

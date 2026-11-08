@@ -253,20 +253,6 @@ def check_chroot() -> Check:
     return Check("runtimes", runtime.name, OK, "unprivileged user namespaces available")
 
 
-def check_socat() -> Check | None:
-    if not sys.platform.startswith("linux"):
-        return None
-    if shutil.which("socat") is None:
-        return Check(
-            "tools",
-            "socat",
-            INFO,
-            "not found on PATH",
-            "Needed only for --pi-ollama / host-local proxies on Linux bridge networks",
-        )
-    return Check("tools", "socat", OK, "found")
-
-
 def check_git() -> list[Check]:
     if shutil.which("git") is None:
         return [
@@ -432,9 +418,6 @@ def run_checks() -> list[Check]:
     checks.append(check_podman())
     checks.append(check_chroot())
     checks.append(auto_runtime_check(checks))
-    socat = check_socat()
-    if socat is not None:
-        checks.append(socat)
     checks += check_git()
     checks.append(check_jj())
     checks += check_egress_sidecars(checks)
@@ -444,7 +427,6 @@ def run_checks() -> list[Check]:
 _SECTION_TITLES = {
     "host": "Host",
     "runtimes": "Container runtimes",
-    "tools": "Networking tools",
     "vcs": "Version control",
     "egress": "Egress sidecar",
 }

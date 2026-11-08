@@ -8,6 +8,8 @@ import sys
 import tempfile
 import threading
 import time
+import unittest
+import unittest.mock
 from pathlib import Path
 from unittest import TestCase
 
@@ -377,3 +379,358 @@ class PreferredPortTests(TestCase):
             ),
         )
         self.assertIn(sys.executable, RelayControl()._python)
+
+
+def _has_ipv6_loopback() -> bool:
+    if not socket.has_ipv6:
+        return False
+    try:
+        with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as probe:
+            probe.bind(("::1", 0))
+    except OSError:
+        return False
+    return True
+
+
+class EchoParent6(EchoParent):
+    """An echo 'service' listening on IPv6 loopback only."""
+
+    def __init__(self) -> None:
+        self.server = socket.create_server(("::1", 0), family=socket.AF_INET6)
+        self.port = self.server.getsockname()[1]
+        self.accepted = 0
+        threading.Thread(target=self._serve, daemon=True).start()
+
+
+def _echo(port: int, payload: bytes = b"ping", host: str = "127.0.0.1") -> bytes:
+    with socket.create_connection((host, port), timeout=5) as c:
+        c.sendall(payload)
+        return c.recv(4096)
+
+
+class GeneralizedForwarderTests(TestCase):
+    """share-local-service-forwarders task 1.1: optional peer, ::1, exact port."""
+
+    def setUp(self) -> None:
+        self.parent = EchoParent()
+        self.addCleanup(self.parent.close)
+
+    def test_no_peer_filter_relays_any_peer(self) -> None:
+        forwarder = egress_relay.TcpForwarder(
+            bind="127.0.0.1", peer=None, target_port=self.parent.port
+        )
+        with forwarder:
+            self.assertEqual(_echo(forwarder.port), b"ping")
+            self.assertIn("for any peer", forwarder.describe())
+        self.assertEqual(forwarder.refused, 0)
+        self.assertEqual(self.parent.accepted, 1)
+
+    @unittest.skipUnless(_has_ipv6_loopback(), "no IPv6 loopback on this host")
+    def test_ipv6_loopback_upstream_is_relayed(self) -> None:
+        parent6 = EchoParent6()
+        self.addCleanup(parent6.close)
+        forwarder = egress_relay.TcpForwarder(
+            bind="127.0.0.1", peer=None, target_port=parent6.port, target_host="::1"
+        )
+        with forwarder:
+            self.assertEqual(_echo(forwarder.port, b"six"), b"six")
+            self.assertIn(f"to [::1]:{parent6.port}", forwarder.describe())
+        self.assertEqual(parent6.accepted, 1)
+
+    def test_only_loopback_targets_are_accepted(self) -> None:
+        for host in ("172.17.0.1", "localhost", "0.0.0.0", "::"):
+            with self.subTest(host=host), self.assertRaises(SystemExit):
+                egress_relay.TcpForwarder(
+                    bind="127.0.0.1", peer=None, target_port=1, target_host=host
+                )
+
+    def test_exact_port_in_use_raises_instead_of_falling_back(self) -> None:
+        with socket.create_server(("127.0.0.1", 0)) as busy:
+            taken = busy.getsockname()[1]
+            with self.assertRaisesRegex(SystemExit, f"127.0.0.1:{taken}"):
+                egress_relay.TcpForwarder(
+                    bind="127.0.0.1",
+                    peer=None,
+                    target_port=self.parent.port,
+                    port=taken,
+                    exact_port=True,
+                )
+            # Without exact_port the same request falls back to a free port.
+            fallback = egress_relay.TcpForwarder(
+                bind="127.0.0.1", peer=None, target_port=self.parent.port, port=taken
+            )
+            self.addCleanup(fallback.close)
+            self.assertNotEqual(fallback.port, taken)
+
+    def test_exact_port_binds_the_requested_port(self) -> None:
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            wanted = probe.getsockname()[1]
+        forwarder = egress_relay.TcpForwarder(
+            bind="127.0.0.1",
+            peer=None,
+            target_port=self.parent.port,
+            port=wanted,
+            exact_port=True,
+        )
+        with forwarder:
+            self.assertEqual(forwarder.port, wanted)
+
+    def test_listener_sets_reuseaddr(self) -> None:
+        forwarder = egress_relay.TcpForwarder(
+            bind="127.0.0.1", peer=None, target_port=self.parent.port
+        )
+        self.addCleanup(forwarder.close)
+        self.assertTrue(
+            forwarder._listener.getsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR)
+        )
+
+    def test_exact_port_tolerates_time_wait_from_a_previous_forwarder(self) -> None:
+        first = egress_relay.TcpForwarder(
+            bind="127.0.0.1", peer=None, target_port=self.parent.port
+        )
+        port = first.port
+        with first:
+            self.assertEqual(_echo(port), b"ping")
+        # The closed connection may leave TIME_WAIT on the port; a respawn binds.
+        second = egress_relay.TcpForwarder(
+            bind="127.0.0.1",
+            peer=None,
+            target_port=self.parent.port,
+            port=port,
+            exact_port=True,
+        )
+        second.close()
+
+
+class ForwardMainTests(TestCase):
+    """share-local-service-forwarders task 1.2: CLI flags and spawn argv."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.state = Path(self._tmp.name)
+
+    def _main_error(self, argv: list[str]) -> str:
+        from contextlib import redirect_stderr
+        from io import StringIO
+
+        err = StringIO()
+        with redirect_stderr(err), self.assertRaises(SystemExit) as caught:
+            egress_relay.main(["--state-dir", str(self.state), *argv])
+        self.assertEqual(caught.exception.code, 2)
+        return err.getvalue()
+
+    def test_forward_without_peer_or_exact_port_is_rejected(self) -> None:
+        err = self._main_error(
+            ["--forward", "--bind", "127.0.0.1", "--target-port", "1", "--port", "0"]
+        )
+        self.assertIn("--peer unless --exact-port", err)
+
+    def test_exact_port_needs_a_port(self) -> None:
+        err = self._main_error(
+            [
+                "--forward",
+                "--exact-port",
+                "--bind",
+                "127.0.0.1",
+                "--target-port",
+                "1",
+                "--port",
+                "0",
+            ]
+        )
+        self.assertIn("non-zero --port", err)
+
+    def test_target_host_must_be_loopback(self) -> None:
+        err = self._main_error(
+            [
+                "--forward",
+                "--exact-port",
+                "--bind",
+                "127.0.0.1",
+                "--target-host",
+                "10.0.0.1",
+                "--target-port",
+                "1",
+                "--port",
+                "1",
+            ]
+        )
+        self.assertIn("--target-host", err)
+
+    def test_lease_needs_exact_port_and_no_peer(self) -> None:
+        base = ["--forward", "--bind", "127.0.0.1", "--target-port", "1"]
+        err = self._main_error([*base, "--lease", "--peer", "127.0.0.1", "--port", "1"])
+        self.assertIn("--lease needs --exact-port and no --peer", err)
+
+    def test_forward_without_peer_with_exact_port_is_accepted(self) -> None:
+        seen = {}
+
+        def serve_forward(state_dir, **kwargs):
+            seen.update(kwargs)
+            return 0
+
+        with unittest.mock.patch.object(egress_relay, "serve_forward", serve_forward):
+            rc = egress_relay.main(
+                [
+                    "--state-dir",
+                    str(self.state),
+                    "--forward",
+                    "--exact-port",
+                    "--bind",
+                    "127.0.0.1",
+                    "--target-host",
+                    "::1",
+                    "--target-port",
+                    "11434",
+                    "--port",
+                    "11434",
+                ]
+            )
+        self.assertEqual(rc, 0)
+        self.assertIsNone(seen["peer"])
+        self.assertTrue(seen["exact_port"])
+        self.assertEqual(seen["target_host"], "::1")
+
+    def test_spawn_local_forward_argv(self) -> None:
+        seen = {}
+        clock = iter([0.0, 99.0])
+        control = RelayControl(
+            popen=lambda argv, **kw: seen.update(argv=argv, **kw),
+            sleep=lambda _s: None,
+            clock=lambda: next(clock),
+            spawn_timeout=1,
+        )
+        with self.assertRaises(RelayError):
+            control.spawn_local_forward(
+                self.state,
+                bind="172.17.0.1",
+                port=11434,
+                target_host="::1",
+                target_port=11434,
+            )
+        argv = seen["argv"]
+        self.assertEqual(argv[1:3], ["-m", "project_sandbox.egress_relay"])
+        for flag in ("--forward", "--lease", "--exact-port"):
+            self.assertIn(flag, argv)
+        self.assertNotIn("--peer", argv)
+        for flag, value in (
+            ("--bind", "172.17.0.1"),
+            ("--target-host", "::1"),
+            ("--target-port", "11434"),
+            ("--port", "11434"),
+        ):
+            self.assertEqual(argv[argv.index(flag) + 1], value)
+        self.assertTrue(seen["start_new_session"])
+        self.assertTrue(seen["close_fds"])
+        self.assertNotIn("preexec_fn", seen)
+
+    def test_spawn_reports_an_early_exit_with_the_log(self) -> None:
+        (self.state / egress_relay.LOG_NAME).write_text("x failed to start: busy\n")
+
+        class Exited:
+            def poll(self):
+                return 1
+
+        control = RelayControl(popen=lambda argv, **kw: Exited(), sleep=lambda _s: None)
+        with self.assertRaisesRegex(RelayError, "exited with status 1(.|\n)*busy"):
+            control.spawn_forward(
+                self.state, bind="127.0.0.1", peer="127.0.0.1", target_port=1
+            )
+
+
+class RunLockedTests(TestCase):
+    """share-local-service-forwarders task 1.3: file names and the idle callback."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.state = Path(self._tmp.name)
+        self.parent = EchoParent()
+        self.addCleanup(self.parent.close)
+
+    FILES = egress_relay.StateFiles(
+        lock="x.lock", pid="x.pid", port="x.port", log="x.log"
+    )
+
+    def test_custom_files_and_idle_callback_stop_the_server(self) -> None:
+        calls = []
+
+        def idle() -> bool:
+            calls.append(time.monotonic())
+            return len(calls) >= 2
+
+        ready = []
+        result = {}
+        thread = threading.Thread(
+            target=lambda: result.setdefault(
+                "rc",
+                egress_relay.serve_forward(
+                    self.state,
+                    bind="127.0.0.1",
+                    peer=None,
+                    target_port=self.parent.port,
+                    install_signals=False,
+                    files=self.FILES,
+                    idle=idle,
+                    idle_poll=0.05,
+                    on_ready=lambda server: ready.append(
+                        (self.state / "x.port").exists()
+                    ),
+                ),
+            )
+        )
+        thread.start()
+        thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(result["rc"], 0)
+        self.assertEqual(len(calls), 2)
+        # on_ready runs before the port file (the readiness signal) appears.
+        self.assertEqual(ready, [False])
+        # The lock is released and the relay's own names were never used.
+        control = RelayControl(files=self.FILES)
+        self.assertFalse(control.is_live(self.state))
+        self.assertTrue((self.state / "x.lock").exists())
+        self.assertFalse((self.state / "x.pid").exists())
+        self.assertFalse((self.state / "x.port").exists())
+        self.assertIn("no session holds a lease", (self.state / "x.log").read_text())
+        for name in ("relay.lock", "relay.pid", "relay.port", "relay.log"):
+            self.assertFalse((self.state / name).exists(), name)
+
+    def test_relay_files_are_private_and_never_follow_symlinks(self) -> None:
+        target = self.state / "elsewhere"
+        target.write_text("keep\n")
+        (self.state / egress_relay.LOG_NAME).symlink_to(target)
+        rc = egress_relay.serve_forward(
+            self.state,
+            bind="127.0.0.1",
+            peer="127.0.0.1",
+            target_port=self.parent.port,
+            stop=_set_event(),
+            install_signals=False,
+        )
+        self.assertEqual(rc, 1)
+        self.assertEqual(target.read_text(), "keep\n")
+        (self.state / egress_relay.LOG_NAME).unlink()
+        rc = egress_relay.serve_forward(
+            self.state,
+            bind="127.0.0.1",
+            peer="127.0.0.1",
+            target_port=self.parent.port,
+            stop=_set_event(),
+            install_signals=False,
+        )
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            os.stat(self.state / egress_relay.LOG_NAME).st_mode & 0o777, 0o600
+        )
+        self.assertEqual(
+            os.stat(self.state / egress_relay.LOCK_NAME).st_mode & 0o777, 0o600
+        )
+
+
+def _set_event() -> threading.Event:
+    event = threading.Event()
+    event.set()
+    return event

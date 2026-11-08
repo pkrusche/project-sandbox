@@ -188,9 +188,16 @@ the container and:
   boundary: no other host-loopback port is reachable. A sandbox process
   listening on a forwarded port inside the container conflicts with the forward.
   Services listening only on IPv6 loopback are rejected on this path.
-- Ollama itself stays on host loopback. Local Linux bridge modes conditionally
-  require `socat`, bound to the exact validated bridge address and terminated
-  with the sandbox. Apple `container` requires the administrator-managed
+- Ollama itself stays on host loopback. On local Linux bridge modes (Docker
+  Engine) a project-sandbox forwarder is bound to the exact validated bridge
+  address and port and forwards only to the one recorded loopback address on
+  that port. It is shared by the concurrent sessions that use the service, each
+  holding a `flock` lease, and exits within about one poll interval (2s) after
+  the last lease is released, including a lease released by a killed session.
+  A listener owned by another process is refused, never reused, and there is no
+  fallback port or wildcard address. Its state is private to the user
+  (`$XDG_STATE_HOME/project-sandbox/local-forward/`, directories `0700`, files
+  `0600`, symlinks refused). Apple `container` requires the administrator-managed
   `host.docker.internal` localhost DNS mapping described in `docs/usage.md`.
   Creating it can disrupt container Internet access until runtime networking is
   rebuilt and might disable Private Relay, so restart the container system
@@ -438,21 +445,23 @@ parts that matter for security:
   `client` log field is therefore the runtime's port forwarder, not a sandbox
   (on rootless Podman it is the host's LAN address), and the session-end denial
   count covers every client.
-- **Docker Engine: gateway listeners compared with `linux-bridge-socat`.**
+- **Docker Engine: gateway listeners compared with `linux-bridge-forwarder`.**
   Firewall mode reaches a host-loopback service on Docker Engine through a
-  per-session `socat` bound to the `docker0` gateway. Sidecar mode adds two
-  listeners on the same address:
+  shared project-sandbox forwarder bound to the `docker0` gateway, one per
+  service port. Before share-local-service-forwarders this was a per-session
+  `socat`, with the same exposure and a single session's lifetime. Sidecar mode
+  adds two listeners on the same address:
 
   | Listener | Bound to | Lifetime | Who can connect | Reaches |
   |---|---|---|---|---|
-  | `linux-bridge-socat` (firewall mode; Ollama, agent proxy in both modes) | `<gateway>:<service port>` | one session | every container on any Docker bridge | the service on host loopback, unfiltered |
+  | `linux-bridge-forwarder` (firewall mode; Ollama, agent proxy in both modes) | `<gateway>:<service port>` | the union of the sessions that use it, plus about one poll interval (2s) | every container on any Docker bridge | the service on host loopback (one recorded loopback address), unfiltered |
   | Sidecar publish | `<gateway>:3129` | until `project-sandbox-egress down` | every container on any Docker bridge | Squid: only what `egress.toml` allows |
   | Parent forwarder (loopback parent only) | `<gateway>:<free port>` | the sidecar's | the sidecar's bridge address only; every other peer is closed before any upstream connection | the parent on `127.0.0.1:<parent port>` |
 
   A host listener on a bridge gateway is reachable from containers on every
   bridge, because traffic to a host address takes the host's INPUT path, which
   Docker's inter-bridge isolation does not filter. The sidecar publish is
-  therefore exposed like a `linux-bridge-socat` listener, but longer-lived, and
+  therefore exposed like a `linux-bridge-forwarder` listener, but longer-lived, and
   it grants less: a hostname-filtered proxy instead of a raw service. Source
   addresses are preserved on this path, so the forwarder's peer check reliably
   tells the sidecar apart from other containers. The forwarder connects only to
