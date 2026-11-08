@@ -63,6 +63,18 @@ class RelayError(RuntimeError):
     """The relay could not be started or stopped; the message is user-facing."""
 
 
+class _RelayServer(Protocol):
+    """What ``_run_locked`` needs from the server its ``start`` callback builds."""
+
+    port: int
+
+    def describe(self) -> str: ...
+
+    def __enter__(self) -> object: ...
+
+    def __exit__(self, *exc: object) -> object: ...
+
+
 def preferred_port(endpoint: proxy_endpoint.ProxyEndpoint) -> int:
     return build_proxy_forwarder.preferred_port(endpoint, purpose=PORT_PURPOSE)
 
@@ -88,7 +100,7 @@ def _read_int(path: Path) -> int | None:
 
 def _run_locked(
     state_dir: Path,
-    start: Callable[[Callable[[str], None]], object],
+    start: Callable[[Callable[[str], None]], _RelayServer],
     *,
     stop: threading.Event | None,
     install_signals: bool,
@@ -123,10 +135,10 @@ def _run_locked(
             if install_signals:
                 for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
                     signal.signal(signum, lambda *_: stop.set())
-            with server:  # type: ignore[attr-defined]
+            with server:
                 _write_atomic(state_dir / PID_NAME, f"{os.getpid()}\n")
-                _write_atomic(state_dir / PORT_NAME, f"{server.port}\n")  # type: ignore[attr-defined]
-                note(server.describe())  # type: ignore[attr-defined]
+                _write_atomic(state_dir / PORT_NAME, f"{server.port}\n")
+                note(server.describe())
                 stop.wait()  # the with block started the server
                 note("stopping")
             for name in (PID_NAME, PORT_NAME):
@@ -160,7 +172,7 @@ def serve(
 ) -> int:
     """Run the relay until ``stop`` is set or SIGTERM arrives; return an exit code."""
 
-    def start(note: Callable[[str], None]) -> object:
+    def start(note: Callable[[str], None]) -> _RelayServer:
         endpoint = proxy_endpoint.parse(upstream, option="egress relay upstream")
         ca = (ca_file.read_bytes(),) if ca_file is not None else ()
         return _DescribedForwarder(
@@ -333,7 +345,7 @@ def serve_forward(
 ) -> int:
     """Run the Docker Engine parent forwarder under the relay's process model."""
 
-    def start(note: Callable[[str], None]) -> object:
+    def start(note: Callable[[str], None]) -> _RelayServer:
         return TcpForwarder(
             bind=bind, peer=peer, target_port=target_port, port=port, note=note
         )

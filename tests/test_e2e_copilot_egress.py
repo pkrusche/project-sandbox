@@ -10,6 +10,7 @@ import tempfile
 import tomllib
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -413,7 +414,7 @@ class SidecarPhaseTests(unittest.TestCase):
         restarted = "\n".join(SIDECAR_BLOCK_LINES)
         self.assertEqual(self.script.new_log_lines(before, restarted), restarted)
 
-    def _block(self, lines) -> object:
+    def _block(self, lines) -> Any:
         result_file = self.tmp / "copilot-egress-block.json"
         result_file.write_text(json.dumps([{"probe": "x", "client": "error"}]))
         run = self.script.Run(0, "", "")

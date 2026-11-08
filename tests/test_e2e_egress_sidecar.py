@@ -12,6 +12,7 @@ import time
 import tomllib
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -282,7 +283,10 @@ class ProbeHelperTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.script = _load()
-        self.ns = {"PROXY": ("host.docker.internal", 3129), "results": {}}
+        self.ns: dict[str, Any] = {
+            "PROXY": ("host.docker.internal", 3129),
+            "results": {},
+        }
         # The probe helpers are our own source, run as the sandbox would.
         exec(compile(self.script.PROBE_HELPERS, "helpers", "exec"), self.ns)  # noqa: S102
 

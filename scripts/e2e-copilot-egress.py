@@ -769,18 +769,22 @@ class Suite:
         self.ca_cert = workdir / "ca" / "ca.pem"
         self.counter = 0
 
+    def _fixture_cli(self) -> str:
+        if self.cli is None:
+            raise RuntimeError("the fixture phases need a fixture container CLI")
+        return self.cli
+
     def prepare(self) -> None:
+        cli = self._fixture_cli()
         inspected = subprocess.run(
-            [self.cli, "image", "inspect", self.image], capture_output=True, check=False
+            [cli, "image", "inspect", self.image], capture_output=True, check=False
         )
         if inspected.returncode != 0:
             print(f"Building Squid fixture image {self.image}", flush=True)
-            checked(
-                [self.cli, "build", "-t", self.image, str(FIXTURE_DIR)], timeout=1200
-            )
+            checked([cli, "build", "-t", self.image, str(FIXTURE_DIR)], timeout=1200)
         checked(
             [
-                self.cli,
+                cli,
                 "run",
                 "--rm",
                 "-v",
@@ -799,7 +803,10 @@ class Suite:
         (self.workdir / "squid.conf").write_text(conf, encoding="utf-8")
         name = f"sbx-e2e-copilot-egress-{self.counter}-{int(time.time())}"
         log_path = self.project / ".e2e-logs" / f"{label}.log"
-        with running_fixture(self.cli, self.image, self.workdir, name) as (port, logs):
+        with running_fixture(self._fixture_cli(), self.image, self.workdir, name) as (
+            port,
+            logs,
+        ):
             run = run_session(
                 session_command(
                     self.args,
