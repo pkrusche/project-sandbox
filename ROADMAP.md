@@ -69,10 +69,6 @@ GitHub. The squid-sidecar line drafted this design and deferred it.
 
 Deferred by `egress-sidecar-macos` (one published Squid sidecar per runtime):
 
-- **Linux runtimes** (`egress-sidecar-linux`, proposed). Docker Engine and
-  rootless Podman on a Linux host are rejected today: a port published on host
-  loopback does not reach their sandboxes through the existing local-service
-  forwarding.
 - **Per-sandbox denial attribution** (egress-sidecar-macos). Sandboxes reach the
   sidecar through the runtime's port forwarder, so Squid's `client` address does
   not identify a sandbox, and the session-end summary counts the denials of
@@ -82,6 +78,25 @@ Deferred by `egress-sidecar-macos` (one published Squid sidecar per runtime):
 - **Upstream proxy authentication** (egress-sidecar-macos). Basic, NTLM or
   Kerberos to the `[egress.upstream]` parent. Today a 407 from the parent fails
   the request.
+- **DNS probes** (egress-sidecar-macos). Port the DNS probes that
+  `internet-proxy-locally` runs and `scripts/e2e-egress-sidecar.py` does not
+  (`dns-rebinding`, `dns-mixed-answers`, `ptr-allowlist`): they need upstream's
+  lab DNS fixture (egress-sidecar-macos design.md Decision 15).
+- **Business and enterprise Copilot hosts** (egress-sidecar-macos). Capture them
+  with `scripts/e2e-copilot-egress.py`: `api.{business,enterprise}.githubcopilot.com`
+  are admitted by analogy with the individual-plan capture (egress-sidecar-macos
+  design.md Decision 5).
+- **GHE.com tenants for `--copilot-host` in sidecar mode** (egress-sidecar-macos;
+  rejected today). Capture the tenant host set and add a tenant profile.
+- **Sidecar egress for devcontainers** (egress-sidecar-macos). Sidecar launches
+  leave `.devcontainer/` untouched; devcontainers stay firewall-only.
+
+Deferred by `egress-sidecar-linux`:
+
+- **ufw and other host firewalls on Docker Engine** are untested. A firewall that
+  drops container traffic to the `docker0` gateway blocks the sidecar and the
+  parent forwarder. The sandbox firewall reports the sidecar as unreachable with
+  a hint naming ufw, but nothing is configured automatically.
 
 ## GitHub Copilot agent follow-ups
 
@@ -114,7 +129,7 @@ the final firewall. Optional public CAs apply with either proxy.
 See [proxy endpoints](docs/proxy-endpoints.md) for supported URLs, session DNS
 lifetime, trust, and compatibility; [development](docs/development.md#proxy-endpoint-verification)
 records verification and runtime acceptance limitations. Deferred authentication
-and dynamic DNS refresh are tracked in TODO.md.
+and dynamic DNS refresh are listed below.
 
 Items still to be considered:
 
