@@ -49,13 +49,13 @@ RUN set -euxo pipefail; \
 # bump JJ_VERSION and replace both per-architecture checksums with the values
 # from the matching release on https://github.com/jj-vcs/jj/releases.
 RUN set -euxo pipefail; \
-    JJ_VERSION="v0.46.0"; \
+    JJ_VERSION="v0.47.1"; \
     JJ_ARCH="$(uname -m)"; \
     case "$JJ_ARCH" in \
         arm64|aarch64) JJ_ARCH="aarch64"; \
-            JJ_SHA256="80e28f7501c11e50e0ca06cd6a1fa1d982cff9cc59bfe4411a9d36aa501d867e" ;; \
+            JJ_SHA256="0f300e1576de8dabe0a9dedf0b87ae44f8accea5cf54d9a342a51061c1fb1bcd" ;; \
         x86_64) JJ_ARCH="x86_64"; \
-            JJ_SHA256="fce0271158e665ceb82dc66c5eb95b1728649094e9133074f3b5baece345fc08" ;; \
+            JJ_SHA256="d4b657f622ee50929c8916466dfa3d6a6c17a0a32b50e7b2c793707ec9ebcad7" ;; \
         *) echo "Unsupported architecture for jj: $JJ_ARCH" >&2; exit 1 ;; \
     esac; \
     jj_tmp="$(mktemp -d)"; \
@@ -70,23 +70,23 @@ RUN set -euxo pipefail; \
 # Global npm tooling is pinned to exact versions (never a floating tag) so a
 # compromised or broken upstream release cannot silently land in an image that
 # later receives workspace and agent credentials. Bump these deliberately.
-RUN npm install -g @fission-ai/openspec@1.16.0
+RUN npm install -g @fission-ai/openspec@1.16.1
 
 {% if install_claude %}
-RUN npm install -g @anthropic-ai/claude-code@2.1.316
+RUN npm install -g @anthropic-ai/claude-code@2.1.319
 {% endif %}
 {% if install_codex %}
-RUN npm install -g @openai/codex@0.166.0
+RUN npm install -g @openai/codex@0.167.0
 {% endif %}
 {% if install_opencode %}
 RUN npm install -g opencode-ai@1.19.5
-RUN npm install -g @ai-sdk/openai@4.0.106
+RUN npm install -g @ai-sdk/openai@4.0.111
 {% endif %}
 {% if install_pi %}
-RUN npm install -g @earendil-works/pi-coding-agent@1.4.0
+RUN npm install -g @earendil-works/pi-coding-agent@1.5.0
 {% endif %}
 {% if install_copilot %}
-RUN npm install -g @github/copilot@1.0.98
+RUN npm install -g @github/copilot@1.0.107
 {% endif %}
 
 {% if source_after_dependencies -%}

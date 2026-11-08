@@ -17,13 +17,13 @@ from .templating import get_template
 
 # Pinned by digest; updated by scripts/update-pins.py (Alpine release + digest).
 BASE_IMAGE = (
-    "alpine:3.22.1"
-    "@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1"
+    "alpine:3.24.3"
+    "@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a"
 )
 # apk "~" pins the Squid release and accepts Alpine's security revisions of it
 # (an exact -rN pin breaks once the branch repository drops that revision).
 # Updated by scripts/update-pins.py from the branch's APKINDEX.
-SQUID_PACKAGE = "squid~6.12"
+SQUID_PACKAGE = "squid~7.6"
 IMAGE_REPOSITORY = "project-sandbox-egress-sidecar"
 TEMPLATE_DIR = "egress-sidecar"
 
