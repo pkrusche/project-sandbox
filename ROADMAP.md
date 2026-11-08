@@ -24,50 +24,7 @@ Interim mitigation already in place: one host-side exclusive lock
 cleanup, so those shared-store mutations cannot interleave. It does not address
 concurrent in-container writes; this item supersedes it.
 
-## Smart GitHub repository access in sidecar egress mode
-
-`--egress sidecar` (change `egress-sidecar-macos`) blocks GitHub repository
-access and admits only the Copilot CLI's hosts. The next step is per-repository
-access, so an agent can work on the repositories it needs without getting all of
-GitHub. The squid-sidecar line drafted this design and deferred it.
-
-- **Policy:** `[egress.github]` with `read` and `write` lists of `owner/repo` or
-  `owner/*` (`write` implies `read`). Components are validated against
-  `^[A-Za-z0-9_.-]+$` so they are regex-safe. Optional `graphql = true`.
-- **Interception:** bump `github.com`, `api.github.com`,
-  `raw.githubusercontent.com` and `codeload.github.com` only when repository
-  rules are active, with the sidecar CA name-constrained to those hosts.
-- **Rules** (`url_regex`/`urlpath_regex` combined with `method` ACLs,
-  case-insensitive):
-
-  | Traffic | Path pattern | Rule |
-  |---|---|---|
-  | git fetch | `github.com/<o>/<r>(.git)?/info/refs?service=git-upload-pack`, `POST …/git-upload-pack` | read |
-  | git push | `…/info/refs?service=git-receive-pack`, `POST …/git-receive-pack` | write |
-  | LFS | `github.com/<o>/<r>.git/info/lfs/…` | read / write (see open question) |
-  | REST | `api.github.com/repos/<o>/<r>(/…)?` | GET/HEAD → read; other methods → write |
-  | raw / archives | `raw.githubusercontent.com/<o>/<r>/…`, `codeload.github.com/<o>/<r>/…` | read, GET only |
-  | GraphQL | `api.github.com/graphql` | deny unless opted in |
-  | Exfil channels | `api.github.com/gists…`, `gist.github.com`, `POST /user/repos`, `POST /orgs/<o>/repos`, `/repos/<o>/<r>/forks` | deny |
-  | Web UI | other `github.com` paths | deny |
-  | Signed asset hosts | `objects.githubusercontent.com`, `github-cloud.githubusercontent.com`, `release-assets.githubusercontent.com`, LFS media host | spliced, hostname-only |
-
-- **Open questions:**
-  - Confirm the URL shapes by capturing `git clone`, `git push`, `git lfs pull`
-    and `gh release download` through an intercepting proxy, the same way
-    `scripts/e2e-copilot-egress.py` captures Copilot.
-  - LFS download and upload likely share the batch endpoint
-    (`POST …/info/lfs/objects/batch`) and differ only in the JSON body, which
-    Squid cannot inspect. Either treat LFS batch as `write`, or add body
-    inspection.
-  - `gh pr create` and `gh issue` use GraphQL, which this design denies by
-    default.
-  - Credential injection: the sidecar could add a GitHub token for allowed
-    repository paths, so the sandbox holds no token.
-
 ## Egress sidecar follow-ups
-
-Deferred by `egress-sidecar-macos` (one published Squid sidecar per runtime):
 
 - **Per-sandbox denial attribution** (egress-sidecar-macos). Sandboxes reach the
   sidecar through the runtime's port forwarder, so Squid's `client` address does
@@ -78,40 +35,19 @@ Deferred by `egress-sidecar-macos` (one published Squid sidecar per runtime):
 - **Upstream proxy authentication** (egress-sidecar-macos). Basic, NTLM or
   Kerberos to the `[egress.upstream]` parent. Today a 407 from the parent fails
   the request.
-- **DNS probes** (egress-sidecar-macos). Port the DNS probes that
-  `internet-proxy-locally` runs and `scripts/e2e-egress-sidecar.py` does not
-  (`dns-rebinding`, `dns-mixed-answers`, `ptr-allowlist`): they need upstream's
-  lab DNS fixture (egress-sidecar-macos design.md Decision 15).
 - **Business and enterprise Copilot hosts** (egress-sidecar-macos). Capture them
   with `scripts/e2e-copilot-egress.py`: `api.{business,enterprise}.githubcopilot.com`
   are admitted by analogy with the individual-plan capture (egress-sidecar-macos
   design.md Decision 5).
 - **GHE.com tenants for `--copilot-host` in sidecar mode** (egress-sidecar-macos;
   rejected today). Capture the tenant host set and add a tenant profile.
-- **Sidecar egress for devcontainers** (egress-sidecar-macos). Sidecar launches
-  leave `.devcontainer/` untouched; devcontainers stay firewall-only.
-
-Deferred by `egress-sidecar-linux`:
-
-- **ufw and other host firewalls on Docker Engine** are untested. A firewall that
-  drops container traffic to the `docker0` gateway blocks the sidecar and the
-  parent forwarder. The sandbox firewall reports the sidecar as unreachable with
-  a hint naming ufw, but nothing is configured automatically.
 
 ## GitHub Copilot agent follow-ups
 
 Deferred by `add-copilot-agent-support`:
 
-- **Keychain token staging.** Stage the Copilot token from the macOS Keychain
-  (where `copilot login` stores it) as a third source after pass and `gh`.
-- **Devcontainer support for `--agent copilot`.** Needs a token source that does
-  not go stale, since a token captured when the devcontainer is generated would
-  expire.
 - **Self-hosted GitHub Enterprise Server (GHES) hosts for `--copilot-host`**
   (currently rejected): needs its own host/endpoint model and firewall entries.
-- **Opt-in GitHub MCP server.** A flag to re-enable Copilot's built-in GitHub MCP
-  server (now always `--disable-builtin-mcps`) for users who accept that it acts
-  on GitHub with the Copilot token.
 - **Transcript renderer from real captures.** Tighten the Copilot transcript
   renderer and exit reclassification from real e2e captures
   (`scripts/e2e-copilot.py --capture-dir`): replace the synthetic JSONL fixtures
