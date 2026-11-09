@@ -420,9 +420,10 @@ class _Held:
     """An fd on a state file that is closed exactly once."""
 
     def __init__(self, path: Path) -> None:
-        self.fd: int | None = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        self.fd: int = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        self._closed = False
 
     def close(self) -> None:
-        fd, self.fd = self.fd, None
-        if fd is not None:
-            os.close(fd)
+        if not self._closed:
+            self._closed = True
+            os.close(self.fd)

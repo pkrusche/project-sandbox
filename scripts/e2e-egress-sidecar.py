@@ -1397,11 +1397,12 @@ def check_parent(args, runtime, work: Path) -> list[Result]:
         results.append(Result("parent:launch", proc.returncode == 0, out1[-400:]))
         if relay:
             state_dir = egress_sidecar.layout(runtime).root
+            control = egress_relay.RelayControl()
             results.append(
                 Result(
                     "parent:relay-survives-first-session",
-                    egress_relay.RelayControl().is_live(state_dir),
-                    egress_relay.RelayControl.log_tail(state_dir),
+                    control.is_live(state_dir),
+                    control.log_tail(state_dir),
                 )
             )
         run2 = _launch(args, second, "python3 probe.py", work / "parent-2.log")
