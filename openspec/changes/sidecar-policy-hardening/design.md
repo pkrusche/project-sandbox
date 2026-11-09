@@ -42,7 +42,7 @@ acl allowed any-of allowed_exact allowed_wild
 **Public suffix check:**
 - a bundled `public_suffix_list.dat` snapshot (ICANN and private sections), with a dated header;
 - a small matcher implementing the PSL rules (`*` and `!` exceptions);
-- `normalize_host_pattern` rejects a wildcard whose base is a public suffix;
+- `normalize_host_pattern` rejects a wildcard whose base is a public suffix, or has a public-suffix rule beneath it. The second case matters because the list often names only the tenant-bearing subdomains: `s3.amazonaws.com` and its siblings are listed, and task 2.1 checks whether `amazonaws.com` itself is. Either way `*.amazonaws.com` covers every tenant under them;
 - `scripts/update-pins.py` refreshes the snapshot.
 
 Bundling instead of a runtime dependency keeps validation offline and pinned.

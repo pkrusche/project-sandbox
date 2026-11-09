@@ -7,7 +7,7 @@
 
 ## 2. Wildcards, PSL and HTTP
 
-- [ ] 2.1 Bundle a dated PSL snapshot with a matcher, reject public-suffix wildcards in `normalize_host_pattern`, and add the refresh step to `scripts/update-pins.py`. Verify with tests for `*.co.uk`, `*.github.io`, `*.amazonaws.com` (rejected), `*.example.co.uk` (accepted) and the `!` exception rules.
+- [ ] 2.1 Bundle a dated PSL snapshot with a matcher, reject public-suffix wildcards in `normalize_host_pattern`, and add the refresh step to `scripts/update-pins.py`. Record in design.md whether `amazonaws.com` itself is on the snapshot. Verify with tests for `*.co.uk` and `*.github.io` (base is a suffix), `*.amazonaws.com` (a suffix lies beneath the base), `*.example.co.uk` and `*.example.com` (accepted) and the `!` exception rules.
 - [ ] 2.2 Render exact and wildcard ACLs separately (design Decision 1), stop wildcard-covers-apex deduplication, and warn when a wildcard's apex isn't listed. Verify with renderer tests and with a running-sidecar test (`PROJECT_SANDBOX_CONTAINER_TESTS=1`) in which `*.example.com` denies `example.com` and allows `a.example.com`.
 - [ ] 2.3 Add `[egress] http_allow` with its validation (must be allowed; no provider or GitHub hosts), the HTTPS-only rules and the `plain-http-not-allowed` cause and page. Verify with policy tests, renderer tests and running-sidecar tests for denied and allowed plain HTTP.
 

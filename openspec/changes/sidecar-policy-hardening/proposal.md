@@ -20,7 +20,7 @@ Sidecar mode is the hostname-level egress option. The security review's networki
 
 - **HTTPS only by default.** Plain HTTP is denied for every host unless it's listed in `[egress] http_allow` (exact hosts or wildcards, validated like `allow`). Agent provider hosts can never be added to `http_allow`. Denials are logged with the new cause `plain-http-not-allowed`.
 - **Wildcards mean subdomains only.** `*.example.com` matches `a.example.com` and `a.b.example.com`, not `example.com`, which must be listed separately.
-- **No public-suffix wildcards.** A wildcard whose base is a public suffix, from either the ICANN or the private section of the Public Suffix List, is rejected in `egress.toml` and in `allow add`. A dated PSL snapshot is bundled and refreshed by `scripts/update-pins.py`.
+- **No public-suffix wildcards.** A wildcard is rejected in `egress.toml` and in `allow add` when its base is a public suffix, or when a public suffix lies beneath its base (for example `*.amazonaws.com`, which would cover every tenant of `s3.amazonaws.com`). Both the ICANN and the private section of the Public Suffix List count. A dated PSL snapshot is bundled and refreshed by `scripts/update-pins.py`.
 - **GitHub denylist and wording.**
   - Known repository transport hosts are added: `lfs.github.com`, `github-releases.githubusercontent.com`, `objects-origin.githubusercontent.com`, `pkg-containers.githubusercontent.com`, and any others the verification in task 1.2 finds.
   - The spec now says the sidecar blocks *the listed GitHub repository hosts*. It no longer claims to block all repository content, since user content can be served from other domains.
@@ -68,5 +68,5 @@ Sidecar mode is the hostname-level egress option. The security review's networki
   - public-suffix wildcards are rejected;
   - Copilot paths outside the captured set are denied;
   - tunnels older than an hour are closed.
-- **Depends on:** `scope-firewall-allowlist` (the per-agent provider table), and `validate-all-mount-sources` (archive order for the shared requirement).
+- **Depends on:** `scope-firewall-allowlist` (the per-agent provider table), `serialize-egress-policy-updates` (the edit lock used by `--terminate`), and `validate-all-mount-sources` (archive order for the shared requirement).
 - **Docs:** `docs/egress-sidecar.md`, `docs/security.md`.
