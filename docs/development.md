@@ -95,6 +95,23 @@ teardown when a real runtime is selected, and availability-gated Ollama checks. 
 to run the gateway-only network/credential isolation audit followed by two
 billable Pi/OpenCode LLM requests.
 
+To cover every runtime this host supports in one go, run
+`./scripts/run_all_supported_e2e_tests.sh`. It detects runtimes with
+`project-sandbox doctor --json` (Apple `container`, Docker, rootless Podman,
+chroot) and calls `run-e2e-tests.sh` once per runtime. On container runtimes it
+enables `proxy-endpoints`, `egress-sidecar` and, when an
+`../internet-proxy-locally` checkout exists, `build-proxy`. The agent-proxy
+suites run only when `../agentgateway-locally` exists and listens on
+`127.0.0.1:4000`. `internet-proxy-isolation` runs only when both services are
+also up (Internet proxy on `127.0.0.1:18080`). It stops and restarts both
+services; pass `--no-internet-proxy-isolation` to leave them alone. Missing or
+stopped services are reported as notes before and after the run. The billable
+Copilot suites (`copilot`, `copilot-egress`) run by default and need a Copilot
+token; pass `--no-copilot` to skip them. `scripts/e2e-cleanup.py` sweeps the
+detected container runtimes before the first and after the last run; a failed
+cleanup fails the overall result. Use `--dry-run` to print the plan, and `-- OPTIONS` to
+forward extra options such as `--ca-cert` to every run.
+
 Before the first suite, the runner stops sandbox containers left running by an
 earlier sandbox CLI that was killed (for example with SIGKILL) before it could
 tear down. Only containers whose session record is `orphaned` (the recorded CLI
