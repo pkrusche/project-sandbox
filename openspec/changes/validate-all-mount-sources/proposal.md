@@ -16,7 +16,7 @@
   - JSON escaping and argv lists don't protect the runtime's nested mount syntax (TODO.md "Mount encoding").
 - **Targets.** Any target is accepted, including image-managed locations that privileged startup executes (`/usr/local/bin`, `/etc`). A writable source mounted there, for example a workspace subdirectory, puts agent-controlled files where the root stage runs them.
 
-Implicit mount *sources* are validated by `private-session-state` and `jj-only-branch-workspaces`. This change covers user `--mount` values, and makes every mount, implicit or not, go through one structured model and one encoder.
+Implicit mount *sources* are validated by `private-session-state`, and `vcs-session-modes` no longer derives any from repository files. This change covers user `--mount` values, and makes every mount, implicit or not, go through one structured model and one encoder.
 
 ## What Changes
 
@@ -29,7 +29,9 @@ Implicit mount *sources* are validated by `private-session-state` and `jj-only-b
   - it is, contains or lies inside the egress policy directory, the egress state directory, or project-sandbox's state and runtime roots (`private-session-state`);
   - it lies inside the project or workspace but resolves outside it, for example a symlink an earlier session planted.
 
-  Mounting a well-known credential directory (`~/.ssh`, `~/.gnupg`, `~/.aws`, the agents' config directories, `~/.config/gh`, `~/.password-store`) is allowed, with a warning that it bypasses per-agent credential filtering. The *resolved* path is what's passed to the runtime.
+  - it is, contains or lies inside a well-known credential directory (`~/.ssh`, `~/.gnupg`, `~/.aws`, the agents' config directories, `~/.config/gh`, `~/.password-store`). Such a mount would bypass per-agent credential filtering (user decision, 2026-11-09: refuse, with no override).
+
+  The *resolved* path is what's passed to the runtime.
 - **Named volumes.** Their host exposure can't be determined (a volume can be backed by an arbitrary host directory). They are refused in sidecar mode, and allowed with a warning in firewall mode.
 - **Targets are checked.**
   - Absolute, no `..`, no control characters.
@@ -44,7 +46,7 @@ Implicit mount *sources* are validated by `private-session-state` and `jj-only-b
 
 ### New Capabilities
 
-- `mount-validation`: the supported `--mount` forms, source and target rules, the protected locations, how volumes are treated, and how every mount is encoded for the runtimes and the devcontainer.
+- `mount-validation`: the supported `--mount` forms, source and target rules, the protected and credential locations, how volumes are treated, and how every mount is encoded for the runtimes and the devcontainer.
 
 ### Modified Capabilities
 
@@ -61,6 +63,6 @@ Implicit mount *sources* are validated by `private-session-state` and `jj-only-b
   - `egress_policy.check_location`: checks both directions.
   - `devcontainer.py`: mounts rendered from `MountSpec`.
   - `chroot`: unchanged (bind only).
-- **BREAKING:** `--mount` values with unsupported options, tmpfs or volume forms the model doesn't cover, commas in paths, or targets in protected locations are refused. Error messages name the rejected part and the supported alternative.
-- **Depends on:** `private-session-state` (state and runtime roots and their implicit mounts) and `jj-only-branch-workspaces` (jj mounts as computed values). Both feed structured mounts into the encoder.
-- **Docs:** `docs/usage.md` (`--mount` forms and rules), `docs/security.md` (protected locations, the credential-directory warning, volumes).
+- **BREAKING:** `--mount` values with unsupported options, tmpfs or volume forms the model doesn't cover, commas in paths, credential directories as sources, or targets in protected locations are refused. Error messages name the rejected part and the supported alternative.
+- **Depends on:** `private-session-state` (state and runtime roots and their implicit mounts) and `vcs-session-modes` (the session directory and its two metadata mounts). Both feed structured mounts into the encoder.
+- **Docs:** `docs/usage.md` (`--mount` forms and rules), `docs/security.md` (protected locations, credential directories, volumes).

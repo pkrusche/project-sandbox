@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Defines which mount forms a sandbox accepts, how their sources and targets are validated, which host locations can never be mounted, and how every mount is encoded for the container runtimes and the generated devcontainer.
+Defines which mount forms a sandbox accepts, how their sources and targets are validated, which host locations, including credential directories, can never be mounted, and how every mount is encoded for the container runtimes and the generated devcontainer.
 
 ## ADDED Requirements
 
@@ -43,12 +43,20 @@ A bind source that lies inside the project or workspace SHALL be refused if it r
 - **WHEN** `<project>/data` is a symlink to `$HOME/.ssh`, and `--mount source=<project>/data,target=/data` is given
 - **THEN** the launch fails, stating that the source resolves outside the project
 
-### Requirement: Credential directories are mounted only with a warning
-The system SHALL warn, naming the directory, when a bind source is or contains a well-known credential directory: `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.config/gh`, `~/.password-store` or an agent's host config directory. The warning SHALL explain that the mount bypasses per-agent credential filtering. The mount SHALL still be accepted.
+### Requirement: Credential directories are never mounted
+A bind source SHALL be refused when it is, contains or lies inside a well-known credential directory: `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.config/gh`, `~/.password-store` or an agent's host config directory. The error SHALL name the directory and explain that the mount would bypass per-agent credential filtering. There SHALL be no option that overrides the refusal.
 
 #### Scenario: Mounting SSH keys
 - **WHEN** `--mount source=$HOME/.ssh,target=/home/agent/.ssh,readonly` is given
-- **THEN** the session starts and the CLI prints the credential warning
+- **THEN** the launch fails before starting a container, naming `~/.ssh`
+
+#### Scenario: Subdirectory of a credential directory
+- **WHEN** `--mount source=$HOME/.aws/sso,target=/x` is given
+- **THEN** the launch fails, naming `~/.aws`
+
+#### Scenario: Agent config directory
+- **WHEN** `--mount source=$HOME/.claude,target=/x` is given
+- **THEN** the launch fails, naming the directory and pointing to credential forwarding
 
 ### Requirement: Named volumes are restricted by egress mode
 Named volume mounts SHALL be refused in sidecar mode. In firewall mode they SHALL be accepted, with a warning that their host exposure is not checked.

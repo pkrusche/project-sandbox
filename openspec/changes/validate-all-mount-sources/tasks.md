@@ -14,7 +14,7 @@
   - the policy directory with an extra option (refused at parse time);
   - an unrelated directory (accepted).
 - [ ] 2.2 Add the workspace-containment rule, and pass strictly resolved sources to the runtime. Verify with tests for a planted symlink under the project (refused) and a regular project subdirectory (accepted, resolved path in argv).
-- [ ] 2.3 Add credential-directory warnings, and refuse volumes in sidecar mode while warning about them in firewall mode. Verify with CLI output tests for each case.
+- [ ] 2.3 Refuse credential directories as bind sources in all three directions, and refuse volumes in sidecar mode while warning about them in firewall mode. Verify with CLI tests for `~/.ssh`, a subdirectory of `~/.aws`, a parent containing `~/.gnupg`, an agent config directory, and each volume case.
 
 ## 3. Target rules and ordering
 
@@ -22,4 +22,4 @@
 
 ## 4. Docs
 
-- [ ] 4.1 Document the supported `--mount` forms, the source and target rules, protected locations, credential warnings and volume handling in `docs/usage.md` and `docs/security.md`. Remove finding #5 and the "Mount encoding" hardening item from TODO.md. Verify that `uv run pytest -q` and `uv run python -m compileall -q src tests` pass.
+- [ ] 4.1 Document the supported `--mount` forms, the source and target rules, protected locations, credential directories and volume handling in `docs/usage.md` and `docs/security.md`. Remove finding #5 and the "Mount encoding" hardening item from TODO.md. Verify that `uv run pytest -q` and `uv run python -m compileall -q src tests` pass.
