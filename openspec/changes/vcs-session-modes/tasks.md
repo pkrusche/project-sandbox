@@ -2,7 +2,7 @@
 
 ## 1. Runtime spikes
 
-- [ ] 1.1 Repeat the host spike with real mounts on Docker, rootless Podman and Apple `container`: bind `W` at `/workspace` and the private `jj` and `git` directories over `/workspace/.jj` and `/workspace/.git`. From inside, try to rename, remove and unmount both mount points, and search for the host `.jj` by any other path. Run `jj` and `git` in the container, then snapshot on the host. Verify by recording the results per runtime in design.md's Context, and refuse isolated mode on any runtime that exposes the host `.jj`.
+- [x] 1.1 Repeat the host spike with real mounts on Docker, rootless Podman and Apple `container`: bind `W` at `/workspace` and the private `jj` and `git` directories over `/workspace/.jj` and `/workspace/.git`. From inside, try to rename, remove and unmount both mount points, and search for the host `.jj` by any other path. Run `jj` and `git` in the container, then snapshot on the host. Verify by recording the results per runtime in design.md's Context, and refuse isolated mode on any runtime that exposes the host `.jj`.
 - [ ] 1.2 Time setup (workspace add plus the base commit) and the final snapshot on the largest available jj project. Verify by recording the timings in design.md's Risks.
 
 ## 2. Mode selection

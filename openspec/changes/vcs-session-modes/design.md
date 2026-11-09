@@ -5,7 +5,7 @@
 - **Today's `--branch` flow** (`jj_workspace.py`): `jj workspace add --no-colocate` creates a workspace next to the project. The container mounts it at `/workspace`, plus the main `.jj/repo` store and, when colocated, the main `.git`, at targets read from pointer files. At teardown, host `jj -R <workspace>` snapshots and sets the bookmark (`jj_workspace.py:271`).
 - **Without `--branch`**, the project is mounted in place.
 - **Git-only projects** use `worktree.py`, which mounts the main `.git` read-write and runs host Git in the agent's worktree.
-- **Apple `container`** rejects single-file binds and binds onto missing targets. Nested directory binds work (the `.project-sandbox` mask is one).
+- **Apple `container`** 1.7.1 rejects single-file binds given with `--mount` ("is not a directory"), which is the syntax `container_cli` uses, and binds onto missing targets. `-v` accepts a file, but it shares the file's parent directory and silently drops a directory mount of that same parent. Nested directory binds work (the `.project-sandbox` mask is one), in any argument order.
 - **Spike, 2026-11-09** (jj 0.46.0, host only, mounts simulated by swapping directories; script: `spike-isolated-snapshot.sh` in this change). All checks passed:
   - a host workspace still reports no changes after its `.jj` was moved aside, a second repository was initialized over the same files, and the `.jj` was moved back;
   - with only the private `.jj` and `.git` in place, `jj` sees one base commit and a clean tree, and `jj commit` and `git status` work;
@@ -13,6 +13,16 @@
   - the agent's commit message is absent from the main repository;
   - a symlink to `/etc/passwd` is stored with mode 120000;
   - an empty `.git` placeholder directory is not recorded.
+- **Real-mount spike, 2026-11-09** (task 1.1; host jj 0.46.0, container jj 0.47.1; Docker Desktop 29.9.3, Podman 6.0.0 machine (applehv, rootless, `--userns=keep-id`), Apple `container` 1.7.1). Layout as in Decision 1: `W` at `/workspace`, the private `jj` and `git` directories over `/workspace/.jj` and `/workspace/.git`, with a marker file in the host `W/.jj`. Each runtime ran twice: once as root with `NET_ADMIN`/`NET_RAW` and the nested mounts listed before the parent, once as the agent user (uid 501) with the parent first. The results were the same on all three runtimes:
+  - the private `.jj` and `.git` are visible and the host marker is not, in both argument orders (all three runtimes sort the mounts by target);
+  - `mv` of either mount point away, `mv` of a directory over `.jj`, and `rmdir`/`rm -rf` of the mount points fail with `EBUSY`. `rm -rf` empties the private `.jj`, which harms only the agent's own repository;
+  - `umount`, `umount -l` and `mount --bind /workspace /mnt` fail, also as root, because no runtime grants `CAP_SYS_ADMIN`;
+  - `find /` finds neither the host marker nor any `.jj/repo` pointer file, and `/proc/1/root/workspace/.jj` shows the private copy;
+  - `/proc/self/mountinfo` names the host source paths on Docker and Podman (Apple shows share IDs). This discloses paths, not contents;
+  - `jj st`, `jj commit` and `git status` work in the container on the repository the host jj created;
+  - afterwards the host `W/.jj` is byte-identical, the `W/.git` placeholder is still empty, and the host snapshot records the agent's modified and added files with neither the agent's commit message nor any `.git`/`.jj` path.
+
+  No runtime exposes the host `.jj`, so no runtime is refused. Not covered: native Linux hosts (Docker and Podman ran in their macOS VMs) and rootful Podman.
 
 ## Goals / Non-Goals
 
@@ -126,7 +136,8 @@ A private per-session copy (`--copy`) is deferred to ROADMAP.
 
 ## Risks / Trade-offs
 
-- [The spike simulated the mounts] → Task 1.1 repeats it with real nested binds on Docker, Podman and Apple `container`, and tries to reach the host `.jj` from inside. If a runtime can't hide it, isolated mode is refused on that runtime.
+- [The host-side spike simulated the mounts] → Task 1.1 repeated it with real nested binds on Docker, Podman and Apple `container` (Context): every runtime hides the host `.jj`. A runtime that granted `CAP_SYS_ADMIN` could unmount the binds, so the argv tests of task 3.2 also assert that no session adds it.
+- [The agent leaves a symlink in `W` that points at `.jj` or elsewhere on the host] → The snapshot stores it as a link (host spike). Host code that later walks `W` must not follow links, which `private-session-state`'s no-follow helpers already require.
 - [Users lose in-place editing by default] → **BREAKING**, stated in the release notes. The end-of-session output names the bookmark and the command to bring the result into the checkout. `--vcs shared` restores the old behavior.
 - [Agent commit messages are lost] → Decided. The session message describes the snapshot. Agents that structure work as commits still benefit inside the session.
 - [Uncommitted work in the main checkout is the starting point] → As today. The docs say so, and dry-run shows the start revision.
