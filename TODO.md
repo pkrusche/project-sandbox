@@ -72,22 +72,26 @@ The plan was reviewed and every proposal revised on 2026-11-09.
   `$XDG_STATE_HOME/project-sandbox/sessions/*.json`. `private-session-state`
   and `vcs-session-modes` must keep these stable.
 
-### Spikes to run first
+### Spikes
 
-- `vcs-session-modes` task 1.1: the host side passed on jj 0.46
-  (`spike-isolated-snapshot.sh` in the change). Confirm with real nested binds
-  on each runtime that the host `.jj` can't be reached from the container.
-- `isolate-firewall-helpers` task 0.1: confirm on Apple `container` that
-  `--user 0:0` works and that the root stage can drop its bounding set.
-- `private-build-context` task 1.1: Apple `container` 1.7.1 has no
-  `--build-context`. Confirm the assets-image `COPY --from` approach (or the
-  APFS-clone fallback) with a real build.
-- `minimal-devcontainer` task 1.1: confirm VS Code and JetBrains attach to a
-  `--network none` devcontainer.
-- `protect-host-executed-project-config` task 1.1: confirm a read-only file
-  bind of `.git/config` on Docker and Podman, and that `chflags uchg` on the
-  host file blocks writes, renames and deletes from an Apple `container`
-  session.
+Run on 2026-11-09 on macOS with Docker Desktop 29.9.3, Podman 6.0.0 machine
+and Apple `container` 1.7.1. Results are in each change's design.md. Native
+Linux hosts were not tested.
+
+- Passed: `vcs-session-modes` 1.1 (no runtime exposes the host `.jj`),
+  `isolate-firewall-helpers` 0.1 (`setpriv` drop on all three runtimes).
+- `private-build-context` 1.1: the Apple assets image works, and the clone
+  fallback is dropped. A missing local tag is pulled from Docker Hub, so the
+  reference must be a `localhost/` tag. Digest references don't resolve
+  locally.
+- `protect-host-executed-project-config` 1.1: the file bind and `uchg` both
+  hold, but renaming `.git` away and recreating it bypassed both on every
+  runtime. The design now self-binds `.git/`, `.jj/` and `.jj/repo/`. Apple
+  drops a directory mount when a file inside it is also bound, so Apple uses
+  `uchg`.
+- `minimal-devcontainer` 1.1: VS Code (JetBrains dropped) installs its server
+  and the Python extensions into a `--network none` container. Running and
+  debugging a test from the IDE is still to be checked by hand.
 
 ### Open points
 
