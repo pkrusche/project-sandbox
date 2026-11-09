@@ -2,7 +2,7 @@
 
 ## 0. Spike
 
-- [ ] 0.1 With a throwaway image that has `setpriv` and a non-root user, run on Apple `container`, Docker and rootless Podman (`--userns=keep-id`): start with `--user 0:0 --cap-add NET_ADMIN --cap-add NET_RAW`, run `iptables -L` as root, then `setpriv --reuid … --regid … --init-groups --inh-caps=-all --ambient-caps=-all --bounding-set=-all --no-new-privs` into a shell that prints `/proc/self/status`. Verify that each runtime shows `NoNewPrivs: 1`, a zero `CapBnd` and the non-root UID, and record the results in design.md's Risks.
+- [x] 0.1 With a throwaway image that has `setpriv` and a non-root user, run on Apple `container`, Docker and rootless Podman (`--userns=keep-id`): start with `--user 0:0 --cap-add NET_ADMIN --cap-add NET_RAW`, run `iptables -L` as root, then `setpriv --reuid … --regid … --init-groups --inh-caps=-all --ambient-caps=-all --bounding-set=-all --no-new-privs` into a shell that prints `/proc/self/status`. Verify that each runtime shows `NoNewPrivs: 1`, a zero `CapBnd` and the non-root UID, and record the results in design.md's Risks.
 
 ## 1. Self-protecting firewall script
 
