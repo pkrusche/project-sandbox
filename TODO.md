@@ -23,7 +23,8 @@ and the proposal revisions listed below are not applied yet.
 
 | # | Change | Covers | Depends on |
 | --- | --- | --- | --- |
-| 1 | `jj-only-branch-workspaces` | #2, #9; jj pointer files choose mount source/target (exploitable today) | — |
+| 1 | `vcs-session-modes` (drafted 2026-11-09) | #2, #9; jj pointer files choose mount source/target (exploitable today); ROADMAP separate clones | — |
+| 1a | `jj-only-branch-workspaces`, reduced to `host-command-execution` | host tool lookup, neutral cwd, jj overrides | — |
 | 2 | `minimal-devcontainer` | devcontainer gateway row; devcontainer half of #1 | — |
 | 3 | `isolate-firewall-helpers` | #1; sudo re-invocation | 2 |
 | 4 | `quote-generated-build-inputs` | #10; image/version strings in `FROM` | — |
@@ -55,13 +56,18 @@ and the proposal revisions listed below are not applied yet.
   snapshot-and-restore as the fallback (spike below).
 - `.jj/repo/config-id`, `.jj/workspace-config-id` and a legacy
   `.jj/repo/config.toml` are snapshotted and restored like `.git/config`.
+- Sessions run in one of two VCS modes (`vcs-session-modes`). Isolated is the
+  default: a separate session directory with an agent-private repository, and
+  one host snapshot at the end; the agent's own commits are not kept. Shared
+  (`--vcs shared`) mounts the project in place with writable history, one
+  session per repository. A launch without `--branch` is isolated, on a
+  generated bookmark.
 
 ### Proposal revisions to apply before implementing
 
-- `jj-only-branch-workspaces`: repeat the pointer and `git_target` comparison
-  before finalization. Host `jj -R <workspace>` follows the agent-writable
-  pointer (`jj_workspace.py:271`). Extend task 1.1: does jj 0.46 trust or
-  migrate a planted legacy `.jj/repo/config.toml`?
+- `jj-only-branch-workspaces`: drop the `branch-workspaces` capability (mount
+  derivation, pointer checks, config-id records, lease), which
+  `vcs-session-modes` replaces. Keep `host-command-execution`.
 - `isolate-firewall-helpers`: remove the devcontainer sudo interim
   (requirement, scenarios, tasks). Add the Apple spike below.
 - `minimal-devcontainer`: explicit opt-in rendering.
@@ -69,8 +75,10 @@ and the proposal revisions listed below are not applied yet.
   (Colima and Lima share only `$HOME`); skip migration while a session of the
   project is still running.
 - `validate-all-mount-sources`: refuse credential directories.
-- `protect-host-executed-project-config`: hard read-only `.git/config`; jj
-  config pointers; correct "host `jj` is unaffected during a session" (jj runs
+- `protect-host-executed-project-config`: narrow to shared mode (one session
+  per repository, so a per-session snapshot replaces the shared baseline); add
+  a live watcher that polls the protected paths and reports changes in the
+  session log and record; hard read-only `.git/config`; jj config pointers; correct "host `jj` is unaffected during a session" (jj runs
   `git` for `jj git push`/`fetch`, which reads `.git/config`).
 - `pin-launch-image-identity`: key the build lock by runtime and image
   repository, not by project (two projects sharing `--image-tag` can still move
@@ -98,6 +106,9 @@ and the proposal revisions listed below are not applied yet.
 
 ### Spikes to run first
 
+- `vcs-session-modes` task 1.1: the host side passed on jj 0.46
+  (`spike-isolated-snapshot.sh` in the change). Confirm with real nested binds
+  on each runtime that the host `.jj` can't be reached from the container.
 - `isolate-firewall-helpers`: confirm on Apple `container` that `--user 0:0`
   works and that the root stage can drop its bounding set (`setpriv
   --bounding-set=-all` needs `CAP_SETPCAP`). The design rests on both.
