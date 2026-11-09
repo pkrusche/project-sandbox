@@ -11,36 +11,79 @@
   shared bridge forwarder (it should exit within about one poll interval) and
   that a fresh session then attaches cleanly. The concurrent-session `kill -9`
   case was verified on 2026-11-08 (see docs/development.md).
-  `pin-launch-image-identity` (below) fixes the first item.
+  `mount-session-firewall` (below) fixes the first item.
 
 ## Security proposals
 
-The security review below is addressed by eleven OpenSpec changes in
+The security review below is addressed by OpenSpec changes in
 `openspec/changes/`. Implement them in this order (`/opsx:apply <change>`).
 Each change removes the findings it covers from this file as its last task.
+The plan was reviewed on 2026-11-09; changes marked *to draft* don't exist yet,
+and the proposal revisions listed below are not applied yet.
 
 | # | Change | Covers | Depends on |
 | --- | --- | --- | --- |
 | 1 | `jj-only-branch-workspaces` | #2, #9; jj pointer files choose mount source/target (exploitable today) | — |
 | 2 | `minimal-devcontainer` | devcontainer gateway row; devcontainer half of #1 | — |
-| 3 | `isolate-firewall-helpers` | #1; sudo re-invocation | 2 (drops its devcontainer interim) |
+| 3 | `isolate-firewall-helpers` | #1; sudo re-invocation | 2 |
 | 4 | `quote-generated-build-inputs` | #10; image/version strings in `FROM` | — |
 | 5 | `serialize-egress-policy-updates` | #7 | — |
-| 6 | `private-session-state` | #3, #4, #8; build-input half of #6; history read-only | 2 |
-| 7 | `validate-all-mount-sources` | #5; mount encoding | 1, 6 |
-| 8 | `protect-host-executed-project-config` | host-side `.git/hooks`, `.git/config` (rest of #2) | 1 |
-| 9 | `pin-launch-image-identity` | launch half of #6; first TODO item above | 3, 6 |
-| 10 | `scope-firewall-allowlist` | firewall rows of the networking table | 3, 6 |
-| 11 | `sidecar-policy-hardening` | sidecar rows of the networking table; Squid logging | 10; archive after 7 |
+| 6 | `private-session-state` | #3, #4, #8: state roots, staging, masks, locks, migration | 2 |
+| 7 | `private-build-context` (*to draft*, split from 6) | build-input half of #6 | 6 |
+| 8 | `read-only-agent-history` (*to draft*, split from 6) | history read-only | 6 |
+| 9 | `validate-all-mount-sources` | #5; mount encoding | 1, 6 |
+| 10 | `protect-host-executed-project-config` | host-side `.git/hooks`, `.git/config`, jj config pointers (rest of #2) | 1 |
+| 11 | `mount-session-firewall` (*to draft*, split from 13) | firewall as a per-session mount; first TODO item above | 3, 6 |
+| 12 | `pin-launch-image-identity` | launch half of #6 | 3, 7, 11 |
+| 13 | `scope-firewall-allowlist` | firewall rows of the networking table | 11 |
+| 14 | `sidecar-policy-hardening` | sidecar rows of the networking table; Squid logging | 13; archive after 9 |
+
+### Decisions (2026-11-09 review)
+
+- GHE.com-tenant Copilot keeps working in firewall mode behind an explicit
+  flag, until the sidecar has a tenant profile. Other Copilot sessions require
+  `--egress sidecar`.
+- `--mount` of a credential directory (`~/.ssh`, `~/.aws`, `~/.gnupg`, agent
+  config directories, …) is refused, not warned about. SELinux `z`/`Z` relabel
+  options stay refused.
+- `private-session-state` is split in three (rows 6–8).
+- `scope-firewall-allowlist` is split: runtime firewall delivery
+  (`mount-session-firewall`) lands before `pin-launch-image-identity`.
+- The devcontainer is rendered only on explicit opt-in (flag or subcommand).
+  Ordinary launches only create and mask an empty `.devcontainer/`.
+- `.git/config` gets a hard read-only where the platform allows it, with
+  snapshot-and-restore as the fallback (spike below).
+- `.jj/repo/config-id`, `.jj/workspace-config-id` and a legacy
+  `.jj/repo/config.toml` are snapshotted and restored like `.git/config`.
+
+### Proposal revisions to apply before implementing
+
+- `jj-only-branch-workspaces`: repeat the pointer and `git_target` comparison
+  before finalization. Host `jj -R <workspace>` follows the agent-writable
+  pointer (`jj_workspace.py:271`). Extend task 1.1: does jj 0.46 trust or
+  migrate a planted legacy `.jj/repo/config.toml`?
+- `isolate-firewall-helpers`: remove the devcontainer sudo interim
+  (requirement, scenarios, tasks). Add the Apple spike below.
+- `minimal-devcontainer`: explicit opt-in rendering.
+- `private-session-state`: split; add a verified override for the runtime root
+  (Colima and Lima share only `$HOME`); skip migration while a session of the
+  project is still running.
+- `validate-all-mount-sources`: refuse credential directories.
+- `protect-host-executed-project-config`: hard read-only `.git/config`; jj
+  config pointers; correct "host `jj` is unaffected during a session" (jj runs
+  `git` for `jj git push`/`fetch`, which reads `.git/config`).
+- `pin-launch-image-identity`: key the build lock by runtime and image
+  repository, not by project (two projects sharing `--image-tag` can still move
+  the tag). Drop the network fields from the settings label.
+- `scope-firewall-allowlist`: split out delivery; tenant flag for firewall-mode
+  Copilot.
+- `sidecar-policy-hardening`: also reject a wildcard whose base has public
+  suffixes beneath it. `amazonaws.com` itself is probably not on the Public
+  Suffix List, so the `*.amazonaws.com` example fails the current rule; check
+  against the snapshot.
 
 ### Reconcile while implementing
 
-- After `minimal-devcontainer` lands, remove the interim devcontainer sudo rule
-  and its tests from `isolate-firewall-helpers`.
-- `scope-firewall-allowlist` mounts the firewall script per session instead of
-  building it into the image. Update `isolate-firewall-helpers` to run the
-  mounted script, and drop the network fields from
-  `pin-launch-image-identity`'s settings label.
 - Archive `validate-all-mount-sources` before `sidecar-policy-hardening`: both
   modify the `egress-sidecar` requirement "Policy lives on the host", and the
   second builds on the first's text.
@@ -53,23 +96,19 @@ Each change removes the findings it covers from this file as its last task.
   `$XDG_STATE_HOME/project-sandbox/sessions/*.json`. `private-session-state`
   must keep these stable.
 
-### Open questions
-
-- GHE.com-tenant Copilot users lose Copilot under `scope-firewall-allowlist`
-  until the sidecar gains a tenant profile. Acceptable?
-- `validate-all-mount-sources`: warn or refuse for credential directories
-  (`~/.ssh`, `~/.aws`, …) passed with `--mount`? SELinux `z`/`Z` relabel
-  options are refused for now.
-- Should `private-session-state` be split (state relocation, per-session
-  staging, history read-only)? It is the largest change.
-
 ### Spikes to run first
 
-- `private-session-state` task 1.2: Apple `container` 1.7.1 has no
-  `--build-context`. Confirm the assets-image `COPY --from` approach (or the
-  APFS-clone fallback) with a real build.
+- `isolate-firewall-helpers`: confirm on Apple `container` that `--user 0:0`
+  works and that the root stage can drop its bounding set (`setpriv
+  --bounding-set=-all` needs `CAP_SETPCAP`). The design rests on both.
+- `private-build-context`: Apple `container` 1.7.1 has no `--build-context`.
+  Confirm the assets-image `COPY --from` approach (or the APFS-clone fallback)
+  with a real build.
 - `minimal-devcontainer` task 1.1: confirm VS Code and JetBrains attach to a
   `--network none` devcontainer.
+- `protect-host-executed-project-config`: confirm a read-only file bind of
+  `.git/config` on Docker and Podman, and that `chflags uchg` on the host file
+  blocks writes, renames and deletes from an Apple `container` session.
 
 ### Not covered by any proposal
 
@@ -79,8 +118,9 @@ Each change removes the findings it covers from this file as its last task.
 - Supply chain: `npm install -g package@version` does not pin transitive
   dependencies. Use lockfiles/integrity metadata or reproducible tool layers,
   and define an image update cadence.
-- Remove the stray `openspec/changes/.claude/` directory (it shows up in
-  `openspec list` as an empty change).
+- Ignore the stray `openspec/changes/.claude/` and `openspec/specs/.claude/`
+  directories (the first shows up in `openspec list` as an empty change). They
+  hold only an empty `.cc-writes` and seem to be recreated by Claude Code.
 
 ## Security review
 
