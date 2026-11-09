@@ -101,6 +101,10 @@ Linux hosts were not tested.
   Suffix List is unchecked; the rule now covers both cases.
 - `protect-host-executed-project-config` assumes `jj git push`/`fetch` run Git
   against `.git/config` (inferred from `git.executable-path`, not tested).
+- `vcs-session-modes` task 1.2 (setup and snapshot timings) was skipped,
+  because the first users have small repositories. Measure isolated-session
+  setup on a large repository when one comes up. If it's slow, build the base
+  commit without a second scan.
 
 ### Not covered by any proposal
 

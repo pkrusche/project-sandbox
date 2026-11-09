@@ -141,7 +141,7 @@ A private per-session copy (`--copy`) is deferred to ROADMAP.
 - [Users lose in-place editing by default] → **BREAKING**, stated in the release notes. The end-of-session output names the bookmark and the command to bring the result into the checkout. `--vcs shared` restores the old behavior.
 - [Agent commit messages are lost] → Decided. The session message describes the snapshot. Agents that structure work as commits still benefit inside the session.
 - [Uncommitted work in the main checkout is the starting point] → As today. The docs say so, and dry-run shows the start revision.
-- [Double metadata costs time for large trees] → Setup snapshots the tree once more than today (step 3). Measure on a large project in task 1.2; the base commit could later be built without a second scan.
+- [Double metadata costs time for large trees] → Setup snapshots the tree once more than today (step 3). Not measured (user decision, 2026-11-09): the first users have small repositories. When large ones come up, measure, and build the base commit without a second scan if needed.
 - [`--share …:rw` lets an agent change files outside the reviewed result] → Read-only is the default, `:rw` is per path, the launch lists every writable share, and the docs say these writes are not in the commit.
 - [A shared folder contains a secret, such as `.env` files] → Sharing is always explicit and per path. Nothing is shared by default or by pattern.
 - [A large generated directory that isn't ignored gets recorded] → As today for `--branch`. The size refusal covers single files only.
