@@ -2,7 +2,7 @@
 
 ## 1. Spike
 
-- [ ] 1.1 On Apple `container` 1.7.1, build a `FROM scratch` assets image from a temporary directory, then build a second image using `COPY --from=<assets tag>`. Separately, build with an absolute `-f` outside the cwd context, with a `<Dockerfile>.dockerignore` beside it. Record the results in design.md and `docs/development.md`. Delete the spike images afterwards. Verify that design.md names exactly one Apple mechanism.
+- [x] 1.1 On Apple `container` 1.7.1, build a `FROM scratch` assets image from a temporary directory, then build a second image using `COPY --from=<assets tag>`. Separately, build with an absolute `-f` outside the cwd context, with a `<Dockerfile>.dockerignore` beside it. Record the results in design.md and `docs/development.md`. Delete the spike images afterwards. Verify that design.md names exactly one Apple mechanism.
 
 ## 2. Docker and Podman
 
@@ -11,7 +11,7 @@
 
 ## 3. Apple container
 
-- [ ] 3.1 Implement the mechanism chosen in task 1.1: either a content-addressed assets image with pruning, or a cloned context with the size warning. Verify with argv and flow tests, and with an opt-in container test that builds `--python-uv` on Apple `container` with a planted `.project-sandbox/entrypoint.sh` in the project, and checks that the image contains the generated entrypoint.
+- [ ] 3.1 Implement the content-addressed assets image (design Decision 1), with a `localhost/` reference, pruning and one rebuild-and-retry when the tag is missing. Verify with argv and flow tests, and with an opt-in container test that builds `--python-uv` on Apple `container` with a planted `.project-sandbox/entrypoint.sh` in the project, and checks that the image contains the generated entrypoint.
 
 ## 4. Integration
 

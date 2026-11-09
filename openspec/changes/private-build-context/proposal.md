@@ -14,7 +14,7 @@ This change was split from `private-session-state` on 2026-11-09, because it dep
 
 - **Generated files reach the build as a separate input.**
   - On Docker and Podman, the session's private `build/` directory is passed as a second, named build context, and the generated Dockerfile copies from it.
-  - Apple `container` 1.7.1 has no `--build-context`. There the generated files come from a content-addressed assets image (`COPY --from=<assets>`). A cloned private build context is the fallback. A spike decides between them before implementation.
+  - Apple `container` 1.7.1 has no `--build-context`. There the generated files come from a content-addressed assets image (`COPY --from=<assets>`). The assets reference is a `localhost/` tag, so a missing tag fails instead of being pulled from Docker Hub (spike, 2026-11-09).
 - **Nothing is written into a build context.** The interim copy into `<context>/.project-sandbox/` is removed. A leftover directory from an older version is never read.
 - **`--docker-context` no longer has to contain `.project-sandbox`.**
 

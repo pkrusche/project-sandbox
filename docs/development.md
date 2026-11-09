@@ -44,6 +44,21 @@ builds (which may copy those paths) and when the project has its own root
 `.dockerignore` (left authoritative). All of this degrades safely: any mismatch
 or inconclusive check falls through to a normal build.
 
+### Apple `container` builder behavior
+
+Checked on Apple `container` 1.7.1 on 2026-11-09, for `private-build-context`:
+
+- `build` has no `--build-context`. Docker 29.9 and Podman 6.0 have it.
+- `COPY --from=<image>` resolves a locally built image from the local store. A
+  rebuilt tag is picked up by the next build.
+- A tag missing from the local store is pulled from a registry. An unqualified
+  name goes to Docker Hub (`docker.io/library/<name>`), so local-only images
+  need a `localhost/` name, which fails with "Connection refused" instead.
+- `name:tag@sha256:…` is never resolved locally, even when the digest matches.
+- An absolute `-f` outside the cwd context works. Its
+  `<Dockerfile>.dockerignore` is honored and takes precedence over the
+  context's `.dockerignore`.
+
 ## Tests
 
 Tests cover CLI surface, runtime selection, dry-run non-mutation, renderer

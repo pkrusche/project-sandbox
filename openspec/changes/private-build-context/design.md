@@ -9,7 +9,12 @@
 Spike, 2026-11-09:
 - Docker 29.9.2 (buildx 0.38.1) and Podman 6.0.0 both support `--build-context name=path`.
 - Apple `container` 1.7.1 `build` has no `--build-context`. Its options are `--build-arg`, `-f`, `--target`, `--secret`, `--ssh`, `--label` and output/platform flags.
-- Whether Apple's builder resolves a locally built image in `COPY --from=<image>` has not been tested yet. That is task 1.1.
+- Task 1.1, 2026-11-09 (Apple `container` 1.7.1):
+  - A `FROM scratch` assets image built from a temporary directory works. A second build with `COPY --from=<assets tag>` takes the file from the local image store (`oci-layout://…`), not from a registry. After the tag was rebuilt with new content, the next build used the new content.
+  - If the tag is missing locally, the builder falls back to the registry: an unqualified name goes to `registry-1.docker.io/v2/library/<name>` (401 here). With a `localhost/` name, a missing tag fails with "Connection refused" instead.
+  - `name:tag@sha256:<digest>` is not resolved from the local store. The builder goes to the registry even when the digest matches the local image, so digest pinning can't be used.
+  - An absolute `-f` outside the cwd context works. Its `<Dockerfile>.dockerignore` is honored and takes precedence over the context's `.dockerignore`, as on Docker 29.9.
+  - The spike images were deleted afterwards.
 
 ## Goals / Non-Goals
 
@@ -28,30 +33,28 @@ Spike, 2026-11-09:
 | Runtime | Whole-project or `--docker-context` build |
 |---|---|
 | Docker, Podman | `--build-context sandbox=<build/>`; the template emits `COPY --from=sandbox <file> …` |
-| Apple `container` | **Primary:** build a content-addressed assets image `project-sandbox-assets-<project-hash>:<fingerprint12>` (`FROM scratch` plus `COPY`) from `build/`, then `COPY --from=<assets ref>`. **Fallback:** a private, cloned build context (below). |
+| Apple `container` | Build a content-addressed assets image `localhost/project-sandbox-assets-<project-hash>:<fingerprint12>` (`FROM scratch` plus `COPY`) from `build/`, then `COPY --from=<assets ref>`. |
 
 - `sandbox_copy_prefix` in `Dockerfile.j2` becomes `sandbox_copy_from`, either `--from=sandbox `/`--from=<ref> ` or empty for the default flow.
 - The assets image tag is content-addressed, so concurrent sessions that produce the same tag produce the same content.
+- The assets reference always carries the `localhost/` registry part. Then a tag missing from the local store fails the build instead of being pulled from Docker Hub. Digest references aren't resolved locally (Context), so the reference is a tag.
 - Old assets tags are pruned after a successful build: keep the last N per project.
 
-### 2. Apple fallback: a cloned context
+### 2. Not chosen: a cloned context on Apple
 
-If task 1.1 shows that Apple's builder can't resolve local images:
-- copy the project into `build/context/` with APFS `clonefile` (`cp -c -R`, copy-on-write, near-instant on the same volume), honoring the generated ignore rules;
-- add the generated files;
-- build from there, cwd-based, which is what Apple handles reliably;
-- if the project is on another volume, the clone degrades to a copy, and the CLI warns with the size.
+Copying the project into a private context with APFS `clonefile` (`cp -c -R`) was the fallback in case Apple's builder couldn't resolve local images. Task 1.1 showed it can, so the clone isn't built. The clone would also degrade to a full copy for projects on another volume.
 
 ### 3. Ignore files
 
 Dockerfile-specific ignore files (`<Dockerfile>.dockerignore` next to the Dockerfile) sit in the private `build/`.
 - BuildKit (Docker) reads them next to `-f`.
 - Podman needs `--ignorefile`.
-- For Apple, task 1.1 checks whether an absolute `-f` outside the context and its ignore file are honored. If they aren't, the clone fallback writes `.dockerignore` into the cloned context instead.
+- Apple honors an absolute `-f` outside the context and the ignore file beside it (task 1.1), so it gets the same layout as Docker.
 
 ## Risks / Trade-offs
 
-- [Apple's builder can't use local images, and the clone fallback is slow for huge projects on another volume] → Warn with the size. Document keeping projects and `$HOME` on one APFS volume. The spike decides before any code is written.
+- [The assets tag is missing when the second build runs, for example after a concurrent prune] → The `localhost/` name makes the build fail instead of pulling. The CLI rebuilds the assets image once and retries. Pruning keeps the tag the current build uses.
+- [A process listening on the host's `localhost` registry port serves an image under that name] → It would need to run as the same user, who could change the build anyway. Accepted.
 - [Assets images accumulate] → Pruned per project after each successful build.
 - [A user Dockerfile stage named `sandbox` collides with the named context] → The splicer already owns stage names it inserts; a test covers a user stage of that name, and the context name is changed if it collides.
 
