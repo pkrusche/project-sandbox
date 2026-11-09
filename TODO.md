@@ -18,108 +18,88 @@
 The security review below is addressed by OpenSpec changes in
 `openspec/changes/`. Implement them in this order (`/opsx:apply <change>`).
 Each change removes the findings it covers from this file as its last task.
-The plan was reviewed on 2026-11-09; changes marked *to draft* don't exist yet,
-and the proposal revisions listed below are not applied yet.
+The plan was reviewed and every proposal revised on 2026-11-09.
 
 | # | Change | Covers | Depends on |
 | --- | --- | --- | --- |
-| 1 | `vcs-session-modes` (drafted 2026-11-09) | #2, #9; jj pointer files choose mount source/target (exploitable today); ROADMAP separate clones | — |
-| 1a | `jj-only-branch-workspaces`, reduced to `host-command-execution` | host tool lookup, neutral cwd, jj overrides | — |
-| 2 | `minimal-devcontainer` | devcontainer gateway row; devcontainer half of #1 | — |
-| 3 | `isolate-firewall-helpers` | #1; sudo re-invocation | 2 |
-| 4 | `quote-generated-build-inputs` | #10; image/version strings in `FROM` | — |
-| 5 | `serialize-egress-policy-updates` | #7 | — |
-| 6 | `private-session-state` | #3, #4, #8: state roots, staging, masks, locks, migration | 2 |
-| 7 | `private-build-context` (*to draft*, split from 6) | build-input half of #6 | 6 |
-| 8 | `read-only-agent-history` (*to draft*, split from 6) | history read-only | 6 |
-| 9 | `validate-all-mount-sources` | #5; mount encoding | 1, 6 |
-| 10 | `protect-host-executed-project-config` | host-side `.git/hooks`, `.git/config`, jj config pointers (rest of #2) | 1 |
-| 11 | `mount-session-firewall` (*to draft*, split from 13) | firewall as a per-session mount; first TODO item above | 3, 6 |
-| 12 | `pin-launch-image-identity` | launch half of #6 | 3, 7, 11 |
-| 13 | `scope-firewall-allowlist` | firewall rows of the networking table | 11 |
-| 14 | `sidecar-policy-hardening` | sidecar rows of the networking table; Squid logging | 13; archive after 9 |
+| 1 | `vcs-session-modes` | #2, #9; jj pointer files choose mount source/target (exploitable today); ROADMAP separate clones | — |
+| 2 | `harden-host-command-execution` | host tool lookup, neutral cwd, jj overrides | — |
+| 3 | `minimal-devcontainer` | devcontainer gateway row; devcontainer half of #1 | — |
+| 4 | `isolate-firewall-helpers` | #1; sudo re-invocation | 3 |
+| 5 | `quote-generated-build-inputs` | #10; image/version strings in `FROM` | — |
+| 6 | `serialize-egress-policy-updates` | #7 | — |
+| 7 | `private-session-state` | #3, #4, #8: state roots, staging, masks, locks, migration | 3 |
+| 8 | `private-build-context` | build-input half of #6 | 7 |
+| 9 | `read-only-agent-history` | history read-only | 7 |
+| 10 | `validate-all-mount-sources` | #5; mount encoding | 1, 7 |
+| 11 | `protect-host-executed-project-config` | shared mode: `.git/hooks`, `.git/config`, jj config pointers, live watcher (rest of #2) | 1, 2 |
+| 12 | `mount-session-firewall` | firewall as a per-session mount; first TODO item above | 4, 7 |
+| 13 | `pin-launch-image-identity` | launch half of #6 | 4, 8, 12 |
+| 14 | `scope-firewall-allowlist` | firewall rows of the networking table | 12 |
+| 15 | `sidecar-policy-hardening` | sidecar rows of the networking table; Squid logging | 6, 14; archive after 10 |
 
 ### Decisions (2026-11-09 review)
 
-- GHE.com-tenant Copilot keeps working in firewall mode behind an explicit
-  flag, until the sidecar has a tenant profile. Other Copilot sessions require
-  `--egress sidecar`.
+- Sessions run in one of two VCS modes. Isolated is the default, also without
+  `--branch` (generated bookmark): a separate session directory with an
+  agent-private repository, and one host snapshot at the end. The agent's own
+  commits are not kept. Shared (`--vcs shared`) mounts the project in place with
+  writable history, one session per repository.
+- In shared mode, `.git/config` and the jj config pointers get a hard read-only
+  where the platform allows it, with snapshot-and-restore as the fallback.
+- GHE.com-tenant Copilot keeps working in firewall mode behind
+  `--copilot-tenant-firewall`, until the sidecar has a tenant profile. Other
+  Copilot sessions require `--egress sidecar`.
 - `--mount` of a credential directory (`~/.ssh`, `~/.aws`, `~/.gnupg`, agent
-  config directories, …) is refused, not warned about. SELinux `z`/`Z` relabel
+  config directories, …) is refused, with no override. SELinux `z`/`Z` relabel
   options stay refused.
-- `private-session-state` is split in three (rows 6–8).
-- `scope-firewall-allowlist` is split: runtime firewall delivery
-  (`mount-session-firewall`) lands before `pin-launch-image-identity`.
-- The devcontainer is rendered only on explicit opt-in (flag or subcommand).
-  Ordinary launches only create and mask an empty `.devcontainer/`.
-- `.git/config` gets a hard read-only where the platform allows it, with
-  snapshot-and-restore as the fallback (spike below).
-- `.jj/repo/config-id`, `.jj/workspace-config-id` and a legacy
-  `.jj/repo/config.toml` are snapshotted and restored like `.git/config`.
-- Sessions run in one of two VCS modes (`vcs-session-modes`). Isolated is the
-  default: a separate session directory with an agent-private repository, and
-  one host snapshot at the end; the agent's own commits are not kept. Shared
-  (`--vcs shared`) mounts the project in place with writable history, one
-  session per repository. A launch without `--branch` is isolated, on a
-  generated bookmark.
-
-### Proposal revisions to apply before implementing
-
-- `jj-only-branch-workspaces`: drop the `branch-workspaces` capability (mount
-  derivation, pointer checks, config-id records, lease), which
-  `vcs-session-modes` replaces. Keep `host-command-execution`.
-- `isolate-firewall-helpers`: remove the devcontainer sudo interim
-  (requirement, scenarios, tasks). Add the Apple spike below.
-- `minimal-devcontainer`: explicit opt-in rendering.
-- `private-session-state`: split; add a verified override for the runtime root
-  (Colima and Lima share only `$HOME`); skip migration while a session of the
-  project is still running.
-- `validate-all-mount-sources`: refuse credential directories.
-- `protect-host-executed-project-config`: narrow to shared mode (one session
-  per repository, so a per-session snapshot replaces the shared baseline); add
-  a live watcher that polls the protected paths and reports changes in the
-  session log and record; hard read-only `.git/config`; jj config pointers; correct "host `jj` is unaffected during a session" (jj runs
-  `git` for `jj git push`/`fetch`, which reads `.git/config`).
-- `pin-launch-image-identity`: key the build lock by runtime and image
-  repository, not by project (two projects sharing `--image-tag` can still move
-  the tag). Drop the network fields from the settings label.
-- `scope-firewall-allowlist`: split out delivery; tenant flag for firewall-mode
-  Copilot.
-- `sidecar-policy-hardening`: also reject a wildcard whose base has public
-  suffixes beneath it. `amazonaws.com` itself is probably not on the Public
-  Suffix List, so the `*.amazonaws.com` example fails the current rule; check
-  against the snapshot.
+- The devcontainer is rendered only with `--devcontainer`. Ordinary launches
+  only create and mask an empty `.devcontainer/`.
+- Agent history is read-only by default; `--persist-agent-history` opts in.
 
 ### Reconcile while implementing
 
 - Archive `validate-all-mount-sources` before `sidecar-policy-hardening`: both
   modify the `egress-sidecar` requirement "Policy lives on the host", and the
   second builds on the first's text.
-- `project-sandbox-tui` passes `--allow-github` when `network.allow_github` is
-  set. `scope-firewall-allowlist` keeps the flag accepted (deprecated, ignored
-  in firewall mode); sidecar mode already rejects it, so coordinate a TUI
-  release that stops passing it.
+- When archiving `private-build-context`, remove the `.project-sandbox/`
+  exception from the `host-state-storage` requirement "Generated state lives
+  outside the project".
+- `project-sandbox-tui` needs a release after `vcs-session-modes`: a
+  shared-mode option, and a note that commit series from isolated sessions are
+  not kept. It also passes `--allow-github` when `network.allow_github` is set;
+  `scope-firewall-allowlist` keeps the flag accepted (deprecated, ignored), and
+  sidecar mode already rejects it, so that release should stop passing it.
 - The TUI reads the `--log`/`--json-summary` paths, `<log>.md`, the summary
   fields `pid`, `exit_code` and `session_id`, and
   `$XDG_STATE_HOME/project-sandbox/sessions/*.json`. `private-session-state`
-  must keep these stable.
+  and `vcs-session-modes` must keep these stable.
 
 ### Spikes to run first
 
 - `vcs-session-modes` task 1.1: the host side passed on jj 0.46
   (`spike-isolated-snapshot.sh` in the change). Confirm with real nested binds
   on each runtime that the host `.jj` can't be reached from the container.
-- `isolate-firewall-helpers`: confirm on Apple `container` that `--user 0:0`
-  works and that the root stage can drop its bounding set (`setpriv
-  --bounding-set=-all` needs `CAP_SETPCAP`). The design rests on both.
-- `private-build-context`: Apple `container` 1.7.1 has no `--build-context`.
-  Confirm the assets-image `COPY --from` approach (or the APFS-clone fallback)
-  with a real build.
+- `isolate-firewall-helpers` task 0.1: confirm on Apple `container` that
+  `--user 0:0` works and that the root stage can drop its bounding set.
+- `private-build-context` task 1.1: Apple `container` 1.7.1 has no
+  `--build-context`. Confirm the assets-image `COPY --from` approach (or the
+  APFS-clone fallback) with a real build.
 - `minimal-devcontainer` task 1.1: confirm VS Code and JetBrains attach to a
   `--network none` devcontainer.
-- `protect-host-executed-project-config`: confirm a read-only file bind of
-  `.git/config` on Docker and Podman, and that `chflags uchg` on the host file
-  blocks writes, renames and deletes from an Apple `container` session.
+- `protect-host-executed-project-config` task 1.1: confirm a read-only file
+  bind of `.git/config` on Docker and Podman, and that `chflags uchg` on the
+  host file blocks writes, renames and deletes from an Apple `container`
+  session.
+
+### Open points
+
+- `openspec/specs/agent-credential-forwarding/` was not read while drafting
+  (`private-session-state` task 1.1 still has to check it).
+- `sidecar-policy-hardening`: whether `amazonaws.com` itself is on the Public
+  Suffix List is unchecked; the rule now covers both cases.
+- `protect-host-executed-project-config` assumes `jj git push`/`fetch` run Git
+  against `.git/config` (inferred from `git.executable-path`, not tested).
 
 ### Not covered by any proposal
 

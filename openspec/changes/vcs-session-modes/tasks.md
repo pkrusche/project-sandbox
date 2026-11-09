@@ -32,5 +32,4 @@
 
 ## Workflow follow-up
 
-- Reduce `jj-only-branch-workspaces` to its `host-command-execution` capability, and narrow `protect-host-executed-project-config` to shared mode (adding the live watcher), before either is implemented.
 - Update project-sandbox-tui: a shared-mode option, and the note that commit series from isolated sessions are not kept.

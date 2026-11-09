@@ -47,7 +47,7 @@ P/git              agent-private         →  /workspace/.git     (bind, rw)
 
 **Alternatives considered:**
 - *A real clone with a bundle or fetch on the way back.* It keeps the agent's commit series, but the host must then read a repository the agent wrote, or depend on the container producing a bundle before it dies. It also costs a clone per session. Rejected with the user's decision that one snapshot is enough.
-- *Keep the shared store and verify pointers* (`jj-only-branch-workspaces`). It leaves the main `.git` writable by every agent. Superseded.
+- *Keep the shared store and verify pointers* (the earlier `jj-only-branch-workspaces` draft). It leaves the main `.git` writable by every agent. Superseded.
 
 ### 2. Building the private repository at a trusted time
 
@@ -95,7 +95,7 @@ Finalization keeps today's sequence, now on host-owned metadata:
 
 ### 5. Leases
 
-- **Isolated:** `host_locks.path_lock("workspace-lease", W)`, non-blocking, from setup to the end of finalization. As in `jj-only-branch-workspaces`, acquisition also refuses while a session record for `W` is running and its container is alive.
+- **Isolated:** `host_locks.path_lock("workspace-lease", W)`, non-blocking, from setup to the end of finalization. Acquisition also refuses while a session record for `W` is running and its container is alive.
 - **Shared:** `host_locks.path_lock("shared-vcs", <project>)`, non-blocking, for the session's lifetime, with the same orphaned-container check.
 
 ### 6. Resume

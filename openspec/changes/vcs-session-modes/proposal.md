@@ -5,9 +5,9 @@
 Every session today gives the agent write access to version-control metadata that the host later reads or executes:
 
 - **Sessions without `--branch`** mount the project in place, with `.git` and `.jj` writable.
-- **`--branch` sessions** mount a jj workspace plus the main repository's `.jj/repo` store and, in colocated repositories, its `.git`. The mount sources and targets come from pointer files the agent can write (see `jj-only-branch-workspaces`).
+- **`--branch` sessions** mount a jj workspace plus the main repository's `.jj/repo` store and, in colocated repositories, its `.git`. The mount sources and targets come from pointer files the agent can write: a pointer naming `/usr/local/bin`, or a `git_target` naming any host directory, becomes a mount in the next session.
 
-The agent can therefore plant Git hooks and config, or redirect jj pointers. The pending proposals contain this with pointer verification, config-id records, read-only sub-mounts and a snapshot-and-restore of `.git/config`. Those are many mechanisms around one cause: the agent shares the user's repository metadata.
+The agent can therefore plant Git hooks and config, or redirect jj pointers. Earlier drafts contained this with pointer verification, config-id records, read-only sub-mounts and a snapshot-and-restore of `.git/config`. Those are many mechanisms around one cause: the agent shares the user's repository metadata.
 
 Most sessions don't need that. An unattended agent needs the files, a way to see its own changes, and a way to hand the result back. Only work *on history itself*, such as rewriting a commit series together with the user, needs the real repository.
 
@@ -53,8 +53,8 @@ A spike on jj 0.46 (2026-11-09, host side only) showed that a session directory 
   - `container_cli.py`: the two metadata mounts.
   - Removed: `worktree.py`, `tests/test_worktree.py`, `scripts/e2e-git-workflow.sh` and the Git branches in `cli.py`.
 - **Other proposals:**
-  - `jj-only-branch-workspaces`: its `branch-workspaces` capability is replaced by this change (mount derivation, pointer verification, config-id records, the jj-only requirement). Its `host-command-execution` capability (tool resolution, neutral working directory, jj overrides) is still needed and stays there.
-  - `protect-host-executed-project-config`: applies to shared mode only. With one shared session per repository, its shared baseline becomes a plain per-session snapshot. The live watcher discussed in the review is added there.
+  - `harden-host-command-execution` (the reduced `jj-only-branch-workspaces` draft): supplies tool resolution, the neutral working directory and the jj overrides used by this change's host commands. Its former `branch-workspaces` capability is replaced by this change.
+  - `protect-host-executed-project-config`: protects repository metadata in shared mode only, relying on this change's one-shared-session lease, and holds the live watcher.
   - `validate-all-mount-sources`: the two metadata mounts are implicit mounts like any other.
   - `private-session-state`: session directories and agent-private repositories move into private state when it lands.
   - ROADMAP: the "separate clones" item is resolved by this change.
