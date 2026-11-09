@@ -21,18 +21,19 @@
 
 ## 3. Cache validity and session tags
 
-- [ ] 3.1 Make the cache-hit decision label-based (`inputs` equals the fingerprint) under the build lock. Verify with tests for:
+- [ ] 3.1 Key the build lock by runtime and image repository, and make the cache-hit decision label-based (`inputs` equals the fingerprint) under it. Verify with tests for:
+  - two projects sharing an `--image-tag` (their builds are serialized);
   - an unchanged image (skipped);
   - a missing label (built);
   - a tag replaced out of band with a different label (built).
-- [ ] 3.2 Add the session tag inside the build lock, launch from it, and remove it in the teardown `finally`. Verify with a barrier-controlled test: session A releases the lock, B rebuilds the tag with a different allowlist, and A's `run` argv still references A's session tag, which points at A's image. Add argv tests for teardown on success, failure and interrupt.
+- [ ] 3.2 Add the session tag inside the build lock, launch from it, and remove it in the teardown `finally`. Verify with a barrier-controlled test: session A releases the lock, B rebuilds the tag with a different base image, and A's `run` argv still references A's session tag, which points at A's image. Add argv tests for teardown on success, failure and interrupt.
 - [ ] 3.3 Reap session tags of dead sessions at launch, using the `private-session-state` leases. Verify with a test that a `SIGKILL`ed session's tag is removed and a live one's is kept.
 
 ## 4. `--no-build` and `--build-only`
 
-- [ ] 4.1 Make `--no-build` render inputs, compare them with the `inputs` label, and print the `settings` diff on mismatch. Verify with CLI tests for TODO.md item 1 (built with `--build-only --pi-ollama`, launched with `--agent pi --pi-ollama --no-build`: refused, naming `pi_ollama`), an unlabeled image (refused) and a matching image (launches without building).
-- [ ] 4.2 Allow `--agent` with `--build-only`, keep a prompt, `--branch` and `--json-summary` rejected, and warn about agent-dependent options without `--agent`. Verify with CLI tests for `--build-only --agent pi --pi-ollama` (the rendered firewall has the Ollama rule; the label records it) and the warning case.
+- [ ] 4.1 Make `--no-build` render inputs, compare them with the `inputs` label, and print the `settings` diff on mismatch. Verify with CLI tests for an image built with another base image (refused, naming `base_image`), an unlabeled image (refused) and a matching image (launches without building).
+- [ ] 4.2 Make `--build-only` warn about options that don't affect the image. Verify with CLI tests for `--build-only --pi-ollama` (warning, build proceeds) and plain `--build-only` (no warning).
 
 ## 5. Docs
 
-- [ ] 5.1 Rewrite `docs/usage.md` "Image Builds": labels, label-based caching, session tags, `--build-only --agent`, and `--no-build` verification with an example mismatch message. Remove TODO.md item 1 and finding #6. Verify that `uv run pytest -q` and `uv run python -m compileall -q src tests` pass.
+- [ ] 5.1 Rewrite `docs/usage.md` "Image Builds": labels, label-based caching, session tags, and `--no-build` verification with an example mismatch message. Remove finding #6 from TODO.md. Verify that `uv run pytest -q` and `uv run python -m compileall -q src tests` pass.
