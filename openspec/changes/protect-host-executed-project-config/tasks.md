@@ -2,11 +2,11 @@
 
 ## 1. Spike
 
-- [ ] 1.1 Check the hard read-only mechanisms with a throwaway repository. On Linux with Docker and Podman: a read-only bind of `.git/config` over itself inside a read-write project mount. On macOS with Apple `container`, Docker Desktop and Podman machine: `chflags uchg` on the host file, then try from the container to write, truncate, rename over, rename away and delete it. Verify by recording the result per platform and runtime in design.md Decision 2, and by naming the fallback platforms.
+- [x] 1.1 Check the hard read-only mechanisms with a throwaway repository. On Linux with Docker and Podman: a read-only bind of `.git/config` over itself inside a read-write project mount. On macOS with Apple `container`, Docker Desktop and Podman machine: `chflags uchg` on the host file, then try from the container to write, truncate, rename over, rename away and delete it. Verify by recording the result per platform and runtime in design.md Decision 2, and by naming the fallback platforms.
 
 ## 2. Read-only Git directories
 
-- [ ] 2.1 Add read-only binds of `.git/hooks/` and `.git/info/` (created if missing) after the workspace mount, for shared sessions only. Verify with argv tests per runtime, including mount order, and with a test that isolated sessions get neither.
+- [ ] 2.1 Add read-write self-binds of `.git/`, `.jj/` and `.jj/repo/` (those that exist), then read-only binds of `.git/hooks/` and `.git/info/` (created if missing), after the workspace mount, for shared sessions only. Verify with argv tests per runtime, including mount order, and with a test that isolated sessions get none of them.
 - [ ] 2.2 Add an opt-in container test (`PROJECT_SANDBOX_CONTAINER_TESTS=1`): writing `.git/hooks/pre-commit` and `.git/info/attributes` fails, and an existing `pre-commit` hook still runs on an in-sandbox `git commit`. Verify on Docker and Apple `container`.
 
 ## 3. Config files

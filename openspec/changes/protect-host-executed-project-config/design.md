@@ -4,7 +4,7 @@
 
 - **Shared sessions** (`vcs-session-modes`): the project, including `.git/` and `.jj/`, is bind-mounted read-write at `/workspace`. Only one shared session runs per repository.
 - **Isolated sessions:** the main repository's metadata is not mounted. The session directory's files come back as one commit.
-- **Apple `container`:** rejects single-file bind mounts ("is not a directory"), but nested directory binds work.
+- **Apple `container`** 1.7.1: `--mount` rejects single-file binds ("is not a directory"). `-v` accepts a file, but it shares the file's parent directory and silently drops a directory mount of that same parent. Nested directory binds work.
 - **Host jj** has `git.executable-path = "git"`, so `jj git push` and `fetch` run Git against `.git/config`.
 - **Session teardown:** happens in `cli.main`'s `finally` block (`cli.py:1200–1245`), ending with the JSON summary (`_write_json_summary_unguarded`, `cli.py:1284`).
 
@@ -25,6 +25,7 @@
 
 | Path | Mechanism | Why |
 |---|---|---|
+| `.git/`, `.jj/`, `.jj/repo/` | read-write bind of the same host directory over itself, before the protections below | A mount point can't be renamed. Without it, the agent renames the parent away and recreates it with its own config, which defeats every protection below (spike, Decision 2). |
 | `.git/hooks/`, `.git/info/` | read-only bind of the same host directory over itself | Directories work on every runtime. Existing hooks still run in the sandbox. |
 | `.git/config`, `.git/worktrees/*/config.worktree`, `.jj/repo/config-id`, `.jj/workspace-config-id` | hard read-only during the session (Decision 2), plus snapshot and restore afterwards (Decision 3) | These are single files that host tools read on every command. |
 | `.jj/repo/config.toml` | moved aside after the session if it appeared or changed | Only older jj releases read it. `doctor` warns about those (`harden-host-command-execution`). |
@@ -38,6 +39,24 @@ A missing `hooks/` or `info/` is created (empty, `0755`) through a no-follow `mk
 - **macOS (Apple `container`, Docker Desktop, Podman machine):** before launch, the host runs the equivalent of `chflags uchg` on each file. The flag is enforced by the host filesystem, so writes, renames and deletes arriving through the VM's file sharing fail. After the container exits, the host clears the flag on exactly the files it set, recorded in session state.
 - **Stale flags:** a killed CLI leaves the flag set. The next launch for the repository, and `doctor`, clear flags recorded for sessions whose lease is free.
 - **Fallback:** if the spike (task 1.1) shows a mechanism doesn't hold on a platform, that platform runs with restore only, and the launch says so.
+
+**Spike, 2026-11-09** (task 1.1; Docker Desktop 29.9.3, Podman 6.0.0 machine (applehv, rootless, `--userns=keep-id`), Apple `container` 1.7.1, macOS host on APFS). In a throwaway `git init` repository mounted read-write at `/workspace`, the container tried: `chmod`, `touch`, append, `truncate`, `git config core.fsmonitor …`, rename a file over `config`, rename `config` away, delete it, hard-link it, and finally rename `.git` away, recreate it and write its own `config`. Each case ran as root with `NET_ADMIN`/`NET_RAW`, and the self-bind cases also ran as the agent user.
+
+| Mechanism | Docker Desktop | Podman machine | Apple `container` |
+|---|---|---|---|
+| read-only file bind of `config` | all file operations blocked (`EROFS`, `EBUSY`, `EXDEV`) | same | same, with `-v` only |
+| `chflags uchg` on the host file | all file operations blocked (`EPERM`) | same | same |
+| either of the above, but no `.git` self-bind | **bypassed**: `.git` renamed and recreated with an agent-written `config` | **bypassed** | **bypassed** |
+| file bind plus `.git` self-bind | holds (`mv .git` gives `EBUSY`) | holds | **bypassed**: Apple drops the `.git` mount (Context) |
+| `uchg` plus `.git` self-bind | holds | holds | holds |
+
+- `.git` self-bind plus read-only `hooks/` and `info/` binds plus `uchg` on `config` blocks writing a hook, writing `info/attributes`, renaming or removing `hooks/`, renaming `.git`, and appending to `config`, on all three runtimes.
+- Neither runtime grants `CAP_LINUX_IMMUTABLE`, and the host enforces `uchg` regardless of the container's uid.
+- **Consequences:**
+  - The self-binds of Decision 1 are required on every runtime. Renaming `.jj` or `.jj/repo` was not tested, but it is the same `rename(2)` case.
+  - Use `uchg` on all three macOS runtimes. Apple has no working file bind next to a `.git` self-bind.
+  - On native Linux, use the read-only file bind plus the self-bind. It held in both Linux VMs, but a native Linux host was not tested.
+- **Fallback platforms:** none among those tested. Restore-only applies where `chflags` fails, such as volumes without BSD flags (exFAT, some network shares; untested), and to runtimes not listed here.
 
 **Alternative considered:** restore only, as first drafted. It leaves the whole session as a window in which the user's host `git` or `jj git push` honors agent-written config. Rejected as the primary mechanism (user decision, 2026-11-09).
 

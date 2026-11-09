@@ -7,7 +7,7 @@ Defines how project-sandbox keeps sandboxed agents from silently changing reposi
 ## ADDED Requirements
 
 ### Requirement: Git hooks and info directories are read-only in shared sessions
-Every shared session SHALL mount the repository's `.git/hooks/` and `.git/info/` read-only at their in-container locations. Existing hooks SHALL remain usable inside the sandbox. A missing directory SHALL be created empty on the host before the container starts.
+Every shared session SHALL mount the repository's `.git/`, `.jj/` and `.jj/repo/`, where they exist, as mount points of their own, so that they can't be renamed from inside the container. It SHALL mount `.git/hooks/` and `.git/info/` read-only at their in-container locations. Existing hooks SHALL remain usable inside the sandbox. A missing directory SHALL be created empty on the host before the container starts.
 
 #### Scenario: Agent writes a hook
 - **WHEN** a process in a shared session writes `.git/hooks/pre-commit`
@@ -20,6 +20,10 @@ Every shared session SHALL mount the repository's `.git/hooks/` and `.git/info/`
 #### Scenario: Existing hooks still run in the sandbox
 - **WHEN** the repository has a `pre-commit` hook and the agent runs `git commit` in a shared session
 - **THEN** the hook runs inside the sandbox
+
+#### Scenario: Agent renames the metadata directory away
+- **WHEN** a process in a shared session renames `.git`, `.jj` or `.jj/repo` to another name
+- **THEN** the rename fails, so the agent can't replace the directory with one holding its own hooks or config
 
 #### Scenario: Isolated session
 - **WHEN** an isolated session starts
