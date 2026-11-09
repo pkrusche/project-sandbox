@@ -8,20 +8,17 @@ Firewall mode admits much more than a session needs (TODO.md networking table):
 - **All ports and protocols.** Pinned addresses are accepted on every port and protocol, so any service on those IPs is reachable.
 - **Private addresses get pinned.** DNS answers aren't classified. A domain resolving to loopback, RFC 1918, link-local, metadata (`169.254.169.254`) or other non-global ranges opens that internal address on all ports.
 - **`--allow-github` is broad, and Copilot implies it.** It admits GitHub's web, API and git CIDRs, repository hosts, `ghcr.io` and telemetry hosts, and `--agent copilot` turns it on. Firewall mode can only admit `api.github.com:443` whole, so it can't restrict Copilot to the `/copilot_internal/` paths the CLI needs. The sidecar's Copilot profile can. Sandboxes don't need GitHub repository access.
-- **The firewall is baked into the image.** The rendered firewall script is `COPY`ed into the image, so any change to the allowlist means another image. Scoping the allowlist per agent would make every agent switch a rebuild. It also produces stale-policy images (TODO.md item 1).
+
+`mount-session-firewall`, split from this change on 2026-11-09, already delivers the firewall script as a per-session mount. Scoping the allowlist per agent therefore doesn't make an agent switch rebuild the image.
 
 Decisions made with the user (2026-11-09):
 - headless sessions, and interactive sessions with a named agent, admit only that agent's hosts, while a plain shell session (`--agent bash`) gets every provider;
 - align the allowlist with the sidecar's minimal provider set;
-- no GitHub repository access, with Copilot only through the sidecar.
+- no GitHub repository access, with Copilot only through the sidecar;
+- GHE.com-tenant Copilot stays available in firewall mode behind an explicit flag, until the sidecar has a tenant profile (plan review, 2026-11-09).
 
 ## What Changes
 
-- **The firewall becomes a per-session runtime input.**
-  - The firewall script is rendered into the session's private staging directory and mounted read-only at `/project-sandbox-firewall/`.
-  - The root stage (`isolate-firewall-helpers`) runs it from there.
-  - Images no longer contain any network policy. Changing agent, domains, proxies or Ollama never rebuilds the image.
-  - A session that needs a firewall and has no mounted script fails closed.
 - **Provider hosts are scoped to the agent.**
   - One table maps each agent to its provider hosts: Claude to the Anthropic hosts; Codex to the OpenAI hosts; OpenCode and Pi to the hosts of their configured provider families, or none with `--pi-ollama` or an agent proxy.
   - `--agent bash` admits the union of all of them. The sidecar's always-allowed provider set is defined as that same union, so the two modes can't drift.
@@ -35,7 +32,7 @@ Decisions made with the user (2026-11-09):
   - `--allow-private-destination host:port` is the explicit exception, for internal mirrors or proxies, and admits only that host and port.
 - **No GitHub in firewall mode.**
   - **BREAKING:** `--agent copilot` requires `--egress sidecar`, and is refused in firewall mode with a pointer to the sidecar Copilot profile.
-  - **BREAKING:** GHE.com tenants (`--copilot-host <tenant>.ghe.com`) become unavailable until the sidecar gains a tenant profile (ROADMAP).
+  - **BREAKING:** GHE.com tenants (`--copilot-host <tenant>.ghe.com`) need the new `--copilot-tenant-firewall` flag. It admits only that tenant's Copilot hosts on TCP 443, in firewall mode. Without it, the launch is refused with a message naming the flag and what it exposes: the tenant's whole API host, reachable with the Copilot token. The flag goes away when the sidecar gains a tenant profile (ROADMAP).
   - **BREAKING:** `--allow-github` is deprecated. It is still accepted, because project-sandbox-tui passes it, but it is ignored, with a warning that suggests `--extra-domain` for specific hosts.
   - The GitHub meta CIDR import, along with its root-run `curl`/`jq` step, is removed.
 
@@ -43,11 +40,11 @@ Decisions made with the user (2026-11-09):
 
 ### New Capabilities
 
-- `firewall-egress-policy`: what firewall-mode egress admits: per-agent provider scoping, port scoping, address classification and the private-destination exception, `--extra-domain` syntax, `--allow-github` deprecation, and delivery of the firewall as a per-session runtime input.
+- `firewall-egress-policy`: what firewall-mode egress admits: per-agent provider scoping, port scoping, address classification and the private-destination exception, `--extra-domain` syntax, and `--allow-github` deprecation.
 
 ### Modified Capabilities
 
-- `copilot-agent-support`: "Copilot implies GitHub network access, chosen explicitly" is replaced by "Copilot requires sidecar egress". Tenant hosts are refused until the sidecar supports them.
+- `copilot-agent-support`: "Copilot implies GitHub network access, chosen explicitly" is replaced by "Copilot requires sidecar egress", with the flagged firewall-mode exception for tenant hosts.
 - `pi-agent-support`: "Pi provider allowlist warning" names `--extra-domain` only, not `--allow-github`.
 
 ## Impact
@@ -57,14 +54,10 @@ Decisions made with the user (2026-11-09):
   - `templates/_resolve_endpoints.py.j2`: extended for domains.
   - `firewall.py`: per-agent hosts, ports, private exceptions.
   - `egress_policy.py`: `PROVIDER_HOST_SETS`, with `PROVIDER_HOSTS` as their union.
-  - `templates/Dockerfile.j2`: the firewall `COPY` is removed.
-  - `cli.py`: the firewall mount, Copilot and tenant refusals, `--allow-github` deprecation, `--extra-domain host:port`, `--allow-private-destination`.
-  - `container_cli.py`: the mount.
-- **Interplay:**
-  - `isolate-firewall-helpers`: the root stage runs `/project-sandbox-firewall/init-firewall.sh` instead of a baked path. Its `-I`, `cd /` and `env -i` protections apply unchanged.
-  - `pin-launch-image-identity`: the `settings` label loses its network fields, and TODO.md item 1 can no longer occur, because Ollama rules are runtime input.
-  - `validate-all-mount-sources` already forbids user targets under `/project-sandbox-*`.
-  - `private-session-state` provides the private staging the script is mounted from.
+  - `cli.py`: Copilot refusal and the tenant flag, `--allow-github` deprecation, `--extra-domain host:port`, `--allow-private-destination`.
+- **Depends on:**
+  - `mount-session-firewall` must land first.
+  - `pin-launch-image-identity` is unaffected: no network setting is part of an image.
 - **Users:**
   - Headless sessions lose access to other agents' providers.
   - Extra domains are 443-only unless a port is given.

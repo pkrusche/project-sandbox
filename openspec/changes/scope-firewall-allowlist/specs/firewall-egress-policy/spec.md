@@ -2,20 +2,9 @@
 
 ## Purpose
 
-Defines what a firewall-mode sandbox may reach: per-agent provider hosts, ports, the handling of non-global addresses, user-added destinations, and how the firewall policy is delivered to the sandbox at runtime rather than built into the image.
+Defines what a firewall-mode sandbox may reach: per-agent provider hosts, ports, the handling of non-global addresses, and user-added destinations.
 
 ## ADDED Requirements
-
-### Requirement: The firewall policy is a per-session runtime input
-The system SHALL render each session's firewall script into that session's private staging, and mount it read-only into the container. Privileged setup SHALL run the mounted script. Images SHALL NOT contain a firewall script or any network allowlist. A session with the firewall enabled SHALL fail before starting the session command if the mounted script is absent.
-
-#### Scenario: Switching agents does not rebuild
-- **WHEN** a Claude session is followed by a Codex session for the same project with otherwise identical options
-- **THEN** the second session reuses the image, and its firewall admits the Codex provider hosts
-
-#### Scenario: Missing script
-- **WHEN** the firewall is enabled and `/project-sandbox-firewall/init-firewall.sh` is not mounted
-- **THEN** the container exits non-zero before the session command starts
 
 ### Requirement: Provider hosts are scoped to the session's agent
 In firewall mode without an agent proxy, the system SHALL admit only the selected agent's provider hosts, from a single table that defines each agent's set. `--agent bash` SHALL admit the union of every agent's set. The sidecar's always-allowed provider hosts SHALL equal that union.
@@ -35,6 +24,10 @@ In firewall mode without an agent proxy, the system SHALL admit only the selecte
 #### Scenario: Pi with Ollama
 - **WHEN** `--agent pi --pi-ollama` runs in firewall mode
 - **THEN** no remote provider host is admitted, and Ollama is reachable on its port-scoped rule
+
+#### Scenario: Switching agents
+- **WHEN** a Claude session is followed by a Codex session for the same project with otherwise identical options
+- **THEN** the second session reuses the image, and its firewall admits only the Codex provider hosts
 
 #### Scenario: Sidecar alignment
 - **WHEN** the sidecar's effective allowlist is computed
