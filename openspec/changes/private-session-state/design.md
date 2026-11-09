@@ -17,19 +17,16 @@ Whole-project builds use the project (or `--docker-context`) as the build contex
 
 `container_cli.build_image` runs `build` with `cwd` set to the context and `.` as the context argument. Apple `container` "only reliably honors a current-directory context" (`container_cli.py:510`).
 
-Spike, 2026-11-09:
-- Docker 29.9.2 (buildx 0.38.1) and Podman 6.0.0 both support `--build-context name=path`.
-- Apple `container` 1.7.1 `build` has no `--build-context`. Its options are `--build-arg`, `-f`, `--target`, `--secret`, `--ssh`, `--label` and output/platform flags.
-- Whether Apple's builder resolves a locally built image in `COPY --from=<image>` has not been tested yet. That is task 1.2.
-
 ## Goals / Non-Goals
 
 **Goals:**
-- No host-generated file at a predictable path inside a project, except `.devcontainer/`.
+- No host-generated secret, config, history, log, mask or lock inside a project. Generated build inputs leave the project too, except for whole-project flows until `private-build-context`.
 - No two sessions share mutable inputs.
 - One primitive for every host write, so link-safety is not re-implemented per renderer.
 
 **Non-Goals:**
+- Supplying generated files to whole-project builds from outside the project (`private-build-context`).
+- Read-only agent history (`read-only-agent-history`).
 - Image identity, meaning launching by image ID and a complete fingerprint. That belongs to `pin-launch-image-identity`. This change only makes the inputs per session.
 - Validating user `--mount` values (`validate-all-mount-sources`).
 - Devcontainer content: that belongs to `minimal-devcontainer`. This change only relocates what remains.
@@ -61,11 +58,12 @@ $XDG_STATE_HOME/project-sandbox/                         persistent (0700)
 ```
 
 The runtime root is chosen in this order:
-1. `$XDG_RUNTIME_DIR` (Linux; per-user tmpfs);
-2. `$TMPDIR` when it is per-user (macOS `/var/folders/…/T`);
-3. `/tmp/project-sandbox-<uid>`, verified, which is the current location.
+1. `$PROJECT_SANDBOX_RUNTIME_DIR`, when set (absolute, verified private);
+2. `$XDG_RUNTIME_DIR` (Linux; per-user tmpfs);
+3. `$TMPDIR` when it is per-user (macOS `/var/folders/…/T`);
+4. `/tmp/project-sandbox-<uid>`, verified, which is the current location.
 
-Secrets therefore stay off persistent disk where the OS offers a per-user temporary location. The macOS `$TMPDIR` lives under `/var/folders`, which is in the default shares of Docker Desktop and Podman machine. Apple `container` shares arbitrary paths. On Colima, `/tmp` staging already fails today, so there's no regression. A per-runtime mount probe turns any failure into a clear error.
+Secrets therefore stay off persistent disk where the OS offers a per-user temporary location. The macOS `$TMPDIR` lives under `/var/folders`, which is in the default shares of Docker Desktop and Podman machine. Apple `container` shares arbitrary paths. On Colima and Lima, which share only `$HOME` by default, the mount probe fails with an error that names `PROJECT_SANDBOX_RUNTIME_DIR`. Task 1.3 also checks whether macOS's periodic cleanup of `$TMPDIR` can remove staging of a session that runs for days.
 
 The `<session-id>` is the existing observability session ID.
 
@@ -80,7 +78,7 @@ The `<session-id>` is the existing observability session ID.
 
 Renderers stop calling `Path.write_text`. They return their content, and the caller writes it through a `PrivateDir`. This is the bulk of the refactor (`dockerfile.py`, `firewall.py`, `config_agents.py`, `devcontainer.py` and `chroot.py`), and it makes the rendering functions pure, which simplifies tests.
 
-`.devcontainer/` is the one in-project target. It is opened from a descriptor on the project root. If it is a symlink, rendering is refused, matching the review's suggestion to reject symlinked directories. Leaf symlinks inside it are replaced by the rename.
+`.devcontainer/` is the one lasting in-project target. Its configuration files are written only for `--devcontainer`. It is opened from a descriptor on the project root. If it is a symlink, rendering is refused, matching the review's suggestion to reject symlinked directories. Leaf symlinks inside it are replaced by the rename.
 
 **Alternative considered:** `is_symlink()` checks before `write_text`, extending today's `_reject_symlinked_project_path`. The review explicitly notes this is racy against concurrent replacement. Rejected.
 
@@ -92,35 +90,17 @@ At launch, under a short reaper lock, the CLI scans `staging/*`. For each one, i
 
 This is the same pattern as the existing local-forward leases. It is immune to PID reuse, and it never unlinks a lock that someone else holds.
 
-### 4. Supplying generated files to whole-project builds
+### 4. Build inputs
 
-| Runtime | Default flow (context is the session `build/`) | Whole-project or `--docker-context` |
-|---|---|---|
-| Docker, Podman | build from `build/` as today (cwd plus `.`) | `--build-context sandbox=<build/>`; the template emits `COPY --from=sandbox <file> …` |
-| Apple `container` | build from `build/` as today | **Primary:** build a content-addressed assets image `project-sandbox-assets-<project-hash>:<fingerprint12>` (`FROM scratch` plus `COPY`) from `build/`, then `COPY --from=<assets ref>`. **Fallback:** a private, cloned build context (see below). |
+Every renderer's output goes into the session's `build/` directory. The default flow builds from there, cwd-based, as today.
 
-- `sandbox_copy_prefix` in `Dockerfile.j2` becomes `sandbox_copy_from`, either `--from=sandbox `/`--from=<ref> ` or empty.
-- The assets image tag is content-addressed, so concurrent sessions that produce the same tag produce the same content. That avoids a tag race without waiting for `pin-launch-image-identity`.
-- Old assets tags are pruned after a successful build: keep the last N per project.
-- **Fallback, if task 1.2 shows Apple's builder can't resolve local images:**
-  - copy the project into `build/context/` with APFS `clonefile` (`cp -c -R`, copy-on-write, near-instant on the same volume), honoring the generated ignore rules;
-  - add the generated files;
-  - build from there, cwd-based, which is what Apple handles reliably;
-  - if the project is on another volume, the clone degrades to a copy, and the CLI warns with the size.
-- **Ignore files:** Dockerfile-specific ignore files (`<Dockerfile>.dockerignore` next to the Dockerfile) now sit in the private `build/`.
-  - BuildKit (Docker) reads them next to `-f`.
-  - Podman needs `--ignorefile`.
-  - For Apple, task 1.2 checks whether an absolute `-f` outside the context and its ignore file are honored. If they aren't, the clone fallback writes `.dockerignore` into the cloned context instead.
+Whole-project flows use the project (or `--docker-context`) as their context, and `COPY` generated files by a context-relative path. Until `private-build-context` supplies them separately, the launch copies the generated files from `build/` into `<context>/.project-sandbox/` through a `PrivateDir` opened on the context root, under the build lock, right before the build. The fingerprint is still computed over the session `build/`.
 
-### 5. History: a read-only persisted copy plus a writable in-session copy
+This interim copy keeps two known gaps for those flows, both closed by `private-build-context`: a file can be replaced between the copy and the build, and `--docker-context` must still contain `.project-sandbox`.
 
-- **Default mount:** `history/claude_projects` is mounted read-only at `/project-sandbox-history/claude_projects`.
-- **Entrypoint seeding:** after the privilege drop, the entrypoint copies it into `$HOME/.claude/projects` (`cp -a`; the container's own writable layer, discarded with the container), so Claude can append transcripts and write memory during the session.
-- **`--persist-agent-history`:** mounts the directory read-write directly at `$HOME/.claude/projects`, as interactive sessions do today.
-- **Headless sessions:** now get the read-only mount too (user decision).
-- **Size:** if the persisted history exceeds a threshold (default 256 MiB), the launch warns before copying. The history is per project, so it holds only this project's transcripts.
+### 5. History location
 
-**Alternative considered:** an overlayfs mount in the root stage. That needs `CAP_SYS_ADMIN`, which the container does not and should not have. Rejected.
+`history/shell` and `history/claude_projects` move to `projects/<key>/history/`. Their mounts are unchanged: interactive sessions only, read-write. `read-only-agent-history` changes the Claude history mount afterwards.
 
 ### 6. Logs, locks and `.gitignore`
 
@@ -138,7 +118,7 @@ This is the same pattern as the existing local-forward leases. It is immune to P
 
 The mask exists so the agent can't edit configuration the host later executes. `devcontainer.json`'s `initializeCommand` runs on the host when the project is opened in a container. Today the mask is skipped when `.devcontainer` is absent (`cli.py:3233`), because Apple `container` rejects a bind onto a missing target. An agent can therefore create the directory and plant `devcontainer.json`.
 
-Before building argv, the launch opens the workspace root as a `PrivateDir` anchor:
+Before building argv, the launch opens the directory mounted at `/workspace` (the session directory in isolated mode, the project in shared mode; see `vcs-session-modes`) as a `PrivateDir` anchor:
 - if `.devcontainer` is absent, it creates `.devcontainer/` with `.gitignore` (`*`);
 - if `.devcontainer` is a symlink, it refuses the launch;
 - it then always adds the read-only mask from the session's `empty/` directory.
@@ -149,10 +129,10 @@ An empty `.devcontainer/` holding only `.gitignore` doesn't trigger IDE "Reopen 
 
 ### 8. Migration, once per project
 
-Migration runs under the project's build lock, and only when `projects/<key>/migrated` is absent. Working through a `PrivateDir` opened (no-follow) on `<project>/.project-sandbox` (and `<workspace>/.project-sandbox` in branch mode):
+Migration runs under the project's build lock, and only when `projects/<key>/migrated` is absent. It is postponed, with a notice, while any session record for the project is `running` with a live process: a session started by an older version still has these files mounted. Working through a `PrivateDir` opened (no-follow) on `<project>/.project-sandbox` (and `<workspace>/.project-sandbox` in branch mode):
 1. Move `history/shell/bash_history` and `history/claude_projects/` into private state, by copying regular files only and skipping symlinks, then delete the originals.
 2. Move `sessions/*.log` in the same way.
-3. Unlink every name on the known generated-file list, including secrets such as `api-keys.env`, `pi/models.json` and `opencode/opencode.json`, plus empty known subdirectories.
+3. Unlink every name on the known generated-file list (leaving the build inputs a whole-project flow still copies in, see Decision 4), including secrets such as `api-keys.env`, `pi/models.json` and `opencode/opencode.json`, plus empty known subdirectories.
 4. Report what was moved and removed, and list unknown entries left in place.
 5. Write the `migrated` marker.
 
@@ -162,10 +142,8 @@ A legacy `.project-sandbox` that still exists, holding unknown files or being re
 
 ## Risks / Trade-offs
 
-- [Apple's builder can't use local images, and the clone fallback is slow for huge projects on another volume] → Warn with the size. Document keeping projects and `$HOME` on one APFS volume. The spike in task 1.2 decides before any code is written.
 - [Breaking the outputs launchers depend on] → I checked project-sandbox-tui (2026-11-09). It always passes its own `--log` and `--json-summary` paths, inside its private state, for background runs. It reads `<log>.md` as the transcript and `pid`, `exit_code` and `session_id` from the summary. It reads session records directly from `$XDG_STATE_HOME/project-sandbox/sessions/*.json`. It reads nothing under `.project-sandbox/`. All of these are kept and pinned by the "Launcher-facing outputs" requirement. The per-session staging directory is named `staging/`, under a different root, so it can't be mistaken for the records directory. Other user scripts that read `.project-sandbox/sessions/*.log` get the release-note mention and the printed path.
 - [`$XDG_STATE_HOME` on NFS, where `flock` is unreliable] → This is already true for egress and local-forward state. Document it. `doctor` can warn when the state root is on a network filesystem.
-- [Copying history adds launch time] → It is bounded by the size warning. `--persist-agent-history` skips the copy.
 - [The refactor touches every renderer] → Pure renderers plus one writer make the change mechanical. Renderer tests switch from reading files to asserting returned content, which is a net simplification.
 - [Devcontainer coupling] → Sequence `minimal-devcontainer` first. If it slips, this change keeps a persistent `projects/<key>/devcontainer/` staging directory for its credentials, and refers to it with absolute paths in `devcontainer.json`.
 

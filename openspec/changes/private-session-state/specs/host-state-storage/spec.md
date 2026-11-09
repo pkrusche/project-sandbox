@@ -2,19 +2,19 @@
 
 ## Purpose
 
-Defines where project-sandbox keeps the state it generates on the host, how that state is protected from the repository and from sandboxed agents, how concurrent sessions are kept apart, and how image builds receive generated inputs.
+Defines where project-sandbox keeps the state it generates on the host, how that state is protected from the repository and from sandboxed agents, and how concurrent sessions are kept apart.
 
 ## ADDED Requirements
 
 ### Requirement: Generated state lives outside the project
-The system SHALL store generated build inputs, agent configs, staged secrets, prompts, build-cache state, history, session logs, mask directories and lock files outside every project and worktree directory. The only generated files inside a project SHALL be in `.devcontainer/`.
+The system SHALL store agent configs, staged secrets, prompts, build-cache state, history, session logs, mask directories and lock files outside every project and session directory. Generated build inputs SHALL be rendered there too. Inside a project or session directory, the system SHALL write only `.devcontainer/` and, until whole-project builds receive their inputs separately, a secret-free copy of those inputs in `.project-sandbox/` of the build context.
 
 #### Scenario: Launch leaves no generated files in the project
-- **WHEN** a sandbox session runs to completion in a project without `.devcontainer` rendering
-- **THEN** the project and its worktree contain no file or directory created by project-sandbox, and the root `.gitignore` is unchanged
+- **WHEN** a default-flow sandbox session runs to completion
+- **THEN** the project and the session directory contain nothing created by project-sandbox except an empty, self-ignoring `.devcontainer/`, and the root `.gitignore` is unchanged
 
 #### Scenario: Devcontainer files are self-ignoring
-- **WHEN** the devcontainer is rendered
+- **WHEN** the devcontainer is rendered with `--devcontainer`
 - **THEN** its generated files are real files under `.devcontainer/`, `.devcontainer/.gitignore` contains `*`, and the root `.gitignore` is unchanged
 
 #### Scenario: Dry-run
@@ -66,24 +66,16 @@ Each session SHALL render its build context, prompt, API-key env file, agent con
 - **WHEN** a session's process was killed with `SIGKILL`, and a later launch for any project runs
 - **THEN** the killed session's staging is deleted, and the live sessions' staging is not
 
-### Requirement: Builds receive generated inputs without project-relative paths
-Image builds SHALL take generated files from the session's private build context, never from a path inside the project. When the build context is the project or a user-supplied `--docker-context`, the generated files SHALL be supplied separately from that context. `--docker-context` SHALL NOT need to contain any generated directory.
+### Requirement: The runtime root can be overridden
+When `PROJECT_SANDBOX_RUNTIME_DIR` is set, the system SHALL use it as the root for per-session staging, after the same verification as any state directory. A relative value SHALL be refused. When a runtime cannot mount the selected runtime root, the launch SHALL fail naming the path and this variable.
 
-#### Scenario: Whole-project build on Docker or Podman
-- **WHEN** `--python-uv`, `--rust-cargo`, `--node-npm` or `--dockerfile` builds on Docker or Podman
-- **THEN** the build command passes the session's private build context as a named build context, and the generated Dockerfile copies sandbox files from it
+#### Scenario: Runtime that shares only the home directory
+- **WHEN** `PROJECT_SANDBOX_RUNTIME_DIR` names a private directory under `$HOME`
+- **THEN** per-session staging is created there and mounted from there
 
-#### Scenario: Whole-project build on Apple container
-- **WHEN** the same flows build on Apple `container`
-- **THEN** the generated files reach the image without any path inside the project, and the build succeeds
-
-#### Scenario: Planted generated file in the project
-- **WHEN** the project contains `.project-sandbox/init-firewall.sh` or `.project-sandbox/entrypoint.sh` with attacker content
-- **THEN** the built image contains the generated versions, not the project's files
-
-#### Scenario: Custom docker context
-- **WHEN** `--dockerfile` is used with a `--docker-context` directory that does not contain the project's `.project-sandbox`
-- **THEN** the build proceeds
+#### Scenario: Unmountable default
+- **WHEN** the runtime cannot mount the default runtime root
+- **THEN** the launch fails before starting a container, naming the path and `PROJECT_SANDBOX_RUNTIME_DIR`
 
 ### Requirement: Implicit mount sources are validated
 Every mount source the system adds on its own (history, masks, staging, the egress CA directory) SHALL be a verified private directory or file under the state roots, and SHALL be validated immediately before the container command is built. A mask SHALL be an empty directory created for the session. A legacy `/workspace/.project-sandbox` SHALL still be masked when present.
@@ -115,9 +107,9 @@ Every sandbox session SHALL mount an empty, read-only directory over `/workspace
 - **WHEN** `.devcontainer` in the workspace is a symbolic link
 - **THEN** the launch fails before starting a container, naming the path and explaining that the link's target would be writable from the sandbox
 
-#### Scenario: Worktree sessions
-- **WHEN** a `--branch` session mounts a worktree at `/workspace`
-- **THEN** the worktree's `.devcontainer` is masked in the same way
+#### Scenario: Isolated sessions
+- **WHEN** an isolated session mounts its session directory at `/workspace`
+- **THEN** that directory's `.devcontainer` is masked in the same way
 
 ### Requirement: Launcher-facing outputs keep their locations and formats
 Moving generated state SHALL NOT change the outputs that launchers such as project-sandbox-tui consume:
@@ -150,6 +142,10 @@ On the first launch after upgrading, the system SHALL move history and session l
 #### Scenario: Symlink during migration
 - **WHEN** `.project-sandbox/history` or a generated file in `.project-sandbox/` is a symlink
 - **THEN** the link itself is removed or skipped, and its target is neither read, moved nor deleted
+
+#### Scenario: Older session still running
+- **WHEN** a session of the project started by an earlier version is still running
+- **THEN** migration is postponed with a notice, and the files that session has mounted are untouched
 
 #### Scenario: Unknown files kept
 - **WHEN** `.project-sandbox/` contains a file the system did not generate
