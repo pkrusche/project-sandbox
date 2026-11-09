@@ -32,7 +32,7 @@
 # Usage:
 #   scripts/run-e2e-tests.sh [--runtime chroot|auto|apple-container|docker|podman]
 #                            [--base-image IMAGE] [--no-build] [--keep]
-#                            [--only SUITE] [--list] [--all-tests]
+#                            [--only SUITE] [--list] [--plan] [--all-tests]
 #                            [--with-agent-proxy] [--with-internet-proxy]
 #                            [--with-proxy-endpoints --proxy-fixture-host IP]
 #                            [--with-build-proxy --internet-proxy-dir DIR]
@@ -56,6 +56,9 @@
 #                    --only copilot-egress, and --only egress-sidecar need no additional
 #                    --with-* flag.
 #   --list           print the suite names accepted by --only and exit
+#   --plan           decide every suite as a real run would, print RUN/SKIP/FAIL
+#                    per suite and the summary, but execute nothing (no orphan
+#                    reaping either); exits 0
 #   --all-tests      run every suite, including all opt-in ones (implies
 #                    --with-agent-proxy, --with-internet-proxy,
 #                    --with-proxy-endpoints, --with-build-proxy, --with-copilot,
@@ -140,6 +143,7 @@ BASE_IMAGE="python:3.12-slim"
 NO_BUILD=0
 KEEP=0
 ONLY=""
+PLAN=0
 WITH_AGENT_PROXY=0
 WITH_INTERNET_PROXY=0
 WITH_PROXY_ENDPOINTS=0
@@ -171,6 +175,7 @@ while [ $# -gt 0 ]; do
     --keep)       KEEP=1; shift ;;
     --only)       ONLY="${2:?--only needs a value}"; shift 2 ;;
     --list)       printf '%s\n' "${SUITES[@]}"; exit 0 ;;
+    --plan)       PLAN=1; shift ;;
     --all-tests)  ALL_TESTS=1; shift ;;
     --with-agent-proxy) WITH_AGENT_PROXY=1; shift ;;
     --with-internet-proxy) WITH_INTERNET_PROXY=1; shift ;;
@@ -280,6 +285,11 @@ run_suite() {
   local log="$LOG_DIR/$name.log"
   local start=$SECONDS
   suite_progress "$name"
+  if [ "$PLAN" = 1 ]; then
+    printf 'RUN\n'
+    record_result RUN "$name"
+    return 0
+  fi
   if "$@" >"$log" 2>&1; then
     printf 'PASS (%ds)\n' "$((SECONDS - start))"
     if [ "$KEEP" = 1 ]; then
@@ -337,7 +347,7 @@ esac
 
 # A SIGKILLed sandbox CLI from an earlier run cannot stop its own container;
 # stop such orphans so they cannot interfere with this run. Best-effort.
-if [ -n "$CONTAINER_RUNTIME" ]; then
+if [ -n "$CONTAINER_RUNTIME" ] && [ "$PLAN" = 0 ]; then
   (cd "$ROOT" && uv run python "$ROOT/scripts/e2e-reap-orphans.py" \
     --runtime "$CONTAINER_RUNTIME") || true
 fi
@@ -588,6 +598,7 @@ fi
 passed=0
 failed=0
 skipped=0
+planned=0
 echo "========================================"
 echo "Summary"
 echo "========================================"
@@ -598,6 +609,7 @@ for i in "${!RESULT_NAME[@]}"; do
     PASS) passed=$((passed + 1)) ;;
     FAIL) failed=$((failed + 1)) ;;
     SKIP) skipped=$((skipped + 1)) ;;
+    RUN) planned=$((planned + 1)) ;;
   esac
   if [ -n "$detail" ]; then
     printf '  %-4s %s  (%s)\n' "$status" "${RESULT_NAME[$i]}" "$detail"
@@ -606,6 +618,11 @@ for i in "${!RESULT_NAME[@]}"; do
   fi
 done
 echo
+if [ "$PLAN" = 1 ]; then
+  echo "Plan: $planned suite(s) would run, $failed cannot start, $skipped skipped."
+  rmdir "$LOG_DIR" 2>/dev/null || true
+  exit 0
+fi
 echo "Ran $((passed + failed)) suite(s): $passed passed, $failed failed, $skipped skipped."
 if [ "$LOGS_KEPT" = 1 ]; then
   echo "Suite logs kept in: $LOG_DIR"

@@ -101,15 +101,23 @@ To cover every runtime this host supports in one go, run
 chroot) and calls `run-e2e-tests.sh` once per runtime. On container runtimes it
 enables `proxy-endpoints`, `egress-sidecar` and, when an
 `../internet-proxy-locally` checkout exists, `build-proxy`. The agent-proxy
-suites run only when `../agentgateway-locally` exists and listens on
-`127.0.0.1:4000`. `internet-proxy-isolation` runs only when both services are
-also up (Internet proxy on `127.0.0.1:18080`). It stops and restarts both
-services; pass `--no-internet-proxy-isolation` to leave them alone. Missing or
-stopped services are reported as notes before and after the run. The billable
+suites run whenever `../agentgateway-locally` exists, and
+`internet-proxy-isolation` whenever both checkouts exist. The agent-proxy
+suites need the gateway listening on `127.0.0.1:4000` and fail otherwise. The
+isolation audit starts a stopped Internet proxy (`127.0.0.1:18080`) itself and
+stops it afterwards, but it also needs the gateway up. It stops and restarts
+both services; pass `--no-internet-proxy-isolation` to leave them alone.
+Missing checkouts (suites skipped) and stopped services (suites still run) are
+reported as notes before and after the run. The billable
 Copilot suites (`copilot`, `copilot-egress`) run by default and need a Copilot
 token; pass `--no-copilot` to skip them. `scripts/e2e-cleanup.py` sweeps the
 detected container runtimes before the first and after the last run; a failed
-cleanup fails the overall result. Use `--dry-run` to print the plan, and `-- OPTIONS` to
+cleanup fails the overall result. Before anything runs, the script prints a
+test plan table (suite x runtime: RUN/SKIP/FAIL, with skip reasons) built from
+`run-e2e-tests.sh --plan`, which decides every suite like a real run but
+executes nothing. Afterwards it prints an outcome table (PASS/FAIL/SKIP per
+suite and runtime, with failure log paths) and the per-runtime and cleanup exit
+status. Use `--dry-run` to print only the plan and commands, and `-- OPTIONS` to
 forward extra options such as `--ca-cert` to every run.
 
 Before the first suite, the runner stops sandbox containers left running by an

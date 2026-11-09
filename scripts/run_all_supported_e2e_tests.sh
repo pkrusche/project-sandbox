@@ -10,14 +10,17 @@
 #   build-proxy                       internet-proxy-locally sources found
 #                                     (Podman additionally needs Docker for the fixture)
 #   agent-proxy-isolation, agent-proxy
-#                                     agentgateway-locally found AND listening on
-#                                     127.0.0.1:4000 (agent-proxy makes two billable requests)
-#   internet-proxy-isolation          both services found AND listening
-#                                     (127.0.0.1:18080 and 127.0.0.1:4000). DESTRUCTIVE:
-#                                     stops and restarts both services; billable
+#                                     agentgateway-locally found; they need it listening
+#                                     on 127.0.0.1:4000 and fail otherwise
+#                                     (agent-proxy makes two billable requests)
+#   internet-proxy-isolation          both checkouts found. DESTRUCTIVE: stops and
+#                                     restarts both services; billable. Starts a stopped
+#                                     Internet proxy (127.0.0.1:18080) itself and stops it
+#                                     afterwards; needs the gateway listening
 #   copilot, copilot-egress           always (billable; needs a Copilot token);
 #                                     pass --no-copilot to leave them out
-# Anything unavailable is skipped with a note printed before and after the run.
+# A missing checkout skips its suites; a checkout whose service is not listening
+# still runs them. Both cases are reported as notes before and after the run.
 # The chroot runtime only runs the suites run-e2e-tests.sh supports without a
 # container; no opt-in suite is requested for it.
 #
@@ -164,7 +167,7 @@ if [ -z "$IPL_DIR" ] || [ ! -f "$IPL_DIR/pyproject.toml" ]; then
 elif port_open "$INTERNET_PROXY_HOST" "$INTERNET_PROXY_PORT"; then
   IPL_UP=1
 else
-  note "internet proxy not up: nothing listening on $INTERNET_PROXY_HOST:$INTERNET_PROXY_PORT (start it with 'uv run ipl up' in $IPL_DIR); skipping internet-proxy-isolation"
+  note "internet proxy not up: nothing listening on $INTERNET_PROXY_HOST:$INTERNET_PROXY_PORT; internet-proxy-isolation will start it and stop it afterwards"
 fi
 
 if [ -z "$GW_DIR" ] || [ ! -f "$GW_DIR/run.py" ]; then
@@ -173,17 +176,17 @@ if [ -z "$GW_DIR" ] || [ ! -f "$GW_DIR/run.py" ]; then
 elif port_open "$AGENT_PROXY_HOST" "$AGENT_PROXY_PORT"; then
   GW_UP=1
 else
-  note "agent proxy not up: nothing listening on $AGENT_PROXY_HOST:$AGENT_PROXY_PORT (start it with './run.py up' in $GW_DIR); skipping agent-proxy-isolation, agent-proxy and internet-proxy-isolation"
+  note "agent proxy not up: nothing listening on $AGENT_PROXY_HOST:$AGENT_PROXY_PORT; agent-proxy-isolation, agent-proxy and internet-proxy-isolation still run and will fail unless you start it ('./run.py up' in $GW_DIR)"
 fi
 
-if [ "$NO_INTERNET_ISOLATION" = 1 ] && [ "$IPL_UP" = 1 ] && [ "$GW_UP" = 1 ]; then
+if [ "$NO_INTERNET_ISOLATION" = 1 ] && [ -n "$IPL_DIR" ] && [ -n "$GW_DIR" ]; then
   note "internet-proxy-isolation disabled by --no-internet-proxy-isolation"
 fi
 if [ "$WITH_COPILOT" = 0 ]; then
   note "copilot and copilot-egress disabled by --no-copilot"
 fi
 if [ "$NO_BUILD" = 1 ]; then
-  note "--no-build: skipping proxy-endpoints, egress-sidecar, build-proxy, internet-proxy-isolation and copilot-egress"
+  note "--no-build: skipping proxy-endpoints, egress-sidecar, build-proxy and copilot-egress"
 fi
 
 # --- Per-runtime argument assembly -----------------------------------------
@@ -200,10 +203,10 @@ runtime_args() {
       printf '%s\n' --with-build-proxy
     fi
   fi
-  if [ "$GW_UP" = 1 ]; then
+  if [ -n "$GW_DIR" ]; then
     printf '%s\n' --with-agent-proxy
   fi
-  if [ "$NO_BUILD" = 0 ] && [ "$NO_INTERNET_ISOLATION" = 0 ] && [ "$IPL_UP" = 1 ] && [ "$GW_UP" = 1 ]; then
+  if [ "$NO_INTERNET_ISOLATION" = 0 ] && [ -n "$IPL_DIR" ] && [ -n "$GW_DIR" ]; then
     printf '%s\n' --with-internet-proxy
   fi
   if [ "$WITH_COPILOT" = 1 ]; then
@@ -227,15 +230,82 @@ print_notes() {
   done
 }
 
-echo "Runtimes to test: ${RUNTIMES[*]}"
-echo "Internet proxy:   ${IPL_DIR:-not found} ($([ "$IPL_UP" = 1 ] && echo up || echo down))"
-echo "Agent proxy:      ${GW_DIR:-not found} ($([ "$GW_UP" = 1 ] && echo up || echo down))"
-print_notes
-echo
+WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/project-sandbox-e2e-all.XXXXXX")"
+trap 'rm -rf "$WORK_DIR"' EXIT
 
-RESULT_RT=()
-RESULT_RC=()
-overall=0
+# Sets CMD to the run-e2e-tests.sh invocation for runtime $1.
+build_cmd() {
+  local line
+  local args=()
+  while IFS= read -r line; do
+    args+=("$line")
+  done < <(runtime_args "$1")
+  CMD=("$RUNNER" "${args[@]}" ${COMMON_ARGS[@]+"${COMMON_ARGS[@]}"} ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"})
+}
+
+# Renders a suite x runtime table from run-e2e-tests.sh "Summary" sections.
+# $1 is "plan" or "outcome"; the rest are RUNTIME=OUTPUT_FILE[=EXIT_CODE].
+render_table() {
+  uv run --no-project python -I - "$@" <<'PY'
+import re
+import sys
+
+mode, specs = sys.argv[1], sys.argv[2:]
+row = re.compile(r"^  (PASS|FAIL|SKIP|RUN)\s+(\S+)(?:  \((.*)\))?$")
+runtimes, results, suites, broken = [], {}, [], []
+for spec in specs:
+    runtime, path, *code = spec.split("=", 2)
+    runtimes.append(runtime)
+    in_summary = False
+    with open(path, errors="replace") as fh:
+        for line in fh:
+            line = line.rstrip("\n")
+            if line == "Summary":
+                in_summary = True
+                continue
+            match = row.match(line) if in_summary else None
+            if match:
+                status, suite, detail = match.groups()
+                if runtime == "chroot" and (detail or "").startswith("pass --with"):
+                    # Opt-in suites are never requested for chroot: none can run there.
+                    detail = "needs a container runtime"
+                results[(runtime, suite)] = (status, detail or "")
+                if suite not in suites:
+                    suites.append(suite)
+    if not in_summary:
+        broken.append(f"{runtime}: run-e2e-tests.sh exited {code[0] if code else '?'} without a summary")
+
+width = max([len("Suite"), *map(len, suites)])
+cols = [max(len(r), 4) for r in runtimes]
+print(("  " + "Suite".ljust(width) + "".join("  " + r.ljust(c) for r, c in zip(runtimes, cols))).rstrip())
+print("  " + "-" * width + "".join("  " + "-" * c for c in cols))
+counts = {}
+for suite in suites:
+    cells = []
+    for runtime, c in zip(runtimes, cols):
+        status = results.get((runtime, suite), ("-", ""))[0]
+        counts[status] = counts.get(status, 0) + 1
+        cells.append("  " + status.ljust(c))
+    print(("  " + suite.ljust(width) + "".join(cells)).rstrip())
+print()
+order = ("RUN", "PASS", "FAIL", "SKIP")
+print("  Totals: " + ", ".join(f"{counts[k]} {k}" for k in order if k in counts))
+
+details = {}
+for (runtime, suite), (status, detail) in results.items():
+    if status in ("SKIP", "FAIL") and detail:
+        details.setdefault((status, suite, detail), []).append(runtime)
+for heading, status in (("Failures", "FAIL"), ("Skipped", "SKIP")):
+    entries = [(s, d, r) for (st, s, d), r in details.items() if st == status]
+    if not entries:
+        continue
+    print(f"  {heading}:")
+    for suite, detail, rts in sorted(entries, key=lambda e: suites.index(e[0])):
+        print(f"    {suite} [{', '.join(rts)}]: {detail}")
+for line in broken:
+    print(f"  ERROR: {line}")
+PY
+}
 
 # Sweep e2e leftovers on every detected container runtime (chroot leaves none).
 CLEANUP_CMD=(uv run python "$ROOT/scripts/e2e-cleanup.py")
@@ -246,6 +316,37 @@ for rt in "${RUNTIMES[@]}"; do
     CLEANUP_RUNTIMES=1
   fi
 done
+
+# --- Test plan ---------------------------------------------------------------
+echo "Runtimes to test: ${RUNTIMES[*]}"
+echo "Internet proxy:   ${IPL_DIR:-not found} ($([ "$IPL_UP" = 1 ] && echo up || echo down))"
+echo "Agent proxy:      ${GW_DIR:-not found} ($([ "$GW_UP" = 1 ] && echo up || echo down))"
+echo
+PLAN_SPECS=()
+for rt in "${RUNTIMES[@]}"; do
+  build_cmd "$rt"
+  plan_out="$WORK_DIR/plan-$rt.txt"
+  if ! "${CMD[@]}" --plan >"$plan_out" 2>&1; then
+    echo "ERROR: could not plan the $rt run:" >&2
+    sed 's/^/  /' "$plan_out" >&2
+    exit 64
+  fi
+  PLAN_SPECS+=("$rt=$plan_out")
+done
+echo "========================================"
+echo "Test plan"
+echo "========================================"
+render_table plan "${PLAN_SPECS[@]}"
+if [ "$CLEANUP_RUNTIMES" = 1 ]; then
+  echo "  Cleanup: e2e-cleanup.py before the first and after the last runtime"
+fi
+print_notes
+echo
+
+RESULT_RT=()
+RESULT_RC=()
+OUTCOME_SPECS=()
+overall=0
 
 # Runs the cleanup and records it in the summary as cleanup-$1.
 run_cleanup() {
@@ -265,11 +366,7 @@ run_cleanup() {
 
 run_cleanup before
 for rt in "${RUNTIMES[@]}"; do
-  ARGS=()
-  while IFS= read -r line; do
-    ARGS+=("$line")
-  done < <(runtime_args "$rt")
-  CMD=("$RUNNER" "${ARGS[@]}" ${COMMON_ARGS[@]+"${COMMON_ARGS[@]}"} ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"})
+  build_cmd "$rt"
   echo "========================================"
   echo "Runtime: $rt"
   echo "========================================"
@@ -277,8 +374,10 @@ for rt in "${RUNTIMES[@]}"; do
   if [ "$DRY_RUN" = 1 ]; then
     continue
   fi
+  run_out="$WORK_DIR/run-$rt.txt"
   rc=0
-  "${CMD[@]}" || rc=$?
+  { "${CMD[@]}" 2>&1 | tee "$run_out"; } || rc=$?
+  OUTCOME_SPECS+=("$rt=$run_out=$rc")
   RESULT_RT+=("$rt")
   RESULT_RC+=("$rc")
   [ "$rc" = 0 ] || overall=1
@@ -291,9 +390,12 @@ if [ "$DRY_RUN" = 1 ]; then
   exit 0
 fi
 
+# --- Outcome -----------------------------------------------------------------
 echo "========================================"
-echo "Overall summary"
+echo "Outcome"
 echo "========================================"
+render_table outcome "${OUTCOME_SPECS[@]}"
+echo
 for i in "${!RESULT_RT[@]}"; do
   if [ "${RESULT_RC[$i]}" = 0 ]; then
     printf '  PASS %s\n' "${RESULT_RT[$i]}"
