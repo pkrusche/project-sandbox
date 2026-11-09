@@ -134,7 +134,10 @@ class RendererTests(TestCase):
         self.assertIn('exec unshare --root="$jail" --wd=/workspace', text)
         # /proc (and /dev/fd symlinks resolving into it) must be present, or
         # bash process substitution (<(...)) fails inside the jail.
-        self.assertIn('mount --bind /proc "$jail/proc"', text)
+        # Recursive: a plain --bind fails in a user namespace when the host
+        # has submounts under /proc (e.g. binfmt_misc).
+        self.assertIn('mount --rbind /proc "$jail/proc"', text)
+        self.assertNotIn('mount --bind /proc "$jail/proc"', text)
         self.assertIn('ln -sfn /proc/self/fd "$jail/dev/fd"', text)
         # /lib must be bound exactly once: the loop's /lib* glob already
         # covers it, so a leftover literal /lib would double-mount it.

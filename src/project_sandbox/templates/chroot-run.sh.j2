@@ -20,11 +20,12 @@ for source in /dev/null /dev/zero /dev/random /dev/urandom; do
     bind "$source" "$source" rw
 done
 mkdir -p "$jail/proc"
-# Which of these two works is host-dependent (kernel/procfs superblock-owner
-# policy differs across environments), so try both: a bind of the host's
-# procfs first, falling back to mounting a fresh instance (equivalent here,
-# since no PID namespace is unshared).
-mount --bind /proc "$jail/proc" 2>/dev/null || mount -t proc proc "$jail/proc"
+# Recursive bind: inside a user namespace the kernel refuses a non-recursive
+# bind of a mount with locked submounts (EINVAL), and hosts commonly have some
+# under /proc (e.g. the binfmt_misc autofs at /proc/sys/fs/binfmt_misc).
+# A fresh `mount -t proc` is the fallback, but it only succeeds where procfs
+# superblock-owner policy allows it, since no PID namespace is unshared.
+mount --rbind /proc "$jail/proc" 2>/dev/null || mount -t proc proc "$jail/proc"
 # -n: the jail dir is reused across runs, and a previous run's /dev/fd symlink
 # resolves (via the host's own /proc/self/fd) to a real directory, which would
 # make a dereferencing `ln -sf` create the link inside it instead of replacing it.
