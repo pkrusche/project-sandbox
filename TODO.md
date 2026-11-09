@@ -11,6 +11,76 @@
   shared bridge forwarder (it should exit within about one poll interval) and
   that a fresh session then attaches cleanly. The concurrent-session `kill -9`
   case was verified on 2026-11-08 (see docs/development.md).
+  `pin-launch-image-identity` (below) fixes the first item.
+
+## Security proposals
+
+The security review below is addressed by eleven OpenSpec changes in
+`openspec/changes/`. Implement them in this order (`/opsx:apply <change>`).
+Each change removes the findings it covers from this file as its last task.
+
+| # | Change | Covers | Depends on |
+| --- | --- | --- | --- |
+| 1 | `jj-only-branch-workspaces` | #2, #9; jj pointer files choose mount source/target (exploitable today) | — |
+| 2 | `minimal-devcontainer` | devcontainer gateway row; devcontainer half of #1 | — |
+| 3 | `isolate-firewall-helpers` | #1; sudo re-invocation | 2 (drops its devcontainer interim) |
+| 4 | `quote-generated-build-inputs` | #10; image/version strings in `FROM` | — |
+| 5 | `serialize-egress-policy-updates` | #7 | — |
+| 6 | `private-session-state` | #3, #4, #8; build-input half of #6; history read-only | 2 |
+| 7 | `validate-all-mount-sources` | #5; mount encoding | 1, 6 |
+| 8 | `protect-host-executed-project-config` | host-side `.git/hooks`, `.git/config` (rest of #2) | 1 |
+| 9 | `pin-launch-image-identity` | launch half of #6; first TODO item above | 3, 6 |
+| 10 | `scope-firewall-allowlist` | firewall rows of the networking table | 3, 6 |
+| 11 | `sidecar-policy-hardening` | sidecar rows of the networking table; Squid logging | 10; archive after 7 |
+
+### Reconcile while implementing
+
+- After `minimal-devcontainer` lands, remove the interim devcontainer sudo rule
+  and its tests from `isolate-firewall-helpers`.
+- `scope-firewall-allowlist` mounts the firewall script per session instead of
+  building it into the image. Update `isolate-firewall-helpers` to run the
+  mounted script, and drop the network fields from
+  `pin-launch-image-identity`'s settings label.
+- Archive `validate-all-mount-sources` before `sidecar-policy-hardening`: both
+  modify the `egress-sidecar` requirement "Policy lives on the host", and the
+  second builds on the first's text.
+- `project-sandbox-tui` passes `--allow-github` when `network.allow_github` is
+  set. `scope-firewall-allowlist` keeps the flag accepted (deprecated, ignored
+  in firewall mode); sidecar mode already rejects it, so coordinate a TUI
+  release that stops passing it.
+- The TUI reads the `--log`/`--json-summary` paths, `<log>.md`, the summary
+  fields `pid`, `exit_code` and `session_id`, and
+  `$XDG_STATE_HOME/project-sandbox/sessions/*.json`. `private-session-state`
+  must keep these stable.
+
+### Open questions
+
+- GHE.com-tenant Copilot users lose Copilot under `scope-firewall-allowlist`
+  until the sidecar gains a tenant profile. Acceptable?
+- `validate-all-mount-sources`: warn or refuse for credential directories
+  (`~/.ssh`, `~/.aws`, …) passed with `--mount`? SELinux `z`/`Z` relabel
+  options are refused for now.
+- Should `private-session-state` be split (state relocation, per-session
+  staging, history read-only)? It is the largest change.
+
+### Spikes to run first
+
+- `private-session-state` task 1.2: Apple `container` 1.7.1 has no
+  `--build-context`. Confirm the assets-image `COPY --from` approach (or the
+  APFS-clone fallback) with a real build.
+- `minimal-devcontainer` task 1.1: confirm VS Code and JetBrains attach to a
+  `--network none` devcontainer.
+
+### Not covered by any proposal
+
+- Firewall installation is not atomic: rules are flushed before the final DROP
+  policies go in. Consider `iptables-restore` and a test for failures during
+  setup. Audit the outbound ICMPv6 types that stay allowed.
+- Supply chain: `npm install -g package@version` does not pin transitive
+  dependencies. Use lockfiles/integrity metadata or reproducible tool layers,
+  and define an image update cadence.
+- Remove the stray `openspec/changes/.claude/` directory (it shows up in
+  `openspec list` as an empty change).
 
 ## Security review
 
