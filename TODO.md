@@ -89,9 +89,9 @@ Linux hosts were not tested.
   runtime. The design now self-binds `.git/`, `.jj/` and `.jj/repo/`. Apple
   drops a directory mount when a file inside it is also bound, so Apple uses
   `uchg`.
-- `minimal-devcontainer` 1.1: VS Code (JetBrains dropped) installs its server
-  and the Python extensions into a `--network none` container. Running and
-  debugging a test from the IDE is still to be checked by hand.
+- Passed: `minimal-devcontainer` 1.1 with VS Code (JetBrains dropped). It
+  installs its server and the Python extensions into a `--network none`
+  container, and running and debugging a test work.
 
 ### Open points
 

@@ -67,7 +67,7 @@ It is also regenerated into the project on every launch, whether or not the user
   - `cli.py`: the `--devcontainer` command path replaces `_renders_devcontainer`; the new `--devcontainer-network` flag.
 - **Interplay with `isolate-firewall-helpers`:** this change lands first and deletes the devcontainer's `sudo` path. `isolate-firewall-helpers` then removes the sudoers rule from every image.
 - **Enables `private-session-state`:** no persistent devcontainer staging remains.
-- **IDE compatibility:** VS Code installs its server and extensions from the host side, so it is expected to work offline. JetBrains downloads its IDE backend inside the container, which is the known risk. Both are verified before release (task 1.1), and `--devcontainer-network=runtime` is the documented fallback.
+- **IDE compatibility:** VS Code installs its server and extensions from the host side and works offline, including running and debugging tests (task 1.1). JetBrains downloads its IDE backend inside the container, so it is expected to need `--devcontainer-network=runtime`. It is not tested (user decision: VS Code support is enough).
 - **Docs:**
   - `docs/usage.md` "Devcontainer Flow": test and debug environment, no agents, offline, the new flag;
   - `docs/security.md`: credential, gateway and firewall-variant paragraphs;

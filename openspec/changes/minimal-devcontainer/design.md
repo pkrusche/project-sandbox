@@ -91,8 +91,9 @@ Removed: all `/project-sandbox-config` and `/project-sandbox-secrets` mounts, Cl
 
 ## Risks / Trade-offs
 
-- [JetBrains Gateway or IDE cannot start its backend offline] → Task 1.1 tests it. The documented answer is `--devcontainer-network=runtime`. If JetBrains turns out to need the network unconditionally, the docs say so explicitly.
-- [Extensions that download components inside the container, such as C#/.NET or some debuggers] → Same fallback. List known cases in the docs.
+- [The IDE can't attach offline] → Task 1.1, 2026-11-09, tested VS Code 1.145.2 with Dev Containers 0.463.0 on Docker Desktop 29.9.3. The fixture was a hand-rendered `devcontainer.json` with `"runArgs": ["--network", "none"]` and the offline variables, for a `python:3.12-slim` + uv project. VS Code built the image (build-time network is unaffected), started the container with network mode `none`, and installed its server and the Python, debugpy, Pylance and Python Environments extensions into it. Running a pytest test and debugging it with a breakpoint both worked. VS Code fetches the server and extensions on the host and copies them in, so offline attach needs no network inside the container.
+- [JetBrains IDEs] → Not tested (user decision, 2026-11-09: VS Code support is enough). Its backend downloads inside the container (Context), so it probably can't start offline. The docs say so and name `--devcontainer-network=runtime` for JetBrains.
+- [Extensions that download components inside the container at runtime, such as C#/.NET or some debuggers] → None were seen with the Python stack. The fallback is `--devcontainer-network=runtime`; the docs list known cases as they are reported.
 - [Tests that rely on host services, such as a database on the host] → They now fail. That's intended for the default. `runtime` mode restores host reachability.
 - [Users who ran agents in the devcontainer] → **BREAKING**. The docs point to direct sessions (`project-sandbox --agent …`) and the TUI.
 - [Users who relied on the devcontainer appearing by itself] → **BREAKING**. The docs and release notes name `--devcontainer`. Existing `.devcontainer/` files from older versions stay until the user re-renders or deletes them.

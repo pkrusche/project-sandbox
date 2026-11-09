@@ -2,7 +2,7 @@
 
 ## 1. IDE verification
 
-- [ ] 1.1 Hand-render a `devcontainer.json` with `--network none` for a `--python-uv` project. Open it in VS Code (Reopen in Container, install the Python extension, run and debug a test) and in one JetBrains IDE through its Dev Containers support. Record what works offline, and any extension or backend that needs the network, in `docs/usage.md`. Verify that the design's Risks section matches the findings, and that the docs name `--devcontainer-network=runtime` for each failing case.
+- [x] 1.1 Hand-render a `devcontainer.json` with `--network none` for a `--python-uv` project. Open it in VS Code (Reopen in Container, install the Python extension, run and debug a test). JetBrains is out of scope (user decision, 2026-11-09). Record what works offline, and any extension or backend that needs the network, in the design's Risks, for `docs/usage.md` in task 6.2. Verify that the design's Risks section matches the findings, and that the docs name `--devcontainer-network=runtime` for each failing case.
 
 ## 2. Image and firewall
 
