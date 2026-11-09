@@ -16,7 +16,7 @@ runtime run --workdir /workspace --cap-add NET_ADMIN --cap-add NET_RAW   (image 
 
 `sudo` resets the environment by default on Debian-family images, but it preserves the working directory. That is the root cause of finding #1. The sudoers rule stays in force for the whole session, so the agent can trigger the root path again at any time.
 
-The devcontainer uses an image rendered from the same `Dockerfile.j2` (`dockerfile.py:238–244`, with `firewall_src_filename` switched). It runs the firewall from `postStartCommand` via `sudo -n` (`devcontainer.py:219–223`), because the IDE starts the container as `remoteUser: agent` and overrides the entrypoint.
+The devcontainer used the same rule from `postStartCommand`. `minimal-devcontainer` lands first and removes its firewall, so the rule has no remaining user.
 
 ## Goals / Non-Goals
 
@@ -27,7 +27,6 @@ The devcontainer uses an image rendered from the same `Dockerfile.j2` (`dockerfi
 
 **Non-Goals:**
 - Changing *what* the firewall allows. That belongs to `scope-firewall-allowlist`.
-- Removing the firewall from the devcontainer. That belongs to `minimal-devcontainer`.
 - Hardening the chroot backend, which is not a security boundary.
 - Dropping `NET_ADMIN`/`NET_RAW` from the container itself. The root stage needs them, and the drop removes them from the agent's bounding set.
 
@@ -60,15 +59,13 @@ runtime run --user 0:0 --workdir /workspace --cap-add NET_ADMIN --cap-add NET_RA
 
 ### 2. The firewall script is self-protecting, too
 
-The firewall script starts with `cd /` and runs both helpers as `python3 -I -`. The root stage already sanitizes, but these lines are needed anyway because:
-- the devcontainer still calls the script through `sudo` from a cwd of `/workspace` (Decision 4);
-- the script must stay safe if a future caller forgets to sanitize.
+The firewall script starts with `cd /` and runs both helpers as `python3 -I -`. The root stage already sanitizes, but the script must stay safe if a future caller forgets to.
 
 `-I` implies `-E -s`. It drops the script directory/cwd from `sys.path`, ignores `PYTHON*` variables and skips user site-packages.
 
 Audit of the other root-run commands in the script: `iptables`, `ip6tables`, `ipset`, `ip`, `getent`, `awk`, `sysctl`, `curl`, `timeout`, `install` and `update-ca-certificates`. All use absolute input paths. They are resolved through the fixed `PATH`, and none reads the cwd.
 
-`curl` is the exception: it reads `$HOME/.curlrc`, which can name an output file, a further `--config` or a proxy. On the devcontainer `sudo` path, `HOME` depends on the base image's sudo defaults and may still be `/home/agent`, which the agent can write. All three root-run calls (`init-firewall.sh.j2:154`, `:331` and `:382`) therefore start with `curl -q`, which disables `.curlrc` and must be the first argument. On top of that, the root stage sets `HOME=/root` and the devcontainer sudoers rule sets `always_set_home`.
+`curl` is the exception: it reads `$HOME/.curlrc`, which can name an output file, a further `--config` or a proxy. All three root-run calls (`init-firewall.sh.j2:154`, `:331` and `:382`) therefore start with `curl -q`, which disables `.curlrc` and must be the first argument. On top of that, the root stage sets `HOME=/root`.
 
 Tests pin the fixed `PATH`, assert that no relative path appears in root-run commands, and assert that every `curl` in the rendered script is `curl -q`.
 
@@ -81,21 +78,10 @@ Tests pin the fixed `PATH`, assert that no relative path appears in root-run com
 
 This is the only safe option for `--no-build`. Starting an old image with `--user 0:0` would run its old entrypoint, and therefore the agent, as root.
 
-### 4. Devcontainer interim
-
-The devcontainer Dockerfile render keeps a sudoers rule for the firewall script only, with explicit defaults rather than relying on the base image's `/etc/sudoers`:
-
-```
-Defaults!/usr/local/bin/project-sandbox-init-firewall env_reset, always_set_home, secure_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-agent ALL=(root) NOPASSWD: /usr/local/bin/project-sandbox-init-firewall
-```
-
-Decision 2 makes the script itself cwd-safe. The agent image render has no rule. `minimal-devcontainer` deletes this branch.
-
 ## Risks / Trade-offs
 
 - [`setpriv` missing in a custom base image, such as Alpine or a distroless-derived image] → Install `util-linux` in the existing apt step. The build fails if `setpriv` is still absent after the provisioning layer (`command -v setpriv`). Non-Debian bases are already unsupported by the apt-based Dockerfile.
-- [Apple `container` and the `--user` flag, or Podman `keep-id` with a root stage] → Verify `--user 0:0` together with `--userns=keep-id` on rootless Podman. Container root is the namespace root, which can already run `iptables` today through `sudo`. Cover all three runtimes in the e2e check (task 4.x).
+- [The root stage may not start as root, or may be unable to drop its bounding set, on some runtime] → Dropping the bounding set needs `CAP_SETPCAP`. Task 0.1 checks `--user 0:0` and the full `setpriv` drop on Apple `container`, Docker and rootless Podman (with `--userns=keep-id`) before anything else is built. If a runtime can't do it, the design is revisited for that runtime before implementation.
 - [`env -i` drops a variable the firewall needs] → Today the rendered script reads no environment variables: every setting is rendered into it at build time. A renderer test asserts that the script never references `$PROJECT_SANDBOX_*` or other caller environment, so a future change cannot start depending on one without noticing.
 - [PID 1 semantics change] → `setpriv` uses `exec`, so the entrypoint is still PID 1 after the drop, and the timeout teardown (`scripts/verify-timeout-teardown.sh`) still applies.
 - [Users who relied on running `sudo …init-firewall` manually inside a session] → They can no longer do that. Re-initializing mid-session is exactly what this change removes. Document it.

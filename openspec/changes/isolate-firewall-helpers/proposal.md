@@ -20,9 +20,9 @@ The persistent `sudo` grant also means the agent can re-run firewall initializat
   - The firewall script changes to `/` first.
   - It runs every embedded Python helper in isolated mode (`python3 -I`).
   - It is started with a fixed, minimal environment: fixed `PATH`, `HOME=/root`, and no `BASH_ENV`, `ENV` or `PYTHON*` variables.
-  - Root-run `curl` calls (the GitHub meta fetch, the agent-proxy preflight and the Ollama check) use `curl -q`, so no `.curlrc` is read. The agent's home is agent-writable, and on the devcontainer `sudo` path `HOME` depends on the base image's sudo defaults.
+  - Root-run `curl` calls (the GitHub meta fetch, the agent-proxy preflight and the Ollama check) use `curl -q`, so no `.curlrc` is read, whatever `HOME` a future caller passes.
   - This also protects against files a *previous* session left in a persistent workspace, because the root stage runs before the current agent exists.
-- **Devcontainer (interim).** The devcontainer still runs the firewall from `postStartCommand` through `sudo`, so the sudoers rule is rendered only in the devcontainer image. It gets the same `/` + `-I` + clean-environment protections. `minimal-devcontainer` later removes the firewall and the rule from the devcontainer entirely.
+- **No sudoers rule in any image.** `minimal-devcontainer` lands first and removes the devcontainer's firewall, so no image needs the rule.
 - **Regression coverage.**
   - Unit tests render the firewall script and run its Python helpers against a temporary directory full of shadow modules.
   - An e2e check confirms that inside a running session:
@@ -30,13 +30,13 @@ The persistent `sudo` grant also means the agent can re-run firewall initializat
     - `NoNewPrivs` is 1;
     - the capability bounding set is empty;
     - the firewall rules cannot be changed.
-- `docs/security.md` describes the root stage and privilege drop, and the devcontainer exception.
+- `docs/security.md` describes the root stage and privilege drop.
 
 ## Capabilities
 
 ### New Capabilities
 
-- `sandbox-privileges`: which code runs with root or elevated capabilities inside a sandbox container, when it runs, what it may read, and how the agent session is prevented from regaining those privileges. Later changes extend it, for example the `minimal-devcontainer` network and capability profile.
+- `sandbox-privileges`: which code runs with root or elevated capabilities inside a sandbox container, when it runs, what it may read, and how the agent session is prevented from regaining those privileges.
 
 ### Modified Capabilities
 
@@ -45,13 +45,14 @@ The persistent `sudo` grant also means the agent can re-run firewall initializat
 ## Impact
 
 - **Templates:**
-  - `Dockerfile.j2`: the sudoers rule is conditional on the devcontainer render, and a new root-stage entrypoint is added.
+  - `Dockerfile.j2`: the sudoers rule is removed, and a new root-stage entrypoint is added.
   - `entrypoint.sh.j2`: the `sudo -n` calls are removed. The firewall now runs from the root stage.
   - `init-firewall.sh.j2`: `cd /`, `python3 -I` and the environment reset.
   - `_resolve_endpoints.py.j2`: unchanged code, now run isolated.
 - **Runtime argv:** `container_cli.py` starts agent containers as root (for example `--user 0:0` or the image default). The image's `USER` stays `agent`, so `exec` into a container still defaults to the agent.
 - **Base images:** the privilege drop needs `setpriv` (util-linux). The build verifies it exists, and installs it on Debian-family bases where it is missing.
 - **Build cache:** a template change alters the fingerprint, so existing images rebuild automatically. With `--no-build`, an image that predates the root stage is refused with a rebuild instruction. Starting such an image as root would run its old entrypoint, and the agent, as root.
+- **Depends on:** `minimal-devcontainer`, which removes the devcontainer's `sudo` firewall path.
 - **Chroot backend:** unaffected (not a security boundary; no firewall).
 - **Docs:** `docs/security.md` (Network Firewall and sidecar sections), `docs/development.md` (new e2e check).
 - **Security:** removes an agent-reachable root escalation path, and makes "the agent cannot change the firewall" an enforced property.

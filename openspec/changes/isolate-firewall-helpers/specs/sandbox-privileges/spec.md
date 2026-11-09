@@ -22,7 +22,7 @@ An agent container SHALL run its privileged setup, including firewall initializa
 - **THEN** no firewall rules are installed, and the session still drops privileges as defined below
 
 ### Requirement: Agent sessions cannot regain elevated privileges
-After privileged setup, an agent container SHALL run the session command as the non-root `agent` user, with `no_new_privs` set, an empty capability bounding set, and no inheritable or ambient capabilities. Agent images SHALL NOT grant the `agent` user any `sudo` rule.
+After privileged setup, an agent container SHALL run the session command as the non-root `agent` user, with `no_new_privs` set, an empty capability bounding set, and no inheritable or ambient capabilities. No generated image SHALL grant the `agent` user any `sudo` rule.
 
 #### Scenario: sudo is unavailable
 - **WHEN** a process in an agent session runs `sudo -n /usr/local/bin/project-sandbox-init-firewall` or `sudo -n true`
@@ -55,10 +55,6 @@ Code that runs as root in a sandbox container SHALL NOT import, source or execut
 - **WHEN** privileged setup runs `curl` while `/workspace` or `/home/agent` contains a `.curlrc` that sets an output file or extra options
 - **THEN** that `.curlrc` is not read, and privileged setup writes no file it names
 
-#### Scenario: Devcontainer firewall
-- **WHEN** a devcontainer's post-start command runs the firewall script through `sudo`, with shadow modules in `/workspace` and a `.curlrc` in `/home/agent`
-- **THEN** none of those files are executed or read, and the script runs with `HOME` set to root's home
-
 ### Requirement: Images without the privilege-drop entrypoint are refused
 The system SHALL launch an agent session only from an image built with the privilege-drop entrypoint. An existing image that lacks it SHALL be rebuilt, or the launch SHALL be refused.
 
@@ -69,10 +65,3 @@ The system SHALL launch an agent session only from an image built with the privi
 #### Scenario: --no-build with an old image
 - **WHEN** `--no-build` names an image that lacks the privilege-drop entrypoint
 - **THEN** the launch fails before starting a container and tells the user to rebuild without `--no-build`
-
-### Requirement: Devcontainer firewall uses a narrow sudo rule
-Until the devcontainer stops initializing a firewall, the devcontainer image SHALL be the only image that contains a sudoers rule. That rule SHALL permit only `/usr/local/bin/project-sandbox-init-firewall`, with `sudo`'s environment reset, `secure_path` and `HOME` set to the target user's home.
-
-#### Scenario: Agent image vs devcontainer image
-- **WHEN** both the agent image and the devcontainer image are rendered for a project
-- **THEN** only the devcontainer Dockerfile installs `/etc/sudoers.d/agent-firewall`
