@@ -26,8 +26,8 @@
 
 ## 5. CLI
 
-- [ ] 5.1 Add `--devcontainer-network {none,runtime}` (default `none`). In `runtime` mode: no `--network` override, the `--internet-proxy` environment when configured, no offline variables, and an unfiltered-network warning. Show the mode in `--dry-run`. Verify with CLI tests for both modes, the invalid value and dry-run output.
-- [ ] 5.2 Make `_renders_devcontainer` independent of egress mode (chroot still excluded). Verify with CLI tests that a sidecar-mode launch renders the same `devcontainer.json` as firewall mode.
+- [ ] 5.1 Add `--devcontainer` as a terminal mode (design Decision 6): render and exit, with its rejected combinations, and remove the render from the launch path together with `_renders_devcontainer`. Verify with CLI tests that an ordinary launch in firewall and sidecar mode writes no devcontainer file, that `--devcontainer` writes them and starts nothing, each rejected combination, and `--devcontainer --dry-run`.
+- [ ] 5.2 Add `--devcontainer-network {none,runtime}` (default `none`), valid only with `--devcontainer`. In `runtime` mode: no `--network` override, the `--internet-proxy` environment when configured, no offline variables, and an unfiltered-network warning. Verify with CLI tests for both modes, the invalid value, and the flag without `--devcontainer`.
 
 ## 6. Verification and docs
 
@@ -39,8 +39,4 @@
   - `/workspace/.devcontainer` is read-only.
 
   Verify on Docker and Podman.
-- [ ] 6.2 Rewrite `docs/usage.md` "Devcontainer Flow" (purpose, no agents, offline default, `--devcontainer-network`, IDE findings from task 1.1). Update `docs/security.md` (remove the devcontainer credential, gateway and firewall-variant text, and describe the new profile) and the `README.md` feature line. Remove the "Devcontainer gateway" row from TODO.md's networking table. Verify that `uv run pytest -q` and `uv run python -m compileall -q src tests` pass.
-
-## Workflow follow-up
-
-- If this change lands before `isolate-firewall-helpers`, update that change: remove its "Devcontainer firewall uses a narrow sudo rule" requirement, the devcontainer scenarios and the related tasks.
+- [ ] 6.2 Rewrite `docs/usage.md` "Devcontainer Flow" (purpose, `--devcontainer`, no agents, offline default, `--devcontainer-network`, IDE findings from task 1.1). Update `docs/security.md` (remove the devcontainer credential, gateway and firewall-variant text, and describe the new profile) and the `README.md` feature line. Remove the "Devcontainer gateway" row from TODO.md's networking table. Verify that `uv run pytest -q` and `uv run python -m compileall -q src tests` pass.

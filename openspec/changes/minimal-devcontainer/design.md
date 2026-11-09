@@ -2,7 +2,7 @@
 
 ## Context
 
-`devcontainer.render` (`devcontainer.py:34–270`) runs on every non-chroot, non-sidecar launch (`cli.py:832`, `_renders_devcontainer`). It writes `.devcontainer/devcontainer.json`, plus symlinks into `.project-sandbox/` for:
+`devcontainer.render` (`devcontainer.py:34–270`) runs today on every non-chroot, non-sidecar launch (`cli.py:832`, `_renders_devcontainer`). It writes `.devcontainer/devcontainer.json`, plus symlinks into `.project-sandbox/` for:
 - `Dockerfile.devcontainer`;
 - `init-firewall-devcontainer.sh`;
 - `claude`/`claude-devcontainer`/`codex`/`codex-devcontainer` configs.
@@ -49,7 +49,7 @@ IDE research (2026-11-09):
 
 An IDE-host allowlist (VS Code update and marketplace hosts, JetBrains download hosts) would need the firewall, capabilities and `sudo` again, plus a host list that tracks IDE vendors' CDNs. Since no agent runs in the devcontainer, its trust level is the user's own development environment. An honest "unfiltered" opt-in is simpler, and doesn't pretend to be a boundary.
 
-The flag is a launch argument rather than an edit to `devcontainer.json`, because the file is regenerated on every launch.
+The flag is a command-line argument rather than an edit to `devcontainer.json`, because the file is rewritten by every `--devcontainer` run.
 
 ### 3. One Dockerfile template with an explicit devcontainer profile
 
@@ -77,9 +77,17 @@ Removed: all `/project-sandbox-config` and `/project-sandbox-secrets` mounts, Cl
 
 `config_agents.render` drops the `claude-devcontainer`/`codex-devcontainer` profiles. `sync_credentials` drops the `claude-devcontainer` staging.
 
-### 6. Rendering is independent of egress mode
+### 6. Rendering on request
 
-`_renders_devcontainer` returns `not is_chroot`. Sidecar-mode launches render the same devcontainer, which has no network to filter.
+`_renders_devcontainer` and the render call in the launch path are removed. `--devcontainer` is a terminal mode like `--build-only`:
+- it validates the build options, renders `.devcontainer/` in the project directory, prints the path and the network mode, and exits;
+- it never builds an image, stages credentials or starts a container;
+- it ignores `--egress`, and is rejected with `--agent`, a prompt, `--branch`, `--build-only` and `--runtime chroot`;
+- `--devcontainer --dry-run` prints what would be written.
+
+`--devcontainer-network` without `--devcontainer` is a usage error.
+
+**Alternative considered:** keep rendering on every launch. The files are a shared, in-project target that concurrent launches overwrite with their own options, for a feature most launches don't use. Rejected.
 
 ## Risks / Trade-offs
 
@@ -87,8 +95,8 @@ Removed: all `/project-sandbox-config` and `/project-sandbox-secrets` mounts, Cl
 - [Extensions that download components inside the container, such as C#/.NET or some debuggers] → Same fallback. List known cases in the docs.
 - [Tests that rely on host services, such as a database on the host] → They now fail. That's intended for the default. `runtime` mode restores host reachability.
 - [Users who ran agents in the devcontainer] → **BREAKING**. The docs point to direct sessions (`project-sandbox --agent …`) and the TUI.
-- [`isolate-firewall-helpers` ordering] → See the proposal's Impact. Whichever lands second removes the other's devcontainer `sudo` handling. Tests in both changes assert the devcontainer image has no sudoers rule once both are in.
+- [Users who relied on the devcontainer appearing by itself] → **BREAKING**. The docs and release notes name `--devcontainer`. Existing `.devcontainer/` files from older versions stay until the user re-renders or deletes them.
 
 ## Migration Plan
 
-The next launch regenerates `.devcontainer/` with the reduced config. The user rebuilds the devcontainer in their IDE. Stale `claude-devcontainer`/`codex-devcontainer` symlinks in `.devcontainer/` are removed by the renderer, and stale profile directories in `.project-sandbox/` are left for `private-session-state`'s migration.
+The user runs `--devcontainer` once to regenerate `.devcontainer/` with the reduced config, and rebuilds the devcontainer in their IDE. Until then, the files from the older version stay as they are. Stale `claude-devcontainer`/`codex-devcontainer` symlinks in `.devcontainer/` are removed by the renderer, and stale profile directories in `.project-sandbox/` are left for `private-session-state`'s migration.
