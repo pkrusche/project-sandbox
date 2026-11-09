@@ -1,4 +1,5 @@
 import contextlib
+import dataclasses
 import hashlib
 import json
 import os
@@ -12,7 +13,7 @@ import time
 from argparse import ArgumentParser
 from collections.abc import Callable, Generator
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import NoReturn
 
 from . import (
@@ -33,6 +34,7 @@ from . import (
     egress_policy,
     egress_sidecar,
     firewall,
+    host_locks,
     internet_proxy,
     local_service_network,
     oauth_refresh,
@@ -41,15 +43,13 @@ from . import (
     sidecar_image,
     token_expiry,
     transcript,
+    vcs_mode,
 )
 from . import (
     jj_workspace as jj_workspace_mod,
 )
 from . import (
     session_ca as session_ca_module,
-)
-from . import (
-    worktree as worktree_mod,
 )
 from .git_identity import read as read_identity
 from .paths import (
@@ -307,10 +307,22 @@ def build_parser() -> ArgumentParser:
         ),
     )
     p.add_argument(
+        "--vcs",
+        choices=vcs_mode.MODES,
+        help=(
+            "How the session sees version control. isolated (the default in jj "
+            "projects): the agent works in a separate jj workspace with a private "
+            "repository, and its result becomes one commit on the session's "
+            "bookmark. shared: the project is mounted in place with its .git and "
+            ".jj writable; one shared session per repository."
+        ),
+    )
+    p.add_argument(
         "--branch",
         help=(
-            "Run the agent in a git worktree / jj workspace on this branch "
-            "(reused if it exists, else created)."
+            "Bookmark for an isolated session's result (reused if it exists, "
+            "else created). Without it, a sandbox/<session-id> bookmark is "
+            "generated."
         ),
     )
     p.add_argument(
@@ -327,8 +339,22 @@ def build_parser() -> ArgumentParser:
         "--keep-workspace",
         action="store_true",
         help=(
-            "Leave the worktree/workspace in place after the session so a later "
-            "--branch run on the same branch can reuse it."
+            "Leave an isolated session's directory and private repository in "
+            "place so a later --branch run on the same bookmark can reuse them."
+        ),
+    )
+    p.add_argument(
+        "--share",
+        dest="shares",
+        action="append",
+        default=[],
+        metavar="PATH[:rw]",
+        help=(
+            "Mount the project directory PATH (relative, absent from the "
+            "checkout, e.g. an ignored data folder) at /workspace/PATH in an "
+            "isolated session. Read-only unless :rw is given; writes through a "
+            "writable share go straight to the project and are not part of the "
+            "result commit. Repeatable. No effect in shared mode."
         ),
     )
     p.add_argument("--prompt")
@@ -533,14 +559,7 @@ def _main(argv: list[str] | None = None) -> int:
     if is_chroot:
         _reject_image_only_flags_for_chroot(args)
         _validate_chroot_session(run_agent)
-    if args.branch and run_agent is None:
-        raise SystemExit("--branch requires --agent, --prompt, or --prompt-text")
-    if args.branch_start_at and not args.branch:
-        raise SystemExit("--branch-start-at requires --branch")
-    if args.keep_workspace and not args.branch:
-        raise SystemExit("--keep-workspace requires --branch")
-    if args.build_only and args.branch:
-        raise SystemExit("--build-only cannot be combined with --branch")
+    vcs_mode.validate_args(args, run_agent)
     if args.build_only and (args.prompt or args.prompt_text):
         raise SystemExit("--build-only cannot be combined with a prompt")
     if args.build_only and args.agent:
@@ -551,16 +570,26 @@ def _main(argv: list[str] | None = None) -> int:
     project = _resolve_required_path(args.project, what="project path")
     if args.image_tag is None:
         args.image_tag = _default_image_tag(project)
+    # The session id is fixed before planning: a generated bookmark is named
+    # after it, and dry-run shows that name.
+    session_id = observability.new_session_id()
+    vcs_plan: vcs_mode.VcsPlan | None = (
+        vcs_mode.plan(args, project, session_id=session_id, describe_start=args.dry_run)
+        if run_agent is not None
+        else None
+    )
+    planned_workspace = vcs_plan.workspace if vcs_plan is not None else project
     # --egress sidecar: the global policy, checked to lie outside every mount
-    # before any worktree exists. The sandbox is then planned exactly like
-    # firewall mode with --internet-proxy at the sidecar's published endpoint.
+    # before any session directory exists. The sandbox is then planned exactly
+    # like firewall mode with --internet-proxy at the sidecar's published endpoint.
     egress: egress_policy.PolicyFile | None = None
     if sidecar:
-        _, planned_workspace = (
-            _plan_worktree(args, project) if run_agent else (None, project)
-        )
         egress = _egress_sidecar_policy(
-            args, project=project, workspace=planned_workspace, run_agent=run_agent
+            args,
+            project=project,
+            workspace=planned_workspace,
+            run_agent=run_agent,
+            vcs_plan=vcs_plan,
         )
         internet_proxy_config = internet_proxy.for_sidecar(egress.port)
     identity = read_identity()
@@ -581,8 +610,6 @@ def _main(argv: list[str] | None = None) -> int:
     if run_agent == "copilot" and run_agent not in available_agents:
         available_agents = (*available_agents, run_agent)
 
-    if run_agent is not None and args.branch:
-        _validate_worktree_project(project)
     if run_agent is not None:
         _ensure_agent_available(run_agent, available_agents)
     runtime = (
@@ -609,12 +636,11 @@ def _main(argv: list[str] | None = None) -> int:
     sandbox_proxy_config = internet_proxy.for_runtime(internet_proxy_config, runtime)
 
     if args.dry_run:
-        wt, workspace = _plan_worktree(args, project) if run_agent else (None, project)
         return _dry_run(
             args,
             project=project,
-            workspace=workspace,
-            worktree=wt,
+            workspace=planned_workspace,
+            vcs_plan=vcs_plan,
             identity=identity,
             available_agents=available_agents,
             egress=egress,
@@ -691,18 +717,32 @@ def _main(argv: list[str] | None = None) -> int:
     _warn_byok_provider_allowlist(args, run_agent)
     _warn_pi_ollama_no_firewall(args, pi_ollama_enabled)
 
-    wt, workspace = _setup_worktree(args, project) if run_agent else (None, project)
+    # The VCS lease (isolated: the session directory; shared: the repository)
+    # is held from setup until finalization completes, so it closes last.
+    vcs_stack = contextlib.ExitStack()
+    try:
+        wt = (
+            _setup_vcs(args, project, vcs_plan, runtime, vcs_stack)
+            if vcs_plan is not None
+            else None
+        )
+    except BaseException:
+        vcs_stack.close()
+        raise
+    workspace = wt.path if wt is not None else project
+    if wt is not None and vcs_plan is not None:
+        # Mount exactly what setup created (or found, for a kept session).
+        vcs_plan = dataclasses.replace(vcs_plan, ws=wt, workspace=wt.path)
 
-    # Once a worktree exists, every exit path must run teardown so a failed build
-    # or early return does not orphan the worktree (and its branch). agent_ran
-    # distinguishes a genuine session (finalize the branch/bookmark) from a
-    # setup/build failure before the agent ran (leave git in place, drop the
-    # empty jj workspace).
+    # Once a session directory exists, every exit path must run teardown so a
+    # failed build or early return does not orphan it (and its bookmark).
+    # agent_ran distinguishes a genuine session (record the result on the
+    # bookmark) from a setup/build failure before the agent ran (drop what this
+    # session created).
     agent_ran = False
     forwarding_plans: list[local_service_network.ForwardingPlan] = []
     internet_proxy_relay: build_proxy_forwarder.BuildProxyForwarder | None = None
     exit_code = 1
-    session_id = ""
     container_name: str | None = None
     session_started_at: datetime | None = None
     # Doubles as the "record still open" marker: cleared once the session's
@@ -732,7 +772,7 @@ def _main(argv: list[str] | None = None) -> int:
                 label="Internet proxy",
                 ca_option="--ca-cert",
             )
-        if not is_chroot and (args.python_uv or args.node_npm) and args.branch:
+        if not is_chroot and (args.python_uv or args.node_npm) and wt is not None:
             # The venv / npm workspace manifests must match the tree mounted at
             # /workspace. Keep generated
             # assets inside that build context so COPY paths remain valid.
@@ -1055,7 +1095,6 @@ def _main(argv: list[str] | None = None) -> int:
                 bypass_hosts=(proxy_endpoint.sandbox_host,) if proxy_endpoint else (),
             )
 
-        session_id = observability.new_session_id()
         session_container_name = (
             observability.container_name(session_id) if runtime.is_container else None
         )
@@ -1101,6 +1140,7 @@ def _main(argv: list[str] | None = None) -> int:
             ),
             session_id=session_id,
             egress_mount=egress_mount,
+            vcs_plan=vcs_plan,
         )
         container_name = session_container_name
 
@@ -1127,10 +1167,10 @@ def _main(argv: list[str] | None = None) -> int:
             else:
                 print("Starting container…")
 
-        waited = _wait_for_worktree_metadata(wt, runtime)
+        waited = _wait_for_new_directories(wt, runtime)
         if waited and args.verbose:
             print(
-                f"Waited {waited:.1f}s for the new worktree metadata to become "
+                f"Waited {waited:.1f}s for the new session directories to become "
                 f"visible to {runtime.name}"
             )
 
@@ -1224,25 +1264,28 @@ def _main(argv: list[str] | None = None) -> int:
                 context_dir / "api-keys.env",
             ):
                 secret_file.unlink(missing_ok=True)
-        if wt is not None:
-            if agent_ran:
-                _finalize_worktree(args, project=project, wt=wt, exit_code=exit_code)
-            elif isinstance(wt, jj_workspace_mod.JjWorkspace):
-                jj_workspace_mod.remove(project, wt)
-        if agent_ran and args.json_summary:
-            assert run_agent is not None
-            _write_json_summary(
-                args.json_summary,
-                session_id=session_id,
-                container_name=container_name,
-                workspace=workspace,
-                agent=run_agent,
-                worktree=wt,
-                project=project,
-                exit_code=exit_code,
-                started_at=session_started_at,
-                ended_at=datetime.now().astimezone(),
-            )
+        try:
+            if wt is not None:
+                if agent_ran:
+                    _finalize_vcs(args, project=project, wt=wt, exit_code=exit_code)
+                else:
+                    jj_workspace_mod.remove(project, wt)
+            if agent_ran and args.json_summary:
+                assert run_agent is not None
+                _write_json_summary(
+                    args.json_summary,
+                    session_id=session_id,
+                    container_name=container_name,
+                    workspace=workspace,
+                    agent=run_agent,
+                    worktree=wt,
+                    project=project,
+                    exit_code=exit_code,
+                    started_at=session_started_at,
+                    ended_at=datetime.now().astimezone(),
+                )
+        finally:
+            vcs_stack.close()
 
 
 def _write_json_summary(
@@ -1297,9 +1340,8 @@ def _write_json_summary_unguarded(
     bookmark = None
     change_id = None
     if worktree is not None:
-        bookmark = worktree.branch if _is_git_worktree(worktree) else worktree.bookmark
-        if isinstance(worktree, jj_workspace_mod.JjWorkspace):
-            change_id = jj_workspace_mod.change_id(project, worktree.bookmark)
+        bookmark = worktree.bookmark
+        change_id = jj_workspace_mod.change_id(project, worktree.bookmark)
     payload = {
         "session_id": session_id,
         "container_name": container_name,
@@ -1527,7 +1569,12 @@ def _validate_egress_args(args) -> None:
 
 
 def _egress_sidecar_policy(
-    args, *, project: Path, workspace: Path, run_agent: str | None
+    args,
+    *,
+    project: Path,
+    workspace: Path,
+    run_agent: str | None,
+    vcs_plan: vcs_mode.VcsPlan | None = None,
 ) -> egress_policy.PolicyFile:
     """Load the global policy and check it and the sidecar state stay out of reach.
 
@@ -1537,6 +1584,8 @@ def _egress_sidecar_policy(
     --mount source, checked after resolving symlinks.
     """
     protected = [project, workspace, project / ".git", project / ".jj"]
+    if vcs_plan is not None and vcs_plan.ws is not None:
+        protected.append(vcs_plan.ws.private)
     for value in args.extra_mounts:
         spec = container_cli.parse_mount(value)
         if spec.raw is None:
@@ -1828,13 +1877,16 @@ def _dry_run(
     *,
     project: Path,
     workspace: Path,
-    worktree,
+    vcs_plan: vcs_mode.VcsPlan | None,
     identity,
     available_agents: tuple[str, ...],
     egress: egress_policy.PolicyFile | None = None,
 ) -> int:
+    worktree = vcs_plan.ws if vcs_plan is not None else None
     asset_project = (
-        workspace if (args.python_uv or args.node_npm) and args.branch else project
+        workspace
+        if (args.python_uv or args.node_npm) and worktree is not None
+        else project
     )
     context_dir = asset_project / ".project-sandbox"
     claude_cfg = context_dir / "claude" / "settings.json"
@@ -1864,7 +1916,9 @@ def _dry_run(
     if args.runtime == container_cli.CHROOT.name:
         _validate_chroot_session(run_agent)
 
-    print("DRY RUN: no files, worktrees, images, or containers will be created.")
+    print(
+        "DRY RUN: no files, session directories, images, or containers will be created."
+    )
     if run_agent == "copilot":
         assert copilot_host is not None
         _print_copilot_dry_run(args, context_dir=context_dir, host=copilot_host)
@@ -1886,16 +1940,8 @@ def _dry_run(
                 "Would inject Bash proxy environment: OPENAI_BASE_URL, "
                 "OPENAI_API_KEY, OPENAI_MODEL (values redacted)."
             )
-    if worktree is not None:
-        print(f"Would use worktree at: {workspace}")
-        if isinstance(worktree, jj_workspace_mod.JjWorkspace):
-            source, target = jj_workspace_mod.repo_store_mount(project, workspace)
-            print(f"Would mount .jj metadata: {source} -> {target}")
-            git_mount = jj_workspace_mod.git_backend_mount(project, workspace)
-            if git_mount is not None:
-                print(f"Would mount jj git backend: {git_mount[0]} -> {git_mount[1]}")
-        else:
-            print(f"Would mount .git metadata: {(project / '.git').resolve()}")
+    if vcs_plan is not None:
+        _print_vcs_plan(vcs_plan, dry_run=True)
     if args.build_proxy:
         print(
             "Would pass the build proxy as predefined proxy build-args, which are "
@@ -2075,6 +2121,7 @@ def _dry_run(
         context_dir=context_dir,
         workspace=workspace,
         worktree=worktree,
+        vcs_plan=vcs_plan,
         identity=identity,
         run_agent=run_agent,
         claude_cfg=claude_cfg,
@@ -2840,108 +2887,197 @@ def _warn_pi_ollama_no_firewall(args, pi_ollama_enabled: bool) -> None:
     )
 
 
-def _setup_worktree(args, project: Path):
-    """Return (Worktree | JjWorkspace | None, workspace_path). main() validates the project first."""
-    if not args.branch:
-        return None, project
+def _print_vcs_plan(plan: vcs_mode.VcsPlan, *, dry_run: bool) -> None:
+    """Report the VCS mode and its layout (dry-run and launch)."""
 
-    if (project / ".jj").is_dir():
-        ws = jj_workspace_mod.setup(
-            repo=project,
-            bookmark=args.branch,
-            start_at=args.branch_start_at,
-            workspace_dir=_worktree_dir(args),
+    def say(would: str, done: str) -> None:
+        print(would if dry_run else done)
+
+    if plan.mode == vcs_mode.ISOLATED:
+        assert plan.ws is not None
+        generated = " (generated)" if plan.generated_bookmark else ""
+        say("Would use VCS mode: isolated", "VCS mode: isolated")
+        say(
+            f"Would use bookmark: {plan.ws.bookmark}{generated}",
+            f"Bookmark: {plan.ws.bookmark}{generated}",
         )
-        return ws, ws.path
+        if plan.start is not None:
+            print(f"Would start from: {plan.start}")
+        say(
+            f"Would use session directory: {plan.ws.path}",
+            f"Session directory: {plan.ws.path}",
+        )
+        if dry_run:
+            for source, target in jj_workspace_mod.metadata_mounts(plan.ws):
+                print(f"Would mount private repository: {source} -> {target}")
+        for share in plan.shares:
+            mode = "read-write" if share.writable else "read-only"
+            say(
+                f"Would share {share.rel} ({mode}): {share.source} -> {share.target}",
+                f"Sharing {share.rel} ({mode})",
+            )
+        if plan.writable_shares:
+            names = ", ".join(share.rel for share in plan.writable_shares)
+            print(
+                f"[!] Writable shares, whose writes go straight to the project and "
+                f"are not part of the result commit: {names}"
+            )
+        return
+    if plan.mode == vcs_mode.SHARED:
+        say(
+            "Would use VCS mode: shared (project mounted in place)",
+            "VCS mode: shared (project mounted in place)",
+        )
+        if plan.shares:
+            print("--share has no effect in shared mode.")
+        print(vcs_mode.SHARED_WARNING)
+        return
+    if plan.shares:
+        print("--share has no effect without a repository.")
 
-    wt = worktree_mod.setup(
-        repo=project,
-        branch=args.branch,
-        start_at=args.branch_start_at,
-        worktree_dir=_worktree_dir(args),
-    )
-    return wt, wt.path
 
+def _setup_vcs(
+    args,
+    project: Path,
+    plan: vcs_mode.VcsPlan,
+    runtime: container_cli.Runtime | None,
+    stack: contextlib.ExitStack,
+) -> jj_workspace_mod.JjWorkspace | None:
+    """Take the session's VCS lease and create its session directory.
 
-def _plan_worktree(args, project: Path):
-    """Return a non-mutating placeholder and workspace path for dry-run."""
-    if not args.branch:
-        return None, project
-
-    if (project / ".jj").is_dir():
-        ws_path = jj_workspace_mod.path_for(
+    Returns the isolated session's workspace, or ``None`` when the project is
+    mounted in place. The lease is entered on ``stack``, which the caller
+    closes after finalization.
+    """
+    if plan.mode == vcs_mode.SHARED:
+        _take_lease(
+            stack,
+            "shared-vcs",
             project,
-            args.branch,
-            workspace_dir=_worktree_dir(args),
+            runtime,
+            busy=lambda running: (
+                f"another shared session is running for {project}"
+                + (f" (session {running})" if running else "")
+                + "; only one --vcs shared session may run per repository. "
+                "Isolated sessions can run beside it."
+            ),
         )
-        return jj_workspace_mod.JjWorkspace(path=ws_path, bookmark=args.branch), ws_path
-
-    wt_path = worktree_mod.path_for(
-        project,
-        args.branch,
-        worktree_dir=_worktree_dir(args),
+        _print_vcs_plan(plan, dry_run=False)
+        return None
+    if plan.mode != vcs_mode.ISOLATED:
+        return None
+    assert plan.ws is not None
+    bookmark = plan.ws.bookmark
+    _take_lease(
+        stack,
+        "workspace-lease",
+        plan.ws.path,
+        runtime,
+        busy=lambda running: (
+            f"a session for bookmark '{bookmark}' is already running"
+            + (f" (session {running})" if running else "")
+            + f" in {plan.ws.path}"
+        ),
     )
-    return worktree_mod.Worktree(path=wt_path, branch=args.branch), wt_path
+    ws = jj_workspace_mod.setup(
+        repo=project,
+        bookmark=bookmark,
+        start_at=args.branch_start_at,
+        workspace_dir=Path(args.worktree_dir) if args.worktree_dir else None,
+        shares=[share.rel for share in plan.shares],
+    )
+    _print_vcs_plan(plan, dry_run=False)
+    return ws
 
 
-def _wait_for_worktree_metadata(wt, runtime) -> float:
-    """Give a freshly created git worktree time to become visible in the VM.
+def _take_lease(
+    stack: contextlib.ExitStack,
+    kind: str,
+    target: Path,
+    runtime: container_cli.Runtime | None,
+    *,
+    busy: Callable[[str | None], str],
+) -> None:
+    """Hold ``kind``'s lease on ``target`` for the session, or refuse.
+
+    A lease that is free while a recorded session for ``target`` still has a
+    live container (its CLI was killed) is refused too.
+    """
+    try:
+        stack.enter_context(host_locks.path_lock(kind, target, blocking=False))
+    except host_locks.LockBusy:
+        raise SystemExit(busy(_running_session_for(target))) from None
+    orphan = _orphaned_session_for(target, runtime)
+    if orphan is not None:
+        session_id, container = orphan
+        stack.close()
+        raise SystemExit(
+            busy(session_id)
+            + f". Its CLI is gone but container {container} still runs; stop it "
+            "first."
+        )
+
+
+def _session_records_for(target: Path) -> list[dict]:
+    resolved = str(target.resolve())
+    return [
+        record
+        for record in observability.list_records()
+        if record.get("workspace_path")
+        and str(Path(record["workspace_path"]).resolve()) == resolved
+    ]
+
+
+def _running_session_for(target: Path) -> str | None:
+    for record in _session_records_for(target):
+        if record.get("status") == "running":
+            return record.get("session_id")
+    return None
+
+
+def _orphaned_session_for(
+    target: Path, runtime: container_cli.Runtime | None
+) -> tuple[str, str] | None:
+    """A session recorded as running for ``target`` whose CLI died but whose
+    container is still alive."""
+    for record in _session_records_for(target):
+        container = record.get("container_name")
+        if record.get("status") not in ("running", "orphaned") or not container:
+            continue
+        record_runtime = container_cli.runtime_by_name(record.get("runtime")) or runtime
+        if record_runtime is None or not record_runtime.is_container:
+            continue
+        if container_cli.container_exists(record_runtime, container):
+            return record.get("session_id") or "?", container
+    return None
+
+
+def _wait_for_new_directories(
+    wt: jj_workspace_mod.JjWorkspace | None, runtime: container_cli.Runtime
+) -> float:
+    """Give freshly created session directories time to become visible in the VM.
 
     Container runtimes on macOS share the host filesystem through a metadata
-    cache that can hide a just-recreated ``.git/worktrees`` directory for about
-    a second; a container started in that window sees no gitdir and every git
-    command in it fails (see worktree.METADATA_CACHE_WINDOW). Linux containers
-    bind-mount the host filesystem directly and chroot does not mount at all,
-    so neither needs the wait. Returns the seconds waited.
+    cache that can hide a just-created directory for about a second (see
+    jj_workspace.METADATA_CACHE_WINDOW). Linux containers bind-mount the host
+    filesystem directly and chroot does not mount at all, so neither needs the
+    wait. Returns the seconds waited.
     """
-    if not isinstance(wt, worktree_mod.Worktree):
+    if wt is None or not runtime.is_container or sys.platform != "darwin":
         return 0.0
-    if not runtime.is_container or sys.platform != "darwin":
-        return 0.0
-    return worktree_mod.wait_for_metadata_visibility(wt)
+    return jj_workspace_mod.wait_for_new_directories(wt)
 
 
-def _worktree_dir(args) -> Path | None:
-    return Path(args.worktree_dir) if args.worktree_dir else None
-
-
-def _validate_worktree_project(project: Path) -> None:
-    if (project / ".jj").is_dir():
-        return  # jj workspace support
-
-    git_dir = project / ".git"
-    if not git_dir.is_dir():
-        raise SystemExit(
-            "--branch requires a git or jj repo at the project root "
-            "(.git is a file or missing — worktree-of-worktree and submodules are not supported)."
-        )
-
-
-def _finalize_worktree(args, *, project: Path, wt, exit_code: int) -> None:
-    session_failed = exit_code != 0
-    message = _session_commit_message(
-        wt.branch if _is_git_worktree(wt) else wt.bookmark
+def _finalize_vcs(
+    args, *, project: Path, wt: jj_workspace_mod.JjWorkspace, exit_code: int
+) -> None:
+    jj_workspace_mod.finalize(
+        project,
+        wt,
+        keep_workspace=args.keep_workspace,
+        session_failed=exit_code != 0,
+        message=_session_commit_message(wt.bookmark),
     )
-    if isinstance(wt, jj_workspace_mod.JjWorkspace):
-        jj_workspace_mod.finalize(
-            project,
-            wt,
-            keep_workspace=args.keep_workspace,
-            session_failed=session_failed,
-            message=message,
-        )
-    else:
-        worktree_mod.finalize(
-            project,
-            wt,
-            keep_workspace=args.keep_workspace,
-            session_failed=session_failed,
-            message=message,
-        )
-
-
-def _is_git_worktree(wt) -> bool:
-    return not isinstance(wt, jj_workspace_mod.JjWorkspace)
 
 
 def _session_commit_message(name: str) -> str:
@@ -3022,6 +3158,33 @@ def _mount_touches_path(mount_value: str, vcs_dir: Path) -> bool:
     )
 
 
+def _reject_vcs_mount_conflicts(
+    extra_mounts: list[str], plan: vcs_mode.VcsPlan, project: Path
+) -> None:
+    """Refuse a --mount that would expose host VCS metadata or cover the
+    private repository's mount points in an isolated session."""
+    host_paths = vcs_mode.protected_host_paths(plan, project)
+    targets = vcs_mode.protected_targets(plan)
+    for value in extra_mounts:
+        for host_path in host_paths:
+            if _mount_touches_path(value, host_path):
+                raise SystemExit(
+                    f"--mount {value} conflicts with version-control metadata at "
+                    f"{host_path}, which an isolated session keeps out of the sandbox"
+                )
+        try:
+            spec = container_cli.parse_mount(value)
+        except SystemExit:
+            continue
+        target = PurePosixPath(spec.target)
+        for protected in targets:
+            if target == protected or protected in target.parents:
+                raise SystemExit(
+                    f"--mount {value} covers {protected}, where the session's "
+                    f"private repository is mounted"
+                )
+
+
 def _build_session_command(
     args,
     *,
@@ -3045,6 +3208,7 @@ def _build_session_command(
     network: str | None = None,
     session_id: str | None = None,
     egress_mount: str | None = None,
+    vcs_plan: vcs_mode.VcsPlan | None = None,
 ) -> tuple[list[str], Path | None, bool, list[str] | None]:
     # Agent availability is validated up front in main() via _ensure_agent_available.
     extra_mounts = list(args.extra_mounts)
@@ -3056,33 +3220,9 @@ def _build_session_command(
             f"type=bind,source={(context_dir / 'opencode').resolve(strict=False)},"
             "target=/project-sandbox-config/opencode,readonly"
         )
-    if worktree is not None:
-        if isinstance(worktree, jj_workspace_mod.JjWorkspace):
-            vcs_dir = (project / ".jj").resolve()
-            conflict_msg = (
-                f"--mount conflicts with the workspace .jj metadata mount at {vcs_dir}"
-            )
-            source, target = jj_workspace_mod.repo_store_mount(project, worktree.path)
-            metadata_mounts = [f"type=bind,source={source},target={target}"]
-            # An additional workspace's store points its git backend at the main
-            # repo's git dir, which is outside the /workspace and .jj/repo mounts.
-            # Mount it too, or every in-container `jj` command fails to open the
-            # repo. (The default workspace gets it via the /workspace mount.)
-            git_mount = jj_workspace_mod.git_backend_mount(project, worktree.path)
-            if git_mount is not None:
-                git_source, git_target = git_mount
-                metadata_mounts.append(
-                    f"type=bind,source={git_source},target={git_target}"
-                )
-        else:
-            vcs_dir = (project / ".git").resolve()
-            conflict_msg = (
-                f"--mount conflicts with the worktree .git metadata mount at {vcs_dir}"
-            )
-            metadata_mounts = [f"type=bind,source={vcs_dir},target={vcs_dir}"]
-        if any(_mount_touches_path(m, vcs_dir) for m in extra_mounts):
-            raise SystemExit(conflict_msg)
-        extra_mounts.extend(metadata_mounts)
+    if vcs_plan is not None and vcs_plan.mode == vcs_mode.ISOLATED:
+        _reject_vcs_mount_conflicts(extra_mounts, vcs_plan, project)
+        extra_mounts.extend(vcs_mode.mounts(vcs_plan))
     extra_env: list[str] = []
     if api_key_values is None:
         api_key_values = _api_key_env_values(args)
@@ -3154,7 +3294,10 @@ def _build_session_command(
             Path(args.log).expanduser().resolve()
             if args.log
             else session.default_log_path(
-                project, args.branch, run_agent, create=create_prompt_files
+                project,
+                worktree.bookmark if worktree is not None else None,
+                run_agent,
+                create=create_prompt_files,
             )
         )
         run_mode_agent = f"{run_agent}-headless"

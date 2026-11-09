@@ -47,6 +47,30 @@ _RUNTIMES = {
 }
 
 
+def runtime_by_name(name: object) -> Runtime | None:
+    """Return the runtime recorded under ``name`` (e.g. in a session record)."""
+    return _RUNTIMES.get(name) if isinstance(name, str) else None
+
+
+def container_exists(runtime: Runtime, name: str) -> bool:
+    """Whether a container called ``name`` exists (sessions run with ``--rm``).
+
+    ``<binary> inspect <name>`` exits 0 for an existing container and non-zero
+    otherwise on docker, podman and Apple ``container`` 1.7.1. A missing binary
+    counts as no container.
+    """
+    argv = (
+        [runtime.binary, "inspect", name]
+        if runtime.name == APPLE_CONTAINER.name
+        else [runtime.binary, "container", "inspect", name]
+    )
+    try:
+        proc = subprocess.run(argv, check=False, capture_output=True, text=True)
+    except FileNotFoundError:
+        return False
+    return proc.returncode == 0
+
+
 def host_build_identity(runtime: Runtime) -> tuple[int, int] | None:
     """Return the host identity that Docker/Podman images must build for."""
     if not sys.platform.startswith("linux") or runtime.name not in (

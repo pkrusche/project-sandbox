@@ -3299,6 +3299,20 @@ class CopilotRendererTests(TestCase):
             provision.split("export_project_sandbox_copilot_token()")[0],
         )
 
+    def test_provision_marks_workspace_as_a_safe_git_directory(self) -> None:
+        """Apple `container` can show the /workspace mount root as root-owned;
+        without the exception git refuses the session's repository (e2e
+        regression, vcs-session-modes)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            text = self._entrypoint(Path(tmp))
+        provision = text[: text.index('case "${1:-bash}" in')]
+        self.assertIn("git config --global --add safe.directory /workspace", provision)
+        # Added after the identity block, which truncates ~/.gitconfig.
+        self.assertGreater(
+            provision.index("safe.directory /workspace"),
+            provision.index(': > "$HOME/.gitconfig"'),
+        )
+
     def _run_dispatch(
         self, *args: str, env: dict[str, str] | None = None, token: str | None = None
     ) -> tuple[list[str], str]:

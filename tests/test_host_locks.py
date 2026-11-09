@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from project_sandbox import build_cache, host_locks, jj_workspace, worktree
+from project_sandbox import build_cache, host_locks, jj_workspace
 
 
 @contextlib.contextmanager
@@ -128,10 +128,18 @@ with open(sys.argv[1], "r") as lock:
                 pass
             with jj_workspace._workspace_lock(Path("/tmp/repo")):
                 pass
-            with worktree._teardown_lock(Path("/tmp/repo")):
-                pass
 
-        self.assertEqual(
-            seen,
-            [("build", "ctx"), ("jj-workspace", "repo"), ("git-teardown", "repo")],
-        )
+        self.assertEqual(seen, [("build", "ctx"), ("jj-workspace", "repo")])
+
+    def test_non_blocking_lease_refuses_while_held(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "W"
+            with host_locks.path_lock("workspace-lease", target, blocking=False):
+                # A second open file description conflicts like another process.
+                with self.assertRaises(host_locks.LockBusy):
+                    with host_locks.path_lock(
+                        "workspace-lease", target, blocking=False
+                    ):
+                        pass
+            with host_locks.path_lock("workspace-lease", target, blocking=False):
+                pass

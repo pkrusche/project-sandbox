@@ -7,6 +7,13 @@ if [ -n "$NAME" ] || [ -n "$EMAIL" ]; then
   [ -n "$NAME" ] && git config --global user.name "$NAME"
   [ -n "$EMAIL" ] && git config --global user.email "$EMAIL"
 fi
+# Apple `container` can present the /workspace mount root as owned by root, and
+# git then refuses the repository there ("detected dubious ownership"). The
+# workspace is the session's own (in isolated mode a private repository), so
+# mark it safe.
+if ! git config --global --get-all safe.directory 2>/dev/null | grep -qx /workspace; then
+  git config --global --add safe.directory /workspace
+fi
 
 if command -v jj >/dev/null 2>&1 && { [ -n "$NAME" ] || [ -n "$EMAIL" ]; }; then
   [ -n "$NAME" ] && (cd "$HOME" && jj config set --user user.name "$NAME")

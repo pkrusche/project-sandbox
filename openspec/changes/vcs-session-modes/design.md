@@ -51,7 +51,7 @@ P/git              agent-private         →  /workspace/.git     (bind, rw)
 ```
 
 - `W` is created by `jj workspace add --no-colocate --name <ws> -r <start>` from the main repository.
-- `P` is a per-bookmark directory beside `W`'s parent, outside `W` and outside the project.
+- `P` is `<W's parent>/.session-vcs/<W's name>.<12 hex>`: outside `W` and outside the project. Each new private repository gets a fresh name, and neither `<repo>-workspaces/` nor `.session-vcs/` is ever removed. Docker Desktop on macOS could not bind a private directory that had been mounted, removed and recreated at the same path, even 5 s later, nor anything under a recreated `.session-vcs/`; a name it has never seen always works (e2e, 2026-11-10). A kept session's `P` is found by that name pattern.
 - The two nested binds hide `W/.jj` and `W/.git`. A bind mount point can't be renamed or removed from inside the container, so the underlying host `.jj` stays out of reach.
 - The main repository's `.jj/repo` and `.git` are not mounted at all. `repo_store_mount` and `git_backend_mount` are deleted.
 
@@ -145,6 +145,9 @@ A private per-session copy (`--copy`) is deferred to ROADMAP.
 - [`--share …:rw` lets an agent change files outside the reviewed result] → Read-only is the default, `:rw` is per path, the launch lists every writable share, and the docs say these writes are not in the commit.
 - [A shared folder contains a secret, such as `.env` files] → Sharing is always explicit and per path. Nothing is shared by default or by pattern.
 - [A large generated directory that isn't ignored gets recorded] → As today for `--branch`. The size refusal covers single files only.
+
+- [Apple `container` presents the `/workspace` mount root as root-owned, and git refuses the private repository as "dubious ownership"] → The entrypoint's identity provisioning adds `safe.directory /workspace` (found by the e2e test, 2026-11-10).
+- [Freshly created mount sources can be invisible to a VM-backed runtime for about a second] → On macOS container runtimes the CLI waits up to 1.5 s after setup created directories, measured from their creation.
 
 ## Migration Plan
 

@@ -3,27 +3,6 @@
 This file contains functionality researched but not yet planned for execution
 in the next release via <TODO.md>.
 
-## Isolate concurrent subagents in separate clones, merge back on teardown
-
-Every `--branch` jj agent shares one repo's `.jj/repo` store and — since we now
-also mount the git backend — its `.git`, both bind-mounted read-write into each
-container. That fits jj's concurrent-workspace model on a shared-kernel runtime,
-but concurrent writes from *inside* multiple containers to a single shared store
-are not obviously safe across separate VMs (Apple `container` + VirtioFS), where
-lock-file and rename atomicity may not hold.
-
-Plan: give each subagent its own clone, then merge/rebase the agent's bookmark 
-back into the parent repo during teardown. This removes the shared-store race 
-entirely and keeps each agent's blast radius isolated.
-
-Note the git-worktree (`--branch` non-jj) path — which shares `.git` the same way —
-should use the same approach.
-
-Interim mitigation already in place: one host-side exclusive lock
-(`_workspace_lock`) serializes workspace setup, finalization, and build-failure
-cleanup, so those shared-store mutations cannot interleave. It does not address
-concurrent in-container writes; this item supersedes it.
-
 ## Private copies of ignored folders for isolated sessions (`--copy`)
 
 Isolated sessions (`vcs-session-modes`) start from a fresh checkout, so folders

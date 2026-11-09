@@ -13,7 +13,6 @@ import pytest
 @pytest.mark.parametrize(
     ("filename", "class_name"),
     [
-        ("test_worktree.py", "GitWorktreeDockerEndToEndTests"),
         ("test_jj_workspace.py", "JjWorkspaceDockerEndToEndTests"),
     ],
 )

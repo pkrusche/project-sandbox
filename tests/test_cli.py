@@ -18,7 +18,6 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from project_sandbox import cli, container_cli, firewall
-from project_sandbox import worktree as worktree_mod
 from project_sandbox.git_identity import GitIdentity
 
 
@@ -29,6 +28,16 @@ def _agent_paths(home: Path) -> dict[str, Path]:
         "opencode": home / ".config" / "opencode",
         "pi": home / ".pi" / "agent",
     }
+
+
+def _isolated_plan(workspace: Path, bookmark: str = "feature"):
+    """A planned isolated session whose session directory is ``workspace``."""
+    ws = cli.jj_workspace_mod.JjWorkspace(
+        path=workspace,
+        bookmark=bookmark,
+        private=cli.jj_workspace_mod.new_private_path(workspace),
+    )
+    return cli.vcs_mode.VcsPlan(mode=cli.vcs_mode.ISOLATED, workspace=workspace, ws=ws)
 
 
 def _make_git_repo(path: Path) -> None:
@@ -748,286 +757,6 @@ class CliTests(TestCase):
 
         self.assertIn("base_image is required", str(raised.exception))
 
-    def test_branch_jj_repo_dispatches_to_jj_workspace(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            project = Path(tmp)
-            (project / ".jj").mkdir()
-            host_home = project / "home"
-            paths = _agent_paths(host_home)
-            paths["claude"].mkdir(parents=True)
-
-            fake_ws = cli.jj_workspace_mod.JjWorkspace(
-                path=project.parent / f"{project.name}-workspaces" / "feat-x",
-                bookmark="feat/x",
-            )
-            stdout_buf = io.StringIO()
-            with (
-                patch.object(
-                    cli, "read_identity", return_value=GitIdentity("A", "a@b.com")
-                ),
-                patch.object(
-                    cli.config_agents, "_agent_host_paths", return_value=paths
-                ),
-                patch.object(
-                    cli.jj_workspace_mod, "setup", return_value=fake_ws
-                ) as jj_setup,
-                patch.object(cli.worktree_mod, "setup") as git_setup,
-                patch.object(cli.jj_workspace_mod, "finalize"),
-                contextlib.redirect_stdout(stdout_buf),
-            ):
-                cli.main(
-                    [
-                        "--dry-run",
-                        "--no-build",
-                        "--no-firewall",
-                        "--agent",
-                        "claude",
-                        "--branch",
-                        "feat/x",
-                        str(project),
-                        "python:3.12-slim",
-                    ]
-                )
-
-        jj_setup.assert_not_called()  # dry-run uses path_for, not setup
-        git_setup.assert_not_called()
-        # Dry-run output should reference the jj workspace path
-        output = stdout_buf.getvalue()
-        self.assertIn(str(fake_ws.path), output)
-
-    def test_branch_file_git_raises(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            project = Path(tmp)
-            (project / ".git").write_text(
-                "gitdir: ../some/.git/worktrees/x\n", encoding="utf-8"
-            )
-            with (
-                patch.object(
-                    cli, "read_identity", return_value=GitIdentity("A", "a@b.com")
-                ),
-                patch.object(
-                    cli.config_agents,
-                    "_agent_host_paths",
-                    return_value=_agent_paths(project / "home"),
-                ),
-                self.assertRaises(SystemExit) as raised,
-            ):
-                cli.main(
-                    [
-                        "--agent",
-                        "claude",
-                        "--branch",
-                        "feat/x",
-                        str(project),
-                        "python:3.12-slim",
-                    ]
-                )
-        self.assertIn(".git is a file or missing", str(raised.exception))
-
-    def test_branch_dry_run_argv_includes_git_metadata_mount(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            project = Path(tmp)
-            _make_git_repo(project)
-
-            wt_path = project.parent / f"{project.name}-worktrees" / "feat-x"
-            host_home = project / "home"
-            paths = _agent_paths(host_home)
-            paths["claude"].mkdir(parents=True)
-
-            stdout_buf = io.StringIO()
-            with (
-                patch.object(
-                    cli, "read_identity", return_value=GitIdentity("A", "a@b.com")
-                ),
-                patch.object(cli.worktree_mod, "setup") as setup_worktree,
-                patch.object(
-                    cli.config_agents, "_agent_host_paths", return_value=paths
-                ),
-                contextlib.redirect_stdout(stdout_buf),
-            ):
-                rc = cli.main(
-                    [
-                        "--dry-run",
-                        "--no-build",
-                        "--no-firewall",
-                        "--agent",
-                        "claude",
-                        "--branch",
-                        "feat/x",
-                        str(project),
-                        "python:3.12-slim",
-                    ]
-                )
-
-        self.assertEqual(rc, 0)
-        setup_worktree.assert_not_called()
-        self.assertFalse(wt_path.exists())
-        output = stdout_buf.getvalue()
-
-        git_dir = str((project / ".git").resolve())
-        # The container run argv line should contain the .git metadata mount
-        self.assertIn(git_dir, output)
-        # And the workspace mount should point at the worktree, not the project root
-        self.assertIn(str(wt_path), output)
-        self.assertNotIn(f"source={project},target=/workspace", output)
-
-    def test_branch_jj_dry_run_argv_includes_jj_metadata_mount(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            project = Path(tmp)
-            (project / ".jj").mkdir()
-            host_home = project / "home"
-            paths = _agent_paths(host_home)
-            paths["claude"].mkdir(parents=True)
-
-            stdout_buf = io.StringIO()
-            with (
-                patch.object(
-                    cli, "read_identity", return_value=GitIdentity("A", "a@b.com")
-                ),
-                patch.object(
-                    cli.config_agents, "_agent_host_paths", return_value=paths
-                ),
-                contextlib.redirect_stdout(stdout_buf),
-            ):
-                rc = cli.main(
-                    [
-                        "--dry-run",
-                        "--no-build",
-                        "--no-firewall",
-                        "--agent",
-                        "claude",
-                        "--branch",
-                        "feat/x",
-                        str(project),
-                        "python:3.12-slim",
-                    ]
-                )
-
-        self.assertEqual(rc, 0)
-        output = stdout_buf.getvalue()
-        jj_dir = str((project / ".jj").resolve())
-        self.assertIn(jj_dir, output)
-        self.assertIn("Would mount .jj metadata:", output)
-        self.assertIn("-> /", output)
-        self.assertNotIn("Would mount .git metadata:", output)
-
-    def test_branch_jj_mount_conflicting_with_jj_metadata_raises(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            project = Path(tmp)
-            (project / ".jj").mkdir()
-            host_home = project / "home"
-            paths = _agent_paths(host_home)
-            paths["claude"].mkdir(parents=True)
-            jj_dir = str((project / ".jj").resolve())
-
-            with (
-                patch.object(
-                    cli, "read_identity", return_value=GitIdentity("A", "a@b.com")
-                ),
-                patch.object(
-                    cli.config_agents, "_agent_host_paths", return_value=paths
-                ),
-                contextlib.redirect_stdout(io.StringIO()),
-            ):
-                with self.assertRaises(SystemExit) as raised:
-                    cli.main(
-                        [
-                            "--dry-run",
-                            "--no-build",
-                            "--no-firewall",
-                            "--agent",
-                            "claude",
-                            "--branch",
-                            "feat/x",
-                            "--mount",
-                            f"type=bind,source={jj_dir},target=/jj",
-                            str(project),
-                            "python:3.12-slim",
-                        ]
-                    )
-
-        self.assertIn("--mount conflicts", str(raised.exception))
-        self.assertIn(jj_dir, str(raised.exception))
-
-    def test_branch_dry_run_prints_worktree_info(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            project = Path(tmp)
-            _make_git_repo(project)
-
-            wt_path = project.parent / f"{project.name}-worktrees" / "feat-x"
-            host_home = project / "home"
-            paths = _agent_paths(host_home)
-            paths["claude"].mkdir(parents=True)
-
-            stdout_buf = io.StringIO()
-            with (
-                patch.object(
-                    cli, "read_identity", return_value=GitIdentity("A", "a@b.com")
-                ),
-                patch.object(cli.worktree_mod, "setup") as setup_worktree,
-                patch.object(
-                    cli.config_agents, "_agent_host_paths", return_value=paths
-                ),
-                contextlib.redirect_stdout(stdout_buf),
-            ):
-                cli.main(
-                    [
-                        "--dry-run",
-                        "--no-build",
-                        "--no-firewall",
-                        "--agent",
-                        "claude",
-                        "--branch",
-                        "feat/x",
-                        str(project),
-                        "python:3.12-slim",
-                    ]
-                )
-
-        output = stdout_buf.getvalue()
-        setup_worktree.assert_not_called()
-        self.assertFalse(wt_path.exists())
-        self.assertIn("Would use worktree at:", output)
-        self.assertIn("Would mount .git metadata:", output)
-
-    def test_branch_mount_conflicting_with_git_metadata_raises(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            project = Path(tmp)
-            _make_git_repo(project)
-            host_home = project / "home"
-            paths = _agent_paths(host_home)
-            paths["claude"].mkdir(parents=True)
-            git_dir = (project / ".git").resolve()
-
-            with (
-                patch.object(
-                    cli, "read_identity", return_value=GitIdentity("A", "a@b.com")
-                ),
-                patch.object(
-                    cli.config_agents, "_agent_host_paths", return_value=paths
-                ),
-                contextlib.redirect_stdout(io.StringIO()),
-            ):
-                with self.assertRaises(SystemExit) as raised:
-                    cli.main(
-                        [
-                            "--dry-run",
-                            "--no-build",
-                            "--no-firewall",
-                            "--agent",
-                            "claude",
-                            "--branch",
-                            "feat/x",
-                            "--mount",
-                            f"type=bind,source={git_dir},target=/git",
-                            str(project),
-                            "python:3.12-slim",
-                        ]
-                    )
-
-        self.assertIn("--mount conflicts", str(raised.exception))
-        self.assertIn(str(git_dir), str(raised.exception))
-
     def test_branch_without_agent_or_prompt_raises(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
@@ -1055,18 +784,15 @@ class CliTests(TestCase):
 
         self.assertIn("--branch requires", str(raised.exception))
 
-    def test_failed_build_tears_down_worktree_without_integrating(self) -> None:
+    def test_failed_build_tears_down_workspace_without_recording(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
-            _make_git_repo(project)
+            (project / ".jj").mkdir()
             host_home = project / "home"
             paths = _agent_paths(host_home)
             paths["claude"].mkdir(parents=True)
 
-            fake_wt = cli.worktree_mod.Worktree(
-                path=project.parent / f"{project.name}-worktrees" / "feat-x",
-                branch="feat/x",
-            )
+            fake_wt = cli.jj_workspace_mod.plan(project, "feat/x")
 
             with (
                 patch.object(
@@ -1083,8 +809,9 @@ class CliTests(TestCase):
                         "claude-devcontainer": host_home / "cd",
                     },
                 ),
-                patch.object(cli.worktree_mod, "setup", return_value=fake_wt),
-                patch.object(cli.worktree_mod, "finalize") as finalize,
+                patch.object(cli.jj_workspace_mod, "setup", return_value=fake_wt),
+                patch.object(cli.jj_workspace_mod, "finalize") as finalize,
+                patch.object(cli.jj_workspace_mod, "remove") as remove,
                 patch.object(
                     cli.container_cli,
                     "select_runtime",
@@ -1111,9 +838,10 @@ class CliTests(TestCase):
 
             self.assertEqual(rc, 1)
             run.assert_not_called()
-            # Build failed before the agent ran: finalize must NOT run (no commit
-            # of an empty/failed session), the git worktree is left in place.
+            # Build failed before the agent ran: nothing is recorded on the
+            # bookmark, and what this session created is dropped.
             finalize.assert_not_called()
+            remove.assert_called_once_with(project.resolve(), fake_wt)
 
     def test_branch_start_at_requires_branch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1129,20 +857,6 @@ class CliTests(TestCase):
                     ]
                 )
         self.assertIn("--branch-start-at requires --branch", str(raised.exception))
-
-    def test_keep_workspace_requires_branch(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            with self.assertRaises(SystemExit) as raised:
-                cli.main(
-                    [
-                        "--agent",
-                        "claude",
-                        "--keep-workspace",
-                        tmp,
-                        "python:3.12-slim",
-                    ]
-                )
-        self.assertIn("--keep-workspace requires --branch", str(raised.exception))
 
     def test_failed_pi_json_run_is_reported_as_a_nonzero_exit(self) -> None:
         # `pi --mode json` exits 0 even when the turn ended in an error, so the
@@ -2311,6 +2025,7 @@ class CliTests(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
             _make_git_repo(project)
+            (project / ".jj").mkdir()
             host_home = project / "home"
             paths = _agent_paths(host_home)
             paths["claude"].mkdir(parents=True)
@@ -2349,6 +2064,7 @@ class CliTests(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
             _make_git_repo(project)
+            (project / ".jj").mkdir()
             host_home = project / "home"
             paths = _agent_paths(host_home)
             paths["claude"].mkdir(parents=True)
@@ -2380,7 +2096,7 @@ class CliTests(TestCase):
                         ]
                     )
 
-        self.assertIn("--mount conflicts", str(raised.exception))
+        self.assertIn("conflicts with version-control metadata", str(raised.exception))
 
     def test_mount_conflict_check_handles_raw_mount_forms(self) -> None:
         """A mount form we don't model structurally (tmpfs/volume, or a bind
@@ -3606,8 +3322,8 @@ class VerboseAgentConfigTests(TestCase):
         self.assertIn("PROJECT_SANDBOX_QUIET=1", output)
 
 
-class FinalizeWorktreeTests(TestCase):
-    """_finalize_worktree maps CLI flags/exit code onto the module finalize()."""
+class FinalizeVcsTests(TestCase):
+    """_finalize_vcs maps CLI flags/exit code onto jj_workspace.finalize()."""
 
     def _run_finalize(
         self, *, exit_code: int, keep_workspace: bool
@@ -3616,27 +3332,24 @@ class FinalizeWorktreeTests(TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
-            _make_git_repo(project)
-            fake_wt = cli.worktree_mod.Worktree(
-                path=project.parent / "wt" / "feat-x",
-                branch="feat/x",
-            )
+            fake_ws = cli.jj_workspace_mod.plan(project, "feat/x")
             args = argparse.Namespace(keep_workspace=keep_workspace)
             with (
-                patch.object(cli.worktree_mod, "finalize") as finalize,
+                patch.object(cli.jj_workspace_mod, "finalize") as finalize,
                 contextlib.redirect_stdout(io.StringIO()),
             ):
-                cli._finalize_worktree(
-                    args, project=project, wt=fake_wt, exit_code=exit_code
+                cli._finalize_vcs(
+                    args, project=project, wt=fake_ws, exit_code=exit_code
                 )
             finalize.assert_called_once()
+            self.assertIs(finalize.call_args.args[1], fake_ws)
             return dict(finalize.call_args.kwargs)
 
     def test_nonzero_exit_marks_session_failed(self) -> None:
         kwargs = self._run_finalize(exit_code=124, keep_workspace=False)
         self.assertTrue(kwargs["session_failed"])
         self.assertFalse(kwargs["keep_workspace"])
-        # The commit message defaults to the branch name plus a timestamp.
+        # The commit message defaults to the bookmark name plus a timestamp.
         message = kwargs["message"]
         assert isinstance(message, str)
         self.assertIn("feat/x", message)
@@ -3649,31 +3362,17 @@ class FinalizeWorktreeTests(TestCase):
         kwargs = self._run_finalize(exit_code=0, keep_workspace=True)
         self.assertTrue(kwargs["keep_workspace"])
 
-    def test_jj_workspace_dispatches_to_jj_finalize(self) -> None:
-        import argparse
-
-        with tempfile.TemporaryDirectory() as tmp:
-            project = Path(tmp)
-            fake_ws = cli.jj_workspace_mod.JjWorkspace(
-                path=project.parent / "ws" / "feat-x", bookmark="feat/x"
-            )
-            args = argparse.Namespace(keep_workspace=False)
-            with patch.object(cli.jj_workspace_mod, "finalize") as finalize:
-                cli._finalize_worktree(args, project=project, wt=fake_ws, exit_code=0)
-            finalize.assert_called_once()
-            self.assertIn("feat/x", finalize.call_args.kwargs["message"])
-
 
 class JsonSessionSummaryTests(TestCase):
-    def test_writes_compact_file_summary_for_git_worktree(self) -> None:
+    def test_writes_compact_file_summary_for_isolated_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             project = root / "project"
-            workspace = root / "project-worktrees" / "feat"
             project.mkdir()
+            wt = cli.jj_workspace_mod.plan(project, "feat")
+            workspace = wt.path
             workspace.mkdir(parents=True)
             destination = root / "reports" / "summary.json"
-            wt = cli.worktree_mod.Worktree(path=workspace, branch="feat")
             started = cli.datetime.fromisoformat("2026-08-13T10:00:00+00:00")
             ended = cli.datetime.fromisoformat("2026-08-13T10:01:00+00:00")
 
@@ -3690,6 +3389,7 @@ class JsonSessionSummaryTests(TestCase):
                 ended_at=ended,
             )
 
+            # project is not a jj repository, so the change id can't resolve.
             raw = destination.read_text(encoding="utf-8")
             self.assertEqual(raw.count("\n"), 1)
             self.assertEqual(
@@ -3714,7 +3414,9 @@ class JsonSessionSummaryTests(TestCase):
             project.mkdir()
             workspace.mkdir()
             ws = cli.jj_workspace_mod.JjWorkspace(
-                path=workspace, bookmark="automation/run"
+                path=workspace,
+                bookmark="automation/run",
+                private=Path(tmp) / ".session-vcs" / "workspace",
             )
             out = io.StringIO()
             with (
@@ -4007,14 +3709,17 @@ class BuildCacheReuseTests(TestCase):
                 project.mkdir()
                 workspace.mkdir()
                 _make_git_repo(project)
+                (project / ".jj").mkdir()
                 # Main has no Python metadata; only the resolved branch does.
                 (workspace / "pyproject.toml").write_text(
                     "[project]\nname = 'branch-demo'\n", encoding="utf-8"
                 )
                 if has_lock:
                     (workspace / "uv.lock").write_text("version = 1\n")
-                with patch.object(
-                    cli, "_setup_worktree", return_value=(None, workspace)
+                fake_ws = _isolated_plan(workspace).ws
+                with (
+                    patch.object(cli, "_setup_vcs", return_value=fake_ws),
+                    patch.object(cli, "_finalize_vcs"),
                 ):
                     rc, _, build = self._run(
                         project,
@@ -4212,7 +3917,9 @@ class PythonUvFlagTests(TestCase):
             project = self._make_project(tmp)
             _make_git_repo(project)
             workspace = project / "planned-workspace"
-            with patch.object(cli, "_plan_worktree", return_value=(None, workspace)):
+            with patch.object(
+                cli.vcs_mode, "plan", return_value=_isolated_plan(workspace)
+            ):
                 rc, output = self._dry_run_python_uv(
                     project,
                     [
@@ -4486,17 +4193,18 @@ class PythonUvFlagTests(TestCase):
 
         self.assertIn("mutually exclusive", str(raised.exception))
 
-    def test_invalid_build_source_fails_before_worktree(self) -> None:
-        # A bad build source must abort before _setup_worktree runs, so no
-        # branch/worktree is orphaned by the failure.
+    def test_invalid_build_source_fails_before_session_directory(self) -> None:
+        # A bad build source must abort before _setup_vcs runs, so no session
+        # directory or bookmark is orphaned by the failure.
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
             _make_git_repo(project)
+            (project / ".jj").mkdir()
             with (
                 patch.object(
                     cli, "read_identity", return_value=GitIdentity("A", "a@b.com")
                 ),
-                patch.object(cli, "_setup_worktree") as setup_wt,
+                patch.object(cli, "_setup_vcs") as setup_wt,
                 patch.object(
                     cli.config_agents, "available_agents", return_value=("claude",)
                 ),
@@ -4522,16 +4230,17 @@ class PythonUvFlagTests(TestCase):
             setup_wt.assert_not_called()
             self.assertIn("mutually exclusive", str(raised.exception))
 
-    def test_missing_prompt_file_fails_before_worktree(self) -> None:
-        # A missing --prompt must abort before _setup_worktree runs.
+    def test_missing_prompt_file_fails_before_session_directory(self) -> None:
+        # A missing --prompt must abort before _setup_vcs runs.
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
             _make_git_repo(project)
+            (project / ".jj").mkdir()
             with (
                 patch.object(
                     cli, "read_identity", return_value=GitIdentity("A", "a@b.com")
                 ),
-                patch.object(cli, "_setup_worktree") as setup_wt,
+                patch.object(cli, "_setup_vcs") as setup_wt,
                 patch.object(
                     cli.config_agents, "available_agents", return_value=("claude",)
                 ),
@@ -5154,17 +4863,18 @@ class RustCargoFlagTests(TestCase):
             f"Unexpected {WORKSPACE_CARGO_TARGET} mount in command: {cmd}",
         )
 
-    def test_invalid_build_source_fails_before_worktree(self) -> None:
-        # A bad build source must abort before _setup_worktree runs, so no
-        # branch/worktree is orphaned by the failure.
+    def test_invalid_build_source_fails_before_session_directory(self) -> None:
+        # A bad build source must abort before _setup_vcs runs, so no session
+        # directory or bookmark is orphaned by the failure.
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
             _make_git_repo(project)
+            (project / ".jj").mkdir()
             with (
                 patch.object(
                     cli, "read_identity", return_value=GitIdentity("A", "a@b.com")
                 ),
-                patch.object(cli, "_setup_worktree") as setup_wt,
+                patch.object(cli, "_setup_vcs") as setup_wt,
                 patch.object(
                     cli.config_agents, "available_agents", return_value=("claude",)
                 ),
@@ -5881,69 +5591,6 @@ class ApiKeyInjectionTests(TestCase):
             self.assertEqual(captured["env"]["ANTHROPIC_API_KEY"], "super-secret-value")
 
 
-class WorktreeMetadataWaitTests(TestCase):
-    """The cache-window wait applies only where a VM shares the filesystem.
-
-    See worktree.METADATA_CACHE_WINDOW: a container on macOS can mount a
-    just-deleted .git/worktrees directory and fail every git command, while
-    Linux containers bind-mount the host filesystem directly and chroot does
-    not mount at all.
-    """
-
-    def _worktree(self):
-        return worktree_mod.Worktree(
-            path=Path("/repo-worktrees/b"), branch="b", metadata_created_at=100.0
-        )
-
-    def test_waits_for_a_container_runtime_on_macos(self) -> None:
-        with (
-            patch.object(cli.sys, "platform", "darwin"),
-            patch.object(
-                cli.worktree_mod, "wait_for_metadata_visibility", return_value=1.25
-            ) as wait,
-        ):
-            waited = cli._wait_for_worktree_metadata(
-                self._worktree(), container_cli.DOCKER
-            )
-
-        self.assertEqual(waited, 1.25)
-        wait.assert_called_once()
-
-    def test_does_not_wait_on_linux(self) -> None:
-        with (
-            patch.object(cli.sys, "platform", "linux"),
-            patch.object(cli.worktree_mod, "wait_for_metadata_visibility") as wait,
-        ):
-            waited = cli._wait_for_worktree_metadata(
-                self._worktree(), container_cli.DOCKER
-            )
-
-        self.assertEqual(waited, 0.0)
-        wait.assert_not_called()
-
-    def test_does_not_wait_for_chroot(self) -> None:
-        with (
-            patch.object(cli.sys, "platform", "darwin"),
-            patch.object(cli.worktree_mod, "wait_for_metadata_visibility") as wait,
-        ):
-            waited = cli._wait_for_worktree_metadata(
-                self._worktree(), container_cli.CHROOT
-            )
-
-        self.assertEqual(waited, 0.0)
-        wait.assert_not_called()
-
-    def test_does_not_wait_without_a_git_worktree(self) -> None:
-        with (
-            patch.object(cli.sys, "platform", "darwin"),
-            patch.object(cli.worktree_mod, "wait_for_metadata_visibility") as wait,
-        ):
-            waited = cli._wait_for_worktree_metadata(None, container_cli.DOCKER)
-
-        self.assertEqual(waited, 0.0)
-        wait.assert_not_called()
-
-
 def _make_npm_project(
     root: Path,
     *,
@@ -6472,7 +6119,9 @@ class NodeNpmFlagTests(TestCase):
             _make_git_repo(project)
             workspace = _make_npm_project(Path(tmp) / "branch")
             with (
-                patch.object(cli, "_plan_worktree", return_value=(None, workspace)),
+                patch.object(
+                    cli.vcs_mode, "plan", return_value=_isolated_plan(workspace)
+                ),
             ):
                 rc, output = self._main(
                     [

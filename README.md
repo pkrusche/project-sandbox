@@ -20,7 +20,7 @@ Many sandboxes exist - this is the one with a feature-set / configureable agency
 * **Devcontainer support**: Creates a matched devcontainer config for editor support (weaker isolation but integrated workflow).
 * **Unsupervised job runs** - submit batch jobs.
 * **Network access restrictions**: restrict to allowed domains, (somewhat) hardened firewall script, or opt into the global [Squid egress sidecar](docs/egress-sidecar.md) for one hostname-based policy, managed with `project-sandbox-egress`.
-* **git/jj integration**: Managed execution with worktrees / workspaces. No credentials to push inside containers.
+* **jj integration**: Isolated sessions by default: the agent works in its own jj workspace with a private repository, and the result arrives as one commit on a bookmark. No credentials to push inside containers.
 * **pinned dependencies**: pre-install agents & extra tools into the image, manual upversioning.
 * **Simple workflow** (in my view).
 * **Minimal dependencies** (jinja2)

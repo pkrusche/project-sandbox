@@ -77,17 +77,19 @@ runs the tool against it, and validates every generated artefact:
 The test prints the temp project path on success so the generated files can be
 inspected.
 
-Branch workflow end-to-end tests exercise real headless bash-agent runs against
-throwaway git and jj repositories. They verify the finish actions that integrate
-or leave agent work after the session:
+The environment-injection and isolated-VCS end-to-end tests exercise real
+headless bash-agent runs. The isolated-VCS test uses a throwaway jj repository
+and checks that a session's result arrives as one commit on its bookmark, that
+the agent's private commits, hooks and config never reach the main repository,
+that a `--share` folder is readable but not writable, and that a killed
+session's files are still recorded:
 
 ```bash
 ./scripts/e2e-env-injection.sh
-./scripts/e2e-git-workflow.sh
-./scripts/e2e-jj-workflow.sh
+./scripts/e2e-isolated-vcs.sh
 ```
 
-All three scripts default to `--runtime auto` (Apple `container` on macOS,
+Both scripts default to `--runtime auto` (Apple `container` on macOS,
 otherwise Docker, then Podman) and accept
 `--runtime chroot|auto|apple-container|docker|podman`, `--base-image IMAGE`,
 `--no-build`, and `--keep`.
@@ -186,7 +188,7 @@ single one, pass `--only SUITE`; `--list` prints the accepted suite names:
 
 ```bash
 ./scripts/run-e2e-tests.sh --list
-./scripts/run-e2e-tests.sh --only git-workflow
+./scripts/run-e2e-tests.sh --only isolated-vcs
 ```
 
 `--all-tests` runs every suite, including all opt-in ones. It implies
@@ -254,11 +256,12 @@ The console output is one progress line per suite:
 
 ```
 [1/12] smoke                      PASS (0s)
-[4/12] jj-workflow                SKIP (jj not found on PATH)
 [2/12] env-injection              FAIL (0s)  log: /tmp/project-sandbox-e2e-logs.BNS540/env-injection.log
 ```
 
 Each suite's stdout and stderr go to `<suite>.log` in a per-run temp directory.
+A suite whose dependency is missing prints, for example,
+`[3/12] isolated-vcs               SKIP (jj not found on PATH)`.
 A failing suite's log is kept, its path is printed with the failure, and its
 last 20 lines are echoed inline for immediate context. A passing suite's log is
 deleted unless `--keep` is given, which retains every suite's log; when the run

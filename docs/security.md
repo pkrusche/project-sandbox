@@ -288,6 +288,73 @@ The tool does not protect against:
   the firewall script exits with an error in that case rather than silently
   proceeding.
 
+## Isolated VCS sessions
+
+In a jj project, sessions run in isolated VCS mode unless `--vcs shared` is
+given ([usage](usage.md#version-control-modes)). The goal: no host command reads
+version-control metadata the agent could write, and the agent can't write
+metadata a host command reads.
+
+What is mounted:
+
+| Host | Container | Access |
+|---|---|---|
+| session directory `W` (`<repo>-workspaces/<bookmark>`), a jj workspace of the main repository | `/workspace` | read-write |
+| `W/.jj`, the host's workspace metadata | hidden under the next mount | none |
+| private `.jj` (`<repo>-workspaces/.session-vcs/<name>.<id>/jj`) | `/workspace/.jj` | read-write |
+| private `.git` (same directory, `git`) | `/workspace/.git` | read-write |
+| each `--share PATH` | `/workspace/PATH` | read-only, or read-write with `:rw` |
+
+- The main repository's `.jj` and `.git` are not mounted at all, in whole or in
+  part. A `--mount` whose source lies in them, in `W/.jj` or in `.session-vcs/`,
+  or whose target covers `/workspace/.jj` or `/workspace/.git`, is refused.
+- The private repository is created by the host before the container starts,
+  from the files the host just checked out. Its one `session base` commit and
+  its `.git` (hooks, config, everything) belong to the agent and are thrown
+  away after the session.
+- A bind mount point can't be renamed, removed or unmounted from inside the
+  container, so the host's `W/.jj` stays out of reach. This was checked on
+  Docker Desktop, rootless Podman and Apple `container`, as root with
+  `NET_ADMIN` and as the agent user: `mv`, `rmdir` and `rm -rf` of either mount
+  point fail with `EBUSY`, `umount` and `mount --bind` fail (no runtime grants
+  `CAP_SYS_ADMIN`), and no other path in the container leads to the host
+  metadata. `/proc/self/mountinfo` shows the host source paths on Docker and
+  Podman; that discloses paths, not contents.
+
+What the host reads at the end:
+
+- Host `jj` snapshots `W` with its own metadata in `W/.jj` and moves the
+  bookmark. It reads the files in `W`, including the agent's `.gitignore`
+  edits, which decide which new files are recorded. It never opens the private
+  repository, and jj runs no hooks.
+- Symbolic links the agent created are recorded as links; their targets are
+  not read.
+- The agent's commits and their messages are not kept. The result is one
+  commit whose message the host writes.
+
+Limits:
+
+- Writes through a writable `--share` go straight to the project folder on the
+  host, outside the reviewed result commit, and other sessions sharing the
+  folder see them. Share writable only what you would let the agent write in
+  place anyway.
+- The result commit contains whatever the agent wrote into tracked or new,
+  non-ignored files, including build scripts, CI config or agent config that
+  your tools run later. Review it like any contribution before you merge it.
+- Isolated mode needs jj. Git-only projects run with `--vcs shared` or after
+  `jj git init --colocate`.
+
+### Shared VCS sessions
+
+With `--vcs shared`, the project is mounted in place and the agent can change
+its `.git` and `.jj`, including hooks, config and filters that your host `git`
+and `jj` execute later. Every shared launch prints a warning saying so, and only
+one shared session may run per repository at a time, so two agents can't race
+on the same metadata. Isolated sessions can run beside it. Until the
+protections planned for shared mode land (read-only hooks, config restore, a
+live watcher), review `.git/hooks`, `.git/config` and the jj config after every
+shared session, or use isolated mode.
+
 ## Troubleshooting
 
 - **No supported runtime found.** Install Apple `container` on macOS, or
@@ -344,24 +411,9 @@ The tool does not protect against:
 - The generated `.devcontainer/` targets local Docker-compatible runtimes such as
   Docker Desktop or OrbStack; remote services may require rewriting local mounts
   and relaxing or replacing firewall capability requirements.
-- `--branch` creates an isolated workspace for the agent. In git repos it creates
-  (or reuses) a git worktree on the given branch, mounts the worktree at
-  `/workspace`, and bind-mounts the main repo's `.git/` so `git` works correctly
-  inside the container. In jj repos it creates (or reuses) a jj workspace plus
-  bookmark, mounts that workspace at `/workspace`, and bind-mounts the main repo's
-  `.jj/` metadata so `jj` works inside the container. Worktree-of-worktree setups
-  are not supported.
-- After the session there is a single, non-integrating action: the agent's work
-  is captured on the branch/bookmark (any uncommitted changes are committed for
-  git; the working copy is snapshotted and the bookmark advanced to the session
-  tip for jj), and the worktree/workspace is removed. Nothing is ever merged, rebased, or
-  pushed into the main checkout — the branch/bookmark holds the work for you to
-  integrate manually. `--keep-workspace` leaves the worktree/workspace in place so
-  a later `--branch <same>` run reuses it; a failed session is also left in place
-  for inspection.
-- `--branch-start-at <revision>` pins the starting commit/tag/branch/bookmark for
-  a **new** branch created by `--branch`. It errors if the branch/bookmark already
-  exists (delete or merge it first, or omit the flag to reuse the existing one).
+- Sessions in jj projects run in isolated VCS mode by default (see
+  [Isolated sessions](#isolated-vcs-sessions)); `--vcs shared` mounts the
+  project in place with its `.git` and `.jj` writable.
 - `jj` is installed in the container and configured with the same global
   name/email identity passed to Git.
 # Agent gateway boundary

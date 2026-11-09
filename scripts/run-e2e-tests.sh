@@ -4,24 +4,24 @@
 # Sequentially executes:
 #   1. smoke                    — artifact-generation smoke test (no container needed)
 #   2. env-injection            — bash-agent env/API-key forwarding
-#   3. git-workflow             — git rebase/merge/nothing workflows
-#   4. jj-workflow              — jj rebase/merge/nothing workflows (skipped if jj not on PATH)
-#   5. dockerfile-tamper        — Dockerfile integrity and override behavior
-#   6. timeout-teardown         — container/VM cleanup after timeout
-#   7. python-uv                — --python-uv interpreter/venv usable by the agent
-#   8. pi-ollama                — Pi + Ollama networking/config
-#   9. internet-proxy-smoke     — availability-gated routing/bypass smoke test
-#  10. internet-proxy-isolation — routing/bypass/failure audit (explicit opt-in)
-#  11. agent-proxy-isolation    — gateway-only network/credential audit (explicit opt-in)
-#  12. agent-proxy              — real Pi/OpenCode gateway calls (explicit opt-in)
-#  13. node-npm                 — headless Playwright and ephemeral npm dependencies
-#  14. proxy-endpoints          — controlled remote HTTP/TLS fixtures (explicit opt-in)
-#  15. build-proxy              — build access through TLS-intercepting Squid (explicit opt-in;
+#   3. isolated-vcs             — isolated VCS sessions: one result commit, private metadata,
+#                                 shares, killed containers (skipped if jj not on PATH)
+#   4. dockerfile-tamper        — Dockerfile integrity and override behavior
+#   5. timeout-teardown         — container/VM cleanup after timeout
+#   6. python-uv                — --python-uv interpreter/venv usable by the agent
+#   7. pi-ollama                — Pi + Ollama networking/config
+#   8. internet-proxy-smoke     — availability-gated routing/bypass smoke test
+#   9. internet-proxy-isolation — routing/bypass/failure audit (explicit opt-in)
+#  10. agent-proxy-isolation    — gateway-only network/credential audit (explicit opt-in)
+#  11. agent-proxy              — real Pi/OpenCode gateway calls (explicit opt-in)
+#  12. node-npm                 — headless Playwright and ephemeral npm dependencies
+#  13. proxy-endpoints          — controlled remote HTTP/TLS fixtures (explicit opt-in)
+#  14. build-proxy              — build access through TLS-intercepting Squid (explicit opt-in;
 #                                 on Podman the Squid fixture runs on Docker)
-#  16. copilot                  — real GitHub Copilot CLI sessions (explicit opt-in; billable)
-#  17. copilot-egress           — Copilot CLI egress capture and Copilot-only profile check
+#  15. copilot                  — real GitHub Copilot CLI sessions (explicit opt-in; billable)
+#  16. copilot-egress           — Copilot CLI egress capture and Copilot-only profile check
 #                                 through an intercepting Squid fixture (explicit opt-in; billable)
-#  18. egress-sidecar           — --egress sidecar policy, TLS interception, shared sidecar, parent
+#  17. egress-sidecar           — --egress sidecar policy, TLS interception, shared sidecar, parent
 #                                 chaining and a loopback-only local service (explicit opt-in; needs
 #                                 network and builds)
 #
@@ -120,8 +120,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SUITES=(
   smoke
   env-injection
-  git-workflow
-  jj-workflow
+  isolated-vcs
   dockerfile-tamper
   timeout-teardown
   python-uv
@@ -362,21 +361,16 @@ if selected env-injection; then
   run_suite "env-injection" "$ROOT/scripts/e2e-env-injection.sh" ${WORKFLOW_ARGS[@]+"${WORKFLOW_ARGS[@]}"}
 fi
 
-# 3. Git workflow: rebase / merge / nothing
-if selected git-workflow; then
-  run_suite "git-workflow" "$ROOT/scripts/e2e-git-workflow.sh" ${WORKFLOW_ARGS[@]+"${WORKFLOW_ARGS[@]}"}
-fi
-
-# 4. Jj workflow: rebase / merge / nothing (only if jj is on PATH)
-if selected jj-workflow; then
+# 3. Isolated VCS sessions (only if jj is on PATH)
+if selected isolated-vcs; then
   if command -v jj >/dev/null 2>&1; then
-    run_suite "jj-workflow" "$ROOT/scripts/e2e-jj-workflow.sh" ${WORKFLOW_ARGS[@]+"${WORKFLOW_ARGS[@]}"}
+    run_suite "isolated-vcs" "$ROOT/scripts/e2e-isolated-vcs.sh" ${WORKFLOW_ARGS[@]+"${WORKFLOW_ARGS[@]}"}
   else
-    skip_suite "jj-workflow" "jj not found on PATH"
+    skip_suite "isolated-vcs" "jj not found on PATH"
   fi
 fi
 
-# 5. Dockerfile tamper detection always runs its portable host checks. Add its
+# 4. Dockerfile tamper detection always runs its portable host checks. Add its
 # real-container override check when this invocation permits a build.
 if selected dockerfile-tamper; then
   TAMPER_ARGS=()
@@ -387,7 +381,7 @@ if selected dockerfile-tamper; then
   run_suite "dockerfile-tamper" "$ROOT/scripts/e2e-dockerfile-tamper.sh" ${TAMPER_ARGS[@]+"${TAMPER_ARGS[@]}"}
 fi
 
-# 6. Timeout teardown necessarily builds and kills a real container. Skip it
+# 5. Timeout teardown necessarily builds and kills a real container. Skip it
 # for chroot, unavailable auto runtimes, and explicit --no-build runs.
 if selected timeout-teardown; then
   if [ -n "$CONTAINER_RUNTIME" ] && [ "$NO_BUILD" = 0 ]; then
@@ -421,7 +415,7 @@ if selected node-npm; then
   fi
 fi
 
-# 8. Pi + Ollama: networking and baked config (only if Ollama is reachable;
+# 7. Pi + Ollama: networking and baked config (only if Ollama is reachable;
 # chroot cannot run --agent pi, so fall back to auto runtime detection)
 if selected pi-ollama; then
   if command -v curl >/dev/null 2>&1 && curl -sf --max-time 2 http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
@@ -436,7 +430,7 @@ if selected pi-ollama; then
   fi
 fi
 
-# 9. Non-destructive Internet-proxy smoke test. The script itself detects an
+# 8. Non-destructive Internet-proxy smoke test. The script itself detects an
 # absent listener and reports a successful skip before creating anything.
 if selected internet-proxy-smoke; then
   if [ -n "$CONTAINER_RUNTIME" ]; then
@@ -453,7 +447,7 @@ if selected internet-proxy-smoke; then
   fi
 fi
 
-# 10. The combined Internet-proxy audit deliberately controls both external
+# 9. The combined Internet-proxy audit deliberately controls both external
 # services and makes real AI requests. Never availability-gate this destructive test.
 if selected internet-proxy-isolation; then
   if [ "$WITH_INTERNET_PROXY" = 1 ]; then
@@ -542,7 +536,7 @@ if selected build-proxy; then
   fi
 fi
 
-# 16. Real Copilot sessions are billable and need a token, so they never run
+# 15. Real Copilot sessions are billable and need a token, so they never run
 # just because one is available; without the opt-in nothing is looked up.
 if selected copilot; then
   if [ "$WITH_COPILOT" = 1 ]; then
@@ -561,7 +555,7 @@ if selected copilot; then
   fi
 fi
 
-# 17. Copilot egress capture/profile check: billable, token-gated like copilot.
+# 16. Copilot egress capture/profile check: billable, token-gated like copilot.
 if selected copilot-egress; then
   if [ "$WITH_COPILOT_EGRESS" = 1 ]; then
     if [ -z "$CONTAINER_RUNTIME" ]; then

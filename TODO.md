@@ -17,7 +17,7 @@ The plan was reviewed and every proposal revised on 2026-11-09.
 
 | # | Change | Covers | Depends on |
 | --- | --- | --- | --- |
-| 1 | `vcs-session-modes` | #2, #9; jj pointer files choose mount source/target (exploitable today); ROADMAP separate clones | — |
+| 1 | `vcs-session-modes` | **implemented**, archive pending; covered #9, the isolated half of #2, the jj pointer-file mounts and the ROADMAP separate-clones item | — |
 | 2 | `harden-host-command-execution` | host tool lookup, neutral cwd, jj overrides | — |
 | 3 | `minimal-devcontainer` | devcontainer gateway row; devcontainer half of #1 | — |
 | 4 | `isolate-firewall-helpers` | #1; sudo re-invocation | 3 |
@@ -64,11 +64,16 @@ The plan was reviewed and every proposal revised on 2026-11-09.
   outside the project".
 - `project-sandbox-tui` needs a release after `vcs-session-modes`: a
   shared-mode option, a config key for `--share`, and a note that commit series from isolated sessions are
-  not kept. It also passes `--allow-github` when `network.allow_github` is set;
+  not kept. Its "main checkout" sessions (no `--branch`) now run isolated on a
+  generated `sandbox/<session-id>` bookmark unless it passes `--vcs shared`.
+  Its workspace cleanup must also remove the private repository,
+  `<repo>-workspaces/.session-vcs/<workspace name>.<12 hex>`, and must never
+  remove `.session-vcs/` itself (Docker Desktop can't bind a recreated one). It also passes `--allow-github` when `network.allow_github` is set;
   `scope-firewall-allowlist` keeps the flag accepted (deprecated, ignored), and
   sidecar mode already rejects it, so that release should stop passing it.
 - The TUI reads the `--log`/`--json-summary` paths, `<log>.md`, the summary
-  fields `pid`, `exit_code` and `session_id`, and
+  fields `exit_code` and `session_id` (`pid` comes from its own wrapper and the
+  session records), and
   `$XDG_STATE_HOME/project-sandbox/sessions/*.json`. `private-session-state`
   and `vcs-session-modes` must keep these stable.
 
@@ -161,32 +166,17 @@ on repository files. Add a regression that places shadow modules in a temporary
 workspace and runs the rendered helper, plus a runtime test that verifies the
 agent cannot obtain root through the allowed firewall command.
 
-#### 2. High — automatic Git finalization can execute agent-controlled code on the host
+#### 2. High — shared mode: host Git and jj run agent-writable metadata
 
-**Locations:** `cli.py:3066–3086`; `worktree.py:136–194`;
-`jj_workspace.py:185` and its Git-backend mount helpers.
-
-Git branch sessions expose the main repository's `.git` read-write. The host
-then runs Git status, add, and commit against the session worktree during
-finalization, without disabling hooks or otherwise isolating repository config.
-The agent can modify `.git/hooks`, set `core.hooksPath`, or configure executable
-helpers. For example, a pre-commit hook planted in the shared metadata can run
-as the host user when the automatic commit captures a dirty worktree. No merge
-or push is needed. Git explicitly supports executable commit hooks and
-configurable hook locations: [Git hooks](https://git-scm.com/docs/githooks).
-
-This is a code-path finding, not a demonstrated host compromise. The existing
-ROADMAP recognizes shared-store concurrency risk, but the host execution risk
-also makes metadata isolation a security priority. Normal writable checkouts
-and the jj Git-backend mount likewise allow poisoning later host operations.
-
-**Suggestion:** prioritize independent clones with private VCS metadata. Capture
-changes inside the sandbox and import reviewed objects through a trusted host
-repository. As an interim measure, disable hooks for host operations and audit
-all executable Git configuration surfaces, including filters, fsmonitor, and
-signing. `core.hooksPath=/dev/null` alone is not a complete defense against
-attacker-writable Git configuration. Test with inert marker hooks/helpers and
-confirm none execute on the host.
+`vcs-session-modes` removed the Git worktree backend and the shared jj store
+mounts: isolated sessions (the default in jj projects) never mount the main
+repository's `.git` or `.jj`, and project-sandbox's own finalization reads only
+host-owned metadata. What remains is `--vcs shared` (and Git-only projects,
+which need it): the agent can plant `.git/hooks`, `core.hooksPath`, filters,
+`fsmonitor` and other executable config, or jj config pointers, which the
+user's own host `git`/`jj` honor later. The launch warns and allows one shared
+session per repository. `protect-host-executed-project-config` adds the
+protections (row 11).
 
 #### 3. High — generated-file writes follow repository-controlled symlinks
 
@@ -323,27 +313,6 @@ devcontainer staging separate. Use session leases/reference counting for truly
 shared resources. Add tests where one session starts or exits while another is
 waiting to read its prompt and credentials.
 
-#### 9. Medium — workspaces lack lifetime ownership, and Git locks are deleted without proving staleness
-
-**Locations:** `worktree.py:37–78`, `:132`, `:156`, `:212–217`;
-`jj_workspace.py:62–78`, `:141`, `:287–298`.
-
-Both backends reuse an existing registered workspace for the same branch or
-bookmark without checking for an active session. Setup/finalization locking
-does not prevent two agents from sharing that workspace for their full runs;
-one finalizer can remove it while the other is using it. Git setup additionally
-does not take the teardown lock. `_clear_stale_index_lock()` unconditionally
-unlinks an existing `index.lock`; the host advisory lock does not establish that
-another Git process, editor, or container has stopped using it. Its metadata
-path is guessed from the worktree basename rather than queried from Git.
-
-**Suggestion:** acquire a workspace lease for the complete session or reject
-concurrent use of the same workspace. Use one repository mutation lock for Git
-setup and finalization. Do not automatically remove an index lock merely because
-it exists; fail with recovery guidance unless ownership and termination are
-established. Resolve the actual worktree metadata location. Test overlapping
-same-branch sessions and a live external Git lock.
-
 #### 10. Medium — Cargo workspace paths are interpolated into shell and Dockerfile syntax
 
 **Locations:** `cli.py:2615–2644`; `dockerfile.py:1017–1034`.
@@ -443,5 +412,5 @@ boundary and was assessed accordingly.
   review, not a dependency-CVE audit or proof that no other issues exist.
 
 Suggested order: fix findings 1–5 first, then make build inputs, policy updates,
-and session staging concurrency-safe (6–9), fix quoting (10), and validate the
+and session staging concurrency-safe (6–8), fix quoting (10), and validate the
 narrower networking profiles with runtime tests.

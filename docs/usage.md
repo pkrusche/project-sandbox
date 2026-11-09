@@ -425,8 +425,8 @@ default; configure Puppeteer or Karma launchers to do the same); see
 [security](security.md#nodejs--npm-images---node-npm). For web tests that need
 external hosts, see [Internet proxy](internet-proxy.md#web-tests-that-need-external-hosts).
 
-With `--node-npm --branch`, the image is built from the resolved worktree or jj
-workspace, like `--python-uv --branch`.
+In an isolated session, `--node-npm` builds the image from the session
+directory, like `--python-uv`.
 
 Generated Node/npm devcontainers are not supported yet: their config lacks the
 `node_modules` tmpfs and `--shm-size`. Starting a Node image through the sandbox
@@ -516,12 +516,45 @@ rebuilt and the build duration is reported (`Built image in 12.3s`).
 - `--force-build` rebuilds even when the cache is valid.
 - `--no-build` skips the build entirely, assuming the image already exists.
 
-## Branch Mode
+## Version Control Modes
 
-`--branch <name>` runs the agent in an isolated git worktree (or jj workspace, if
-the project root has a `.jj/` directory) checked out on `<name>`, instead of on
-your working tree. The worktree/workspace is mounted at `/workspace` in the
-sandbox and the repo's VCS metadata is bind-mounted so `git`/`jj` work inside.
+Every session runs in one of two VCS modes. `--vcs` picks the mode; the default
+depends on the project:
+
+| Project | no `--vcs` | `--vcs isolated` | `--vcs shared` |
+|---|---|---|---|
+| has `.jj/` | isolated | isolated | in place |
+| `.git/` only | error, with both hints below | error, with the jj hint | in place |
+| neither | in place | error | error |
+
+A Git-only project has no isolated mode. Either add jj, which keeps your Git
+history and lets you keep using `git`:
+
+```bash
+jj git init --colocate /absolute/path/to/repo
+```
+
+or run with `--vcs shared` to mount the project in place. project-sandbox
+never initializes a repository itself.
+
+`--dry-run` shows the mode, the bookmark, the start revision and the session
+directory without creating anything.
+
+### Isolated sessions (default in jj projects)
+
+The agent works in a separate session directory, a jj workspace of your
+repository next to it (`<repo>-workspaces/<bookmark>`), and never sees your
+repository's `.jj` or `.git`. Before the container starts, project-sandbox
+creates a private, throwaway jj and Git repository over the session's files,
+with one `session base` commit. Inside the sandbox, `jj` and `git` work as
+usual: the agent can diff, commit and inspect its own changes.
+
+When the session ends, project-sandbox records everything the agent changed as
+**one commit** on the session's bookmark, using only its own metadata, and then
+removes the session directory and the private repository. The agent's own
+commits and their messages are not kept; the result commit gets a message with
+the bookmark name and the date. Your main checkout is never touched: merge,
+rebase or open a pull request from the bookmark yourself.
 
 ```bash
 uv run project-sandbox \
@@ -530,47 +563,91 @@ uv run project-sandbox \
   /absolute/path/to/repo python:3.12-slim
 ```
 
-After the session there is one action, and it never touches your main checkout:
+- `--branch <name>` names the bookmark. It is reused if it exists, and the
+  session then starts from it. Without `--branch`, the bookmark is
+  `sandbox/<session-id>`; the CLI prints it at the start and at the end, and it
+  is in the `--json-summary` `bookmark` field.
+- A new bookmark starts from your main working copy, including its
+  uncommitted changes. If the working copy has no changes, it starts from its
+  parent. `--branch-start-at <revision>` picks another start for a **new**
+  bookmark, and is an error when the bookmark exists.
+- A session that changed nothing leaves the bookmark at its start.
+- The session directory contains only tracked files. Ignored folders, such as
+  datasets or build output, are absent; see `--share` below.
+- jj refuses new files larger than `snapshot.max-new-file-size`. The CLI lists
+  any it refused, and keeps the session directory so you can add them yourself.
+- `--keep-workspace` keeps the session directory and private repository after
+  the session; a later `--branch <name>` run resumes from them, including the
+  agent's private history. A failed session is always kept, after its files are
+  recorded, and the CLI prints its path. A killed or timed-out container is
+  treated the same way: its files are still recorded.
+- `--worktree-dir <path>` places the session directories somewhere other than
+  the sibling `<repo>-workspaces` directory. The private repositories go into a
+  `.session-vcs/` directory next to them.
 
-- The agent's work is captured on the branch/bookmark. For git, any uncommitted
-  changes are committed onto `<name>`. For jj, the working copy is snapshotted
-  and the bookmark is advanced to the session tip (`@`, described if it has no
-  message; or `@-` when `@` is empty, so committed work is captured without
-  leaving an empty commit as the tip).
-- The worktree/workspace is then removed. The branch/bookmark keeps the commits
-  for you to merge, rebase, or open a PR from manually.
+Only one session can run per bookmark. A second launch on a running bookmark
+fails and names the running session, also when the first CLI was killed and
+its container is still running. Sessions on different bookmarks run in
+parallel.
 
-Related flags:
+A session directory kept by an older project-sandbox version has no private
+repository and is refused, with the commands to keep its work on the bookmark
+and remove it.
 
-- `--branch-start-at <revision>` — starting commit/tag/branch/bookmark for a
-  **new** branch. Errors if the branch/bookmark already exists (delete or merge it
-  first, or omit the flag to reuse it). Without it, a new branch starts at `HEAD`
-  (git) / `@` (jj), and an existing branch/bookmark is reused.
-- `--keep-workspace` — leave the worktree/workspace in place after the session so
-  a later `--branch <name>` run reuses it (the reused workspace resumes from the
-  branch/bookmark tip). A failed session is always left in place for inspection.
-- `--worktree-dir <path>` — where to place the worktree/workspace root (default:
-  a sibling `<repo>-worktrees` / `<repo>-workspaces` directory).
+### Sharing ignored folders
 
-Parallel `--branch` runs against one repository are supported when every active
-run uses a distinct branch/bookmark (and therefore a distinct worktree/workspace).
-Do not run two agents on the same branch at once: reuse is intended for sequential
-runs and a shared working copy is not multi-writer-safe. For jj repositories,
-project-sandbox serializes the short `jj workspace add` setup phase with a
-repository-scoped filesystem lock; agent execution remains parallel. Image cache
-checks and first builds are also serialized per generated build context, so a
-second run waits for and reuses an identical image instead of building it twice.
+`--share PATH` mounts the project's directory `PATH` at `/workspace/PATH` in an
+isolated session, read-only. `--share PATH:rw` makes it writable. The option is
+repeatable.
+
+```bash
+uv run project-sandbox --agent claude \
+  --share data --share out:rw \
+  /absolute/path/to/repo python:3.12-slim
+```
+
+- `PATH` is relative to the project and must be an existing directory inside
+  it that the session's checkout doesn't contain, which in practice means an
+  ignored one. A tracked path, a single file, a path that resolves outside the
+  project, repository metadata (`.git`, `.jj`), `.devcontainer`,
+  `.project-sandbox`, and agent or IDE config that host tools run (such as
+  `.claude/settings.json`, `.mcp.json`, `.vscode/tasks.json`) are refused before
+  the container starts.
+- The agent's `jj` and `git` don't report the shared folder's files as new.
+- Writes through a writable share go straight to the real folder. They are
+  **not** part of the result commit, and concurrent sessions sharing the same
+  folder see each other's writes. The launch lists every writable share.
+- In shared mode and in projects without a repository, `--share` is accepted
+  and has no effect: the whole project is mounted anyway.
+
+### Shared sessions (`--vcs shared`)
+
+The project is mounted in place at `/workspace`, with its real `.git` and
+`.jj` writable, as sessions without `--branch` were before isolated mode. Use it
+for work on history itself, such as rewriting a commit series with the agent,
+or for Git-only projects.
+
+- The agent can change everything under `.git` and `.jj`, including hooks and
+  config that your host `git` and `jj` run later. Every shared launch prints a
+  warning saying so. Review `.git/hooks`, `.git/config` and `.jj/repo/config.toml`
+  after a shared session.
+- Only one shared session runs per repository at a time; a second one fails
+  and names the running session. Isolated sessions can run beside it.
+- `--branch` and `--keep-workspace` are refused with `--vcs shared`.
+
+### Notes
 
 On macOS, container runtimes reach the host filesystem through a VM share whose
-metadata cache serves stale directory entries for about a second. Git deletes
-`.git/worktrees` when a repo's last worktree is removed, so a `--branch` run
-started immediately after a previous one finished could mount that deleted
-directory and fail at startup with `fatal: not a git repository: <gitdir>`.
-When project-sandbox recreates `.git/worktrees`, it now waits out the cache
-window (1.5s, measured from directory creation, so build and staging time count
-against it) before starting the container. Linux containers bind-mount the host
-filesystem directly and never wait; `--verbose` reports the wait when one
-happens.
+metadata cache can serve stale directory entries. Each private repository
+therefore gets a directory name no earlier session used, the
+`<repo>-workspaces/` and `.session-vcs/` directories are never removed, and the
+CLI waits up to 1.5 s after creating new session directories before starting the
+container (measured from their creation, so build time counts against it).
+Linux containers never wait; `--verbose` reports the wait when one happens.
+
+Image cache checks and first builds are serialized per generated build context,
+so parallel sessions wait for and reuse an identical image instead of building
+it twice.
 
 ## Unsupervised Sessions
 
@@ -660,28 +737,22 @@ uv run project-sandbox \
 - `--log FILE` overrides the default log path under
   `.project-sandbox/sessions/<agent>-main-<timestamp>.log`.
 - `--json-summary PATH` writes one compact JSON object after the session and
-  worktree cleanup completes. Use `-` to print the JSON line on stdout. The
+  its cleanup complete. Use `-` to print the JSON line on stdout. The
   object contains `session_id`, `container_name`, `workspace_path`, `agent`,
   `bookmark`, `jj_change_id`, `exit_code`, `started_at`, and `ended_at`.
-  `jj_change_id` is null for git repositories and runs without `--branch`.
+  `workspace_path` is the session directory in an isolated session and the
+  project otherwise. `bookmark` and `jj_change_id` (the result commit) are null
+  unless the session is isolated.
   Writing the summary is best-effort: an IO failure prints a warning and leaves
   the session's own exit code intact, so an unusable `PATH` is rejected up front
   instead.
-- `--branch NAME` uses a predictable sibling directory by default:
-  `<repo>-worktrees/<name>` for git and `<repo>-workspaces/<name>` for jj. A
-  name containing `/` has its slashes replaced with `-` and gains a short
-  disambiguating suffix, so `feat/x` becomes `feat-x-<6 hex chars>` (the first
-  six hex digits of `sha256("feat/x")`) and cannot collide with a literal
-  `feat-x` branch. `--keep-workspace` leaves that registered directory in
-  place, and a later run for the same branch/bookmark reuses it. Rather than
-  recomputing the name, read the exact absolute path from `workspace_path` in
-  the JSON summary.
-- jj session workspaces are always created non-colocated (`jj workspace add
-  --no-colocate` on jj >= 0.46), even when the main repo is colocated: a
-  workspace's own Git worktree cannot be opened from `/workspace` in the
-  container. The agent uses `jj` there, not `git`. A kept workspace that is
-  colocated (created by jj >= 0.46 before this rule) is rejected on reuse with
-  the commands to recreate it; its work is left untouched.
+- An isolated session's directory is predictable:
+  `<repo>-workspaces/<bookmark>`. A bookmark containing `/` has its slashes
+  replaced with `-` and gains a short disambiguating suffix, so `feat/x` becomes
+  `feat-x-<6 hex chars>` (the first six hex digits of `sha256("feat/x")`) and
+  cannot collide with a literal `feat-x` bookmark. Rather than recomputing the
+  name, read the exact absolute path from `workspace_path` in the JSON summary.
+  See [Version Control Modes](#version-control-modes).
 - Headless Claude, Codex, Pi, OpenCode, and Copilot runs retain their raw JSON event log,
   translate completed messages and tool activity to Markdown on the terminal as
   the session runs, and render the same readable transcript beside the log.
@@ -769,9 +840,9 @@ uv run pytest -q
 
 For session-time proxy trust, use repeatable [`--ca-cert PATH`](internet-proxy.md#injecting-proxy-ca-certificates) with `--internet-proxy`. This also applies to generated devcontainers.
 
-With `--python-uv --branch`, the image is built from the resolved Git worktree
-or jj workspace, including its `pyproject.toml` and `uv.lock`. Generated sandbox
+In an isolated session, `--python-uv` builds the image from the session
+directory, including its `pyproject.toml` and `uv.lock`. Generated sandbox
 and devcontainer files live in that workspace so the baked environment matches
 the sources mounted at `/workspace`. Builds use the runtime's layer cache;
 `--no-build` still skips rebuilding, so the existing image must already contain
-the branch's dependencies.
+the bookmark's dependencies.

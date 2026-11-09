@@ -37,7 +37,7 @@ Keep unrelated edits in separate changes. Recent history uses short imperative d
 
 ## Security & Configuration Tips
 
-Treat generated container config and firewall behavior as security-sensitive. Avoid passing secrets through environment variables; prefer mounted credential files. The `--branch` flag is active: it mounts the worktree directory at `/workspace` and bind-mounts the main repo's `.git/` at its absolute host path so `git` works inside the container (via VirtioFS UID remapping).
+Treat generated container config and firewall behavior as security-sensitive. Avoid passing secrets through environment variables; prefer mounted credential files. Sessions in jj projects are isolated by default: the session directory (a jj workspace) is mounted at `/workspace`, an agent-private jj/Git repository is mounted over `/workspace/.jj` and `/workspace/.git`, and the main repository's metadata is never mounted. `--branch` names the result bookmark. `--vcs shared` mounts the project in place with writable `.git`/`.jj`.
 
 ## Documentation guidelines
 
