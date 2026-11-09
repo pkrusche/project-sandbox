@@ -7,11 +7,6 @@
   Ollama is refused with "No route to host". Either let `--build-only` honour
   `--pi-ollama` (or accept `--agent`), or have `--no-build` detect an image
   rendered without the session's Ollama settings.
-- Manually verify that `kill -9` of the only `--pi-ollama` session releases the
-  shared bridge forwarder (it should exit within about one poll interval) and
-  that a fresh session then attaches cleanly. The concurrent-session `kill -9`
-  case was verified on 2026-11-08 (see docs/development.md).
-  `mount-session-firewall` (below) fixes the first item.
 
 ## Security proposals
 
@@ -45,6 +40,8 @@ The plan was reviewed and every proposal revised on 2026-11-09.
   agent-private repository, and one host snapshot at the end. The agent's own
   commits are not kept. Shared (`--vcs shared`) mounts the project in place with
   writable history, one session per repository.
+- Ignored folders reach an isolated session through `--share PATH[:rw]`,
+  read-only by default. A private per-session copy (`--copy`) is in ROADMAP.
 - In shared mode, `.git/config` and the jj config pointers get a hard read-only
   where the platform allows it, with snapshot-and-restore as the fallback.
 - GHE.com-tenant Copilot keeps working in firewall mode behind
@@ -66,7 +63,7 @@ The plan was reviewed and every proposal revised on 2026-11-09.
   exception from the `host-state-storage` requirement "Generated state lives
   outside the project".
 - `project-sandbox-tui` needs a release after `vcs-session-modes`: a
-  shared-mode option, and a note that commit series from isolated sessions are
+  shared-mode option, a config key for `--share`, and a note that commit series from isolated sessions are
   not kept. It also passes `--allow-github` when `network.allow_github` is set;
   `scope-firewall-allowlist` keeps the flag accepted (deprecated, ignored), and
   sidecar mode already rejects it, so that release should stop passing it.

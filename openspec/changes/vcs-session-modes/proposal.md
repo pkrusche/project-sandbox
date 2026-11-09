@@ -25,6 +25,11 @@ A spike on jj 0.46 (2026-11-09, host side only) showed that a session directory 
   - When the session ends, the host snapshots the session directory with its own metadata. Everything the agent changed becomes one commit in the main repository, and the session's bookmark points at it. This also works when the container was killed.
   - The agent's own commits and messages are discarded with its private repository (user decision, 2026-11-09).
   - `--branch NAME` names the bookmark. Without it, a bookmark is generated from the session ID.
+- **Ignored folders can be shared into an isolated session.**
+  - The session directory is a fresh checkout, so folders the repository ignores, such as datasets, are absent.
+  - `--share PATH[:rw]` (repeatable) mounts the project's `PATH` at the same place under `/workspace`. It is read-only unless `:rw` is given.
+  - With `:rw`, the agent's writes go straight to the real folder. They are not part of the result commit, and concurrent sessions sharing the path see each other's writes.
+  - Only directories that the checkout doesn't contain can be shared. Repository metadata, `.devcontainer` and host-executed config paths are refused.
 - **Shared mode.**
   - Only one shared session may run per repository at a time. Isolated sessions may run beside it.
   - The launch prints that the agent can change repository metadata the host executes later.
@@ -39,7 +44,7 @@ A spike on jj 0.46 (2026-11-09, host side only) showed that a session directory 
 
 ### New Capabilities
 
-- `vcs-session-modes`: the VCS modes a session can run in, what each mounts, how an isolated session's result reaches the main repository, and the limits on shared sessions.
+- `vcs-session-modes`: the VCS modes a session can run in, what each mounts, how an isolated session's result reaches the main repository, how ignored folders are shared into it, and the limits on shared sessions.
 
 ### Modified Capabilities
 
@@ -49,7 +54,7 @@ A spike on jj 0.46 (2026-11-09, host side only) showed that a session directory 
 
 - **Code:**
   - `jj_workspace.py`: session-directory setup with the private repository, the host snapshot, removal. `repo_store_mount` and `git_backend_mount` are deleted.
-  - `cli.py`: `--vcs`, the default mode per project type, generated bookmarks, mounts, the shared-session lease, finalization.
+  - `cli.py`: `--vcs`, the default mode per project type, generated bookmarks, `--share`, mounts, the shared-session lease, finalization.
   - `container_cli.py`: the two metadata mounts.
   - Removed: `worktree.py`, `tests/test_worktree.py`, `scripts/e2e-git-workflow.sh` and the Git branches in `cli.py`.
 - **Other proposals:**
@@ -58,5 +63,5 @@ A spike on jj 0.46 (2026-11-09, host side only) showed that a session directory 
   - `validate-all-mount-sources`: the two metadata mounts are implicit mounts like any other.
   - `private-session-state`: session directories and agent-private repositories move into private state when it lands.
   - ROADMAP: the "separate clones" item is resolved by this change.
-- **project-sandbox-tui:** `--branch`, `workspace_path`, `bookmark` and `jj_change_id` keep their meaning. Host `jj` in the session directory uses host-owned metadata, so the TUI can show live progress safely. The TUI needs a way to select shared mode, and a release note about commit series. It is updated after this change is settled.
+- **project-sandbox-tui:** `--branch`, `workspace_path`, `bookmark` and `jj_change_id` keep their meaning. Host `jj` in the session directory uses host-owned metadata, so the TUI can show live progress safely. The TUI needs a way to select shared mode, a config key for shared folders, and a release note about commit series. It is updated after this change is settled.
 - **Docs:** `docs/usage.md`, `docs/security.md`, `README.md`, `CLAUDE.md` (the `--branch` note).

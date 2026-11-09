@@ -104,6 +104,26 @@ A kept `W` keeps `P`. A new session for the bookmark finds both and mounts them 
 
 Between sessions, the host has already recorded the kept state. On resume the agent's private repository still shows its own earlier commits, which is harmless.
 
+### 7. Sharing ignored folders
+
+`--share PATH[:rw]` takes a project-relative path. A trailing `:rw` or `:ro` selects the mode; the default is read-only.
+
+Checks, before anything is created:
+- `PATH` is relative, has no `..`, and `<project>/PATH` is an existing directory that resolves inside the project. Single files are refused, because Apple `container` can't bind them; the message suggests sharing the parent directory.
+- `PATH` isn't, and isn't inside or around, `.git`, `.jj`, `.devcontainer`, `.project-sandbox` or a path watched by `protect-host-executed-project-config`.
+- After `jj workspace add`, `W/PATH` must not exist. If it does, the checkout contains tracked files there, and a mount would hide the agent's edits from the snapshot. The launch fails and removes the new workspace. jj tracks new files automatically, so a path absent from the checkout is in practice an ignored one.
+
+Setup then:
+- creates the empty directory `W/PATH` as the bind target. jj doesn't record empty directories, so the snapshot is unaffected;
+- adds `/PATH/` to the private repository's `.git/info/exclude`, so the agent's `jj` and `git` don't try to track the folder when it is ignored in the main repository only through `info/exclude` or a global ignore file;
+- adds a bind of `<project>/PATH` at `/workspace/PATH`, after the workspace and metadata mounts and before the protections, through the encoder of `validate-all-mount-sources`.
+
+In shared mode and in directories without a repository, the project is mounted in place, so `--share` is accepted and has no effect.
+
+**Alternative considered:** telling users to pass `--mount`. It works, but leaves the placeholder, the exclude entry and the tracked-path check to the user.
+
+A private per-session copy (`--copy`) is deferred to ROADMAP.
+
 ## Risks / Trade-offs
 
 - [The spike simulated the mounts] → Task 1.1 repeats it with real nested binds on Docker, Podman and Apple `container`, and tries to reach the host `.jj` from inside. If a runtime can't hide it, isolated mode is refused on that runtime.
@@ -111,6 +131,8 @@ Between sessions, the host has already recorded the kept state. On resume the ag
 - [Agent commit messages are lost] → Decided. The session message describes the snapshot. Agents that structure work as commits still benefit inside the session.
 - [Uncommitted work in the main checkout is the starting point] → As today. The docs say so, and dry-run shows the start revision.
 - [Double metadata costs time for large trees] → Setup snapshots the tree once more than today (step 3). Measure on a large project in task 1.2; the base commit could later be built without a second scan.
+- [`--share …:rw` lets an agent change files outside the reviewed result] → Read-only is the default, `:rw` is per path, the launch lists every writable share, and the docs say these writes are not in the commit.
+- [A shared folder contains a secret, such as `.env` files] → Sharing is always explicit and per path. Nothing is shared by default or by pattern.
 - [A large generated directory that isn't ignored gets recorded] → As today for `--branch`. The size refusal covers single files only.
 
 ## Migration Plan

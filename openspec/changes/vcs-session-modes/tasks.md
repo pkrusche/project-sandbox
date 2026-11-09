@@ -17,8 +17,9 @@
 - [ ] 3.2 Delete `repo_store_mount` and `git_backend_mount`, and mount only `W` and the two private directories. Verify with argv tests that no mount source lies in the main repository's `.jj` or `.git`, for colocated and non-colocated fixtures, on each runtime.
 - [ ] 3.3 Implement finalization on host metadata (design Decision 3), including the report of files jj refused for size. Verify with tests that swap the metadata as the spike did: modified, added and deleted files land in one commit; a symlink is recorded as a link; an unchanged session creates no non-empty commit; an agent commit message is absent from the main repository; a refused large file is reported and the session directory kept.
 - [ ] 3.4 Implement resume and the mismatched-leftover refusals (design Decision 6), and the refusal of workspaces kept by older versions. Verify with tests for a kept session resumed, `W` without `P`, `P` without `W`, and an old-format workspace.
-- [ ] 3.5 Add `scripts/e2e-isolated-vcs.sh` (replacing `scripts/e2e-jj-workflow.sh`): a session edits and commits with `jj` and `git`, plants `.git/hooks/pre-commit`, and exits; the script asserts the single commit in the main repository and the unchanged main `.git/hooks` and `.git/config`. Add a variant that kills the container. Verify on Docker and Apple `container`.
-- [ ] 3.6 Describe isolated mode in `docs/security.md`: what is mounted, what the host reads at the end, and that commit series are not kept. Verify the text against the argv tests of 3.2.
+- [ ] 3.4a Add `--share PATH[:rw]` (design Decision 7): parsing, the path checks, the placeholder, the exclude entry, the mount and the list of writable shares in the launch output and `--dry-run`. Verify with CLI tests for every scenario of the two sharing requirements, an argv test on mount order and mode, and a snapshot test that neither a read-only nor a writable share adds anything to the result commit.
+- [ ] 3.5 Add `scripts/e2e-isolated-vcs.sh` (replacing `scripts/e2e-jj-workflow.sh`): a session edits and commits with `jj` and `git`, plants `.git/hooks/pre-commit`, reads a `--share` folder and fails to write it, and exits; the script asserts the single commit in the main repository and the unchanged main `.git/hooks` and `.git/config`. Add a variant that kills the container. Verify on Docker and Apple `container`.
+- [ ] 3.6 Describe isolated mode in `docs/security.md`: what is mounted, what the host reads at the end, that commit series are not kept, and what a writable share bypasses. Document `--share` in `docs/usage.md`. Verify the text against the argv tests of 3.2.
 
 ## 4. Leases and shared mode
 
@@ -32,4 +33,4 @@
 
 ## Workflow follow-up
 
-- Update project-sandbox-tui: a shared-mode option, and the note that commit series from isolated sessions are not kept.
+- Update project-sandbox-tui: a shared-mode option, a config key for shared folders, and the note that commit series from isolated sessions are not kept.

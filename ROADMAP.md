@@ -24,6 +24,20 @@ Interim mitigation already in place: one host-side exclusive lock
 cleanup, so those shared-store mutations cannot interleave. It does not address
 concurrent in-container writes; this item supersedes it.
 
+## Private copies of ignored folders for isolated sessions (`--copy`)
+
+Isolated sessions (`vcs-session-modes`) start from a fresh checkout, so folders
+the repository ignores are absent. `--share PATH[:rw]` mounts the project's
+real folder. That doesn't fit folders an agent should be able to change without
+touching the user's copy, such as a local database or a scratch cache.
+
+Plan: `--copy PATH` clones the folder into the session directory at setup. On
+APFS use `clonefile` (copy-on-write, nearly free); elsewhere it is a real copy,
+so warn with the size. The copy is ignored by the session's private repository,
+never recorded in the result commit, and discarded with the session directory.
+Open points: whether a kept session keeps its copy, a size limit, and the same
+path rules as `--share` (ignored directories only, no repository metadata).
+
 ## Egress sidecar follow-ups
 
 - **Per-sandbox denial attribution** (egress-sidecar-macos). Sandboxes reach the

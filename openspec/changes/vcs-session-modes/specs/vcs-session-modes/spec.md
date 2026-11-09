@@ -66,6 +66,40 @@ In isolated mode, `/workspace` SHALL contain a working `jj` and `git` repository
 - **WHEN** the agent writes `/workspace/.git/hooks/pre-commit` or changes `/workspace/.git/config`
 - **THEN** the main repository's `.git/hooks` and `.git/config` are unchanged, and no host command reads the planted files
 
+### Requirement: Ignored folders can be shared into an isolated session
+`--share PATH[:rw]` SHALL mount the project's directory `PATH` at `/workspace/PATH` in an isolated session, read-only unless `:rw` is given. Changes made through a writable share SHALL NOT be part of the session's result commit. The launch SHALL list every writable share. In shared mode the option SHALL be accepted without effect.
+
+#### Scenario: Read-only data folder
+- **WHEN** `--share data` is given, and `data/` is an ignored directory in the project
+- **THEN** the agent can read `/workspace/data`, writes to it fail, and the result commit contains nothing under `data/`
+
+#### Scenario: Writable share
+- **WHEN** `--share out:rw` is given and the agent writes `/workspace/out/report.txt`
+- **THEN** the file appears in the project's `out/` directory, the launch output named `out` as writable, and the result commit doesn't contain it
+
+#### Scenario: Agent's own tools ignore the share
+- **WHEN** a folder is shared and the agent runs `jj status` or `git status`
+- **THEN** the shared folder's files are not reported as new
+
+### Requirement: Only safe paths can be shared
+A `--share` path SHALL be a project-relative directory that exists, resolves inside the project, and is absent from the session's checkout. The launch SHALL fail before starting a container for any other path, including a single file, a tracked path, repository metadata, `.devcontainer`, and host-executed config paths.
+
+#### Scenario: Tracked path
+- **WHEN** `--share src` is given and `src/` holds tracked files
+- **THEN** the launch fails, explaining that tracked paths are already in the session, and no session directory is left behind
+
+#### Scenario: Repository metadata
+- **WHEN** `--share .git` or `--share .jj/repo` is given
+- **THEN** the launch fails, naming the path
+
+#### Scenario: Symlink leaving the project
+- **WHEN** `--share data` is given and `data` is a symlink to a directory outside the project
+- **THEN** the launch fails, stating that the path resolves outside the project
+
+#### Scenario: Single file
+- **WHEN** `--share .env` is given
+- **THEN** the launch fails, stating that only directories can be shared
+
 ### Requirement: The host records an isolated session's result as one commit
 When an isolated session ends, the host SHALL record the session directory's files as one commit in the main repository and point the session's bookmark at it. It SHALL do so without reading version-control metadata the agent could write. A session that changed nothing SHALL leave the bookmark at its starting commit.
 
