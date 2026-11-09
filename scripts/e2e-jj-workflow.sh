@@ -59,6 +59,30 @@ esac
 command -v uv >/dev/null 2>&1 || { echo "ERROR: uv not found on PATH." >&2; exit 64; }
 command -v jj >/dev/null 2>&1 || { echo "ERROR: jj not found on PATH." >&2; exit 64; }
 
+# The chroot jail only exposes the host's /usr, /bin, /lib* and /etc, so a jj
+# installed elsewhere (e.g. `cargo install` into ~/.cargo/bin) is invisible to
+# the agent. Bind the host binary read-only to a fixed jail path and put that
+# on the agent's PATH. Chroot is a workflow-test runtime, not a security
+# boundary, so exposing a host binary this way is fine.
+JJ_EXTRA_ARGS=()
+JJ_PROMPT_PREFIX=""
+if [ "$RUNTIME" = chroot ]; then
+  JJ_HOST_BIN="$(readlink -f "$(command -v jj)")"
+  case "$JJ_HOST_BIN" in
+    /usr/*|/bin/*|/lib/*|/lib64/*|/etc/*) ;;
+    *,*)
+      echo "ERROR: jj path contains a comma and cannot be passed to --mount: $JJ_HOST_BIN" >&2
+      exit 64
+      ;;
+    *)
+      JJ_JAIL_DIR=/opt/project-sandbox-e2e/bin
+      echo "jj at $JJ_HOST_BIN is outside the chroot jail; mounting it at $JJ_JAIL_DIR/jj"
+      JJ_EXTRA_ARGS=(--mount "type=bind,source=$JJ_HOST_BIN,target=$JJ_JAIL_DIR/jj,readonly")
+      JJ_PROMPT_PREFIX="export PATH=$JJ_JAIL_DIR:\$PATH"
+      ;;
+  esac
+fi
+
 REQUESTED_RUNTIME="$RUNTIME"
 if [ "$RUNTIME" = auto ]; then
   if [ "$(uname -s)" = Darwin ] && command -v container >/dev/null 2>&1; then
@@ -102,6 +126,7 @@ run_ps() {
 
   prompt=$(
     printf "set -euo pipefail\n"
+    if [ -n "$JJ_PROMPT_PREFIX" ]; then printf '%s\n' "$JJ_PROMPT_PREFIX"; fi
     printf "printf '%%s\\\\n' %q > %q\n" "$text" "$file"
     printf "jj describe -m %q\n" "$message"
     printf "jj status\n"
@@ -116,6 +141,7 @@ run_ps() {
     --no-forward-credentials
     --no-firewall
     --verbose
+    ${JJ_EXTRA_ARGS[@]+"${JJ_EXTRA_ARGS[@]}"}
   )
   if [ "$keep" = 1 ]; then
     cmd+=(--keep-workspace)
