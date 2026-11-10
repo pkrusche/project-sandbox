@@ -1,5 +1,9 @@
 #!/bin/bash
 set -euo pipefail
+# Runs as root: never resolve anything against the caller's directory, which
+# may be the agent-writable workspace (Python helpers run with -I and curl
+# with -q for the same reason).
+cd /
 {%- if egress_sidecar %}
 
 # --egress sidecar: trust the sidecar's CA only while it intercepts TLS
@@ -62,7 +66,7 @@ fi
 # Resolve every endpoint with sandbox-visible NSS before DNS or NAT is closed.
 # A bounded helper validates addresses and atomically prepares shell arrays;
 # failures propagate instead of disappearing inside process substitution.
-ENDPOINT_ADDRESSES=$(timeout 15 python3 - "$IPV6_FW" <<'PY_ENDPOINTS'
+ENDPOINT_ADDRESSES=$(timeout 15 python3 -I - "$IPV6_FW" <<'PY_ENDPOINTS'
 {% include '_resolve_endpoints.py.j2' %}
 PY_ENDPOINTS
 ) || {
@@ -151,7 +155,7 @@ ipset create allowed-ipv4 hash:net family inet
 [ "$IPV6_FW" = "1" ] && ipset create allowed-ipv6 hash:net family inet6
 
 {% if allow_github %}
-gh_meta=$(curl -sf --max-time 10 https://api.github.com/meta || true)
+gh_meta=$(curl -q -sf --max-time 10 https://api.github.com/meta || true)
 [ -z "$gh_meta" ] && gh_meta='{"web":[],"api":[],"git":[],"ipv6":[]}'
 
 while IFS= read -r cidr; do
@@ -302,7 +306,7 @@ fi
 # Exercise the real sandbox-to-host path after the final firewall rules are in
 # place. HTTP error statuses are acceptable here; this probe verifies only that
 # the proxy listener can be reached and returns an HTTP response.
-if ! curl --globoff --silent --show-error --connect-timeout 3 --max-time 5 \
+if ! curl -q --globoff --silent --show-error --connect-timeout 3 --max-time 5 \
   --noproxy '*' --output /dev/null \
   {{ agent_proxy_url | shlex_quote }}; then
   echo "ERROR: Agent proxy is unreachable from inside the sandbox at {{ agent_proxy_hostname }}:{{ agent_proxy_port }}." >&2
@@ -317,7 +321,7 @@ fi
 {% for destination in local_destinations %}
 {% if destination.label == "Internet proxy" %}
 # Verify TCP or TLS without a public destination through the final firewall.
-if ! timeout 5 python3 - <<'PY_PREFLIGHT'
+if ! timeout 5 python3 -I - <<'PY_PREFLIGHT'
 import socket
 import ssl
 try:
@@ -353,7 +357,7 @@ fi
 {% if pi_ollama %}
 # Verify Ollama through the final port-scoped firewall, not merely before the
 # default-deny policy and terminal reject rules are installed.
-if ! curl --noproxy '*' --fail --silent --show-error --connect-timeout 3 --max-time 5 \
+if ! curl -q --noproxy '*' --fail --silent --show-error --connect-timeout 3 --max-time 5 \
     "http://{{ ollama_hostname }}:11434/api/tags" >/dev/null; then
   echo "ERROR: the final firewall cannot reach loopback-bound Ollama at {{ ollama_hostname }}:11434." >&2
   exit 1

@@ -48,7 +48,8 @@ runtime run --user 0:0 --workdir /workspace --cap-add NET_ADMIN --cap-add NET_RA
                  └ provisioning, node_modules, agent           uid=agent, no sudo
 ```
 
-- The image keeps `USER agent`. `container_cli.run_argv` adds `--user 0:0` only for agent sessions. A host-side `exec` still lands as `agent`, and an image run without project-sandbox's argv never starts as root by accident.
+- The image keeps `USER agent`. `container_cli.run_argv` adds `--user 0:0` only for agent sessions, so an image run without project-sandbox's argv never starts as root by accident.
+- **Host `exec` defaults to root.** Docker and Podman record the `run --user` value as the container's user (`Config.User` is `0:0`), and a plain `exec` uses it. Verified during implementation on Docker 29.9, Podman 6.0 and Apple `container` 1.7.1, 2026-11-10. Only someone on the host can `exec`, the agent cannot, and nothing in project-sandbox or the TUI execs into sessions. No design keeps a plain `exec` landing as `agent` without a setuid helper, so this is documented instead: `exec --user agent` gives an agent shell.
 - The root stage returns to `/workspace` only after the drop. The entrypoint and agent need it as their cwd, so `setpriv` is followed by `cd /workspace` in the entrypoint, or the entrypoint sets the directory itself.
 - `setpriv` (util-linux) is preferred over `su`/`runuser`, which go through PAM and keep a parent process alive, and over a Python drop helper, which would add another privileged interpreter invocation to harden. `setpriv` execs directly, so PID 1 becomes the entrypoint, as today. That matters for signal handling and the existing timeout teardown.
 - `--no-new-privs` makes setuid binaries, including `sudo`, inert even if a rule survived. With an empty bounding set, file capabilities cannot regrant `NET_ADMIN`.

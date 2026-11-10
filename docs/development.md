@@ -96,6 +96,27 @@ otherwise Docker, then Podman) and accept
 `--runtime chroot|auto|apple-container|docker|podman`, `--base-image IMAGE`,
 `--no-build`, and `--keep`.
 
+The privilege-model test starts a firewalled headless session with a local
+Internet-proxy destination (a plain TCP listener on the host), so the root
+stage's endpoint helper runs, after planting `ipaddress.py`, `socket.py`,
+`shlex.py`, `ssl.py` and `pathlib.py` markers in the workspace. Inside the
+session it checks that `sudo -n` fails, `NoNewPrivs` is 1, `CapBnd` and
+`CapEff` are zero, the UID is not root, `iptables -F`/`ip6tables -F` fail and
+the session shell is PID 1. From the host it checks that
+`exec --user agent` lands as `agent`, and prints what a plain `exec` lands as.
+No marker may fire:
+
+```bash
+./scripts/e2e-privileges.sh --runtime docker
+```
+
+It accepts `--runtime auto|apple-container|docker|podman` (not `chroot`),
+`--base-image IMAGE`, `--no-build`, and `--keep`. Passed on 2026-11-10 on
+Docker Desktop 29.9, Podman 6.0 (machine, rootless) and Apple `container`
+1.7.1; a plain `exec` landed as `root` on all three.
+`scripts/verify-timeout-teardown.sh` also passed on all three with the root
+stage in place.
+
 A separate suite covers `--python-uv`, checking inside the sandbox that the
 agent user can actually run `uv` against the baked `/opt/venv`. It builds one
 project with `python-preference = "only-managed"`, so uv downloads

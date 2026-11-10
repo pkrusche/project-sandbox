@@ -21,12 +21,13 @@ from pathlib import Path
 from . import host_locks
 
 # Top-level files in the generated context that fully determine the CLI image.
-# The CLI always builds context_dir/"Dockerfile"; entrypoint.sh, init-firewall.sh
-# and project-sandbox-devcontainer-init are COPY'd into it.
+# The CLI always builds context_dir/"Dockerfile"; entrypoint.sh, init-firewall.sh,
+# project-sandbox-init and project-sandbox-devcontainer-init are COPY'd into it.
 _BUILD_INPUT_FILES = (
     "Dockerfile",
     "entrypoint.sh",
     "init-firewall.sh",
+    "project-sandbox-init",
     "project-sandbox-devcontainer-init",
 )
 

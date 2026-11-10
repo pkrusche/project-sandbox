@@ -37,8 +37,9 @@ After privileged setup, an agent container SHALL run the session command as the 
 - **THEN** the attempt fails and the installed rules are unchanged
 
 #### Scenario: exec into a running container
-- **WHEN** a host user runs the runtime's `exec` against a running agent container without specifying a user
+- **WHEN** a host user runs the runtime's `exec` against a running agent container with `--user agent`
 - **THEN** the command runs as the `agent` user, not root
+- **AND** the documentation states that an `exec` without `--user` runs as root on Docker, Podman and Apple `container`, because the container was started with `--user 0:0`
 
 ### Requirement: Privileged helpers do not load workspace code or configuration
 Code that runs as root in a sandbox container SHALL NOT import, source or execute files from `/workspace`, the current directory or the `agent` user's home. It SHALL NOT read tool configuration from those locations either. It SHALL ignore interpreter-influencing environment variables. This SHALL hold even when these locations contain files planted by the repository or by an earlier session.

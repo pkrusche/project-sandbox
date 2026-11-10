@@ -837,6 +837,7 @@ def _main(argv: list[str] | None = None) -> int:
             dockerfile.render_dockerignore(context_dir, build_context=build_context)
         if not is_chroot:
             dockerfile.render_entrypoint(context_dir, egress_sidecar=sidecar)
+            dockerfile.render_root_stage(context_dir)
             dockerfile.render_devcontainer_entrypoint(context_dir)
             firewall.render(
                 context_dir,
@@ -1016,15 +1017,15 @@ def _main(argv: list[str] | None = None) -> int:
                     # .project-sandbox dir the sandbox cannot reach.
                     dockerfile_checksum.record(context_dir, tracked_dockerfiles)
                     print(f"Built image in {time.monotonic() - start:.1f}s")
-        elif runtime.is_container and not container_cli.image_exists(
-            runtime, args.image_tag
-        ):
-            # Fail early with a clear message instead of letting `container run`
-            # surface its own raw runtime error for a nonexistent image.
-            raise SystemExit(
-                f"--no-build was given but image {args.image_tag!r} does not exist; "
-                "drop --no-build so the image can be built."
-            )
+        elif runtime.is_container:
+            if not container_cli.image_exists(runtime, args.image_tag):
+                # Fail early with a clear message instead of letting `container
+                # run` surface its own raw runtime error for a nonexistent image.
+                raise SystemExit(
+                    f"--no-build was given but image {args.image_tag!r} does not "
+                    "exist; drop --no-build so the image can be built."
+                )
+            _require_privilege_model(runtime, args.image_tag)
 
         if args.build_only:
             print(f"Image ready: {args.image_tag}")
@@ -1728,6 +1729,25 @@ DEVCONTAINER_NETWORK_WARNING = (
 )
 
 
+def _require_privilege_model(runtime: container_cli.Runtime, image_tag: str) -> None:
+    """Refuse an image built before the root-stage privilege model.
+
+    Sessions start as root so the image's root stage can install the firewall
+    and drop to the agent. An older image's entrypoint would instead run the
+    agent itself as root.
+    """
+    model = container_cli.image_label(
+        runtime, image_tag, dockerfile.PRIVILEGE_MODEL_LABEL
+    )
+    if model != dockerfile.PRIVILEGE_MODEL:
+        raise SystemExit(
+            f"--no-build was given but image {image_tag!r} lacks "
+            f"{dockerfile.PRIVILEGE_MODEL_LABEL}={dockerfile.PRIVILEGE_MODEL}: it "
+            "is absent or was built by an older project-sandbox without the "
+            "root-stage privilege drop; drop --no-build so the image is rebuilt."
+        )
+
+
 def _validate_devcontainer_args(args) -> None:
     """--devcontainer is a terminal mode: render .devcontainer/ and exit."""
     if args.devcontainer_network is not None and not args.devcontainer:
@@ -2113,6 +2133,12 @@ def _dry_run(
     container_cli.ensure_system_started(
         runtime=runtime, dry_run=True, verbose=args.verbose
     )
+    if runtime.is_container and args.no_build:
+        # Dry-run probes no images; the real run refuses an unlabelled one.
+        print(
+            f"Would require image {args.image_tag} to carry "
+            f"{dockerfile.PRIVILEGE_MODEL_LABEL}={dockerfile.PRIVILEGE_MODEL}"
+        )
     if runtime.is_container and not args.no_build:
         container_cli.build_image(
             runtime=runtime,
@@ -3669,6 +3695,7 @@ def _write_project_sandbox_gitignore(context_dir: Path) -> None:
 !Dockerfile
 !Dockerfile.devcontainer
 !entrypoint.sh
+!project-sandbox-init
 !project-sandbox-devcontainer-init
 """
     (context_dir / ".gitignore").write_text(content, encoding="utf-8")

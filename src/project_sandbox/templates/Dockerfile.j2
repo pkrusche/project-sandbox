@@ -14,7 +14,7 @@ RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
         ca-certificates curl git sudo gnupg jq xz-utils less python3 \
-        iptables ipset iproute2 dnsutils aggregate libatomic1 \
+        iptables ipset iproute2 dnsutils aggregate libatomic1 util-linux \
         fd-find ripgrep; \
     rm -rf /var/lib/apt/lists/*; \
     ln -sf "$(command -v fdfind)" /usr/local/bin/fd
@@ -139,14 +139,18 @@ RUN install -d /project-sandbox-config/claude /project-sandbox-config/codex \
     install -m 0644 -o agent -g "${AGENT_GID}" /dev/null /home/agent/.codex/config.toml
 
 COPY {{ sandbox_copy_prefix }}init-firewall.sh /usr/local/bin/project-sandbox-init-firewall
+COPY {{ sandbox_copy_prefix }}project-sandbox-init /usr/local/bin/project-sandbox-init
 COPY {{ sandbox_copy_prefix }}entrypoint.sh /usr/local/bin/project-sandbox-entrypoint
 COPY {{ sandbox_copy_prefix }}project-sandbox-devcontainer-init /usr/local/bin/project-sandbox-devcontainer-init
 
+# The root stage (project-sandbox-init) installs the firewall and drops to the
+# agent with setpriv; no sudo rule exists, so nothing in the session can run
+# as root again.
 RUN chmod 0755 /usr/local/bin/project-sandbox-init-firewall \
+    /usr/local/bin/project-sandbox-init \
     /usr/local/bin/project-sandbox-entrypoint \
     /usr/local/bin/project-sandbox-devcontainer-init && \
-    echo 'agent ALL=(root) NOPASSWD: /usr/local/bin/project-sandbox-init-firewall' > /etc/sudoers.d/agent-firewall && \
-    chmod 0440 /etc/sudoers.d/agent-firewall
+    command -v setpriv
 
 {% if ca_certificate_sources %}
 # Session trust is installed only after all dependency and project build steps.
@@ -157,8 +161,9 @@ RUN chmod 0644 /usr/local/share/ca-certificates/project-sandbox-ca-*.crt
 RUN update-ca-certificates
 ENV NODE_USE_SYSTEM_CA=1
 {% endif %}
+LABEL org.project-sandbox.privilege-model="root-stage-v1"
 USER agent
 WORKDIR /workspace
-ENTRYPOINT ["/usr/local/bin/project-sandbox-entrypoint"]
+ENTRYPOINT ["/usr/local/bin/project-sandbox-init"]
 CMD ["bash"]
 {%- endif %}

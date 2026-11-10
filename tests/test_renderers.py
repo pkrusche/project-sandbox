@@ -1866,12 +1866,10 @@ class RendererTests(TestCase):
             self.assertIn('"$HOME/.pi/agent/settings.json"', text)
             self.assertNotIn(".codex.host", text)
             self.assertNotIn("opencode.host", text)
-            self.assertIn("sudo -n /usr/local/bin/project-sandbox-init-firewall", text)
-            # Quiet mode suppresses the firewall banner but re-surfaces output on
-            # failure (then aborts, since the firewall is the sandbox boundary).
-            self.assertIn('"${PROJECT_SANDBOX_QUIET:-0}" = "1"', text)
-            self.assertIn("printf '%s\\n' \"$fw_out\" >&2", text)
-            self.assertNotIn("sudo chown", text)
+            # The root stage installed the firewall before this agent-run
+            # script started; nothing here can reach root again.
+            self.assertNotIn("sudo", text)
+            self.assertNotIn("project-sandbox-init-firewall", text)
             self.assertIn('jj config set --user user.name "$NAME"', text)
             self.assertIn('jj config set --user user.email "$EMAIL"', text)
             self.assertIn("claude-headless", text)
@@ -2913,7 +2911,8 @@ class RendererTests(TestCase):
                 "COPY init-firewall.sh /usr/local/bin/project-sandbox-init-firewall",
                 text,
             )
-            self.assertEqual(text.count("NOPASSWD"), 1)
+            self.assertNotIn("NOPASSWD", text)
+            self.assertNotIn("sudoers", text)
 
     def test_devcontainer_profile_has_no_agents_firewall_sudo_or_runtime_ca(
         self,
@@ -3078,11 +3077,8 @@ class NodeNpmDockerfileTests(TestCase):
         self.assertIn('!= "tmpfs"', block)
         self.assertIn('[ -z "$(ls -A /workspace/node_modules)" ]', block)
         self.assertIn("-exec cp -a -t /workspace/node_modules/ -- {} +", block)
-        # Populated before the agent (and the firewall) start.
-        self.assertLess(
-            text.index("-exec cp -a"),
-            text.index("project-sandbox-init-firewall"),
-        )
+        # Populated before the agent starts.
+        self.assertLess(text.index("-exec cp -a"), text.index('exec claude "$@"'))
 
     @skipUnless(
         sys.platform == "linux", "executes Linux container shell code using GNU cp"
@@ -3574,8 +3570,6 @@ class SidecarSandboxRendererTests(TestCase):
         )
         for var in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "NODE_USE_SYSTEM_CA"):
             self.assertIn(f"export {var}=", sidecar)
-        # The block sits after the firewall step, which installs the CA.
-        self.assertLess(
-            sidecar.index("project-sandbox-init-firewall"),
-            sidecar.index("/project-sandbox-egress/ca.pem"),
-        )
+        # The root stage's firewall step installed the CA before this script
+        # ran; the block only points clients at the system store.
+        self.assertNotIn("project-sandbox-init-firewall", sidecar)

@@ -1,5 +1,8 @@
 #!/bin/sh
 set -eu
+# Runs as the agent, after the root stage (project-sandbox-init) installed the
+# firewall from / and dropped privileges.
+cd /workspace
 
 NAME="${PROJECT_SANDBOX_USER_NAME:-}"
 EMAIL="${PROJECT_SANDBOX_USER_EMAIL:-}"
@@ -30,16 +33,6 @@ if [ -d /opt/node-project/node_modules ]; then
 fi
 
 if [ "${PROJECT_SANDBOX_NO_FIREWALL:-0}" != "1" ]; then
-  if [ "${PROJECT_SANDBOX_QUIET:-0}" = "1" ]; then
-    # Suppress the firewall banner, but capture output so a failure is still
-    # visible (then abort, since the firewall is the sandbox boundary).
-    if ! fw_out="$(sudo -n /usr/local/bin/project-sandbox-init-firewall 2>&1)"; then
-      printf '%s\n' "$fw_out" >&2
-      exit 1
-    fi
-  else
-    sudo -n /usr/local/bin/project-sandbox-init-firewall
-  fi
   export UV_OFFLINE=1
 fi
 {%- if egress_sidecar %}

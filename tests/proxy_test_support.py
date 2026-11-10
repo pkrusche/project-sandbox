@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from project_sandbox import cli
+from project_sandbox.dockerfile import PRIVILEGE_MODEL
 from project_sandbox.git_identity import GitIdentity
 
 
@@ -19,6 +20,7 @@ def mock_container_runtime(runtime):
         patch.object(cli.container_cli, "select_runtime", return_value=runtime),
         patch.object(cli.container_cli, "ensure_system_started", return_value=0),
         patch.object(cli.container_cli, "image_exists", return_value=True),
+        patch.object(cli.container_cli, "image_label", return_value=PRIVILEGE_MODEL),
         patch.object(cli, "read_identity", return_value=GitIdentity("Ada", "a@b.c")),
     ):
         yield

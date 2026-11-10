@@ -49,7 +49,7 @@ The persistent `sudo` grant also means the agent can re-run firewall initializat
   - `entrypoint.sh.j2`: the `sudo -n` calls are removed. The firewall now runs from the root stage.
   - `init-firewall.sh.j2`: `cd /`, `python3 -I` and the environment reset.
   - `_resolve_endpoints.py.j2`: unchanged code, now run isolated.
-- **Runtime argv:** `container_cli.py` starts agent containers as root (for example `--user 0:0` or the image default). The image's `USER` stays `agent`, so `exec` into a container still defaults to the agent.
+- **Runtime argv:** `container_cli.py` starts agent containers as root (for example `--user 0:0` or the image default). The image's `USER` stays `agent`, so an image run outside project-sandbox does not start as root. A plain host `exec` into a session runs as root on Docker, Podman and Apple `container` (the runtime reuses `--user 0:0`); `docs/security.md` says to pass `--user agent`.
 - **Base images:** the privilege drop needs `setpriv` (util-linux). The build verifies it exists, and installs it on Debian-family bases where it is missing.
 - **Build cache:** a template change alters the fingerprint, so existing images rebuild automatically. With `--no-build`, an image that predates the root stage is refused with a rebuild instruction. Starting such an image as root would run its old entrypoint, and the agent, as root.
 - **Depends on:** `minimal-devcontainer`, which removes the devcontainer's `sudo` firewall path.

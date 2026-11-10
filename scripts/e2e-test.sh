@@ -76,6 +76,7 @@ REQUIRED=(
   "$PS/Dockerfile"
   "$PS/Dockerfile.devcontainer"
   "$PS/entrypoint.sh"
+  "$PS/project-sandbox-init"
   "$PS/init-firewall.sh"
   "$PS/project-sandbox-devcontainer-init"
   "$PS/.gitignore"
@@ -163,7 +164,11 @@ check_contains "$PS/Dockerfile" "npm install -g @fission-ai/openspec"
 check_contains "$PS/init-firewall.sh" "ipset create allowed-ipv4"
 check_contains "$PS/claude/settings.json" "bypassPermissions"
 check_contains "$PS/codex/config.toml" 'approval_policy = "never"'
-check_contains "$PS/entrypoint.sh" "project-sandbox-init-firewall"
+check_contains "$PS/project-sandbox-init" "project-sandbox-init-firewall"
+check_contains "$PS/project-sandbox-init" "--bounding-set=-all --no-new-privs"
+check_contains "$PS/Dockerfile" 'ENTRYPOINT ["/usr/local/bin/project-sandbox-init"]'
+check_contains "$PS/Dockerfile" 'org.project-sandbox.privilege-model="root-stage-v1"'
+check_contains "$PS/init-firewall.sh" "cd /"
 check_contains "$PS/entrypoint.sh" "bash-headless"
 check_contains "$TMP_PROJECT/.gitignore" "project-sandbox — do not commit agent secrets"
 check_contains "$DC/devcontainer.json" '"none"'

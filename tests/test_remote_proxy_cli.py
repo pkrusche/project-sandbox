@@ -12,6 +12,7 @@ from project_sandbox import (
     internet_proxy,
     local_service_network,
 )
+from project_sandbox.dockerfile import PRIVILEGE_MODEL
 from project_sandbox.git_identity import GitIdentity
 
 
@@ -244,6 +245,9 @@ class RemoteProxyCliTests(unittest.TestCase):
                         container_cli, "ensure_system_started", return_value=0
                     ),
                     patch.object(container_cli, "image_exists", return_value=True),
+                    patch.object(
+                        container_cli, "image_label", return_value=PRIVILEGE_MODEL
+                    ),
                     patch.object(container_cli, "run", side_effect=launch),
                     patch.object(cli.session, "run", side_effect=launch),
                     patch.object(
@@ -298,6 +302,9 @@ class RemoteProxyCliTests(unittest.TestCase):
                 ),
                 patch.object(container_cli, "ensure_system_started", return_value=0),
                 patch.object(container_cli, "image_exists", return_value=True),
+                patch.object(
+                    container_cli, "image_label", return_value=PRIVILEGE_MODEL
+                ),
                 patch.object(container_cli, "run", return_value=0) as run,
                 patch.object(
                     cli,

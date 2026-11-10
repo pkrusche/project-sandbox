@@ -8,6 +8,7 @@
 #                                 shares, killed containers (skipped if jj not on PATH)
 #   4. dockerfile-tamper        — Dockerfile integrity and override behavior
 #   5. timeout-teardown         — container/VM cleanup after timeout
+#   5b. privileges              — root stage, privilege drop, no sudo, isolated firewall helpers
 #   6. python-uv                — --python-uv interpreter/venv usable by the agent
 #   7. pi-ollama                — Pi + Ollama networking/config
 #   8. internet-proxy-smoke     — availability-gated routing/bypass smoke test
@@ -123,6 +124,7 @@ SUITES=(
   isolated-vcs
   dockerfile-tamper
   timeout-teardown
+  privileges
   python-uv
   node-npm
   pi-ollama
@@ -389,6 +391,17 @@ if selected timeout-teardown; then
       "$ROOT/scripts/verify-timeout-teardown.sh" --runtime "$CONTAINER_RUNTIME"
   else
     skip_suite "timeout-teardown" "select a container runtime without --no-build"
+  fi
+fi
+
+# 5b. Session privilege model: the root stage drops to the agent, sudo is inert
+# and the firewall helpers ignore workspace modules. Builds a throwaway project.
+if selected privileges; then
+  if [ -n "$CONTAINER_RUNTIME" ] && [ "$NO_BUILD" = 0 ]; then
+    run_suite "privileges" \
+      "$ROOT/scripts/e2e-privileges.sh" --runtime "$CONTAINER_RUNTIME" --base-image "$BASE_IMAGE"
+  else
+    skip_suite "privileges" "select a container runtime without --no-build"
   fi
 fi
 

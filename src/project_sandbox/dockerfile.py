@@ -85,6 +85,12 @@ _LOCAL_INSTALL_RE = re.compile(
 )
 
 _DEPENDENCY_STAGE_NAME = "project-sandbox-dependencies"
+# Session image privilege model (isolate-firewall-helpers): the ENTRYPOINT is a
+# root stage that installs the firewall and drops to the agent. The CLI refuses
+# --no-build images without this label, since it starts sessions as root.
+PRIVILEGE_MODEL_LABEL = "org.project-sandbox.privilege-model"
+PRIVILEGE_MODEL = "root-stage-v1"
+ROOT_STAGE_NAME = "project-sandbox-init"
 
 # Matches a numeric build-stage reference such as `COPY --from=1 ...` or
 # `RUN --mount=type=bind,from=1,...`. Docker resolves a purely-numeric --from
@@ -1138,6 +1144,19 @@ def render_entrypoint(context_dir: Path, *, egress_sidecar: bool = False) -> Pat
     out = context_dir / "entrypoint.sh"
     tmpl = templating.get_template("entrypoint.sh.j2")
     out.write_text(tmpl.render(egress_sidecar=egress_sidecar) + "\n", encoding="utf-8")
+    out.chmod(0o755)
+    return out
+
+
+def render_root_stage(context_dir: Path) -> Path:
+    """Render the session image's root-stage ENTRYPOINT.
+
+    It runs as root, installs the firewall, then drops to the agent user and
+    execs ``project-sandbox-entrypoint``.
+    """
+    out = context_dir / ROOT_STAGE_NAME
+    tmpl = templating.get_template("root-stage.sh.j2")
+    out.write_text(tmpl.render() + "\n", encoding="utf-8")
     out.chmod(0o755)
     return out
 

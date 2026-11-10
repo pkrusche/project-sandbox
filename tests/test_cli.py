@@ -18,6 +18,7 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from project_sandbox import cli, container_cli, firewall
+from project_sandbox.dockerfile import PRIVILEGE_MODEL
 from project_sandbox.git_identity import GitIdentity
 
 
@@ -912,6 +913,9 @@ class CliTests(TestCase):
                     cli.container_cli, "ensure_system_started", return_value=0
                 ),
                 patch.object(cli.container_cli, "image_exists", return_value=True),
+                patch.object(
+                    cli.container_cli, "image_label", return_value=PRIVILEGE_MODEL
+                ),
                 patch.object(cli.session, "run", side_effect=fake_run) as run_session,
                 patch.dict(os.environ, {"XDG_STATE_HOME": str(project / "state")}),
                 contextlib.redirect_stdout(out),
@@ -1559,6 +1563,9 @@ class CliTests(TestCase):
                     cli.container_cli, "ensure_system_started", return_value=0
                 ),
                 patch.object(cli.container_cli, "image_exists", return_value=True),
+                patch.object(
+                    cli.container_cli, "image_label", return_value=PRIVILEGE_MODEL
+                ),
                 patch.object(cli.session, "run", return_value=0),
                 contextlib.redirect_stdout(out),
             ):
@@ -5100,6 +5107,9 @@ class NoForwardCredentialsTests(TestCase):
                 ),
                 patch.object(cli.dockerfile, "render") as render,
                 patch.object(cli.container_cli, "image_exists", return_value=True),
+                patch.object(
+                    cli.container_cli, "image_label", return_value=PRIVILEGE_MODEL
+                ),
                 patch.object(cli.container_cli, "run", return_value=0),
                 contextlib.redirect_stdout(io.StringIO()),
             ):
@@ -5575,6 +5585,9 @@ class ApiKeyInjectionTests(TestCase):
                     cli.container_cli, "ensure_system_started", return_value=0
                 ),
                 patch.object(cli.container_cli, "image_exists", return_value=True),
+                patch.object(
+                    cli.container_cli, "image_label", return_value=PRIVILEGE_MODEL
+                ),
                 patch.object(cli.container_cli, "run", side_effect=fake_run),
                 patch.dict(
                     os.environ, {"ANTHROPIC_API_KEY": "super-secret-value"}, clear=False
@@ -6312,6 +6325,9 @@ class CopilotAgentTests(TestCase):
             ),
             patch.object(cli.container_cli, "ensure_system_started", return_value=0),
             patch.object(cli.container_cli, "image_exists", return_value=True),
+            patch.object(
+                cli.container_cli, "image_label", return_value=PRIVILEGE_MODEL
+            ),
             patch.object(cli.session, "run", side_effect=fake_run),
         ):
             rc = cli.main(
@@ -6586,6 +6602,9 @@ class CopilotAgentTests(TestCase):
             ),
             patch.object(cli.container_cli, "ensure_system_started", return_value=0),
             patch.object(cli.container_cli, "image_exists", return_value=True),
+            patch.object(
+                cli.container_cli, "image_label", return_value=PRIVILEGE_MODEL
+            ),
             patch.object(cli.session, "run", side_effect=fake_run),
         ):
             rc = cli.main(
@@ -7376,6 +7395,11 @@ class EgressSidecarLaunchTests(TestCase):
                 patch.object(cli.container_cli, "image_exists", return_value=True)
             )
             stack.enter_context(
+                patch.object(
+                    cli.container_cli, "image_label", return_value=PRIVILEGE_MODEL
+                )
+            )
+            stack.enter_context(
                 patch.object(cli.container_cli, "run", side_effect=fake_run)
             )
             stack.enter_context(
@@ -7741,6 +7765,11 @@ class DevcontainerCommandTests(TestCase):
             mocks["ensure_system_started"].return_value = 0
             stack.enter_context(
                 patch.object(cli.container_cli, "image_exists", return_value=True)
+            )
+            stack.enter_context(
+                patch.object(
+                    cli.container_cli, "image_label", return_value=PRIVILEGE_MODEL
+                )
             )
             stack.enter_context(contextlib.redirect_stdout(out))
             rc = cli.main([*argv, str(self.project)])

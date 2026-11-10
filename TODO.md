@@ -130,41 +130,13 @@ configuration quoting, host/container trust boundaries, locks and concurrent
 sessions, and firewall/sidecar allowlists. This report proposes changes; it does
 not implement them.
 
-The highest priorities are privileged Python imports from the workspace,
-host-side Git execution against agent-writable metadata, unsafe generated-path
-handling, and races that can substitute a different session's network policy.
+The highest priorities are host-side Git execution against agent-writable
+metadata, unsafe generated-path handling, and races that can substitute a
+different session's network policy. Finding #1 (privileged Python imports from
+the workspace) was fixed by `isolate-firewall-helpers`.
 Passing unit tests do not currently establish these boundaries.
 
 ### Findings and suggested fixes
-
-#### 1. High — firewall Python helpers import code from the writable workspace
-
-**Locations:** `src/project_sandbox/templates/init-firewall.sh.j2:65` and
-`:346`; `templates/_resolve_endpoints.py.j2:1`;
-`templates/Dockerfile.j2:135`; `container_cli.py:403–404`.
-Paths abbreviated below are also relative to `src/project_sandbox/`.
-
-The container works in `/workspace`, and the agent may invoke the firewall
-script through passwordless sudo. Both Python helpers use `python3 -`, which
-searches the current directory for imports. A project containing `ipaddress.py`,
-`socket.py`, or another imported module can therefore execute code as root
-inside the container. Proxy and sidecar configurations reach these helpers.
-An agent can also create such a module and invoke the permitted sudo command
-again. Root execution can defeat the firewall through the granted `NET_ADMIN`
-capability; this is not merely a startup denial of service.
-
-**Evidence:** a harmless temporary `ipaddress.py` raising a recognizable
-`SystemExit` executed when running `python -` in that directory. The same
-command with `-I` imported the standard library successfully. The privilege
-transition is established by the generated sudoers rule; a live container
-exploit was not run. Python documents the import-path behavior and isolated
-mode in its [command-line reference](https://docs.python.org/3/using/cmdline.html).
-
-**Suggestion:** run every privileged Python helper with `python3 -I`, use a
-trusted working directory, and audit indirect commands for similar dependence
-on repository files. Add a regression that places shadow modules in a temporary
-workspace and runs the rendered helper, plus a runtime test that verifies the
-agent cannot obtain root through the allowed firewall command.
 
 #### 2. High — shared mode: host Git and jj run agent-writable metadata
 
@@ -355,7 +327,7 @@ implementation defects above. Some are already described in `docs/security.md`.
 | Wildcards and GitHub exclusions | `*.example.com` also matches the apex after Squid conversion. Two-label validation still admits broad public-suffix patterns such as `*.co.uk`. Reject public-suffix wildcards or require explicit acknowledgement. The finite repository-host denylist is not a complete GitHub-content classifier: `lfs.github.com` is in the firewall list but absent from `GITHUB_REPOSITORY_HOSTS`, and user content can live on other domains. Clarify the guarantee and test every officially supported repository transport/host before claiming all repository access is blocked. |
 | Copilot interception | `/copilot_internal/` permits any matching path and method. Narrow to observed entitlement endpoints/methods where practical. Add live fixture tests for dot segments, percent encoding, conflicting Host/CONNECT/SNI, and redirects. These are validation tasks, not confirmed path bypasses. |
 | Private destinations and upstream parents | Direct Squid mode has a useful private-address denylist; upstream mode deliberately omits it and trusts the parent for destination resolution. Require the parent to enforce equivalent internal/metadata restrictions when those are part of the threat model. Test mixed public/private DNS answers, rebinding, IPv4-mapped IPv6, and deployment-specific NAT64 paths. |
-| Startup, reinitialization, and revocation | The firewall flushes rules before installing final DROP policies and allows ESTABLISHED/RELATED traffic. The script is callable again through sudo; sidecar reloads also need explicit semantics for existing tunnels. Install policy atomically where possible, test failures and concurrent reinitialization, and distinguish blocking new connections from terminating existing ones after revocation. Audit broadly allowed outbound ICMPv6 error types alongside the actual capabilities of the agent process. No packet-level bypass was tested here. |
+| Startup, reinitialization, and revocation | The firewall flushes rules before installing final DROP policies and allows ESTABLISHED/RELATED traffic. The script can no longer be re-run during a session: `isolate-firewall-helpers` removed the sudoers rule and drops privileges before the agent starts. Sidecar reloads still need explicit semantics for existing tunnels. Install policy atomically where possible, test failures and concurrent reinitialization, and distinguish blocking new connections from terminating existing ones after revocation. Audit broadly allowed outbound ICMPv6 error types alongside the actual capabilities of the agent process. No packet-level bypass was tested here. |
 
 ### Additional hardening
 

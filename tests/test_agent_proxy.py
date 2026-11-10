@@ -13,6 +13,7 @@ from typing import cast
 from unittest.mock import Mock, patch
 
 from project_sandbox import agent_proxy, cli, config_agents
+from project_sandbox.dockerfile import PRIVILEGE_MODEL
 from project_sandbox.git_identity import GitIdentity
 
 
@@ -470,6 +471,9 @@ class AgentProxyTests(unittest.TestCase):
                         cli.container_cli, "ensure_system_started", return_value=0
                     ),
                     patch.object(cli.container_cli, "image_exists", return_value=True),
+                    patch.object(
+                        cli.container_cli, "image_label", return_value=PRIVILEGE_MODEL
+                    ),
                     patch.object(cli.container_cli, "run", side_effect=run),
                     patch.object(cli.session, "run", side_effect=run),
                     patch.object(
@@ -624,6 +628,9 @@ class AgentProxyTests(unittest.TestCase):
                     cli.container_cli, "ensure_system_started", return_value=0
                 ),
                 patch.object(cli.container_cli, "image_exists", return_value=True),
+                patch.object(
+                    cli.container_cli, "image_label", return_value=PRIVILEGE_MODEL
+                ),
                 patch.object(cli.container_cli, "run", side_effect=run),
                 patch.object(
                     cli.local_service_network,

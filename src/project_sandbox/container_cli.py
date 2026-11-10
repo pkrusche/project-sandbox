@@ -1,3 +1,4 @@
+import json
 import os
 import shlex
 import subprocess
@@ -429,6 +430,12 @@ def build_run_argv(
         str(cpus),
         "--workdir",
         "/workspace",
+        # The image's root stage installs the firewall, then drops to the agent
+        # user with setpriv (isolate-firewall-helpers). The image's USER stays
+        # agent so it never starts as root outside project-sandbox; a plain
+        # host `exec` into this container does run as root, though.
+        "--user",
+        "0:0",
     ]
     # Rootless podman maps the host user to container root, so the image's
     # agent user (built with the host UID) would land on an unrelated subuid and
@@ -593,6 +600,66 @@ def image_exists(runtime: Runtime, image_tag: str, *, dry_run: bool = False) -> 
     except FileNotFoundError:
         return False
     return proc.returncode == 0
+
+
+def _label_sets(image: object) -> list[dict]:
+    """Every label mapping one image entry of ``image inspect`` JSON carries.
+
+    Docker and Podman report ``Config.Labels`` (Podman also a top-level
+    ``Labels``); Apple ``container`` reports ``config.config.Labels`` per
+    platform variant.
+    """
+    if not isinstance(image, dict):
+        return []
+    found = []
+    config = image.get("Config")
+    if isinstance(config, dict) and "Labels" in config:
+        found.append(config.get("Labels"))
+    if "Labels" in image:
+        found.append(image.get("Labels"))
+    for variant in image.get("variants") or []:
+        if not isinstance(variant, dict):
+            continue
+        config = (variant.get("config") or {}).get("config")
+        found.append(config.get("Labels") if isinstance(config, dict) else None)
+    return [labels if isinstance(labels, dict) else {} for labels in found]
+
+
+def image_label_from_inspect(inspect_json: str, label: str) -> str | None:
+    """Return ``label`` from ``image inspect`` output, or None.
+
+    None unless every label set in the output (all platform variants) carries
+    the same value, so a partly labelled multi-platform image is not trusted.
+    """
+    try:
+        data = json.loads(inspect_json)
+    except ValueError:
+        return None
+    images = data if isinstance(data, list) else [data]
+    values = {labels.get(label) for image in images for labels in _label_sets(image)}
+    if len(values) != 1:
+        return None
+    value = values.pop()
+    return value if isinstance(value, str) else None
+
+
+def image_label(runtime: Runtime, image_tag: str, label: str) -> str | None:
+    """Read one label of ``image_tag`` with ``image inspect`` (read-only).
+
+    None when the image is absent, cannot be inspected, or lacks the label.
+    """
+    try:
+        proc = subprocess.run(
+            [runtime.binary, "image", "inspect", image_tag],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        return None
+    if proc.returncode != 0:
+        return None
+    return image_label_from_inspect(proc.stdout, label)
 
 
 def ensure_system_started(

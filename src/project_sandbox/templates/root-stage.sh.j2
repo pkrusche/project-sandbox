@@ -1,0 +1,44 @@
+#!/bin/sh
+{# Root stage: the session image's ENTRYPOINT (isolate-firewall-helpers). -#}
+# project-sandbox root stage. Agent sessions start as root (--user 0:0) only
+# for this script: it installs the firewall, then drops irrevocably to the
+# agent user (no capabilities, empty bounding set, no_new_privs) before any
+# agent, shell or project code runs. Nothing here reads the workspace: it
+# changes to / first and runs the firewall with a fixed, minimal environment.
+set -eu
+SESSION_PATH="$PATH"
+ROOT_PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+PATH="$ROOT_PATH"
+export PATH
+cd /
+
+if [ "$(id -u)" != 0 ]; then
+  echo "ERROR: project-sandbox-init must start as root; start sessions with project-sandbox." >&2
+  exit 1
+fi
+
+if [ "${PROJECT_SANDBOX_NO_FIREWALL:-0}" != "1" ]; then
+  if [ "${PROJECT_SANDBOX_QUIET:-0}" = "1" ]; then
+    # Suppress the firewall banner, but capture output so a failure is still
+    # visible (then abort, since the firewall is the sandbox boundary).
+    if ! fw_out="$(env -i PATH="$ROOT_PATH" HOME=/root /usr/local/bin/project-sandbox-init-firewall 2>&1)"; then
+      printf '%s\n' "$fw_out" >&2
+      exit 1
+    fi
+  elif ! env -i PATH="$ROOT_PATH" HOME=/root /usr/local/bin/project-sandbox-init-firewall; then
+    exit 1
+  fi
+fi
+
+agent_uid="$(id -u agent)"
+agent_gid="$(id -g agent)"
+agent_home="$(getent passwd agent | cut -d: -f6)"
+setpriv_bin="$(command -v setpriv)"
+# The runtime set HOME for root; the session gets the agent's, and the image's
+# own PATH back.
+HOME="$agent_home"
+PATH="$SESSION_PATH"
+export HOME PATH
+exec "$setpriv_bin" --reuid="$agent_uid" --regid="$agent_gid" --init-groups \
+  --inh-caps=-all --ambient-caps=-all --bounding-set=-all --no-new-privs \
+  -- /usr/local/bin/project-sandbox-entrypoint "$@"

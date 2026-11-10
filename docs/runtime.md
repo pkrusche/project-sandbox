@@ -28,10 +28,12 @@ Given `project-sandbox --agent claude /path/to/repo python:3.12-slim`, it also:
 2. Verifies the Apple `container` system service is running when that runtime is
    selected.
 3. Builds the image with the selected runtime.
-4. Starts the container entrypoint, which wires Git and jj identity, copies only
-   the selected agent's mounted credentials into the container's home, then runs
-   the firewall before exec'ing the agent. Headless modes use the same base-agent
-   credential policy. `--agent bash` is intentionally multi-agent and receives
+4. Starts the container as root for the image's root stage, which runs the
+   firewall and then drops to the `agent` user for good (see
+   [Privileged setup and privilege drop](security.md#privileged-setup-and-privilege-drop)).
+   The entrypoint then wires Git and jj identity and copies only the selected
+   agent's mounted credentials into the container's home before exec'ing the
+   agent. Headless modes use the same base-agent credential policy. `--agent bash` is intentionally multi-agent and receives
    every detected forwarded credential.
 
 Interactive `--agent codex` launches with `--no-daemon` to bypass Codex's shared
@@ -75,7 +77,8 @@ for this reason (see `.github/workflows/e2e.yml`).
 |   |-- .gitignore                     # local safeguard
 |   |-- Dockerfile                     # generated for direct CLI runs
 |   |-- Dockerfile.devcontainer        # only with --devcontainer
-|   |-- entrypoint.sh                  # container PID 1
+|   |-- project-sandbox-init           # root stage: firewall, then privilege drop
+|   |-- entrypoint.sh                  # PID 1 after the drop (runs as agent)
 |   |-- init-firewall.sh               # session firewall
 |   |-- project-sandbox-devcontainer-init  # git/jj identity setup
 |   |-- claude/settings.json

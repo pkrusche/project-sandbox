@@ -555,8 +555,9 @@ IDE afterwards.
 The container image is built before a direct-run session starts. To keep
 repeated local runs fast, the build is **skipped when nothing changed**:
 project-sandbox fingerprints the generated build inputs (the rendered
-`Dockerfile`, `entrypoint.sh`, `init-firewall.sh`, the devcontainer init script,
-the base image, and the image tag) and records that fingerprint in
+`Dockerfile`, `entrypoint.sh`, `project-sandbox-init`, `init-firewall.sh`, the
+devcontainer init script, the base image, and the image tag) and records that
+fingerprint in
 `.project-sandbox/.build-state.json`. On the next run, if the fingerprint still
 matches and the runtime confirms the image exists, the build is skipped and
 `Reusing cached image (inputs unchanged)` is printed; otherwise the image is
@@ -575,7 +576,10 @@ rebuilt and the build duration is reported (`Built image in 12.3s`).
   those paths. If the project already has a root `.dockerignore`, it is left
   authoritative and no per-Dockerfile file is generated.
 - `--force-build` rebuilds even when the cache is valid.
-- `--no-build` skips the build entirely, assuming the image already exists.
+- `--no-build` skips the build entirely, assuming the image already exists. It
+  refuses an image built before the root-stage privilege drop (no
+  `org.project-sandbox.privilege-model=root-stage-v1` label); rebuild it once
+  without `--no-build`.
 
 ## Version Control Modes
 
