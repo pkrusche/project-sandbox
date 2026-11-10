@@ -266,6 +266,26 @@ project-sandbox-egress down                    # stop it and delete its CA
 `project-sandbox doctor` shows a read-only status line per runtime (see
 [doctor](doctor.md)).
 
+### Concurrent policy changes
+
+Policy edits lock the canonical `egress.toml` path across runtimes for the whole
+read, validation, edit, and atomic replacement. Concurrent additions and removals
+therefore preserve each other's changes. Editing through a symlink preserves
+the link and updates its target; relative CA paths resolve beside that target.
+
+Launches, `up`, `reload`, and `restart` acquire the policy lock before the runtime
+lock and reread the current file. Both locks stay held until application finishes.
+A launch delayed by an image build cannot restore a revoked host from its earlier
+snapshot. A file created or removed since preflight is also reflected; an invalid
+current file aborts before sidecar mutation. Status and dry-runs remain read-only.
+
+An edit applies to the selected runtime. Other running runtimes pick it up at
+their next launch or explicit reload. Sidecar startup or reload can delay edits
+for all runtimes. If a reload fails, or the command exits after saving but before
+applying, the saved policy remains; retry `reload` and check its exit status.
+Hand edits do not acquire these advisory locks: avoid overlapping them with CLI
+edits and run `reload` afterward.
+
 ## GitHub repository access is blocked
 
 Sidecar mode does not admit GitHub repository hosts: `github.com`,

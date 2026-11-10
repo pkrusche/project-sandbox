@@ -933,13 +933,15 @@ def ensure(
     is the port a launch rendered into its sandbox; a running sidecar that
     publishes another one, or on another address than ``strategy`` (probed when
     not given) requires, is an error naming ``project-sandbox-egress restart``.
+    Reread policy under the global policy lock, then acquire the runtime lock;
+    hold both through application so a delayed launch cannot undo a revocation.
     """
     deps = deps or Collaborators()
     strategy = strategy or deps.strategy(runtime)
     lay = layout(runtime, root)
-    with _locked(lay):
+    with egress_policy.current_policy(policy) as current, _locked(lay):
         sidecar = _ensure_locked(
-            runtime, policy, image=image, lay=lay, deps=deps, strategy=strategy
+            runtime, current, image=image, lay=lay, deps=deps, strategy=strategy
         )
     if expected_port is not None and sidecar.port != expected_port:
         raise SidecarError(
@@ -1381,11 +1383,11 @@ def restart(
     deps = deps or Collaborators()
     strategy = deps.strategy(runtime)
     lay = layout(runtime, root)
-    with _locked(lay):
+    with egress_policy.current_policy(policy) as current, _locked(lay):
         _down_locked(runtime, lay, deps, keep_ca=not new_ca)
         return _ensure_locked(
             runtime,
-            policy,
+            current,
             image=image,
             lay=lay,
             deps=deps,
@@ -1405,7 +1407,7 @@ def reload(
     """Apply ``egress.toml``'s allowlist to the running sidecar."""
     deps = deps or Collaborators()
     lay = layout(runtime, root)
-    with _locked(lay):
+    with egress_policy.current_policy(policy) as current, _locked(lay):
         state = read_state(lay)
         info = inspect(runtime, deps.runner)
         if info is None or not info.running or state is None or not _complete(lay):
@@ -1415,7 +1417,7 @@ def reload(
             )
         messages: list[str] = []
         _reconcile(
-            runtime, policy, image=image, lay=lay, state=state, info=info,
+            runtime, current, image=image, lay=lay, state=state, info=info,
             deps=deps, messages=messages,
         )  # fmt: skip
         return messages

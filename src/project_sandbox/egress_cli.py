@@ -241,7 +241,11 @@ def cmd_status(ctx: Context, args) -> int:
 
 
 def _apply_live(ctx: Context, policy: egress_policy.PolicyFile) -> None:
-    """Reload a running sidecar; say so when it is not running."""
+    """Reload a running sidecar; say so when it is not running.
+
+    reload() rereads under the policy lock: another edit may have committed
+    since this command wrote the file, so this snapshot must not be applied.
+    """
     info = egress_sidecar.inspect(ctx.runtime, ctx.deps.runner)
     if info is None or not info.running:
         ctx.out(

@@ -1711,7 +1711,7 @@ def _ensure_egress_sidecar(
         sidecar = egress_sidecar.ensure(
             runtime, policy, image=image, expected_port=port, strategy=strategy
         )
-    except egress_sidecar.SidecarError as exc:
+    except (egress_sidecar.SidecarError, egress_policy.EgressPolicyError) as exc:
         raise SystemExit(f"[E] {exc}") from None
     for message in sidecar.messages:
         print(message)

@@ -24,14 +24,15 @@ import os
 import re
 import tempfile
 import tomllib
-from collections.abc import Iterable
-from dataclasses import dataclass, field
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import tomlkit
 from tomlkit.exceptions import ParseError as TomlkitParseError
 
-from . import proxy_endpoint
+from . import host_locks, proxy_endpoint
 
 POLICY_FILENAME = "egress.toml"
 # The host loopback port the sidecar publishes Squid on (design.md Decision 1).
@@ -184,6 +185,9 @@ class PolicyFile:
     memory: str = DEFAULT_MEMORY
     cpus: int = DEFAULT_CPUS
     port: int = DEFAULT_PORT
+    # Retain the source of built-in defaults too: a file may be created while
+    # a launch builds its image. `path` stays None for the missing-file display.
+    source_path: Path | None = field(default=None, compare=False, repr=False)
 
     @property
     def upstream(self) -> proxy_endpoint.ProxyEndpoint | None:
@@ -281,6 +285,8 @@ def _upstream_endpoint(url: str, *, path: Path | None) -> proxy_endpoint.ProxyEn
 
 def load(path: Path) -> PolicyFile:
     """Parse and validate an egress policy file."""
+    source = path.absolute()
+    path = path.resolve()
     try:
         with path.open("rb") as fh:
             data = tomllib.load(fh)
@@ -292,7 +298,7 @@ def load(path: Path) -> PolicyFile:
         raise EgressPolicyError(
             f"Invalid TOML in egress policy {path}: {exc}."
         ) from exc
-    return parse(data, path=path)
+    return replace(parse(data, path=path), source_path=source)
 
 
 def parse(data: dict, *, path: Path) -> PolicyFile:
@@ -510,12 +516,40 @@ def default_policy_path() -> Path:
 
 def load_global() -> PolicyFile:
     """Load the global policy, or the built-in defaults when it does not exist."""
-    path = default_policy_path()
+    return _load_or_defaults(default_policy_path())
+
+
+def _load_or_defaults(path: Path) -> PolicyFile:
     if not path.exists() and not path.is_symlink():
-        return PolicyFile()
+        return PolicyFile(source_path=path)
     if not path.is_file():
         raise EgressPolicyError(f"Egress policy {path} is not a file.")
     return load(path)
+
+
+@contextmanager
+def policy_lock(path: Path) -> Iterator[Path]:
+    """Lock a policy across runtimes; yield its canonical read/write path.
+
+    Resolve before both locking and replacing so edits through a symlink do
+    not replace the link and change lock identities halfway through an edit.
+    Always acquire this lock before a sidecar runtime lock.
+    """
+    canonical = path.resolve()
+    with host_locks.path_lock("egress-policy", canonical):
+        yield canonical
+
+
+@contextmanager
+def current_policy(snapshot: PolicyFile) -> Iterator[PolicyFile]:
+    """Reread policy and hold its lock until application has finished.
+
+    A snapshot taken before a build or while waiting for a runtime lock is
+    never authoritative. Edits cannot commit until this application completes.
+    """
+    source = snapshot.source_path or snapshot.path or default_policy_path()
+    with policy_lock(source) as path:
+        yield _load_or_defaults(path)
 
 
 def check_location(
@@ -594,6 +628,11 @@ def _edit(path: Path, change) -> PolicyFile:
     The file is left byte-identical when the change or the resulting policy is
     invalid. A missing file starts from an empty document.
     """
+    with policy_lock(path) as canonical:
+        return _edit_locked(canonical, change)
+
+
+def _edit_locked(path: Path, change) -> PolicyFile:
     try:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:

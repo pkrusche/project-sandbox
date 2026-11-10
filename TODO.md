@@ -1,5 +1,9 @@
 # TODO - outstanding items for next release
 
+- Policy edit serialization: verify concurrent cross-runtime edits and delayed
+  launches after revocation with live Squid on Docker, Podman, and Apple
+  container. Unit coverage forces these interleavings with simulated runtimes.
+
 - Build/session isolation: verify concurrent launches, image-ID execution, and
   Apple session-alias retention/deletion on live Docker, Podman, and Apple
   container. Add orphan alias cleanup that checks live containers after SIGKILL.
@@ -250,6 +254,18 @@ Include runtime/image identity in resource locking where appropriate. Add a
 barrier-controlled test with two different network policies.
 
 #### 7. High — allowlist edits can lose changes or restore a revoked host
+
+**Addressed:** policy edits now hold one canonical-path lock across
+read/validate/edit/replace, independent of runtime. Sidecar ensure, reload, and
+restart acquire that policy lock before the runtime lock, reread the current
+file, and hold both through application. Earlier snapshots can no longer
+overwrite a newer revocation. Missing-file defaults retain their source path;
+symlink aliases use the same lock and edits preserve the link. Regression tests
+cover concurrent additions/removals, delayed stale applications, cross-runtime
+serialization, invalid current policy, file creation/deletion, and read-only
+status. See [concurrent policy changes](docs/egress-sidecar.md#concurrent-policy-changes).
+Live runtime verification remains listed above. The original finding below
+describes the reviewed revision before this fix.
 
 **Locations:** `egress_cli.py:284–308`; `egress_policy.py:578–626`;
 `egress_sidecar.py:920–945`, `:1395–1420`.
