@@ -3821,6 +3821,165 @@ class SessionsListCommandTests(TestCase):
 
 
 class BuildOnlyTests(TestCase):
+    def test_ollama_image_can_be_built_then_used_without_rebuilding(self) -> None:
+        for runtime in (
+            container_cli.DOCKER,
+            container_cli.PODMAN,
+            container_cli.APPLE_CONTAINER,
+        ):
+            for proxy in (False, True):
+                with (
+                    self.subTest(runtime=runtime.name, proxy=proxy),
+                    tempfile.TemporaryDirectory() as tmp,
+                ):
+                    project = Path(tmp)
+                    context = project / ".project-sandbox"
+                    built_firewalls = []
+
+                    def build_image(
+                        context=context, built_firewalls=built_firewalls, **_kwargs
+                    ):
+                        script = (context / "init-firewall.sh").read_text()
+                        self.assertIn("--dport 11434", script)
+                        self.assertIn("host.docker.internal", script)
+                        self.assertIn("curl", script)
+                        self.assertIn(
+                            "pi-coding-agent@", (context / "Dockerfile").read_text()
+                        )
+                        models = json.loads((context / "pi/models.json").read_text())
+                        self.assertEqual(
+                            models["providers"]["ollama"]["baseUrl"],
+                            "http://host.docker.internal:11434/v1",
+                        )
+                        self.assertEqual(
+                            models["providers"]["ollama"]["models"][0]["id"],
+                            "custom-model",
+                        )
+                        built_firewalls.append(script)
+                        return 0
+
+                    options = [
+                        "--runtime",
+                        runtime.name,
+                        "--pi-ollama",
+                        "--ollama-model",
+                        "custom-model",
+                        "--no-forward-credentials",
+                    ]
+                    if proxy:
+                        options += ["--internet-proxy", "http://127.0.0.1:3128"]
+                    with (
+                        patch.object(
+                            cli,
+                            "read_identity",
+                            return_value=GitIdentity("Ada", "ada@example.com"),
+                        ),
+                        patch.object(
+                            cli.config_agents, "_agent_host_paths", return_value={}
+                        ),
+                        patch.object(
+                            cli.config_agents, "sync_credentials"
+                        ) as credentials,
+                        patch.object(
+                            container_cli, "select_runtime", return_value=runtime
+                        ),
+                        patch.object(
+                            container_cli, "ensure_system_started", return_value=0
+                        ),
+                        patch.object(container_cli, "image_exists", return_value=True),
+                        patch.object(
+                            container_cli, "build_image", side_effect=build_image
+                        ) as build,
+                        patch.object(container_cli, "run", return_value=0) as run,
+                        patch.object(
+                            cli.local_service_network,
+                            "uses_local_pasta",
+                            return_value=False,
+                        ),
+                        patch.object(
+                            cli.local_service_network,
+                            "prepare_services",
+                            return_value=[],
+                        ) as prepare,
+                        patch.object(cli.internet_proxy, "preflight") as preflight,
+                        contextlib.redirect_stdout(io.StringIO()),
+                    ):
+                        self.assertEqual(
+                            cli.main(
+                                [
+                                    "--build-only",
+                                    *options,
+                                    str(project),
+                                    "python:3.12-slim",
+                                ]
+                            ),
+                            0,
+                        )
+                        build.assert_called_once()
+                        run.assert_not_called()
+                        prepare.assert_not_called()
+                        preflight.assert_not_called()
+                        credentials.assert_not_called()
+
+                        self.assertEqual(
+                            cli.main(
+                                [
+                                    "--agent",
+                                    "pi",
+                                    "--no-build",
+                                    *options,
+                                    str(project),
+                                    "python:3.12-slim",
+                                ]
+                            ),
+                            0,
+                        )
+                        build.assert_called_once()
+                        run.assert_called_once()
+                        self.assertEqual(
+                            (context / "init-firewall.sh").read_text(),
+                            built_firewalls[0],
+                        )
+                        services = prepare.call_args.args[1]
+                        self.assertIn(
+                            ("Ollama", 11434),
+                            [(service.label, service.port) for service in services],
+                        )
+
+    def test_plain_build_does_not_enable_ollama(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            with (
+                patch.object(
+                    cli, "read_identity", return_value=GitIdentity(None, None)
+                ),
+                patch.object(cli.config_agents, "_agent_host_paths", return_value={}),
+                patch.object(
+                    container_cli, "select_runtime", return_value=container_cli.DOCKER
+                ),
+                patch.object(container_cli, "ensure_system_started", return_value=0),
+                patch.object(container_cli, "image_exists", return_value=False),
+                patch.object(container_cli, "build_image", return_value=0),
+                patch.object(container_cli, "run") as run,
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                self.assertEqual(
+                    cli.main(
+                        [
+                            "--build-only",
+                            "--no-forward-credentials",
+                            str(project),
+                            "python:3.12-slim",
+                        ]
+                    ),
+                    0,
+                )
+            context = project / ".project-sandbox"
+            self.assertNotIn("11434", (context / "init-firewall.sh").read_text())
+            self.assertFalse((context / "pi/models.json").exists())
+            self.assertNotIn("pi-coding-agent@", (context / "Dockerfile").read_text())
+            run.assert_not_called()
+
     def test_rejects_conflicting_flags(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             cases = [
@@ -3850,6 +4009,7 @@ class BuildOnlyTests(TestCase):
                     [
                         "--dry-run",
                         "--build-only",
+                        "--pi-ollama",
                         "--runtime",
                         "docker",
                         str(project),
@@ -3859,6 +4019,7 @@ class BuildOnlyTests(TestCase):
 
             self.assertEqual(rc, 0)
             self.assertIn("Would build image only:", out.getvalue())
+            self.assertIn("Would include Pi and the host Ollama", out.getvalue())
             self.assertFalse((project / ".project-sandbox").exists())
 
 

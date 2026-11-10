@@ -261,7 +261,7 @@ def build_parser() -> ArgumentParser:
         help=(
             "Extend the firewall to reach a host-run Ollama server and "
             "pre-configure Pi to use it as the default provider. Only takes "
-            "effect together with --agent pi; a no-op otherwise."
+            "effect with --agent pi or --build-only; a no-op otherwise."
         ),
     )
     p.add_argument(
@@ -600,6 +600,9 @@ def _main_scoped(argv: list[str] | None, resources: contextlib.ExitStack) -> int
     # dir, so selecting it is enough to install it into the image.
     if run_agent == "copilot" and run_agent not in available_agents:
         available_agents = (*available_agents, run_agent)
+    if args.build_only and pi_ollama_enabled and "pi" not in available_agents:
+        # An Ollama image needs Pi even when the host has no Pi credentials.
+        available_agents = (*available_agents, "pi")
 
     if run_agent is not None and args.branch:
         _validate_worktree_project(project)
@@ -1560,7 +1563,7 @@ def _reclassify_copilot_exit(exit_code: int, log_path: Path | None) -> int:
 
 
 def _pi_ollama_enabled(args, run_agent: str | None) -> bool:
-    return bool(args.pi_ollama and run_agent == "pi")
+    return bool(args.pi_ollama and (run_agent == "pi" or args.build_only))
 
 
 def _validate_fast_mode_args(args, run_agent: str | None) -> None:
@@ -2120,6 +2123,10 @@ def _dry_run(
             verbose=args.verbose,
         )
     if args.build_only:
+        if pi_ollama_enabled:
+            print(
+                "Would include Pi and the host Ollama firewall rules and configuration."
+            )
         print(f"Would build image only: {args.image_tag}")
         return 0
     assert run_agent is not None

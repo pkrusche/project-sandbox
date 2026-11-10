@@ -1,9 +1,18 @@
 # TODO - outstanding items for next release
 
+Status updated 2026-11-10. All ten numbered security findings below are addressed
+or closed for the agreed release scope. Finding #2's accepted VCS risks are in
+[ROADMAP.md](ROADMAP.md#vcs-defaults-and-isolated-host-capture). The tasks below
+and the networking/additional-hardening sections remain open.
+
 - Generated Cargo builds: verify literal filename COPY behavior on Docker,
   Podman, and Apple container with spaces, quotes, dollar signs, and wildcard
   characters. Unit tests execute generated shell commands and inspect COPY
   encoding; no live image build has been run for this regression.
+
+- Firewall initialization: verify the one-time guard and sudo revocation in
+  live Docker, Podman, and Apple containers, including workspace import-shadowing
+  attempts. Recreate containers from rebuilt images before testing.
 
 - Policy edit serialization: verify concurrent cross-runtime edits and delayed
   launches after revocation with live Squid on Docker, Podman, and Apple
@@ -33,31 +42,24 @@
   repositories/submodules, and lifecycle cleanup for old devcontainer masks.
   Consider reserving absent metadata paths without modifying the host checkout.
 
-- `--build-only --pi-ollama` builds an image without the Ollama firewall rule.
-  `--build-only` rejects `--agent`, and the Pi + Ollama setup is only enabled when
-  `--agent pi` is also given (`cli.py`, `bool(args.pi_ollama and run_agent == "pi")`).
-  A later `--agent pi --pi-ollama --no-build` session then reuses that image, and
-  Ollama is refused with "No route to host". Either let `--build-only` honour
-  `--pi-ollama` (or accept `--agent`), or have `--no-build` detect an image
-  rendered without the session's Ollama settings.
 - Manually verify that `kill -9` of the only `--pi-ollama` session releases the
   shared bridge forwarder (it should exit within about one poll interval) and
   that a fresh session then attaches cleanly. The concurrent-session `kill -9`
   case was verified on 2026-11-08 (see docs/development.md).
 
-## Security review
+## Security review status and historical findings
 
-Reviewed 2026-11-08 against parent revision `595c1432`. Scope: command and
-configuration quoting, host/container trust boundaries, locks and concurrent
-sessions, and firewall/sidecar allowlists. This report proposes changes; it does
-not implement them.
+The original source review was performed on 2026-11-08 against parent revision
+`595c1432`, covering command/configuration quoting, host/container boundaries,
+shared-state races, and firewall/sidecar allowlists. Each numbered finding now
+starts with its resolution status; its original locations, evidence, and
+suggestions are retained as historical context, not as a list of unfixed bugs.
 
-The highest priorities are privileged Python imports from the workspace,
-host-side Git execution against agent-writable metadata, unsafe generated-path
-handling, and races that can substitute a different session's network policy.
-Passing unit tests do not currently establish these boundaries.
+Live runtime validation and crash recovery remain outstanding even where unit
+regressions pass. The broader networking and hardening recommendations below
+remain open unless explicitly noted otherwise.
 
-### Findings and suggested fixes
+### Closed findings and original review details
 
 #### 1. High — firewall Python helpers import code from the writable workspace
 
@@ -239,9 +241,8 @@ forms that can expose host directories.
 **Addressed:** the context lock covers the first generated write through
 image selection, including generation-only and build-only invocations. Item 8
 moves runtime inputs into independent private trees, allowing release before
-the session starts. A
-runtime image-store lock covers cache checks, building, and image pinning across
-projects and tag aliases. Docker/Podman launches use image IDs; Apple launches
+the session starts. A runtime image-store lock covers cache checks, building,
+and image pinning across projects and tag aliases. Docker/Podman launches use image IDs; Apple launches
 use unique, digest-verified session aliases removed on teardown. Cache reuse
 checks runtime and current image identity. Stale generated provider/env keys
 are removed before builds. Controlled concurrency tests cover differing policies,
@@ -441,13 +442,12 @@ implementation defects above. Some are already described in `docs/security.md`.
   do not depend on identical behavior across Linux and macOS. Never unlink a
   live lock file to recover it, since that can create two independently locked
   inodes.
-- **Secrets and logs:** create proxy configuration files with mode 0600 from
-  the initial open instead of writing and then chmodding. Keep them outside all
-  build contexts. Explicit API-key env files should have session-scoped cleanup
-  too. Squid's `%ru` logging includes URLs/query strings for visible HTTP and
-  intercepted requests; redact sensitive fields and define retention/access
-  rules. Token substitution in logs is useful but is not a general data-loss
-  prevention boundary.
+- **Sensitive logs:** Squid's `%ru` logging includes URLs/query strings for
+  visible HTTP and intercepted requests; redact sensitive fields and define
+  retention/access rules. Token substitution in logs is useful but is not a
+  general data-loss prevention boundary. Private proxy configuration, restrictive
+  initial file permissions, and session-scoped API-key cleanup are implemented
+  under findings #3 and #8; runtime checks and crash cleanup remain above.
 - **Supply chain:** exact top-level npm versions are useful, but global
   `npm install -g package@version` does not freeze all transitive dependency
   resolution. Use reviewed lockfiles/integrity metadata or reproducible tool
@@ -459,8 +459,8 @@ implementation defects above. Some are already described in `docs/security.md`.
 Subprocess construction generally uses argv lists. Extra domains and proxy
 authorities receive strict validation, shell domain values use `shlex_quote`,
 and devcontainer JSON uses a serializer. The endpoint helper validates returned
-addresses before constructing shell arrays, so its `eval` is not an obvious
-input-injection finding; its unsafe import path is the concrete problem.
+addresses before constructing shell arrays, and privileged helpers now use
+isolated Python and a trusted working directory (finding #1).
 Selected-agent credential filtering, private credential staging, no-follow
 exclusive creation of several secret files, constrained sidecar CAs, and the
 sidecar's deny-before-CONNECT/SNI checks are useful protections. The chroot
@@ -469,19 +469,28 @@ boundary and was assessed accordingly.
 
 ### Verification and limits
 
-- `uv sync` completed.
-- `uv run python -m compileall -q src tests` passed.
-- `uv run project-sandbox --help` passed.
-- `uv run pytest -q`: **1295 passed, 4 skipped, 882 subtests passed**.
-- Temporary, non-destructive probes reproduced Python import shadowing,
-  generated-file symlink writes, symlinked implicit mount sources, Cargo path
-  interpolation, the raw-mount policy-check bypass, and lost policy edits.
-  These probes used synthetic files/values and left no repository changes.
-- No runtime containers, live credential use, host hook payloads, or external
-  exploitation were exercised. Network behavior still needs adversarial
-  end-to-end coverage on Apple container, Docker, and Podman. This was a source
-  review, not a dependency-CVE audit or proof that no other issues exist.
+Current local verification commands are:
 
-Suggested order: fix findings 1–5 first, then make build inputs, policy updates,
-and session staging concurrency-safe (6–9), fix quoting (10), and validate the
-narrower networking profiles with runtime tests.
+```bash
+uv sync
+uv run python -m compileall -q src tests
+uv run project-sandbox --help
+uv run pytest -q
+```
+
+Use the current test output for counts; the original review's counts predated
+the fixes and are not a current baseline. Regression coverage now includes the
+numbered fixes, and build-only Ollama tests inspect the generated firewall and
+exercise a subsequent `--no-build` launch with simulated runtimes.
+
+The original review used temporary, non-destructive probes for Python import
+shadowing, generated-file symlink writes, implicit mounts, Cargo interpolation,
+extra-mount validation, and policy-edit races. It did not exercise live
+containers, host hook payloads, or external exploitation. The runtime checks
+listed above are still required; passing unit tests is not a dependency-CVE
+audit or proof that no other issues exist.
+
+Next priorities: complete live runtime acceptance, implement recovery for orphan
+session resources, and work through the networking and additional-hardening
+items. The `--build-only --pi-ollama` firewall omission is fixed; see
+[build-only usage](docs/usage.md#session-observability-and-image-warm-up) for image preparation.

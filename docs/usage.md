@@ -462,6 +462,21 @@ uv run project-sandbox /path/to/project --build-only
 The usual image source, runtime, cache, `--force-build`, and resource options
 apply. `--dry-run --build-only` previews the build without writing files.
 
+For a later Pi session using host Ollama, add `--pi-ollama` to the build-only
+command. This installs Pi even without host Pi configuration and includes its
+Ollama configuration and port-scoped firewall rules. Building does not contact
+Ollama or start session forwarders. For example:
+
+```bash
+project-sandbox --build-only --pi-ollama --no-forward-credentials /path/to/project python:3.12-slim
+project-sandbox --agent pi --pi-ollama --no-build --no-forward-credentials /path/to/project python:3.12-slim
+```
+
+Use matching runtime and firewall/proxy options for both commands. Rebuild an
+image previously created without Ollama support: `--no-build` cannot change the
+firewall baked into that image. `--ollama-model` can select the models used by
+the later session.
+
 ## Devcontainer Flow
 
 Use `--vcs-access read-only` or `--vcs-access hidden` to restrict `.git`/`.jj`
@@ -634,11 +649,12 @@ uv run project-sandbox \
   session log (with a Markdown transcript sidecar). Because Pi's JSON output
   mode always exits 0, project-sandbox inspects that stream and reports exit 1
   when the final turn errored or was aborted.
-- `--pi-ollama` (only with `--agent pi`) extends the firewall to reach a
+- `--pi-ollama` (with `--agent pi` or `--build-only`) extends the firewall to reach a
   host-run Ollama server and pre-configures Pi to use it as the default
   provider while Ollama remains bound to `127.0.0.1:11434`. It is a no-op with
-  any other `--agent`. The runtime adapter forwards exactly the planned ports
-  over pasta (`--network=pasta:-4,-T,<port>:<port>`, with `host.docker.internal`
+  any other `--agent`. Build-only prepares the image and configuration; forwarding
+  starts when a Pi session launches. The runtime adapter forwards exactly the
+  planned ports over pasta (`--network=pasta:-4,-T,<port>:<port>`, with `host.docker.internal`
   mapped to the container's `127.0.0.1`) for Podman on Linux with pasta (the
   default), uses native host-loopback forwarding for other Podman setups
   (slirp4netns, Podman machine) and Docker Desktop, and an
