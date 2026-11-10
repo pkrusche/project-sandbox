@@ -25,3 +25,4 @@ dist/
 # sbx-tui — local configuration skill
 /.agents/skills/sbx-tui-config/
 /.claude/skills/sbx-tui-config/
+*.swp

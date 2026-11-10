@@ -25,16 +25,29 @@ For a release gate, fail on missing prerequisites and known limitations too:
 uv run pytest -ra -q scripts/security_e2e --security-runtime docker \
   --peer-runtime podman --strict-coverage --junitxml=security-docker.xml
 
-# Aggregate runner integration (always enables strict coverage):
+# Normal all-runtime run includes security with strict coverage:
+scripts/run_all_supported_e2e_tests.sh
+
+# Select just security on one runtime:
 scripts/run-e2e-tests.sh --only security --runtime docker \
   --security-peer-runtime podman --keep
 scripts/run-e2e-tests.sh --only security --runtime apple-container --plan
 ```
 
-`--all-tests` includes this gate. A normal aggregate run skips it until explicitly
-selected. `--no-build` is incompatible with the security suite. Exploratory
-pytest runs can exit zero with XFAIL/SKIP entries; those entries are **not verified
-protections**. The strict gate is expected to fail while the recorded hardening
+`scripts/run_all_supported_e2e_tests.sh` includes this gate by default on each
+selected container runtime when builds are enabled. It automatically chooses
+another selected container runtime as the policy-edit peer; chroot and runtimes
+excluded by `--runtimes` are never chosen. With only one container runtime,
+cross-runtime coverage remains incomplete unless you explicitly supply a peer.
+Use `-- --security-peer-runtime NAME` to override the automatic choice (the
+same override applies to every selected runtime), or forward fixture settings
+such as `-- --security-fixture-host IP --security-nat64-origin HOST`.
+
+The single-runtime `run-e2e-tests.sh` enables the gate with `--with-security`,
+`--only security`, or `--all-tests`. The all-runtime runner skips it with
+`--no-build` and on chroot; explicitly requesting security with `--no-build`
+is an error. Exploratory pytest runs can exit zero with XFAIL/SKIP entries;
+those entries are **not verified protections**. The strict gate is expected to fail while the recorded hardening
 items remain open. Read the `-ra` summary or JUnit report, not only the exit code.
 
 Logs, fixtures, origin requests, DNS results, dependency inventories, and

@@ -7,6 +7,8 @@
 #
 # Opt-in suites are enabled per container runtime when they can work here:
 #   proxy-endpoints, egress-sidecar   always (non-billable; need network + builds)
+#   security                         always with builds; strict coverage gate; uses
+#                                     another selected container runtime as peer when available
 #   build-proxy                       internet-proxy-locally sources found
 #                                     (Podman additionally needs Docker for the fixture)
 #   agent-proxy-isolation, agent-proxy
@@ -186,19 +188,34 @@ if [ "$WITH_COPILOT" = 0 ]; then
   note "copilot and copilot-egress disabled by --no-copilot"
 fi
 if [ "$NO_BUILD" = 1 ]; then
-  note "--no-build: skipping proxy-endpoints, egress-sidecar, build-proxy and copilot-egress"
+  note "--no-build: skipping proxy-endpoints, egress-sidecar, security, build-proxy and copilot-egress"
 fi
 
 # --- Per-runtime argument assembly -----------------------------------------
+# Select only from the requested/detected runtimes, never an excluded backend.
+security_peer() {
+  local candidate
+  for candidate in "${RUNTIMES[@]}"; do
+    if [ "$candidate" != chroot ] && [ "$candidate" != "$1" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 0
+}
+
 # Prints one argument per line for the run-e2e-tests.sh invocation of $1.
 runtime_args() {
   local rt="$1"
+  local peer
   printf '%s\n' --runtime "$rt"
   [ "$rt" = chroot ] && return 0
   [ -n "$IPL_DIR" ] && printf '%s\n' --internet-proxy-dir "$IPL_DIR"
   [ -n "$GW_DIR" ] && printf '%s\n' --agentgateway-dir "$GW_DIR"
   if [ "$NO_BUILD" = 0 ]; then
-    printf '%s\n' --with-proxy-endpoints --with-egress-sidecar
+    printf '%s\n' --with-proxy-endpoints --with-egress-sidecar --with-security
+    peer="$(security_peer "$rt")"
+    [ -n "$peer" ] && printf '%s\n' --security-peer-runtime "$peer"
     if [ -n "$IPL_DIR" ] && { [ "$rt" != podman ] || command -v docker >/dev/null 2>&1; }; then
       printf '%s\n' --with-build-proxy
     fi
@@ -217,6 +234,9 @@ runtime_args() {
 }
 
 for rt in "${RUNTIMES[@]}"; do
+  if [ "$rt" != chroot ] && [ "$NO_BUILD" = 0 ] && [ -z "$(security_peer "$rt")" ]; then
+    note "security on $rt: no second selected container runtime; cross-runtime coverage needs an explicit --security-peer-runtime or will be incomplete"
+  fi
   if [ "$rt" = podman ] && [ -n "$IPL_DIR" ] && [ "$NO_BUILD" = 0 ] && ! command -v docker >/dev/null 2>&1; then
     note "build-proxy skipped on podman: its Squid fixture needs Docker"
   fi

@@ -63,7 +63,9 @@ os.execv({sys.executable!r}, [{sys.executable!r}, *args[i + 1:]])
 
 
 class RunAllSupportedE2ETests(unittest.TestCase):
-    def _run(self, *args: str) -> subprocess.CompletedProcess[str]:
+    def _run(
+        self, *args: str, doctor: dict | None = None
+    ) -> subprocess.CompletedProcess[str]:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             bindir = tmp_path / "bin"
@@ -71,12 +73,12 @@ class RunAllSupportedE2ETests(unittest.TestCase):
             uv = bindir / "uv"
             uv.write_text(FAKE_UV)
             uv.chmod(0o755)
-            doctor = tmp_path / "doctor.json"
-            doctor.write_text(json.dumps(DOCTOR))
+            doctor_path = tmp_path / "doctor.json"
+            doctor_path.write_text(json.dumps(DOCTOR if doctor is None else doctor))
             env = {
                 **os.environ,
                 "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
-                "FAKE_DOCTOR": str(doctor),
+                "FAKE_DOCTOR": str(doctor_path),
             }
             return subprocess.run(
                 ["bash", str(SCRIPT), "--dry-run", *args],
@@ -105,6 +107,10 @@ class RunAllSupportedE2ETests(unittest.TestCase):
         self.assertIn("--runtime docker", docker)
         self.assertIn("--with-proxy-endpoints", docker)
         self.assertIn("--with-egress-sidecar", docker)
+        self.assertIn("--with-security", docker)
+        self.assertNotIn("--security-peer-runtime", docker)
+        self.assertRegex(out, r"security\s+RUN\s+SKIP")
+        self.assertIn("no second selected container runtime", out)
         self.assertIn("--with-copilot", docker)
         self.assertIn("--with-copilot-egress", docker)
         for flag in (
@@ -119,6 +125,77 @@ class RunAllSupportedE2ETests(unittest.TestCase):
             self.assertTrue(
                 cleanup.endswith("e2e-cleanup.py --runtime docker"), cleanup
             )
+
+    def test_security_chooses_distinct_selected_container_peers(self) -> None:
+        doctor = json.loads(json.dumps(DOCTOR))
+        for check in doctor["checks"]:
+            if check["name"] in ("apple-container", "podman"):
+                check["status"] = "ok"
+        result = self._run(doctor=doctor)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        commands = [
+            line
+            for line in result.stdout.splitlines()
+            if line.startswith("+ ") and "run-e2e-tests.sh" in line
+        ]
+        for runtime, peer in (
+            ("apple-container", "docker"),
+            ("docker", "apple-container"),
+            ("podman", "apple-container"),
+        ):
+            command = next(line for line in commands if f"--runtime {runtime}" in line)
+            self.assertIn("--with-security", command)
+            self.assertIn(f"--security-peer-runtime {peer}", command)
+        chroot = next(line for line in commands if "--runtime chroot" in line)
+        self.assertNotIn("--with-security", chroot)
+        self.assertNotIn("--security-peer-runtime", chroot)
+
+        # Filtering the matrix must also filter automatic peer selection.
+        filtered = self._run("--runtimes", "docker,podman", doctor=doctor)
+        self.assertEqual(filtered.returncode, 0, filtered.stderr)
+        self.assertIn("--security-peer-runtime podman", filtered.stdout)
+        self.assertIn("--security-peer-runtime docker", filtered.stdout)
+        self.assertNotIn("--security-peer-runtime apple-container", filtered.stdout)
+        single = self._run("--runtimes", "docker", doctor=doctor)
+        command = next(
+            line
+            for line in single.stdout.splitlines()
+            if line.startswith("+ ") and "run-e2e-tests.sh" in line
+        )
+        self.assertNotIn("--security-peer-runtime", command)
+
+    def test_no_build_omits_security_and_peer_selection(self) -> None:
+        result = self._run("--no-build")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        commands = [
+            line for line in result.stdout.splitlines() if line.startswith("+ ")
+        ]
+        self.assertTrue(all("--with-security" not in line for line in commands))
+        self.assertTrue(all("--security-peer-runtime" not in line for line in commands))
+        self.assertRegex(result.stdout, r"security\s+SKIP\s+SKIP")
+        self.assertIn("egress-sidecar, security, build-proxy", result.stdout)
+
+    def test_security_fixture_options_are_forwarded(self) -> None:
+        result = self._run(
+            "--runtimes",
+            "docker",
+            "--",
+            "--security-peer-runtime",
+            "podman",
+            "--security-fixture-host",
+            "192.0.2.10",
+            "--security-nat64-origin",
+            "origin.example.test",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        command = next(
+            line
+            for line in result.stdout.splitlines()
+            if line.startswith("+ ") and "run-e2e-tests.sh" in line
+        )
+        self.assertIn("--security-peer-runtime podman", command)
+        self.assertIn("--security-fixture-host 192.0.2.10", command)
+        self.assertIn("--security-nat64-origin origin.example.test", command)
 
     def test_no_copilot_drops_copilot_suites(self) -> None:
         result = self._run("--runtimes", "docker", "--no-copilot")
@@ -209,12 +286,12 @@ class RunAllSupportedE2ETests(unittest.TestCase):
         self.assertIn("runtime 'podman' is not available", result.stderr)
 
 
-# Stub runner: --plan prints RUN rows; a real run passes on docker but fails
-# git-workflow on chroot, mimicking run-e2e-tests.sh's Summary format.
+# Stub runner: --plan prints RUN rows; execution fails security on Docker
+# and smoke on chroot, mimicking run-e2e-tests.sh's Summary format.
 FAKE_RUNNER = """#!/usr/bin/env bash
-rt=""; plan=0
+rt=""; plan=0; security=0
 while [ $# -gt 0 ]; do
-  case "$1" in --runtime) rt="$2"; shift 2 ;; --plan) plan=1; shift ;; *) shift ;; esac
+  case "$1" in --runtime) rt="$2"; shift 2 ;; --plan) plan=1; shift ;; --with-security) security=1; shift ;; *) shift ;; esac
 done
 echo "[1/2] smoke ..."
 echo "========================================"
@@ -224,15 +301,23 @@ if [ "$plan" = 1 ]; then
   echo "  RUN  smoke"
   if [ "$rt" = chroot ]; then echo "  SKIP egress-sidecar  (pass --with-egress-sidecar; needs network and builds)"
   else echo "  RUN  egress-sidecar"; fi
+  if [ "$security" = 1 ]; then echo "  RUN  security"
+  else echo "  SKIP security  (pass --with-security)"; fi
   exit 0
 fi
 if [ "$rt" = chroot ]; then
   echo "  FAIL smoke  (log: /tmp/x/smoke.log)"
   echo "  SKIP egress-sidecar  (pass --with-egress-sidecar; needs network and builds)"
+  echo "  SKIP security  (pass --with-security)"
   exit 1
 fi
 echo "  PASS smoke"
 echo "  PASS egress-sidecar"
+if [ "$security" = 1 ]; then
+  echo "  FAIL security  (log: /tmp/x/security.log)"
+  exit 1
+fi
+echo "  SKIP security  (pass --with-security)"
 """
 
 
@@ -281,11 +366,15 @@ class RunAllSupportedE2ETablesTests(unittest.TestCase):
         self.assertRegex(plan, r"Suite\s+docker\s+chroot")
         self.assertRegex(plan, r"smoke\s+RUN\s+RUN")
         self.assertRegex(plan, r"egress-sidecar\s+RUN\s+SKIP")
+        self.assertRegex(plan, r"security\s+RUN\s+SKIP")
         self.assertIn("egress-sidecar [chroot]: needs a container runtime", plan)
         outcome = out[out.index("Outcome") :]
         self.assertRegex(outcome, r"smoke\s+PASS\s+FAIL")
         self.assertRegex(outcome, r"egress-sidecar\s+PASS\s+SKIP")
-        self.assertIn("Totals: 2 PASS, 1 FAIL, 1 SKIP", outcome)
+        self.assertRegex(outcome, r"security\s+FAIL\s+SKIP")
+        self.assertIn("Totals: 2 PASS, 2 FAIL, 2 SKIP", outcome)
+        self.assertIn("security [docker]: log: /tmp/x/security.log", outcome)
+        self.assertIn("FAIL docker  (exit 1)", outcome)
         self.assertIn("smoke [chroot]: log: /tmp/x/smoke.log", outcome)
         self.assertIn("PASS cleanup-before", outcome)
         self.assertIn("FAIL chroot  (exit 1)", outcome)

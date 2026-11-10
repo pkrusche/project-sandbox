@@ -42,7 +42,7 @@
 #                            [--with-copilot [--copilot-host TENANT.ghe.com]
 #                             [--copilot-capture-dir DIR]]
 #                            [--with-copilot-egress [--copilot-egress-report-dir DIR]]
-#                            [--with-egress-sidecar]
+#                            [--with-egress-sidecar] [--with-security]
 #                            [--proxy-fixture-ipv6-host IP]
 #                            [--proxy-fixture-hostname NAME]
 #                            [--ca-cert PATH ...]
@@ -103,6 +103,9 @@
 #                    token sources as --with-copilot
 #   --copilot-egress-report-dir DIR
 #                    write the copilot-egress report there (default: .project-sandbox/)
+#   --with-security
+#                    include the strict security verification gate alongside other suites;
+#                    enabled automatically by the all-runtime runner when builds are enabled
 #   --security-nat64-origin HOST
 #                    controlled origin routed through the deployment NAT64 translator
 #   --security-peer-runtime NAME
@@ -165,6 +168,7 @@ COPILOT_HOST=""
 COPILOT_CAPTURE_DIR=""
 WITH_COPILOT_EGRESS=0
 WITH_EGRESS_SIDECAR=0
+WITH_SECURITY=0
 SECURITY_PEER_RUNTIME=""
 SECURITY_FIXTURE_HOST=""
 SECURITY_NAT64_ORIGIN=""
@@ -204,6 +208,7 @@ while [ $# -gt 0 ]; do
     --copilot-capture-dir) COPILOT_CAPTURE_DIR="${2:?--copilot-capture-dir needs a value}"; shift 2 ;;
     --with-copilot-egress) WITH_COPILOT_EGRESS=1; shift ;;
     --with-egress-sidecar) WITH_EGRESS_SIDECAR=1; shift ;;
+    --with-security) WITH_SECURITY=1; shift ;;
     --copilot-egress-report-dir) COPILOT_EGRESS_REPORT_DIR="${2:?--copilot-egress-report-dir needs a value}"; shift 2 ;;
     --proxy-fixture-host) PROXY_FIXTURE_HOST="${2:?--proxy-fixture-host needs a value}"; shift 2 ;;
     --proxy-fixture-ipv6-host) PROXY_FIXTURE_IPV6_HOST="${2:?--proxy-fixture-ipv6-host needs a value}"; shift 2 ;;
@@ -225,6 +230,7 @@ if [ "$ALL_TESTS" = 1 ]; then
   WITH_COPILOT=1
   WITH_COPILOT_EGRESS=1
   WITH_EGRESS_SIDECAR=1
+  WITH_SECURITY=1
   missing=()
   [ -n "$INTERNET_PROXY_DIR" ] || missing+=(--internet-proxy-dir)
   [ -n "$AGENTGATEWAY_DIR" ] || missing+=(--agentgateway-dir)
@@ -257,6 +263,7 @@ if [ -n "$ONLY" ]; then
     copilot) WITH_COPILOT=1 ;;
     copilot-egress) WITH_COPILOT_EGRESS=1 ;;
     egress-sidecar) WITH_EGRESS_SIDECAR=1 ;;
+    security) WITH_SECURITY=1 ;;
   esac
 fi
 
@@ -637,7 +644,7 @@ fi
 # Security is an explicit release gate: skipped prerequisites and known gaps
 # fail coverage rather than being hidden in a green aggregate result.
 if selected security; then
-  if [ "$ONLY" = security ] || [ "$ALL_TESTS" = 1 ]; then
+  if [ "$WITH_SECURITY" = 1 ]; then
     if [ "$NO_BUILD" = 1 ]; then
       fail_suite "security" "security verification requires builds"
     else
@@ -648,7 +655,7 @@ if selected security; then
       run_suite "security" uv run pytest -ra -q "$ROOT/scripts/security_e2e" "${SECURITY_ARGS[@]}"
     fi
   else
-    skip_suite "security" "pass --only security; includes known limitations and live security probes"
+    skip_suite "security" "pass --with-security or --only security; includes known limitations and live security probes"
   fi
 fi
 

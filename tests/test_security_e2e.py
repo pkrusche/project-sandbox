@@ -117,6 +117,8 @@ class SecurityHarnessTests(unittest.TestCase):
         for argv, status in (
             (["--only", "security", "--runtime", "docker"], "RUN"),
             (["--runtime", "docker"], "SKIP"),
+            (["--runtime", "docker", "--with-security"], "RUN"),
+            (["--runtime", "docker", "--with-security", "--no-build"], "FAIL"),
             (["--only", "security", "--runtime", "docker", "--no-build"], "FAIL"),
         ):
             result = subprocess.run(

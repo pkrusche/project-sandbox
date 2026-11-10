@@ -12,8 +12,8 @@ but concurrent writes from *inside* multiple containers to a single shared store
 are not obviously safe across separate VMs (Apple `container` + VirtioFS), where
 lock-file and rename atomicity may not hold.
 
-Plan: give each subagent its own clone, then merge/rebase the agent's bookmark 
-back into the parent repo during teardown. This removes the shared-store race 
+Plan: give each subagent its own clone, then merge/rebase the agent's bookmark
+back into the parent repo during teardown. This removes the shared-store race
 entirely and keeps each agent's blast radius isolated.
 
 Note the git-worktree (`--branch` non-jj) path — which shares `.git` the same way —
@@ -96,3 +96,28 @@ Items still to be considered:
 - Consider privileged DNS refresh for long sessions; current endpoint pins require a session restart after DNS changes.
 - Run the opt-in `proxy-endpoints` suite on Docker, Podman, and Apple container, including its native IPv6 scenario. Separately verify pinned bundled Pi/OpenCode versions, DNS-name pinning, and IPv6-disabled fallback. The implementation environment has no container runtime or network-administration capabilities.
 - A remote `--agent-proxy` on Apple container has the same VPN routing gap as `--internet-proxy` had; consider relaying it through the host as well.
+
+## Additional hardening
+
+- **Mount encoding:** CLI bind mounts use CSV encoding, but devcontainer mount
+  strings still need consistent runtime encoding. Verify live parse/render round trips for unusual project names (including commas, quotes,
+  dollars, spaces, and wildcards) on each runtime, and fail closed for unsupported
+  control characters and mount forms. Keep raw user mount parsing aligned with
+  runtime grammar; JSON or argv escaping alone does not cover nested syntax.
+- **Host lock files:** `host_locks.path_lock()` correctly uses `O_NOFOLLOW` and
+  avoids truncation, but does not verify the opened inode is a regular file
+  owned by the caller. Names are predictable in shared temporary storage. Use a
+  verified private per-user lock directory, `fstat()` checks, and bounded waits
+  with useful diagnostics. Existing OS protections may limit cross-user attacks;
+  do not depend on identical behavior across Linux and macOS. Never unlink a
+  live lock file to recover it, since that can create two independently locked
+  inodes.
+- **Sensitive logs:** Squid's `%ru` logging includes URLs/query strings for
+  visible HTTP and intercepted requests; redact sensitive fields and define
+  retention/access rules. Token substitution in logs is useful but is not a
+  general data-loss prevention boundary.
+- **Supply chain:** exact top-level npm versions are useful, but global
+  `npm install -g package@version` does not freeze all transitive dependency
+  resolution. Use reviewed lockfiles/integrity metadata or reproducible tool
+  layers, and define a deliberate image/security-update cadence. Project build
+  scripts and user-supplied Dockerfiles remain trusted image-producing code.

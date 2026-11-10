@@ -130,14 +130,18 @@ To cover every runtime this host supports in one go, run
 `./scripts/run_all_supported_e2e_tests.sh`. It detects runtimes with
 `project-sandbox doctor --json` (Apple `container`, Docker, rootless Podman,
 chroot) and calls `run-e2e-tests.sh` once per runtime. On container runtimes it
-enables `proxy-endpoints`, `egress-sidecar` and, when an
-`../internet-proxy-locally` checkout exists, `build-proxy`. The agent-proxy
+enables `proxy-endpoints`, `egress-sidecar`, the strict `security` verification
+gate, and `build-proxy` when an `../internet-proxy-locally` checkout exists. The agent-proxy
 suites run whenever `../agentgateway-locally` exists, and
 `internet-proxy-isolation` whenever both checkouts exist. The agent-proxy
 suites need the gateway listening on `127.0.0.1:4000` and fail otherwise. The
 isolation audit starts a stopped Internet proxy (`127.0.0.1:18080`) itself and
 stops it afterwards, but it also needs the gateway up. It stops and restarts
 both services; pass `--no-internet-proxy-isolation` to leave them alone.
+The security gate automatically uses another selected container runtime for
+cross-runtime policy checks. It is omitted for chroot and `--no-build`; known
+hardening gaps or skipped prerequisites make its strict result fail, as detailed
+in [Security verification](security-verification.md).
 Missing checkouts (suites skipped) and stopped services (suites still run) are
 reported as notes before and after the run. The billable
 Copilot suites (`copilot`, `copilot-egress`) run by default and need a Copilot
