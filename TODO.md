@@ -27,8 +27,6 @@
   after exit. Add Apple support for Git pointer-file layouts, nested
   repositories/submodules, and lifecycle cleanup for old devcontainer masks.
   Consider reserving absent metadata paths without modifying the host checkout.
-  `.gitattributes` and tracked hook/helper scripts remain editable; automatic
-  host capture still needs separate hardening or isolated export/import.
 
 - `--build-only --pi-ollama` builds an image without the Ollama firewall rule.
   `--build-only` rejects `--agent`, and the Pi + Ollama setup is only enabled when
@@ -95,6 +93,16 @@ workspace and runs the rendered helper, plus a runtime test that verifies the
 agent cannot obtain root through the allowed firewall command.
 
 #### 2. High — automatic Git finalization can execute agent-controlled code on the host
+
+**Done for the agreed VCS session-mode scope:** `vcs-session-modes` adds read-only
+and hidden metadata mounts plus checks that prevent automatic capture after root
+metadata layout changes. The default remains full access, and tracked attributes
+or workspace hook/filter scripts can still affect host capture. These two gaps
+are accepted for this release and moved to the
+[VCS roadmap](ROADMAP.md#vcs-defaults-and-isolated-host-capture), with their limits
+explicit in [security documentation](docs/security.md#vcs-metadata-access).
+This closes the release finding without claiming a complete host-execution
+boundary. The original review follows for context.
 
 **Locations:** `cli.py:3066–3086`; `worktree.py:136–194`;
 `jj_workspace.py:185` and its Git-backend mount helpers.

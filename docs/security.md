@@ -227,10 +227,21 @@ container" guidance.
 
 ## VCS metadata access
 
-Git/jj metadata can be made read-only or hidden with `--vcs-access`; see
-[VCS access](vcs-access.md). This does not restrict tracked `.gitattributes` or
-workspace hook/filter scripts and does not make host-side finalization safe
-against all workspace-controlled code execution.
+`--vcs-access full` is the default and exposes Git/jj metadata read-write.
+Select `read-only` or `hidden` to protect existing metadata from the session;
+see [VCS access](vcs-access.md) for supported layouts. These modes do not provide
+an immutable snapshot against other host processes or concurrent full sessions.
+
+Source files remain writable in restricted modes. An agent can edit tracked
+`.gitattributes` to select an existing configured filter, or edit a workspace
+script referenced by trusted hook/filter configuration. Automatic host-side
+`git add` and `git commit` during branch finalization can still execute that
+code. Restricted metadata therefore does not establish a complete host-execution
+boundary. Without `--branch`, no automatic capture occurs; review these changes
+before running host VCS commands.
+
+Changing the full-access default and isolating host capture/import are deferred
+in the [VCS roadmap](../ROADMAP.md#vcs-defaults-and-isolated-host-capture).
 
 ## Network Firewall
 
