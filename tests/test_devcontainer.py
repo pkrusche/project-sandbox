@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from project_sandbox import devcontainer, mount_storage
+from project_sandbox import container_cli, devcontainer, mount_storage
 from project_sandbox.git_identity import GitIdentity
 
 
@@ -170,6 +170,9 @@ class DevcontainerTests(TestCase):
             mask_mount = (
                 f"source={mount_storage.mask_path(project, 'devcontainer')},"
                 "target=/workspace/.project-sandbox,type=bind,readonly"
+            )
+            custom_mount = container_cli._mount_arg(
+                container_cli.parse_mount(custom_mount)
             )
             self.assertIn(custom_mount, spec["mounts"])
             self.assertIn(mask_mount, spec["mounts"])
@@ -560,7 +563,7 @@ class DevcontainerTests(TestCase):
             project = Path(tmp) / 'pro"ject\n{"injected": true}'
             (project / ".project-sandbox").mkdir(parents=True)
 
-            malicious_mount = 'source=/tmp/x,target=/x"injected":true,type=bind'
+            malicious_mount = 'type=bind,source=/tmp/x,"target=/x""injected"":true"'
             devcontainer.render(
                 project,
                 identity=GitIdentity(

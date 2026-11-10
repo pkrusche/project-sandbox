@@ -518,14 +518,27 @@ def load_global() -> PolicyFile:
     return load(path)
 
 
-def check_location(path: Path, protected: Iterable[Path], *, what: str) -> None:
+def check_location(
+    path: Path, protected: Iterable[Path], *, what: str, tree: bool = False
+) -> None:
     """Reject ``path`` when it, or a symlink on the way to it, is in ``protected``.
 
     ``protected`` holds the project, the worktree, the main ``.git`` and every
     sandbox mount source. A mount *containing* the path (``~/.config`` for the
-    policy) counts, because the sandbox could then modify or read it.
+    policy) counts, because the sandbox could then modify or read it. ``tree``
+    also protects descendants of a directory, including individually mounted
+    files, whether or not those files have been created yet.
     """
     roots = [Path(p).expanduser().resolve() for p in protected]
+    if tree:
+        # A mount of a single key or nested directory still exposes sidecar
+        # state, even though that mount does not contain the state root itself.
+        for root in roots:
+            if path.resolve() in root.parents:
+                raise EgressPolicyError(
+                    f"The {what} {path} contains {root}, which is mounted into the sandbox. "
+                    "Keep all sidecar state outside every --mount source."
+                )
     for location in (*_traversed_paths(path), path.resolve()):
         for root in roots:
             if location == root or root in location.parents:

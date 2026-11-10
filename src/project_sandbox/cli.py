@@ -37,6 +37,7 @@ from . import (
     implicit_mounts,
     internet_proxy,
     local_service_network,
+    mount_options,
     mount_storage,
     oauth_refresh,
     observability,
@@ -1613,10 +1614,11 @@ def _egress_sidecar_policy(
     --mount source, checked after resolving symlinks.
     """
     protected = [project, workspace, project / ".git", project / ".jj"]
-    for value in args.extra_mounts:
-        spec = container_cli.parse_mount(value)
-        if spec.raw is None:
-            protected.append(spec.source)
+    try:
+        for value in args.extra_mounts:
+            protected.append(mount_options.bind_source(value))
+    except ValueError as exc:
+        raise SystemExit(f"Unsafe --mount for --egress sidecar: {exc}") from exc
     try:
         egress_policy.check_location(
             egress_policy.default_policy_path(), protected, what="egress policy"
@@ -1625,6 +1627,7 @@ def _egress_sidecar_policy(
             session_ca_module.egress_root(),
             protected,
             what="egress sidecar state directory",
+            tree=True,
         )
         policy = egress_policy.load_global()
     except egress_policy.EgressPolicyError as exc:

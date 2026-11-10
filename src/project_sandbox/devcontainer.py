@@ -200,7 +200,10 @@ def render(
                 f"source={pi_credentials_mount},target=/project-sandbox-secrets/pi,type=bind,readonly"
             )
     mounts.extend(history_mounts)
-    mounts.extend(extra_mounts)
+    mounts.extend(
+        container_cli._mount_arg(container_cli.parse_mount(value))
+        for value in extra_mounts
+    )
     mounts.extend(vcs_mounts)
     # Keep this after user-supplied mounts so a writable custom mount cannot
     # expose generated sandbox files inside the workspace.

@@ -188,7 +188,9 @@ cpus = 1
 - **Out of the sandbox's reach:** `egress.toml` and the state directory (which
   holds the CA key) must lie outside the project, the worktree, `.git`/`.jj`
   and every `--mount` source. This is checked after resolving symlinks.
-  Mounting `~/.config` or `~/.local/state` into a sidecar sandbox is rejected.
+  Mounting `~/.config` or `~/.local/state` into a sidecar sandbox is rejected,
+  as is mounting any individual file or subdirectory within the sidecar state
+  tree. Read-only mounts are subject to the same exclusion.
 - **Strict validation:** hostnames are validated strictly. IP literals, bare
   `*`, and wildcards over a single label such as `*.com` are rejected. Unknown
   keys are an error.
@@ -201,6 +203,34 @@ cpus = 1
 project-sandbox --dry-run --no-build --runtime docker --agent bash \
   --egress sidecar . python:3.12-slim
 ```
+
+## Extra mount validation
+
+Every extra `--mount` must have a host bind source that the launcher can check.
+Adding options such as `bind-propagation=rprivate` or `consistency=cached` does
+not bypass policy or CA-key isolation. These options are preserved for the
+runtime after their sources pass validation. Supported additional options are
+`bind-propagation`, `bind-recursive`, `bind-nonrecursive`, and `consistency`;
+acceptance by the selected runtime still depends on that runtime's support.
+
+Mount fields use CSV quoting, matching the
+[Docker CLI parser](https://github.com/docker/cli/blob/master/opts/mount.go).
+Aliases (`src`, `dst`, `destination`, `ro`) and option-name casing are normalized.
+For a comma in a path, quote the entire field, including `source=`:
+
+```bash
+project-sandbox --egress sidecar --agent bash \
+  --mount 'type=bind,"source=/host/cache,shared",target=/cache,bind-propagation=rprivate' \
+  ./project python:3.12-slim
+```
+
+Duplicate fields (including aliases), malformed quoting, empty paths, unsupported
+options, and non-bind types such as named volumes are rejected. In particular,
+volume drivers and `volume-opt=device=...` cannot smuggle a host path past the
+check. Fully modeled source/target shorthand without `type` is rendered as an
+explicit bind mount; mounts with additional passthrough options must specify
+`type=bind` so the runtime cannot interpret them as volumes. These checks also
+run during dry-runs, before sidecar inspection or generation.
 
 ## Managing the sidecar
 

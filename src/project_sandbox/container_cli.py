@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import config_agents, copilot_auth, session
+from . import config_agents, copilot_auth, mount_options, session
 from .git_identity import GitIdentity
 from .paths import WORKSPACE_NODE_MODULES_TARGET
 
@@ -138,61 +138,27 @@ def require_rootless_podman() -> None:
     )
 
 
-_MOUNT_FIELD_ALIASES = {
-    "source": "source",
-    "src": "source",
-    "target": "target",
-    "dst": "target",
-    "destination": "target",
-    "type": "type",
-    "readonly": "readonly",
-}
-_MOUNT_FLAGS = {"readonly", "ro"}
-
-
 def parse_mount(value: str) -> MountSpec:
-    fields: dict[str, str] = {}
-    flags: set[str] = set()
-    unrecognized = False
-    for part in value.split(","):
-        if "=" in part:
-            key, item = part.split("=", 1)
-            canonical = _MOUNT_FIELD_ALIASES.get(key)
-            if canonical is None:
-                unrecognized = True
-            else:
-                fields[canonical] = item
-        else:
-            flags.add(part)
-            if part not in _MOUNT_FLAGS:
-                unrecognized = True
-    source = fields.get("source")
-    target = fields.get("target")
-    if (
-        unrecognized
-        or fields.get("type", "bind") != "bind"
-        or source is None
-        or target is None
-    ):
-        # A mount form we don't model structurally (tmpfs/volume mounts, an
-        # option like bind-propagation/consistency we don't understand, or a
-        # bind mount missing source/target even after alias lookup) is passed
-        # through to the container runtime unchanged. Only chroot, which
-        # performs its own bind mounts, requires a fully structured mount.
-        # Preserve whatever source/target fields were present so callers can
-        # still compare paths (e.g. the metadata-mount conflict check); the
-        # relative placeholders used for absent fields can never match an
-        # absolute path.
+    try:
+        fields = mount_options.parse(value)
+        source, target = fields.get("source"), fields.get("target")
+        if target is not None:
+            mount_options.validate_target(target)
+        if not mount_options.simple_bind(fields):
+            # Runtime-specific options are retained verbatim. Security checks
+            # independently require a bounded bind source, even for raw mounts.
+            return MountSpec(
+                Path(source).resolve(strict=False) if source else Path("."),
+                target or "",
+                readonly=fields.get("readonly") == "true",
+                raw=value,
+            )
+        assert source is not None and target is not None
         return MountSpec(
-            Path(source).resolve(strict=False) if source else Path("."),
-            target or "",
-            raw=value,
+            Path(source).resolve(strict=False), target, fields.get("readonly") == "true"
         )
-    target_path = Path(target)
-    if not target_path.is_absolute() or ".." in target_path.parts:
-        raise SystemExit(f"Bind mount target must be an absolute jail path: {target}")
-    readonly = "readonly" in flags or "ro" in flags or fields.get("readonly") == "true"
-    return MountSpec(Path(source).resolve(strict=False), target, readonly)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 def build_mount_specs(
@@ -291,8 +257,10 @@ def build_mount_specs(
 def _mount_arg(mount: MountSpec) -> str:
     if mount.raw is not None:
         return mount.raw
-    value = f"type=bind,source={mount.source},target={mount.target}"
-    return value + (",readonly" if mount.readonly else "")
+    fields = ["type=bind", f"source={mount.source}", f"target={mount.target}"]
+    if mount.readonly:
+        fields.append("readonly")
+    return mount_options.encode(fields)
 
 
 def node_modules_tmpfs_arg(runtime: Runtime) -> str:

@@ -7512,6 +7512,109 @@ class EgressSidecarLaunchTests(TestCase):
                         run_agent="bash",
                     )
 
+    def test_passthrough_bind_options_cannot_expose_policy_or_any_sidecar_state(
+        self,
+    ) -> None:
+        self._policy("")
+        quoted_link = self.root / 'config,with "quotes"'
+        quoted_link.symlink_to(self.config, target_is_directory=True)
+        state_root = cli.session_ca_module.egress_root()
+        for source, what in (
+            (self.config, "egress policy"),
+            (quoted_link, "egress policy"),
+            (state_root, "egress sidecar state directory"),
+            (state_root / "docker", "egress sidecar state directory"),
+            (state_root / "docker" / "ca-key.pem", "egress sidecar state directory"),
+        ):
+            encoded_source = str(source).replace('"', '""')
+            for options in (
+                "bind-propagation=rprivate",
+                "consistency=cached,ro",
+                "bind-recursive=disabled,readonly=false",
+            ):
+                with self.subTest(source=source, options=options):
+                    value = (
+                        f'TYPE=BIND,"SRC={encoded_source}",DESTINATION=/data,{options}'
+                    )
+                    args = cli.build_parser().parse_args(
+                        ["--egress", "sidecar", "--mount", value, str(self.project)]
+                    )
+                    with self.assertRaisesRegex(SystemExit, what):
+                        cli._egress_sidecar_policy(
+                            args,
+                            project=self.project,
+                            workspace=self.project,
+                            run_agent="bash",
+                        )
+
+    def test_sidecar_rejects_unverifiable_and_ambiguous_mount_sources(self) -> None:
+        self._policy("")
+        for value in (
+            "type=volume,source=existing,target=/data",
+            f"type=volume,source=local,target=/data,volume-opt=device={self.state}",
+            f"type=bind,source={self.project},target=/data,volume-opt=device={self.config}",
+            f"type=bind,source={self.project},src={self.config},target=/data",
+            f"type=bind,source={self.config},src={self.project},target=/data",
+            'type=bind,source="/tmp/a,b",target=/data',
+            "type=bind,target=/data,bind-propagation=rprivate",
+        ):
+            with self.subTest(value=value):
+                args = cli.build_parser().parse_args(
+                    ["--egress", "sidecar", "--mount", value, str(self.project)]
+                )
+                with self.assertRaisesRegex(SystemExit, "Unsafe --mount"):
+                    cli._egress_sidecar_policy(
+                        args,
+                        project=self.project,
+                        workspace=self.project,
+                        run_agent="bash",
+                    )
+
+    def test_sidecar_accepts_unrelated_bind_with_options(self) -> None:
+        self._policy("")
+        safe = self.root / "safe,cache"
+        safe.mkdir()
+        value = f'type=bind,"source={safe}",target=/cache,bind-propagation=rprivate'
+        args = cli.build_parser().parse_args(
+            ["--egress", "sidecar", "--mount", value, str(self.project)]
+        )
+        policy = cli._egress_sidecar_policy(
+            args, project=self.project, workspace=self.project, run_agent="bash"
+        )
+        self.assertEqual(policy.path, cli.egress_policy.default_policy_path())
+        self.assertEqual(
+            cli.container_cli._mount_arg(cli.container_cli.parse_mount(value)), value
+        )
+
+    def test_sidecar_dry_run_preserves_safe_passthrough_mount(self) -> None:
+        self._policy("")
+        value = f'type=bind,"source={self.root}/safe,cache",target=/cache,bind-propagation=rprivate'
+        before = sorted(self.root.rglob("*"))
+        rc, _text, run = self._dry_run(
+            lambda argv: subprocess.CompletedProcess(argv, 1, "", "No such object"),
+            "--mount",
+            value,
+        )
+        self.assertEqual(rc, 0)
+        self.assertIn(value, run.call_args.args[0])
+        self.assertTrue(run.call_args.kwargs["dry_run"])
+        self.assertEqual(sorted(self.root.rglob("*")), before)
+
+    def test_unsafe_sidecar_mount_fails_before_dry_run_inspection_or_mutation(
+        self,
+    ) -> None:
+        self._policy("")
+        runner = Mock(
+            side_effect=AssertionError("must reject before runtime inspection")
+        )
+        value = (
+            f"type=bind,source={self.config},target=/config,bind-propagation=rprivate"
+        )
+        with self.assertRaisesRegex(SystemExit, "egress policy"):
+            self._dry_run(runner, "--mount", value)
+        runner.assert_not_called()
+        self.assertEqual([path.name for path in self.project.iterdir()], ["README.md"])
+
     def test_policy_inside_the_project_is_rejected(self) -> None:
         inner = self.project / ".config"
         with patch.dict(os.environ, {"XDG_CONFIG_HOME": str(inner)}):

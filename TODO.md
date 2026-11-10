@@ -175,6 +175,17 @@ constructed mounts, not just the helper return values.
 
 #### 5. High — valid extra mount options bypass sidecar policy/key isolation checks
 
+**Addressed:** sidecar isolation checks now inspect every extra mount through a
+shared CSV parser, including supported bind options retained for runtime
+passthrough. Aliases, quoted fields, and boolean flags have one interpretation
+across validation and command rendering. Duplicate fields, malformed syntax,
+unknown options, and indirect volume types fail closed. The sidecar state tree
+is protected down to individual files, including paths not yet created.
+Regression tests cover the original propagation-option bypass, symlink aliases,
+quoted paths, indirect volumes, safe passthrough, and early dry-run rejection.
+See [sidecar mount validation](docs/egress-sidecar.md#extra-mount-validation).
+The original finding below describes the reviewed revision before this fix.
+
 **Locations:** `container_cli.py:153–189`; `cli.py:1530–1555`.
 
 `parse_mount()` preserves an unmodeled mount as `raw`, including a normal bind

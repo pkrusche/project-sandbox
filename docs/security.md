@@ -50,8 +50,9 @@ remain agent-writable and are never traversed or rewritten by host setup.
 The storage tree must not overlap the checkout, a worktree, build context, or
 another mounted source. Explicit mounts of the storage tree, its ancestors, or
 its descendants are refused, even when read-only. Only fully understood bind
-mount options are accepted here; ambiguous and unmodeled passthrough forms fail
-closed. A fresh CLI mask belongs to one session and is removed on normal or
+mount options are accepted here; known bind propagation, recursion, and consistency
+options retain their runtime semantics while their sources are checked. Ambiguous
+and unmodeled passthrough forms fail closed. See [mount validation](egress-sidecar.md#extra-mount-validation). A fresh CLI mask belongs to one session and is removed on normal or
 exceptional teardown without deleting other sessions' masks or history.
 
 Generated devcontainers retain a private empty mask and run a standalone helper

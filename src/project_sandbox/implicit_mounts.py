@@ -7,7 +7,7 @@ import uuid
 from collections.abc import Sequence
 from pathlib import Path
 
-from . import container_cli, mount_storage
+from . import mount_options, mount_storage
 
 
 def validate_sources(
@@ -22,27 +22,8 @@ def validate_sources(
     if build_context is not None:
         exposed.append(build_context)
     for value in extra_mounts:
-        keys = [part.split("=", 1)[0] for part in value.split(",")]
-        for aliases in (("source", "src"), ("target", "dst", "destination"), ("type",)):
-            if sum(keys.count(key) for key in aliases) > 1:
-                raise ValueError("Ambiguous duplicate fields in --mount")
-        spec = container_cli.parse_mount(value)
-        if spec.raw is not None:
-            raise ValueError(
-                "Private mount storage requires fully understood bind --mount options"
-            )
-        # Keep the original spelling for devcontainer reopen checks: a source
-        # symlink can point somewhere else by the time initializeCommand runs.
-        source = next(
-            part.split("=", 1)[1]
-            for part in value.split(",")
-            if part.split("=", 1)[0] in ("source", "src")
-        )
-        if '"' in source or any(c in source for c in "\n\r\0"):
-            raise ValueError(
-                "Unsupported quoting or control characters in --mount source"
-            )
-        exposed.append(Path(source).absolute())
+        # Preserve source aliases for validation when devcontainers reopen.
+        exposed.append(mount_options.bind_source(value))
     mount_storage.check_exposure(mount_storage.storage_root(), exposed)
     return exposed
 
