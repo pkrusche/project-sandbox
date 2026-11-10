@@ -3,7 +3,7 @@ import os
 import re
 from pathlib import Path
 
-from . import config_agents
+from . import config_agents, container_cli, vcs_access
 from .git_identity import GitIdentity
 from .paths import (
     HISTORY_CLAUDE_PROJECTS_TARGET,
@@ -43,7 +43,20 @@ def render(
     forward_credentials: bool = True,
     build_context: Path | None = None,
     proxy_environment: dict[str, str] | None = None,
+    vcs_mode: str = "full",
 ) -> Path:
+    vcs_mounts = []
+    if vcs_mode != "full":
+        try:
+            layout = vcs_access.inspect(project)
+            vcs_access.validate(layout, vcs_mode, container_cli.DOCKER, extra_mounts)
+            mask_dir = vcs_access.new_mask_dir() if vcs_mode == "hidden" else None
+            vcs_mounts = [
+                container_cli._mount_arg(m)
+                for m in vcs_access.mounts(layout, vcs_mode, mask_dir)
+            ]
+        except (ValueError, OSError) as exc:
+            raise SystemExit(str(exc)) from exc
     dc_dir = project / ".devcontainer"
     dc_dir.mkdir(exist_ok=True)
 
@@ -156,6 +169,8 @@ def render(
         container_env["UV_OFFLINE"] = "1"
     container_env["HISTFILE"] = HISTORY_HISTFILE
     container_env.update(proxy_environment or {})
+    if vcs_mode == "read-only":
+        container_env["GIT_OPTIONAL_LOCKS"] = "0"
 
     # Generated, non-secret config is always mounted; the staged host tokens
     # under /project-sandbox-secrets are only wired when forwarding credentials.
@@ -183,6 +198,7 @@ def render(
             )
     mounts.extend(history_mounts)
     mounts.extend(extra_mounts)
+    mounts.extend(vcs_mounts)
     # Keep this after user-supplied mounts so a writable custom mount cannot
     # expose generated sandbox files inside the workspace.
     mounts.append(workspace_mask_mount)

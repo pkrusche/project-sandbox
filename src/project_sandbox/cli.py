@@ -41,6 +41,7 @@ from . import (
     sidecar_image,
     token_expiry,
     transcript,
+    vcs_access,
 )
 from . import (
     jj_workspace as jj_workspace_mod,
@@ -182,6 +183,12 @@ def build_parser() -> ArgumentParser:
         ),
     )
     p.add_argument("--mount", dest="extra_mounts", action="append", default=[])
+    p.add_argument(
+        "--vcs-access",
+        choices=vcs_access.MODES,
+        default="full",
+        help="Runtime access to existing .git/.jj metadata (default: full). Restricted modes keep source files writable.",
+    )
     p.add_argument("--extra-domain", action="append", default=[])
     p.add_argument(
         "--allow-github",
@@ -590,6 +597,29 @@ def _main(argv: list[str] | None = None) -> int:
         if (run_agent is not None or args.build_only) and not args.dry_run
         else None
     )
+    if args.vcs_access != "full":
+        validation_runtime = runtime or (
+            container_cli.select_runtime(args.runtime, dry_run=True)
+            if run_agent or args.runtime == "chroot"
+            else container_cli.DOCKER
+        )
+        try:
+            vcs_access.validate(
+                vcs_access.inspect(project),
+                args.vcs_access,
+                validation_runtime,
+                args.extra_mounts,
+            )
+            if (
+                args.branch
+                and not (project / ".jj").is_dir()
+                and validation_runtime == container_cli.APPLE_CONTAINER
+            ):
+                raise ValueError(
+                    "Restricted Git --branch sessions require Docker or Podman because .git is a pointer file"
+                )
+        except (ValueError, OSError) as exc:
+            raise SystemExit(str(exc)) from exc
     # Where the sidecar publishes on this runtime (egress-sidecar-linux
     # Decision 1); rootless Docker is rejected here, before any container work.
     egress_strategy: egress_sidecar.Strategy | None = None
@@ -716,7 +746,19 @@ def _main(argv: list[str] | None = None) -> int:
     egress_stack = contextlib.ExitStack()
     egress_state: egress_sidecar.Sidecar | None = None
     egress_started_at: float | None = None
+    vcs_layout = None
+    vcs_masks = None
     try:
+        if run_agent and args.vcs_access != "full":
+            try:
+                vcs_layout = vcs_access.inspect(workspace)
+                vcs_access.validate(
+                    vcs_layout, args.vcs_access, runtime, args.extra_mounts
+                )
+                if args.vcs_access == "hidden":
+                    vcs_masks = vcs_access.new_mask_dir()
+            except (ValueError, OSError) as exc:
+                raise SystemExit(str(exc)) from exc
         if (
             run_agent is not None
             and internet_proxy_config is not None
@@ -837,6 +879,7 @@ def _main(argv: list[str] | None = None) -> int:
                 memory=args.memory,
                 cpus=args.cpus,
                 extra_mounts=args.extra_mounts,
+                vcs_mode=args.vcs_access,
                 credential_dirs=credential_dirs,
                 forward_credentials=forward_credentials,
                 build_context=build_context,
@@ -1092,6 +1135,8 @@ def _main(argv: list[str] | None = None) -> int:
             copilot_host=copilot_host,
             runtime=runtime,
             create_prompt_files=True,
+            vcs_layout=vcs_layout,
+            vcs_mask_dir=vcs_masks,
             api_key_values=api_key_values,
             ollama_add_hosts=list(
                 dict.fromkeys(p.add_host for p in forwarding_plans if p.add_host)
@@ -1201,6 +1246,8 @@ def _main(argv: list[str] | None = None) -> int:
         # The sandbox container has exited (--rm) by now; remove this session's
         # sidecar inputs and count what the shared sidecar denied meanwhile.
         egress_stack.close()
+        if vcs_masks is not None:
+            shutil.rmtree(vcs_masks)
         if egress_state is not None and agent_ran:
             assert runtime is not None
             _print_egress_denials(runtime, egress_state, started_at=egress_started_at)
@@ -1226,7 +1273,17 @@ def _main(argv: list[str] | None = None) -> int:
                 secret_file.unlink(missing_ok=True)
         if wt is not None:
             if agent_ran:
-                _finalize_worktree(args, project=project, wt=wt, exit_code=exit_code)
+                capture_allowed = True
+                if vcs_layout is not None:
+                    try:
+                        vcs_layout.check_roots()
+                    except ValueError as exc:
+                        print(f"[W] {exc}")
+                        capture_allowed = False
+                if capture_allowed:
+                    _finalize_worktree(
+                        args, project=project, wt=wt, exit_code=exit_code
+                    )
             elif isinstance(wt, jj_workspace_mod.JjWorkspace):
                 jj_workspace_mod.remove(project, wt)
         if agent_ran and args.json_summary:
@@ -1888,7 +1945,9 @@ def _dry_run(
             )
     if worktree is not None:
         print(f"Would use worktree at: {workspace}")
-        if isinstance(worktree, jj_workspace_mod.JjWorkspace):
+        if getattr(args, "vcs_access", "full") == "hidden":
+            print("Would hide workspace VCS metadata and omit external VCS stores")
+        elif isinstance(worktree, jj_workspace_mod.JjWorkspace):
             source, target = jj_workspace_mod.repo_store_mount(project, workspace)
             print(f"Would mount .jj metadata: {source} -> {target}")
             git_mount = jj_workspace_mod.git_backend_mount(project, workspace)
@@ -3022,6 +3081,36 @@ def _mount_touches_path(mount_value: str, vcs_dir: Path) -> bool:
     )
 
 
+def _vcs_layout_for_session(
+    project: Path, workspace: Path, worktree, *, preview: bool
+) -> vcs_access.Layout:
+    if not preview or workspace.exists():
+        return vcs_access.inspect(workspace)
+    # A dry-run worktree does not exist yet. Describe its expected metadata
+    # without creating mount sources or invoking either VCS.
+    workspace = workspace.resolve()
+    if isinstance(worktree, jj_workspace_mod.JjWorkspace):
+        root = workspace / ".jj"
+        planned = [container_cli.MountSpec(root, "/workspace/.jj", True)]
+        source, target = jj_workspace_mod.repo_store_mount(project, workspace)
+        planned.append(container_cli.MountSpec(source, target, True))
+        backend = jj_workspace_mod.git_backend_mount(project, workspace)
+        if backend is not None:
+            planned.append(container_cli.MountSpec(*backend, True))
+        return vcs_access.Layout(workspace, (root,), tuple(planned))
+    root = workspace / ".git"
+    common = (project / ".git").resolve()
+    return vcs_access.Layout(
+        workspace,
+        (root,),
+        (
+            container_cli.MountSpec(root, "/workspace/.git", True),
+            container_cli.MountSpec(common, str(common), True),
+        ),
+        frozenset((root,)),
+    )
+
+
 def _build_session_command(
     args,
     *,
@@ -3045,6 +3134,8 @@ def _build_session_command(
     network: str | None = None,
     session_id: str | None = None,
     egress_mount: str | None = None,
+    vcs_layout: vcs_access.Layout | None = None,
+    vcs_mask_dir: Path | None = None,
 ) -> tuple[list[str], Path | None, bool, list[str] | None]:
     # Agent availability is validated up front in main() via _ensure_agent_available.
     extra_mounts = list(args.extra_mounts)
@@ -3056,7 +3147,31 @@ def _build_session_command(
             f"type=bind,source={(context_dir / 'opencode').resolve(strict=False)},"
             "target=/project-sandbox-config/opencode,readonly"
         )
-    if worktree is not None:
+    vcs_mode = getattr(args, "vcs_access", "full")
+    if vcs_mode != "full":
+        try:
+            if vcs_layout is None:
+                vcs_layout = _vcs_layout_for_session(
+                    project, workspace, worktree, preview=not create_prompt_files
+                )
+            vcs_access.validate(vcs_layout, vcs_mode, runtime, list(args.extra_mounts))
+            if vcs_mode == "hidden" and vcs_mask_dir is None:
+                if create_prompt_files:
+                    raise ValueError(
+                        "Hidden VCS access requires session-owned mask sources"
+                    )
+                vcs_mask_dir = Path("/tmp/project-sandbox-vcs-preview")
+            extra_mounts.extend(
+                container_cli._mount_arg(m)
+                for m in vcs_access.mounts(vcs_layout, vcs_mode, vcs_mask_dir)
+            )
+        except (ValueError, OSError) as exc:
+            raise SystemExit(str(exc)) from exc
+        if not create_prompt_files:
+            print(
+                f"Would use VCS access: {vcs_mode}; host capture after exit for --branch only"
+            )
+    elif worktree is not None:
         if isinstance(worktree, jj_workspace_mod.JjWorkspace):
             vcs_dir = (project / ".jj").resolve()
             conflict_msg = (
@@ -3084,6 +3199,8 @@ def _build_session_command(
             raise SystemExit(conflict_msg)
         extra_mounts.extend(metadata_mounts)
     extra_env: list[str] = []
+    if vcs_mode == "read-only":
+        extra_env.append("GIT_OPTIONAL_LOCKS=0")
     if api_key_values is None:
         api_key_values = _api_key_env_values(args)
     staged_api_key_env_file = context_dir / "api-keys.env"

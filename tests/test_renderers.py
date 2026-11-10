@@ -50,6 +50,7 @@ class RendererTests(TestCase):
                     "UV_OFFLINE": "0",
                     "UV_PROJECT_ENVIRONMENT": "/opt/venv",
                     "UV_PYTHON_INSTALL_DIR": "/opt/uv-python",
+                    "GIT_OPTIONAL_LOCKS": "0",
                     "UNRELATED_VARIABLE": "private",
                 }
                 forwarded = {

@@ -1,8 +1,8 @@
 #!/bin/sh
 set -eu
 
-NAME="${PROJECT_SANDBOX_USER_NAME:-$(git config --global user.name 2>/dev/null || echo '')}"
-EMAIL="${PROJECT_SANDBOX_USER_EMAIL:-$(git config --global user.email 2>/dev/null || echo '')}"
+NAME="${PROJECT_SANDBOX_USER_NAME:-$(cd "$HOME" && git config --global user.name 2>/dev/null || echo '')}"
+EMAIL="${PROJECT_SANDBOX_USER_EMAIL:-$(cd "$HOME" && git config --global user.email 2>/dev/null || echo '')}"
 
 echo "project-sandbox: devcontainer uses generated config; re-run 'project-sandbox <project> <base_image>' on the host after credential or config changes." >&2
 

@@ -132,6 +132,13 @@ system, so headless runs always pass `--approve`, trusting the project-local
 boundaries remain the safety net, consistent with Pi's own "run in a
 container" guidance.
 
+## VCS metadata access
+
+Git/jj metadata can be made read-only or hidden with `--vcs-access`; see
+[VCS access](vcs-access.md). This does not restrict tracked `.gitattributes` or
+workspace hook/filter scripts and does not make host-side finalization safe
+against all workspace-controlled code execution.
+
 ## Network Firewall
 
 Firewall initialization is a one-time operation per container. The root-owned

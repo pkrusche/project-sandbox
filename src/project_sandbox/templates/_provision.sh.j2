@@ -4,8 +4,8 @@
     home. Keep this the single source of truth for credential staging. -#}
 if [ -n "$NAME" ] || [ -n "$EMAIL" ]; then
   : > "$HOME/.gitconfig"
-  [ -n "$NAME" ] && git config --global user.name "$NAME"
-  [ -n "$EMAIL" ] && git config --global user.email "$EMAIL"
+  [ -n "$NAME" ] && (cd "$HOME" && git config --global user.name "$NAME")
+  [ -n "$EMAIL" ] && (cd "$HOME" && git config --global user.email "$EMAIL")
 fi
 
 if command -v jj >/dev/null 2>&1 && { [ -n "$NAME" ] || [ -n "$EMAIL" ]; }; then

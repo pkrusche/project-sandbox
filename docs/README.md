@@ -25,6 +25,8 @@ This directory contains the detailed project-sandbox documentation.
   verified TLS, and independent gateway and Internet routing.
 - [Security model](security.md) - firewall behavior, OAuth token lifetime,
   threat model, troubleshooting, and limitations.
+- [VCS access](vcs-access.md) - read-only or hidden Git/jj metadata, host-side
+  branch capture, runtime support, and tracked-configuration risks.
 - [Development guide](development.md) - local setup, verification commands, test
   coverage, and end-to-end smoke tests.
 - [Apple container host alias](apple-container-dns.md) - the shared

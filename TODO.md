@@ -1,5 +1,13 @@
 # TODO - outstanding items for next release
 
+- VCS access: verify read-only/hidden mounts on live Docker, Podman and Apple
+  container, including write/unlink/rename attempts against metadata and host
+  capture after exit. Add Apple support for Git pointer-file layouts, nested
+  repositories/submodules, and lifecycle cleanup for old devcontainer masks.
+  Consider reserving absent metadata paths without modifying the host checkout.
+  `.gitattributes` and tracked hook/helper scripts remain editable; automatic
+  host capture still needs separate hardening or isolated export/import.
+
 - `--build-only --pi-ollama` builds an image without the Ollama firewall rule.
   `--build-only` rejects `--agent`, and the Pi + Ollama setup is only enabled when
   `--agent pi` is also given (`cli.py`, `bool(args.pi_ollama and run_agent == "pi")`).

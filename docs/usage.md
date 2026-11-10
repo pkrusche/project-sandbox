@@ -463,6 +463,12 @@ apply. `--dry-run --build-only` previews the build without writing files.
 
 ## Devcontainer Flow
 
+Use `--vcs-access read-only` or `--vcs-access hidden` to restrict `.git`/`.jj`
+access in CLI sessions and generated devcontainers. The default is `full`.
+Branch sessions still capture changes on the host after exit; ordinary
+working-copy sessions leave commits to the user. See [VCS access](vcs-access.md)
+for runtime/layout restrictions and the remaining `.gitattributes` risks.
+
 Before starting the devcontainer, run
 `project-sandbox /absolute/path/to/repo python:3.12-slim` once on the host. This
 refreshes the `/tmp/project-sandbox-<uid>/...` agent credential staging
