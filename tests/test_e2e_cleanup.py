@@ -64,6 +64,7 @@ class ImageMatchTests(TestCase):
             "project-sandbox-internet-proxy-smoke:latest",
             "project-sandbox-proxy-endpoints-cppn_ok7:latest",
             "project-sandbox-build-proxy:3f9a1c",
+            "project-sandbox-vcs-access:3f9a1c",
             "localhost/project-sandbox-jj-e2e.lv6bl1-3ee8ea75:latest",
         ):
             with self.subTest(reference=reference):

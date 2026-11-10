@@ -24,6 +24,7 @@
 #  18. egress-sidecar           — --egress sidecar policy, TLS interception, shared sidecar, parent
 #                                 chaining and a loopback-only local service (explicit opt-in; needs
 #                                 network and builds)
+#  19. vcs-access               — full/read-only/hidden metadata mounts with a Bash agent
 #
 # The console shows one progress line per suite. Each suite's output is captured
 # in its own temp log file; a failing suite's log is kept and its path reported,
@@ -122,6 +123,7 @@ SUITES=(
   env-injection
   git-workflow
   jj-workflow
+  vcs-access
   dockerfile-tamper
   timeout-teardown
   python-uv
@@ -373,6 +375,17 @@ if selected jj-workflow; then
     run_suite "jj-workflow" "$ROOT/scripts/e2e-jj-workflow.sh" "${WORKFLOW_ARGS[@]}"
   else
     skip_suite "jj-workflow" "jj not found on PATH"
+  fi
+fi
+
+# VCS access needs real mounts and builds one image for all three access modes.
+if selected vcs-access; then
+  if [ -n "$CONTAINER_RUNTIME" ] && [ "$NO_BUILD" = 0 ]; then
+    VCS_ARGS=(--runtime "$CONTAINER_RUNTIME" --base-image "$BASE_IMAGE")
+    [ "$KEEP" = 1 ] && VCS_ARGS+=(--keep)
+    run_suite "vcs-access" uv run python "$ROOT/scripts/e2e-vcs-access.py" "${VCS_ARGS[@]}"
+  else
+    skip_suite "vcs-access" "select a container runtime without --no-build"
   fi
 fi
 

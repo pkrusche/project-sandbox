@@ -1,8 +1,8 @@
 # TODO - outstanding items for next release
 
-- VCS access: verify read-only/hidden mounts on live Docker, Podman and Apple
-  container, including write/unlink/rename attempts against metadata and host
-  capture after exit. Add Apple support for Git pointer-file layouts, nested
+- VCS access: run the `vcs-access` e2e suite on Docker, Podman and Apple
+  container; extend coverage to unlink/rename attempts and branch host capture
+  after exit. Add Apple support for Git pointer-file layouts, nested
   repositories/submodules, and lifecycle cleanup for old devcontainer masks.
   Consider reserving absent metadata paths without modifying the host checkout.
   `.gitattributes` and tracked hook/helper scripts remain editable; automatic

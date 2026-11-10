@@ -70,6 +70,7 @@ E2E_IMAGE = re.compile(
     r"|internet-proxy-smoke"
     r"|proxy-endpoints-[a-z0-9_]{8}"
     r"|build-proxy"
+    r"|vcs-access"
     ")"
 )
 

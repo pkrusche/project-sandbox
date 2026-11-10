@@ -77,6 +77,24 @@ otherwise Docker, then Podman) and accept
 `--runtime chroot|auto|apple-container|docker|podman`, `--base-image IMAGE`,
 `--no-build`, and `--keep`.
 
+The `vcs-access` suite runs three real `--agent bash` sessions in one throwaway
+colocated Git/jj workspace. Full access creates a commit verified on the host;
+read-only access saves commit titles to a persistent source file while Git
+add/commit and direct metadata writes must fail; hidden access checks that every
+original metadata file is absent and both metadata mount points are empty.
+Host checks also verify that restricted sessions leave the metadata unchanged.
+These are working-copy sessions, so host branch finalization cannot create the
+commit on the agent's behalf. No AI credentials or host jj installation are needed.
+
+```bash
+./scripts/run-e2e-tests.sh --only vcs-access --runtime docker
+uv run python scripts/e2e-vcs-access.py --runtime apple-container --keep
+```
+
+It runs by default for container runtimes when builds are enabled, and in Docker
+CI. It accepts `--base-image`, retains logs/workdirs on failure (or `--keep`),
+and skips chroot and aggregate `--no-build` runs.
+
 A separate suite covers `--python-uv`, checking inside the sandbox that the
 agent user can actually run `uv` against the baked `/opt/venv`. It builds one
 project with `python-preference = "only-managed"`, so uv downloads
