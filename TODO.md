@@ -18,7 +18,7 @@ The plan was reviewed and every proposal revised on 2026-11-09.
 | # | Change | Covers | Depends on |
 | --- | --- | --- | --- |
 | 1 | `vcs-session-modes` | **done** (archived 2026-11-10); covered #9, the isolated half of #2, the jj pointer-file mounts and the ROADMAP separate-clones item | — |
-| 2 | `harden-host-command-execution` | host tool lookup, neutral cwd, jj overrides | — |
+| 2 | `harden-host-command-execution` | **implemented**, archive pending; covered host tool lookup, neutral cwd, jj overrides | — |
 | 3 | `minimal-devcontainer` | devcontainer gateway row; devcontainer half of #1 | — |
 | 4 | `isolate-firewall-helpers` | #1; sudo re-invocation | 3 |
 | 5 | `quote-generated-build-inputs` | #10; image/version strings in `FROM` | — |
@@ -176,7 +176,11 @@ which need it): the agent can plant `.git/hooks`, `core.hooksPath`, filters,
 `fsmonitor` and other executable config, or jj config pointers, which the
 user's own host `git`/`jj` honor later. The launch warns and allows one shared
 session per repository. `protect-host-executed-project-config` adds the
-protections (row 11).
+protections (row 11). It must also cover a deleted `.jj/repo/config-id`: jj
+0.46 then adopts a `.jj/repo/config.toml` planted in the repository on the
+next command (tested in `harden-host-command-execution` task 1.1, which found
+no jj release that ignores the file). `project-sandbox doctor` warns about this
+state.
 
 #### 3. High — generated-file writes follow repository-controlled symlinks
 

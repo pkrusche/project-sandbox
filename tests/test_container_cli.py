@@ -105,7 +105,7 @@ class ContainerCliTests(TestCase):
         with (
             patch("project_sandbox.container_cli.sys.platform", "linux"),
             patch(
-                "project_sandbox.container_cli.shutil.which",
+                "project_sandbox.container_cli.host_tools.resolve",
                 return_value="/usr/bin/unshare",
             ),
         ):
@@ -118,7 +118,7 @@ class ContainerCliTests(TestCase):
         with (
             patch("project_sandbox.container_cli.sys.platform", "linux"),
             patch(
-                "project_sandbox.container_cli.shutil.which",
+                "project_sandbox.container_cli.host_tools.resolve",
                 side_effect=lambda binary: (
                     "/usr/bin/unshare" if binary == "unshare" else None
                 ),
@@ -761,14 +761,19 @@ class ContainerCliTests(TestCase):
 
         with (
             patch("project_sandbox.container_cli.sys.platform", "linux"),
-            patch("project_sandbox.container_cli.shutil.which", side_effect=fake_which),
+            patch(
+                "project_sandbox.container_cli.host_tools.resolve",
+                side_effect=fake_which,
+            ),
         ):
             runtime = select_runtime("auto")
 
         self.assertEqual(runtime, DOCKER)
 
     def test_select_runtime_dry_run_does_not_require_binary(self) -> None:
-        with patch("project_sandbox.container_cli.shutil.which", return_value=None):
+        with patch(
+            "project_sandbox.container_cli.host_tools.resolve", return_value=None
+        ):
             runtime = select_runtime("podman", dry_run=True)
         self.assertEqual(runtime, PODMAN)
 
@@ -776,7 +781,7 @@ class ContainerCliTests(TestCase):
         with (
             patch("project_sandbox.container_cli.sys.platform", "linux"),
             patch(
-                "project_sandbox.container_cli.shutil.which",
+                "project_sandbox.container_cli.host_tools.resolve",
                 side_effect=lambda b: "/usr/bin/podman" if b == "podman" else None,
             ),
             patch(
@@ -807,7 +812,9 @@ class ContainerCliTests(TestCase):
                     self._select_podman(requested, info)
 
     def test_select_runtime_explicit_missing_binary_raises(self) -> None:
-        with patch("project_sandbox.container_cli.shutil.which", return_value=None):
+        with patch(
+            "project_sandbox.container_cli.host_tools.resolve", return_value=None
+        ):
             with self.assertRaises(SystemExit) as raised:
                 select_runtime("docker")
         self.assertIn("docker CLI not found", str(raised.exception))

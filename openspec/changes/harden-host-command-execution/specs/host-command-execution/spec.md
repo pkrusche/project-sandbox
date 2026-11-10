@@ -29,8 +29,12 @@ Agent CLIs used for token refresh, `pass`, `gh`, `security` and `git config --gl
 - **THEN** `codex login status` runs from a private empty directory
 
 ### Requirement: Host jj invocations ignore exec-capable configuration
-Every host `jj` invocation SHALL pass configuration overrides that disable commit signing, fsmonitor and paging.
+Every host `jj` invocation SHALL pass configuration overrides that disable commit signing, fsmonitor and paging, and that set the Git executable jj runs to the resolved host `git`.
 
 #### Scenario: Signing program in repository config
 - **WHEN** the repository's jj config enables commit signing with a program that would write a host marker
 - **THEN** session setup and finalization (`workspace add`, `commit`, `describe`, `bookmark set`, `workspace forget`) create no marker
+
+#### Scenario: Git executable in repository config
+- **WHEN** the repository's jj config sets `git.executable-path` to a program that would write a host marker
+- **THEN** `workspace forget` at the end of a session runs the resolved host `git`, and creates no marker

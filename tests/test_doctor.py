@@ -1,7 +1,11 @@
 import contextlib
 import io
 import json
+import os
+import shutil
+import subprocess
 import sys
+import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 from unittest import TestCase
@@ -37,9 +41,11 @@ class FakeHost:
     @contextlib.contextmanager
     def active(self, platform: str = "linux"):
         with (
-            patch.object(doctor.shutil, "which", side_effect=self.which),
+            patch.object(doctor.host_tools, "resolve", side_effect=self.which),
             patch.object(doctor, "_run", side_effect=self.run),
             patch.object(doctor.sys, "platform", platform),
+            # Independent of the directory the tests run in.
+            patch.object(doctor, "check_jj_repo_config", return_value=None),
         ):
             yield
 
@@ -318,3 +324,71 @@ class EgressSidecarTests(TestCase):
             checks = by_name(doctor.run_checks())
         self.assertIn("not running", checks["docker sidecar"].detail)
         self.assertNotIn("podman sidecar", checks)  # not on PATH
+
+
+class JjRepoConfigTests(TestCase):
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name).resolve()
+        self.store = self.root / "repo" / ".jj" / "repo"
+        self.store.mkdir(parents=True)
+
+    def test_legacy_config_without_config_id_warns(self) -> None:
+        (self.store / "config.toml").write_text("[signing]\n")
+        check = doctor.check_jj_repo_config(self.root / "repo")
+        assert check is not None
+        self.assertEqual(check.status, WARN)
+        self.assertIn(str(self.store / "config.toml"), check.detail)
+        self.assertIn("adopts it", check.detail)
+
+    def test_found_from_a_subdirectory(self) -> None:
+        (self.store / "config.toml").write_text("")
+        sub = self.root / "repo" / "src" / "pkg"
+        sub.mkdir(parents=True)
+        self.assertIsNotNone(doctor.check_jj_repo_config(sub))
+
+    def test_migrated_state_is_not_reported(self) -> None:
+        (self.store / "config.toml").write_text("")
+        (self.store / "config-id").write_text("0123456789abcdef0123")
+        self.assertIsNone(doctor.check_jj_repo_config(self.root / "repo"))
+
+    def test_no_legacy_file_or_no_repository(self) -> None:
+        self.assertIsNone(doctor.check_jj_repo_config(self.root / "repo"))
+        outside = self.root / "plain"
+        outside.mkdir()
+        self.assertIsNone(doctor.check_jj_repo_config(outside))
+
+    def test_secondary_workspace_follows_the_store_pointer(self) -> None:
+        (self.store / "config.toml").write_text("")
+        other = self.root / "other" / ".jj"
+        other.mkdir(parents=True)
+        (other / "repo").write_text(os.path.relpath(self.store, other))
+        self.assertIsNotNone(doctor.check_jj_repo_config(self.root / "other"))
+
+    def test_real_jj_migration_clears_the_warning(self) -> None:
+        if shutil.which("jj") is None:
+            self.skipTest("jj not installed")
+        home = self.root / "home"
+        env = {
+            **os.environ,
+            "HOME": str(home),
+            "XDG_CONFIG_HOME": str(home / ".config"),
+        }
+        env.pop("JJ_CONFIG", None)
+        repo = self.root / "real"
+        subprocess.run(
+            ["jj", "git", "init", "--colocate", str(repo)],
+            env=env,
+            capture_output=True,
+            check=True,
+        )
+        store = repo / ".jj" / "repo"
+        (store / "config-id").unlink(missing_ok=True)
+        (store / "config.toml").write_text('[ui]\npaginate = "never"\n')
+        self.assertIsNotNone(doctor.check_jj_repo_config(repo))
+        subprocess.run(
+            ["jj", "-R", str(repo), "status"], env=env, capture_output=True, check=True
+        )
+        self.assertTrue((store / "config-id").exists())
+        self.assertIsNone(doctor.check_jj_repo_config(repo))

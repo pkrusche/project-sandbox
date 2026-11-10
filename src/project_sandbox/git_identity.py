@@ -1,5 +1,6 @@
-import subprocess
 from dataclasses import dataclass
+
+from . import host_tools
 
 
 @dataclass(slots=True)
@@ -9,8 +10,17 @@ class GitIdentity:
 
 
 def _get_global(key: str) -> str | None:
-    cmd = ["git", "config", "--global", "--get", key]
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    # --global only, from a neutral directory: the project's own .git/config
+    # (agent-writable in a shared session) is never read.
+    try:
+        result = host_tools.run(
+            ["git", "config", "--global", "--get", key],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
     value = result.stdout.strip()
     return value or None
 

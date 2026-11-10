@@ -35,6 +35,7 @@ from . import (
     egress_sidecar,
     firewall,
     host_locks,
+    host_tools,
     internet_proxy,
     local_service_network,
     oauth_refresh,
@@ -500,7 +501,10 @@ def _exit_on_termination_signals() -> Generator[None]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    with _exit_on_termination_signals():
+    # launch_scope: host tools are found only through trusted PATH entries (no
+    # empty or relative ones, none in the project or a session directory) for
+    # the whole run, including the runtime and what it spawns.
+    with _exit_on_termination_signals(), host_tools.launch_scope():
         return _main(argv)
 
 
@@ -568,6 +572,7 @@ def _main(argv: list[str] | None = None) -> int:
         raise SystemExit("--json-summary requires --agent, --prompt, or --prompt-text")
 
     project = _resolve_required_path(args.project, what="project path")
+    host_tools.add_untrusted_roots(project)
     if args.image_tag is None:
         args.image_tag = _default_image_tag(project)
     # The session id is fixed before planning: a generated bookmark is named
@@ -579,6 +584,9 @@ def _main(argv: list[str] | None = None) -> int:
         else None
     )
     planned_workspace = vcs_plan.workspace if vcs_plan is not None else project
+    if vcs_plan is not None and vcs_plan.ws is not None:
+        # <repo>-workspaces/: every session directory and private repository.
+        host_tools.add_untrusted_roots(vcs_plan.ws.path.parent)
     # --egress sidecar: the global policy, checked to lie outside every mount
     # before any session directory exists. The sandbox is then planned exactly
     # like firewall mode with --internet-proxy at the sidecar's published endpoint.
@@ -2233,7 +2241,7 @@ def _print_egress_dry_run(
     print(f"  Resources: {policy.memory} memory, {policy.cpus} CPU(s)")
     print(f"  Sidecar image: {image}")
     report = None
-    if shutil.which(runtime.binary) is not None:
+    if host_tools.resolve(runtime.binary) is not None:
         try:
             report = egress_sidecar.status(
                 runtime,

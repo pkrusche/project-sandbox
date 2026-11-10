@@ -28,7 +28,7 @@ class FakeRunner:
         self.calls.append(list(argv))
         assert kwargs.get("timeout"), "every lookup must be bounded by a timeout"
         assert kwargs.get("capture_output") is True
-        result = self.pass_result if argv[0] == "pass" else self.gh_result
+        result = self.pass_result if Path(argv[0]).name == "pass" else self.gh_result
         if result is None:
             raise FileNotFoundError(argv[0])
         if isinstance(result, BaseException):
@@ -192,8 +192,20 @@ class ResolveTokenTests(TestCase):
 
     def test_default_runner_is_looked_up_at_call_time(self) -> None:
         runner = FakeRunner(pass_result=(0, PAT))
-        with patch.object(copilot_auth.subprocess, "run", side_effect=runner):
+        with (
+            patch.object(
+                copilot_auth.host_tools,
+                "resolve",
+                side_effect=lambda n: f"/usr/bin/{n}",
+            ),
+            patch.object(copilot_auth.subprocess, "run", side_effect=runner) as run,
+        ):
             self.assertEqual(copilot_auth.resolve_token("github.com"), (PAT, "pass"))
+        # The default runner is host_tools.run: absolute pass, neutral cwd.
+        self.assertEqual(run.call_args.args[0][0], "/usr/bin/pass")
+        self.assertEqual(
+            run.call_args.kwargs["cwd"], copilot_auth.host_tools.neutral_dir()
+        )
 
     def test_scope_warning_names_entry_and_security_doc(self) -> None:
         warning = copilot_auth.scope_warning("copilot-github-token")

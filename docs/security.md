@@ -99,6 +99,9 @@ for as long as possible and make any shortfall visible:
   own CLI on the host (`claude auth status` / `codex login status`) so the tool
   refreshes and persists its token using its own maintained logic; the refreshed
   credential is then staged, so the container starts with a near-full window.
+  The CLI runs from an empty private directory, not from the project, so
+  project settings such as Claude's `apiKeyHelper` and hooks or Codex's
+  `.codex/` config are not loaded (see [Host commands](#host-commands)).
   This runs under a per-agent lock, is best-effort, and is skipped with
   `--no-token-refresh`. OpenCode and Pi have no delegated refresh.
 - **Start-of-session warning.** When credentials are forwarded, the launch prints
@@ -354,6 +357,40 @@ on the same metadata. Isolated sessions can run beside it. Until the
 protections planned for shared mode land (read-only hooks, config restore, a
 live watcher), review `.git/hooks`, `.git/config` and the jj config after every
 shared session, or use isolated mode.
+
+jj keeps repository config outside the repository, chosen by
+`.jj/repo/config-id`. When that file is missing, every jj release, 0.46
+included, adopts a `.jj/repo/config.toml` it finds in the repository, so a
+shared session can plant config, such as a signing program, for your next `jj`
+command. `project-sandbox doctor`, run inside the repository, warns about such
+a file.
+
+## Host commands
+
+`project-sandbox` runs some tools on the host: `jj`, `git` (to read your global
+identity), the container runtime, `claude` and `codex` (token refresh), `pass`,
+`gh` and `security` (credential lookup). A repository the agent can write must
+not choose which program runs or what it reads from its working directory:
+
+- **Lookup.** Tools are found only through absolute `PATH` entries outside the
+  project and outside `<repo>-workspaces/`. Empty and relative entries (`.`,
+  `bin`) are skipped, as is a candidate whose symlink target lies in the
+  project. A tool found only that way counts as missing, and `doctor` names
+  the skipped entry. For the duration of a launch the process `PATH` is
+  narrowed the same way, so the container runtime and the helpers it starts
+  are found through trusted entries too.
+- **Working directory.** `claude`, `codex`, `pass`, `gh`, `security` and
+  `git config --global` run from a private, empty directory (mode 0700) that is
+  removed at exit. `git` is asked only for `--global` values, so a project's
+  `.git/config` is never read.
+- **jj.** Every host `jj` call names its repository with `-R`, runs from the
+  same empty directory, and overrides the settings that would make it run a
+  program: `signing.behavior=drop`, `fsmonitor.backend=none`,
+  `ui.paginate=never`, and `git.executable-path` set to the resolved host
+  `git`. Host calls always pass `-m`, so no editor is started.
+
+The container runtime's `build` still runs in its build context, which Apple
+`container` requires; the runtime binary itself is found as above.
 
 ## Troubleshooting
 

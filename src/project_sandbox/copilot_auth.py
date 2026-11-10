@@ -20,7 +20,7 @@ import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
-from . import config_agents
+from . import config_agents, host_tools
 
 DEFAULT_HOST = "github.com"
 DEFAULT_PASS_ENTRY = "copilot-github-token"
@@ -110,7 +110,7 @@ def resolve_token(
     An explicit ``--copilot-token-pass`` entry never falls back to ``gh``. The
     default entry falls back quietly when ``pass`` or the entry is missing.
     """
-    run = run or subprocess.run
+    run = run or host_tools.run
     entry = explicit_entry or default_pass_entry(host)
     token = _pass_token(entry, explicit=explicit_entry is not None, run=run)
     if token is not None:

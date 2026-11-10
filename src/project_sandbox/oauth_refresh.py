@@ -13,10 +13,10 @@ concurrent project-sandbox launches do not race on the single-use refresh token.
 """
 
 import contextlib
-import shutil
-import subprocess
 from collections.abc import Generator
 from pathlib import Path
+
+from . import host_tools
 
 # Per-agent: the host config dir and the command that makes the tool validate and
 # (if needed) refresh its own stored token. Claude refreshes lazily, so `auth
@@ -58,21 +58,23 @@ def refresh_host_token(
     if entry is None:
         return
     config_dir_name, command = entry
-    if shutil.which(command[0]) is None:
+    if host_tools.resolve(command[0]) is None:
         return
     config_dir = home / config_dir_name
     if not config_dir.exists():
         return  # agent not set up on this host; nothing to refresh
     try:
         with _host_lock(config_dir):
-            result = subprocess.run(
+            # From a private empty directory: run in the project, the CLI would
+            # load the project's own settings (apiKeyHelper, env, hooks).
+            result = host_tools.run(
                 command,
                 check=False,
                 capture_output=True,
                 timeout=_REFRESH_TIMEOUT_SECONDS,
             )
     except FileNotFoundError as exc:
-        # shutil.which() found the binary moments ago, but exec failed anyway
+        # host_tools.resolve() found the binary moments ago, but exec failed anyway
         # (removed/broken symlink mid-run) -- the delegate itself is the
         # problem, not the login state, so surface it distinctly from the
         # generic best-effort swallow below.

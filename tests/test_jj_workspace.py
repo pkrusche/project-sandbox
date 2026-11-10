@@ -455,6 +455,17 @@ class IsolatedSetupTests(_RepoTestCase):
         ws = jj_workspace_mod.plan(self.repo, "feat/fail-rename")
         self._assert_nothing_left(ws)
 
+    def test_relative_workspace_dir_is_taken_relative_to_the_caller(self) -> None:
+        # Host jj runs from a neutral directory, so the path must be absolute
+        # by the time jj sees it.
+        previous = os.getcwd()
+        os.chdir(self.root)
+        self.addCleanup(os.chdir, previous)
+        ws = self._setup("feat/rel", workspace_dir=Path("rel-ws"))
+        self.assertTrue(ws.path.is_absolute())
+        self.assertEqual(ws.path.parent, self.root / "rel-ws")
+        self.assertIn(str(ws.path), jj_workspace_mod._list_workspaces(self.repo))
+
     def test_setup_default_and_custom_workspace_dir(self) -> None:
         ws = self._setup("feat/hello")
         self.assertEqual(ws.path.parent, self.root / "repo-workspaces")
@@ -598,11 +609,15 @@ class IsolatedFinalizeTests(_RepoTestCase):
         ws = self._setup("feat/large")
         with _as_agent(ws) as workspace:
             (workspace / "big.bin").write_bytes(b"\0" * 5000)
+            (workspace / "sub").mkdir()
+            (workspace / "sub" / "big2.bin").write_bytes(b"\0" * 5000)
             (workspace / "small.txt").write_text("small\n", encoding="utf-8")
 
         out = self._finalize(ws)
 
-        self.assertIn("big.bin", out)
+        # Relative to the session directory, not to jj's (neutral) cwd.
+        self.assertIn("\n  big.bin\n", out)
+        self.assertIn("\n  sub/big2.bin\n", out)
         self.assertIn("snapshot.max-new-file-size", out)
         self.assertTrue(ws.path.is_dir())
         self.assertTrue(ws.private.is_dir())
@@ -642,6 +657,146 @@ class IsolatedFinalizeTests(_RepoTestCase):
         self.assertEqual(
             self._bookmark_file("feat/no-jj", "silent.txt"), "unsnapshotted\n"
         )
+
+
+class HostJjArgvTests(unittest.TestCase):
+    """Every host jj call: resolved program, neutral cwd, overrides first."""
+
+    def _calls(self, action) -> list[tuple[list[str], dict]]:
+        calls: list[tuple[list[str], dict]] = []
+
+        def fake_run(argv, **kwargs):
+            calls.append((list(argv), kwargs))
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+        def fake_resolve(name):
+            return f"/opt/host/bin/{name}" if name in ("jj", "git") else None
+
+        with (
+            patch.object(
+                jj_workspace_mod.host_tools, "resolve", side_effect=fake_resolve
+            ),
+            patch.object(
+                jj_workspace_mod.host_tools.subprocess, "run", side_effect=fake_run
+            ),
+        ):
+            action()
+        return calls
+
+    def _assert_hardened(self, argv: list[str], kwargs: dict) -> None:
+        self.assertEqual(argv[0], "/opt/host/bin/jj")
+        self.assertEqual(kwargs["cwd"], jj_workspace_mod.host_tools.neutral_dir())
+        start = 3 if argv[1] == "-R" else 1
+        self.assertEqual(
+            argv[start : start + 9],
+            [
+                "--color=never",
+                "--config",
+                "signing.behavior=drop",
+                "--config",
+                "fsmonitor.backend=none",
+                "--config",
+                "ui.paginate=never",
+                "--config",
+                'git.executable-path="/opt/host/bin/git"',
+            ],
+        )
+
+    def test_every_helper_passes_the_overrides(self) -> None:
+        repo = Path("/tmp/fake/repo")
+        jj_workspace_mod._supports_no_colocate.cache_clear()
+        self.addCleanup(jj_workspace_mod._supports_no_colocate.cache_clear)
+        calls = self._calls(
+            lambda: (
+                jj_workspace_mod._jj(repo, ["describe", "-m", "x"]),
+                jj_workspace_mod._jj(repo, ["log"], capture=True),
+                jj_workspace_mod._jj_result(repo, ["status"]),
+                jj_workspace_mod._jj_bare(["git", "init", "--colocate", "/tmp/w"]),
+                jj_workspace_mod._supports_no_colocate(),
+            )
+        )
+        self.assertEqual(len(calls), 5)
+        for argv, kwargs in calls:
+            self._assert_hardened(argv, kwargs)
+        self.assertEqual(calls[0][0][1:3], ["-R", str(repo)])
+
+    def test_missing_git_points_at_a_missing_private_path(self) -> None:
+        with patch.object(jj_workspace_mod.host_tools, "resolve", return_value=None):
+            overrides = jj_workspace_mod.jj_overrides()
+        neutral = jj_workspace_mod.host_tools.neutral_dir()
+        value = overrides[-1].removeprefix("git.executable-path=").strip('"')
+        self.assertEqual(Path(value).parent, neutral)
+        self.assertFalse(Path(value).exists())
+
+
+@unittest.skipUnless(JJ, "jj not installed")
+class HostileRepoConfigTests(_RepoTestCase):
+    """Repository config naming programs never makes the host run them."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.bin = self.root / "bin"
+        self.bin.mkdir()
+        self.marker = self.root / "MARKER"
+        names = ("sign", "pager", "git", "editor", "watchman")
+        for name in names:
+            tool = self.bin / name
+            tool.write_text(
+                f'#!/bin/sh\necho "{name} $*" >> "{self.marker}"\nexit 1\n',
+                encoding="utf-8",
+            )
+            tool.chmod(0o755)
+        for key, value in (
+            ("signing.behavior", "own"),
+            ("signing.backend", "ssh"),
+            ("signing.key", "x"),
+            ("signing.backends.ssh.program", str(self.bin / "sign")),
+            ("ui.pager", str(self.bin / "pager")),
+            ("ui.paginate", "auto"),
+            ("ui.editor", str(self.bin / "editor")),
+            ("fsmonitor.backend", "watchman"),
+            ("git.executable-path", str(self.bin / "git")),
+        ):
+            _jj(self.repo, "config", "set", "--repo", key, value)
+        # jj finds watchman through PATH.
+        path = patch.dict(
+            os.environ, {"PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}"}
+        )
+        path.start()
+        self.addCleanup(path.stop)
+
+    def _marker(self) -> str:
+        return self.marker.read_text() if self.marker.exists() else ""
+
+    def test_setup_and_finalize_run_no_configured_program(self) -> None:
+        calls: list[list[str]] = []
+        real_run = jj_workspace_mod.host_tools.run
+
+        def spy(argv, **kwargs):
+            calls.append(list(argv))
+            return real_run(argv, **kwargs)
+
+        with patch.object(jj_workspace_mod.host_tools, "run", side_effect=spy):
+            ws = self._setup("feat/hostile")
+            (ws.path / "a.txt").write_text("changed\n", encoding="utf-8")
+            self._finalize(ws, message="hostile")
+
+        self.assertEqual(self._marker(), "")
+        self._assert_nothing_left(ws)
+        subcommands = {argv[argv.index("--color=never") + 9] for argv in calls}
+        self.assertLessEqual(
+            {"workspace", "commit", "describe", "bookmark", "status", "git"},
+            subcommands,
+        )
+        for argv in calls:
+            self.assertIn("signing.behavior=drop", argv)
+        # Control: the same config does fire without the overrides.
+        subprocess.run(
+            ["jj", "-R", str(self.repo), "describe", "-m", "control"],
+            capture_output=True,
+            check=False,
+        )
+        self.assertIn("sign ", self._marker())
 
 
 @unittest.skipUnless(JJ, "jj not installed")

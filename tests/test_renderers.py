@@ -846,7 +846,7 @@ class RendererTests(TestCase):
             self.assertEqual(
                 run.call_args.args[0],
                 [
-                    "security",
+                    "/usr/bin/security",
                     "find-generic-password",
                     "-a",
                     "test-user",
@@ -895,7 +895,7 @@ class RendererTests(TestCase):
                 [call.args[0] for call in run.call_args_list],
                 [
                     [
-                        "security",
+                        "/usr/bin/security",
                         "find-generic-password",
                         "-a",
                         "host-user",
@@ -904,7 +904,7 @@ class RendererTests(TestCase):
                         "Claude Code-credentials",
                     ],
                     [
-                        "security",
+                        "/usr/bin/security",
                         "find-generic-password",
                         "-w",
                         "-s",

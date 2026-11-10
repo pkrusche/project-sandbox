@@ -11,7 +11,7 @@ import subprocess
 import urllib.error
 import urllib.request
 
-from . import proxy_endpoint
+from . import host_tools, proxy_endpoint
 from .local_service_network import HOSTNAME
 
 DEFAULT_KEY_ENV = "AGENTGATEWAY_API_KEY"
@@ -45,7 +45,7 @@ def loopback_host(value: str) -> str | None:
 
 def resolve_key(env_name: str, raw_key: str | None) -> tuple[str, str]:
     try:
-        proc = subprocess.run(
+        proc = host_tools.run(
             ["pass", "show", "agentgateway-api-key"],
             capture_output=True,
             text=True,

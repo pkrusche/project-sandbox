@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import functools
 import hashlib
+import json
 import os
 import re
 import secrets
@@ -30,7 +31,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import host_locks
+from . import host_locks, host_tools
 
 # Private repositories live beside the session directories, in W's parent:
 # outside W (so the /workspace mount can't reach them) and outside the project.
@@ -47,9 +48,6 @@ PRIVATE_DIR_NAME = ".session-vcs"
 JJ_TARGET = "/workspace/.jj"
 GIT_TARGET = "/workspace/.git"
 BASE_MESSAGE = "session base"
-# The private repository's base commit is created by the host with the user's
-# identity; it is thrown away with the repository, so it is never signed.
-_PRIVATE_REPO_CONFIG = ("--config", "signing.behavior=drop")
 _REFUSED_HEADER = "Refused to snapshot some files:"
 # VM-backed container runtimes (every runtime on macOS) reach the host
 # filesystem through a share whose metadata cache serves stale directory
@@ -92,7 +90,13 @@ def path_for(
     workspace_dir: Path | None = None,
 ) -> Path:
     repo = repo.resolve()
-    ws_root = workspace_dir or (repo.parent / f"{repo.name}-workspaces")
+    # Absolute before jj sees it: host jj runs from a neutral directory, so a
+    # relative --worktree-dir must be taken relative to the caller here.
+    ws_root = (
+        Path(os.path.abspath(workspace_dir.expanduser()))
+        if workspace_dir is not None
+        else repo.parent / f"{repo.name}-workspaces"
+    )
     safe = bookmark.replace("/", "-")
     if "/" in bookmark:
         suffix = hashlib.sha256(bookmark.encode()).hexdigest()[:6]
@@ -276,7 +280,7 @@ def _build_private_repository(ws: JjWorkspace) -> None:
     ws.private.parent.mkdir(parents=True, exist_ok=True)
     os.rename(ws.path / ".jj", parked)
     _jj_bare(["git", "init", "--colocate", str(ws.path)])
-    _jj(ws.path, [*_PRIVATE_REPO_CONFIG, "commit", "-m", BASE_MESSAGE])
+    _jj(ws.path, ["commit", "-m", BASE_MESSAGE])
     ws.private.mkdir(mode=0o700)
     os.rename(ws.path / ".jj", ws.private_jj)
     os.rename(ws.path / ".git", ws.private_git)
@@ -458,13 +462,11 @@ def finalize(
         try:
             # A no-op jj command forces a working-copy snapshot of the session's
             # edits, then point the bookmark at the session tip.
-            status = subprocess.run(
-                ["jj", "-R", str(ws.path), "status"],
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-            refused = refused_paths(status.stderr)
+            status = _jj_result(ws.path, ["status"])
+            refused = [
+                _session_relative(path, ws.path)
+                for path in refused_paths(status.stderr)
+            ]
             if _is_empty(ws.path, "@"):
                 target = "@-"
             else:
@@ -509,6 +511,17 @@ def finalize(
         shutil.rmtree(ws.path, ignore_errors=True)
         # The parent directories stay; see PRIVATE_DIR_NAME.
         shutil.rmtree(ws.private, ignore_errors=True)
+
+
+def _session_relative(path: str, ws_path: Path) -> str:
+    """A path jj printed (relative to its cwd, the neutral directory) as a path
+    inside the session directory; unchanged when it lies elsewhere."""
+    cwd = os.path.realpath(host_tools.neutral_dir())
+    full = os.path.normpath(os.path.join(cwd, path))
+    try:
+        return str(Path(full).relative_to(os.path.realpath(ws_path)))
+    except ValueError:
+        return path
 
 
 def refused_paths(stderr: str) -> list[str]:
@@ -560,8 +573,8 @@ def _discard(repo: Path, ws: JjWorkspace) -> None:
 def _supports_no_colocate() -> bool:
     """Whether the host jj accepts ``workspace add --no-colocate`` (jj >= 0.46)."""
     try:
-        result = subprocess.run(
-            ["jj", "workspace", "add", "--help"],
+        result = host_tools.run(
+            ["jj", *jj_overrides(), "workspace", "add", "--help"],
             capture_output=True,
             text=True,
             check=False,
@@ -589,9 +602,42 @@ def _bookmark_exists(
         return False
 
 
+def jj_overrides() -> list[str]:
+    """Arguments every host ``jj`` call passes, ahead of its subcommand.
+
+    Repository config is not trusted to name programs the host runs: signing,
+    fsmonitor (watchman), the pager, and the ``git`` jj itself runs (``workspace
+    forget`` in a colocated repository runs ``git worktree prune``). Without a
+    trusted host ``git`` the path is a missing file in the neutral directory;
+    jj then skips the prune. ``--color=never`` keeps parsed output plain.
+    """
+    git = host_tools.resolve("git") or str(host_tools.neutral_dir() / "git-unavailable")
+    return [
+        "--color=never",
+        "--config",
+        "signing.behavior=drop",
+        "--config",
+        "fsmonitor.backend=none",
+        "--config",
+        "ui.paginate=never",
+        "--config",
+        f"git.executable-path={json.dumps(git)}",
+    ]
+
+
+def _jj_result(repo: Path, args: list[str]) -> subprocess.CompletedProcess:
+    """Run host ``jj -R repo`` with the overrides; output captured, errors raised."""
+    return host_tools.run(
+        ["jj", "-R", str(repo), *jj_overrides(), *args],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+
 def _jj(repo: Path, args: list[str], capture: bool = False) -> str:
-    result = subprocess.run(
-        ["jj", "-R", str(repo)] + args,
+    result = host_tools.run(
+        ["jj", "-R", str(repo), *jj_overrides(), *args],
         capture_output=capture,
         text=True,
         check=True,
@@ -600,7 +646,9 @@ def _jj(repo: Path, args: list[str], capture: bool = False) -> str:
 
 
 def _jj_bare(args: list[str]) -> None:
-    subprocess.run(["jj", *args], capture_output=True, text=True, check=True)
+    host_tools.run(
+        ["jj", *jj_overrides(), *args], capture_output=True, text=True, check=True
+    )
 
 
 def _is_empty(repo: Path, rev: str = "@", *, ignore_working_copy: bool = False) -> bool:

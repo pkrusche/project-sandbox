@@ -1,13 +1,12 @@
 import os
 import shlex
-import shutil
 import subprocess
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import config_agents, copilot_auth, session
+from . import config_agents, copilot_auth, host_tools, session
 from .git_identity import GitIdentity
 from .paths import WORKSPACE_NODE_MODULES_TARGET
 
@@ -94,8 +93,12 @@ def select_runtime(requested: str, *, dry_run: bool = False) -> Runtime:
         runtime = _RUNTIMES[requested]
         if runtime == CHROOT and not sys.platform.startswith("linux"):
             raise SystemExit("The chroot runtime is supported on Linux only")
-        if not dry_run and shutil.which(runtime.binary) is None:
-            raise SystemExit(f"{runtime.binary} CLI not found on PATH")
+        if not dry_run and host_tools.resolve(runtime.binary) is None:
+            raise SystemExit(
+                host_tools.missing_message(runtime.binary).replace(
+                    runtime.binary, f"{runtime.binary} CLI", 1
+                )
+            )
         if not dry_run and runtime == PODMAN:
             require_rootless_podman()
         return runtime
@@ -109,7 +112,7 @@ def select_runtime(requested: str, *, dry_run: bool = False) -> Runtime:
         else (DOCKER, PODMAN)
     )
     for runtime in candidates:
-        if shutil.which(runtime.binary) is not None:
+        if host_tools.resolve(runtime.binary) is not None:
             if runtime == PODMAN:
                 require_rootless_podman()
             return runtime

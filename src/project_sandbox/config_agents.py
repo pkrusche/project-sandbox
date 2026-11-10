@@ -7,6 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from . import host_tools
+
 # Claude profiles: a profile's settings.json defaultMode IS its .claude.json
 # permission posture, so both the rendered settings file and the staged config
 # state derive from a single value per profile. This is the one place that
@@ -687,7 +689,7 @@ def _credential_state(existing: dict[str, object]) -> dict[str, object]:
 
 
 def _stage_macos_keychain_credentials(out_dir: Path) -> bool:
-    if sys.platform != "darwin" or shutil.which("security") is None:
+    if sys.platform != "darwin" or host_tools.resolve("security") is None:
         return False
     for service in _keychain_service_names():
         commands = (
@@ -707,7 +709,7 @@ def _stage_macos_keychain_credentials(out_dir: Path) -> bool:
         )
         for command in commands:
             try:
-                result = subprocess.run(
+                result = host_tools.run(
                     command,
                     check=False,
                     capture_output=True,

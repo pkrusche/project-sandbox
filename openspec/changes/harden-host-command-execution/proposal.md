@@ -14,8 +14,8 @@ This change was first drafted as `jj-only-branch-workspaces`. Its other half, th
 
 - **Host tools are resolved absolutely.** One resolver finds `jj`, `git` (identity lookup only), the runtime, agent CLIs, `pass`, `gh` and `security` through absolute `PATH` entries outside the project and every session directory.
 - **Host tools run from a neutral directory.** The OAuth refresh delegates, `pass`, `gh`, `security` and `git config --global` run with `cwd` set to a private empty directory. `jj` always receives its repository with `-R`.
-- **Host jj calls are hardened.** Every host `jj` call passes `--config` overrides for its exec-capable settings: signing, fsmonitor and paging.
-- **`doctor` warns** when the host jj predates storing repository config outside the repository. With such a release, an agent in a shared session could plant `.jj/repo/config.toml` for the user's own later `jj` use.
+- **Host jj calls are hardened.** Every host `jj` call passes `--config` overrides for its exec-capable settings: signing, fsmonitor, paging and the Git executable.
+- **`doctor` warns** when the current jj repository holds a `.jj/repo/config.toml` that jj would adopt: one without a `.jj/repo/config-id`. Every jj release, including 0.46, trusts such a file, so an agent in a shared session could plant it for the user's own later `jj` use.
 
 ## Capabilities
 

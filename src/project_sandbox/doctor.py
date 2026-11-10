@@ -9,12 +9,18 @@ from __future__ import annotations
 import json
 import platform
 import re
-import shutil
 import subprocess
 import sys
 from dataclasses import asdict, dataclass
+from pathlib import Path
 
-from . import __version__, container_cli, egress_sidecar, local_service_network
+from . import (
+    __version__,
+    container_cli,
+    egress_sidecar,
+    host_tools,
+    local_service_network,
+)
 
 OK = "ok"
 WARN = "warn"
@@ -26,7 +32,9 @@ _LABELS = {OK: "[ok]  ", WARN: "[warn]", FAIL: "[fail]", INFO: "[--]  "}
 # long time; doctor must always come back with an answer.
 PROBE_TIMEOUT = 10
 MIN_PYTHON = (3, 11)
-JJ_NO_COLOCATE_HINT = "jj >= 0.46 is required for --branch in colocated jj repos"
+JJ_NO_COLOCATE_HINT = (
+    "jj >= 0.46 is required for isolated sessions in colocated jj repos"
+)
 
 _VERSION_RE = re.compile(r"\d+\.\d+(?:\.\d+)?")
 
@@ -50,7 +58,8 @@ class Probe:
 def _run(argv: list[str]) -> Probe | None:
     """Run a read-only probe; None when it cannot be executed or times out."""
     try:
-        proc = subprocess.run(
+        # Resolved like a launch resolves it, run from a neutral directory.
+        proc = host_tools.run(
             argv,
             capture_output=True,
             text=True,
@@ -101,7 +110,7 @@ def check_apple_container() -> list[Check]:
     section = "runtimes"
     if sys.platform != "darwin":
         return [Check(section, runtime.name, INFO, "macOS only")]
-    if shutil.which(runtime.binary) is None:
+    if host_tools.resolve(runtime.binary) is None:
         return [
             Check(
                 section,
@@ -159,7 +168,7 @@ def check_apple_dns() -> Check:
 
 def check_docker() -> Check:
     runtime = container_cli.DOCKER
-    if shutil.which(runtime.binary) is None:
+    if host_tools.resolve(runtime.binary) is None:
         return Check("runtimes", runtime.name, INFO, "docker not found on PATH")
     # Asking for the server version proves the daemon is reachable, not just
     # that a client binary is installed.
@@ -190,7 +199,7 @@ def check_docker() -> Check:
 
 def check_podman() -> Check:
     runtime = container_cli.PODMAN
-    if shutil.which(runtime.binary) is None:
+    if host_tools.resolve(runtime.binary) is None:
         return Check("runtimes", runtime.name, INFO, "podman not found on PATH")
     probe = _run(
         [
@@ -231,7 +240,7 @@ def check_chroot() -> Check:
     runtime = container_cli.CHROOT
     if not sys.platform.startswith("linux"):
         return Check("runtimes", runtime.name, INFO, "Linux only")
-    if shutil.which(runtime.binary) is None:
+    if host_tools.resolve(runtime.binary) is None:
         return Check(
             "runtimes",
             runtime.name,
@@ -254,14 +263,14 @@ def check_chroot() -> Check:
 
 
 def check_git() -> list[Check]:
-    if shutil.which("git") is None:
+    if host_tools.resolve("git") is None:
         return [
             Check(
                 "vcs",
                 "git",
                 FAIL,
-                "not found on PATH",
-                "Install git; it supplies the sandbox identity and --branch worktrees",
+                _not_found("git"),
+                "Install git; it supplies the sandbox identity",
             )
         ]
     probe = _run(["git", "--version"])
@@ -293,14 +302,22 @@ def _git_global(key: str) -> str | None:
     return probe.stdout.strip() or None
 
 
+def _not_found(name: str) -> str:
+    """``"not found on PATH"``, naming entries that hold it but are not trusted."""
+    skipped = host_tools.skipped_matches(name)
+    if not skipped:
+        return "not found on PATH"
+    return f"not found on PATH (ignored: {', '.join(skipped)})"
+
+
 def check_jj() -> Check:
-    if shutil.which("jj") is None:
+    if host_tools.resolve("jj") is None:
         return Check(
             "vcs",
             "jj",
             INFO,
-            "not found on PATH",
-            "Needed only for --branch in jj repositories",
+            _not_found("jj"),
+            "Needed for isolated sessions, the default in jj repositories",
         )
     probe = _run(["jj", "--version"])
     version = _version(probe.stdout) if probe and probe.returncode == 0 else None
@@ -329,7 +346,7 @@ def auto_runtime_check(checks: list[Check]) -> Check:
     by_name = {check.name: check for check in checks if check.section == "runtimes"}
     candidates = _auto_candidates()
     for runtime in candidates:
-        if shutil.which(runtime.binary) is None:
+        if host_tools.resolve(runtime.binary) is None:
             continue
         picked = by_name.get(runtime.name)
         if picked is not None and picked.status != OK:
@@ -411,6 +428,52 @@ def check_egress_sidecars(checks: list[Check]) -> list[Check]:
     return result
 
 
+def _jj_repo_dir(start: Path) -> Path | None:
+    """The ``.jj/repo`` store of the jj repository containing ``start``, if any.
+
+    In a secondary workspace ``.jj/repo`` is a file holding the store's path.
+    """
+    for directory in (start, *start.parents):
+        repo = directory / ".jj" / "repo"
+        if repo.is_dir():
+            return repo
+        if repo.is_file():
+            try:
+                pointer = Path(repo.read_text(encoding="utf-8").strip())
+            except OSError:
+                return None
+            return pointer if pointer.is_absolute() else (repo.parent / pointer)
+    return None
+
+
+def check_jj_repo_config(start: Path | None = None) -> Check | None:
+    """Warn on repository config jj would adopt on its next command.
+
+    jj keeps repository config outside the repository, selected by
+    ``.jj/repo/config-id``. When that file is missing, jj (0.46 included)
+    migrates a ``.jj/repo/config.toml`` it finds and trusts it, so an agent in a
+    shared session can plant one for the user's own next jj command. After a
+    migration jj leaves the old file next to ``config-id``; that is not reported.
+    """
+    try:
+        repo = _jj_repo_dir(Path.cwd() if start is None else start)
+    except OSError:
+        return None
+    if repo is None:
+        return None
+    legacy = repo / "config.toml"
+    if not legacy.is_file() or (repo / "config-id").exists():
+        return None
+    return Check(
+        "vcs",
+        "jj repository config",
+        WARN,
+        f"{legacy} has no config-id; jj adopts it on its next command",
+        "Check its contents (an agent in a shared session can write it) and "
+        "delete it unless you created it",
+    )
+
+
 def run_checks() -> list[Check]:
     checks = [check_python()]
     checks += check_apple_container()
@@ -420,6 +483,9 @@ def run_checks() -> list[Check]:
     checks.append(auto_runtime_check(checks))
     checks += check_git()
     checks.append(check_jj())
+    repo_config = check_jj_repo_config()
+    if repo_config is not None:
+        checks.append(repo_config)
     checks += check_egress_sidecars(checks)
     return checks
 

@@ -519,7 +519,10 @@ class CliTests(TestCase):
                     "_agent_host_paths",
                     return_value=_agent_paths(project / "home"),
                 ),
-                patch("project_sandbox.container_cli.shutil.which", return_value=None),
+                patch(
+                    "project_sandbox.container_cli.host_tools.resolve",
+                    return_value=None,
+                ),
             ):
                 with self.assertRaises(SystemExit) as raised:
                     cli.main(
@@ -7012,7 +7015,7 @@ class EgressSidecarLaunchTests(TestCase):
                 patch.object(cli.egress_sidecar, "default_runner", side_effect=runner)
             )
             stack.enter_context(
-                patch.object(cli.shutil, "which", return_value="/usr/bin/docker")
+                patch.object(cli.host_tools, "resolve", return_value="/usr/bin/docker")
             )
             stack.enter_context(contextlib.redirect_stdout(out))
             rc = cli.main(
