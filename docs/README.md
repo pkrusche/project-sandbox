@@ -14,6 +14,8 @@ This directory contains the detailed project-sandbox documentation.
 - [Generated files and runtime behavior](runtime.md) - end-to-end flow, file
   layout, generated image tags, OpenSpec, credential staging, and workspace
   masking.
+- [Generated Rust builds](cargo-builds.md) - Cargo workspace path handling and
+  validation of generated build inputs.
 - [proxied build networking](build-network.md) - early proxy and CA setup,
   build/runtime separation, and the Squid acceptance test.
 - See [Internet proxy](internet-proxy.md) for routing traffic through an externally 

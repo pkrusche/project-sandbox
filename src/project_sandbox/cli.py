@@ -19,6 +19,7 @@ from . import (
     __version__,
     agent_proxy,
     build_cache,
+    build_inputs,
     build_network,
     build_proxy_forwarder,
     chroot,
@@ -2619,6 +2620,19 @@ def _resolve_build_source(
     if node_npm and rust_cargo:
         raise SystemExit("--node-npm and --rust-cargo are mutually exclusive")
 
+    try:
+        if python_uv:
+            build_inputs.validate_version(
+                python_version if python_version is not None else "3.11",
+                option="--python",
+            )
+        if rust_cargo and rust_version is not None:
+            build_inputs.validate_version(rust_version, option="--rust")
+        if args.base_image:
+            build_inputs.validate_image(args.base_image)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+
     if python_uv:
         if args.dockerfile:
             raise SystemExit("--python-uv and --dockerfile are mutually exclusive")
@@ -2767,16 +2781,38 @@ def _detect_cargo_workspace(project: Path) -> tuple[bool, list[str], bool]:
         return False, [], False
 
     root_is_package = "package" in data
-    excludes = set(workspace.get("exclude", []))
-    members: list[str] = []
-    for pattern in workspace.get("members", []):
-        for member_path in sorted(project.glob(pattern)):
-            rel = member_path.relative_to(project).as_posix()
-            if rel in excludes or rel == ".":
+    root = project.resolve()
+    members: set[str] = set()
+    try:
+        if not isinstance(workspace, dict):
+            raise TypeError("Cargo workspace must be a table")
+        patterns = workspace.get("members", [])
+        excludes = workspace.get("exclude", [])
+        if not isinstance(patterns, list) or not isinstance(excludes, list):
+            raise TypeError("Cargo workspace members/exclude must be arrays of paths")
+        excludes = {build_inputs.cargo_path(p) for p in excludes}
+        for pattern in patterns:
+            pattern = build_inputs.cargo_path(pattern)
+            if pattern == ".":
                 continue
-            if (member_path / "Cargo.toml").exists():
-                members.append(rel)
-    return True, members, root_is_package
+            for member_path in sorted(project.glob(pattern)):
+                rel = build_inputs.cargo_path(
+                    member_path.relative_to(project).as_posix()
+                )
+                if rel in excludes or rel == ".":
+                    continue
+                manifest = member_path / "Cargo.toml"
+                if not member_path.resolve().is_relative_to(
+                    root
+                ) or not manifest.resolve().is_relative_to(root):
+                    raise ValueError(
+                        f"Cargo workspace member {rel!r} escapes the project"
+                    )
+                if manifest.is_file():
+                    members.add(rel)
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        raise SystemExit(f"--rust-cargo: {exc}") from exc
+    return True, sorted(members), root_is_package
 
 
 def _detect_npm_workspaces(project: Path, lockfile: Path) -> list[str]:

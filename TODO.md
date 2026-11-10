@@ -1,5 +1,10 @@
 # TODO - outstanding items for next release
 
+- Generated Cargo builds: verify literal filename COPY behavior on Docker,
+  Podman, and Apple container with spaces, quotes, dollar signs, and wildcard
+  characters. Unit tests execute generated shell commands and inspect COPY
+  encoding; no live image build has been run for this regression.
+
 - Policy edit serialization: verify concurrent cross-runtime edits and delayed
   launches after revocation with live Squid on Docker, Podman, and Apple
   container. Unit coverage forces these interleavings with simulated runtimes.
@@ -369,6 +374,17 @@ established. Resolve the actual worktree metadata location. Test overlapping
 same-branch sessions and a live external Git lock.
 
 #### 10. Medium — Cargo workspace paths are interpolated into shell and Dockerfile syntax
+
+**Addressed:** the Rust Dockerfile is rendered from a template with shell-quoted
+paths and option terminators. Manifest COPY uses JSON arrays with Docker
+variable/quote and wildcard escaping. Workspace declarations and expanded paths
+are validated, deduplicated, and checked for member/manifest symlinks escaping
+the project; control characters, absolute paths, traversal, and backslashes are
+rejected. Literal image/toolchain input validation also covers dry-runs and direct
+renderers. Regression tests execute stub creation/removal with hostile filenames
+and cover COPY encoding, path escapes, and injected FROM values. See
+[generated Rust builds](docs/cargo-builds.md). Live runtime COPY verification is
+listed above. The original finding follows for context.
 
 **Locations:** `cli.py:2615–2644`; `dockerfile.py:1017–1034`.
 

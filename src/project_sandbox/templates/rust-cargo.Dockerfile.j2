@@ -1,0 +1,47 @@
+FROM {{ base_image }}
+
+ARG AGENT_UID=1000
+ARG AGENT_GID=1000
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential cmake \
+    pkg-config \
+    libssl-dev \
+    libudev-dev libasound2-dev \
+    libx11-dev libxcb1-dev libxrandr-dev libxi-dev libxcursor-dev \
+    libwayland-dev \
+    libdbus-1-dev \
+    libpq-dev libsqlite3-dev \
+    libclang-dev \
+    libfontconfig1-dev libfreetype6-dev \
+    && rm -rf /var/lib/apt/lists/*
+RUN rustup component add clippy rustfmt
+RUN printf '%s\n' 'export PATH="/usr/local/cargo/bin:/usr/local/rustup/bin:$PATH"' > /etc/profile.d/rust-toolchain.sh
+
+ENV CARGO_HOME=/opt/cargo-cache
+ENV CARGO_TARGET_DIR=/opt/cargo-target
+WORKDIR /workspace
+{% if warm_cache %}
+# layer 1: fetch dependency sources (rebuilds only when Cargo.toml/Cargo.lock change)
+COPY ["Cargo.toml", "Cargo.lock", "./"]
+{% for copy in member_copies %}
+COPY {{ copy }}
+{% endfor %}
+{% if stub_dirs %}
+RUN mkdir -p -- {{ stub_dirs | map('shlex_quote') | join(' ') }} \
+{% for directory in stub_dirs %}
+    && touch -- {{ (directory ~ '/lib.rs') | shlex_quote }} \
+{% endfor %}
+    && cargo fetch --locked \
+    && rm -rf -- {{ stub_dirs | map('shlex_quote') | join(' ') }}
+{% else %}
+RUN cargo fetch --locked
+{% endif %}
+
+# layer 2: pre-compile so 'cargo build' is fast (and offline) inside the
+# sandbox. Best-effort: a project that does not yet compile must not block
+# the image build — 'cargo fetch' above already made deps available offline.
+COPY [".", "."]
+RUN cargo build || true
+RUN mkdir -p /opt/cargo-cache /opt/cargo-target && chown -R "${AGENT_UID}:${AGENT_GID}" /opt/cargo-cache /opt/cargo-target
+{% endif %}

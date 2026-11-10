@@ -4748,7 +4748,7 @@ class RustCargoFlagTests(TestCase):
             )
             content = out_path.read_text(encoding="utf-8")
 
-        self.assertIn("COPY Cargo.toml Cargo.lock", content)
+        self.assertIn('COPY ["Cargo.toml", "Cargo.lock", "./"]', content)
         self.assertIn("cargo fetch --locked", content)
         self.assertIn("ARG AGENT_UID=1000", content)
         self.assertIn("ARG AGENT_GID=1000", content)
@@ -4761,7 +4761,7 @@ class RustCargoFlagTests(TestCase):
         self.assertIn("CARGO_TARGET_DIR=/opt/cargo-target", content)
         # project must be pre-compiled at image build time so 'cargo build' works
         # offline inside the sandbox (avoids fetching crates behind firewall)
-        self.assertIn("COPY . .", content)
+        self.assertIn('COPY [".", "."]', content)
         # best-effort compile: a project that does not yet build must still
         # produce an image (deps are already fetched/compiled for offline use)
         self.assertIn("RUN cargo build || true", content)
@@ -4817,7 +4817,7 @@ class RustCargoFlagTests(TestCase):
             )
             content = out_path.read_text(encoding="utf-8")
 
-        self.assertNotIn("COPY Cargo.toml", content)
+        self.assertNotIn('COPY ["Cargo.toml"', content)
         self.assertNotIn("cargo fetch", content)
 
     def test_render_omits_cache_warm_when_cargo_lock_missing(self) -> None:
@@ -4834,7 +4834,7 @@ class RustCargoFlagTests(TestCase):
             )
             content = out_path.read_text(encoding="utf-8")
 
-        self.assertNotIn("COPY Cargo.toml", content)
+        self.assertNotIn('COPY ["Cargo.toml"', content)
         self.assertNotIn("cargo fetch", content)
 
     # --- warnings for missing project files ---
@@ -4959,11 +4959,11 @@ class RustCargoFlagTests(TestCase):
             )
             content = out_path.read_text(encoding="utf-8")
 
-        self.assertIn("mkdir -p src", content)
-        self.assertIn("touch src/lib.rs", content)
+        self.assertIn("mkdir -p -- src", content)
+        self.assertIn("touch -- src/lib.rs", content)
         self.assertIn("cargo fetch --locked", content)
         # Stub must be cleaned up before the real source is copied in layer 2
-        self.assertIn("rm -rf src", content)
+        self.assertIn("rm -rf -- src", content)
 
     def test_render_workspace_copies_member_manifests(self) -> None:
         """Workspace: each member Cargo.toml is COPY'd and a stub src/lib.rs is created."""
@@ -4982,13 +4982,13 @@ class RustCargoFlagTests(TestCase):
             )
             content = out_path.read_text(encoding="utf-8")
 
-        self.assertIn("COPY crates/foo/Cargo.toml crates/foo/", content)
-        self.assertIn("COPY crates/bar/Cargo.toml crates/bar/", content)
-        self.assertIn("touch crates/foo/src/lib.rs", content)
-        self.assertIn("touch crates/bar/src/lib.rs", content)
+        self.assertIn('COPY ["crates/foo/Cargo.toml", "crates/foo/"]', content)
+        self.assertIn('COPY ["crates/bar/Cargo.toml", "crates/bar/"]', content)
+        self.assertIn("touch -- crates/foo/src/lib.rs", content)
+        self.assertIn("touch -- crates/bar/src/lib.rs", content)
         self.assertIn("cargo fetch --locked", content)
         # Root has no [package], so no root src stub
-        self.assertNotIn("touch src/lib.rs", content)
+        self.assertNotIn("touch -- src/lib.rs", content)
         # Stubs are cleaned up
         self.assertIn("rm -rf", content)
 
@@ -5009,8 +5009,8 @@ class RustCargoFlagTests(TestCase):
             )
             content = out_path.read_text(encoding="utf-8")
 
-        self.assertIn("touch src/lib.rs", content)
-        self.assertIn("touch member/src/lib.rs", content)
+        self.assertIn("touch -- src/lib.rs", content)
+        self.assertIn("touch -- member/src/lib.rs", content)
         self.assertIn("cargo fetch --locked", content)
 
     def test_detect_cargo_workspace_non_workspace(self) -> None:

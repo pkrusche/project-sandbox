@@ -2,12 +2,13 @@ import base64
 import hashlib
 import json
 import re
+import shlex
 import ssl
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import generated_files, templating
+from . import build_inputs, generated_files, templating
 
 _USER_SETUP_COMMAND_RE = re.compile(
     r"(?<![\w.-])(addgroup|adduser|groupadd|groupmod|useradd|usermod)(?![\w.-])"
@@ -184,6 +185,9 @@ def render(
 ) -> Path:
     if (base_image is None) == (base_dockerfile is None):
         raise ValueError("Provide exactly one of base_image or base_dockerfile")
+
+    if base_image is not None:
+        build_inputs.validate_image(base_image)
 
     source_before_dependencies = ""
     dependency_from = f"FROM {base_image}" if base_image is not None else ""
@@ -881,6 +885,7 @@ def render_python_uv_dockerfile(
     source files change, while the faster dep-only layer is cache-stable against
     lockfile changes.
     """
+    build_inputs.validate_version(python_version, option="--python")
     lines = [
         # Pin uv to an exact tag and digest instead of the mutable ":latest"
         # tag. Bump deliberately and refresh the digest via
@@ -971,90 +976,42 @@ def render_rust_cargo_dockerfile(
     workspace_root_is_package: True when the workspace root Cargo.toml also
         declares a [package] (i.e. the root is itself a crate).
     """
+    if rust_version is not None:
+        build_inputs.validate_version(rust_version, option="--rust")
     base_image = f"rust:{rust_version}-slim" if rust_version else "rust:slim"
-    lines = [
-        f"FROM {base_image}",
-        "",
-        "ARG AGENT_UID=1000",
-        "ARG AGENT_GID=1000",
-        "",
-        (
-            "RUN apt-get update && apt-get install -y --no-install-recommends \\\n"
-            "    build-essential cmake \\\n"
-            "    pkg-config \\\n"
-            "    libssl-dev \\\n"
-            "    libudev-dev libasound2-dev \\\n"
-            "    libx11-dev libxcb1-dev libxrandr-dev libxi-dev libxcursor-dev \\\n"
-            "    libwayland-dev \\\n"
-            "    libdbus-1-dev \\\n"
-            "    libpq-dev libsqlite3-dev \\\n"
-            "    libclang-dev \\\n"
-            "    libfontconfig1-dev libfreetype6-dev \\\n"
-            "    && rm -rf /var/lib/apt/lists/*"
-        ),
-        "RUN rustup component add clippy rustfmt",
-        # Codex runs commands through a login shell. Debian's /etc/profile can
-        # replace the PATH inherited from the official Rust image, hiding the
-        # rustup proxies in /usr/local/cargo/bin. Restore the toolchain paths
-        # after /etc/profile has set its default PATH.
-        (
-            "RUN printf '%s\\n' "
-            "'export PATH=\"/usr/local/cargo/bin:/usr/local/rustup/bin:$PATH\"' "
-            "> /etc/profile.d/rust-toolchain.sh"
-        ),
-        "",
-        "ENV CARGO_HOME=/opt/cargo-cache",
-        "ENV CARGO_TARGET_DIR=/opt/cargo-target",
-        "WORKDIR /workspace",
-    ]
-    if has_cargo_toml and has_cargo_lock:
-        is_workspace = workspace_members is not None
-        members = workspace_members or []
-
-        lines += [
-            "",
-            "# layer 1: fetch dependency sources (rebuilds only when Cargo.toml/Cargo.lock change)",
-            "COPY Cargo.toml Cargo.lock ./",
-        ]
-
-        # For workspace projects, copy each member's manifest so cargo can
-        # resolve the full dependency graph without the member source files.
-        for member in members:
-            lines.append(f"COPY {member}/Cargo.toml {member}/")
-
-        # cargo refuses to parse a manifest that declares no targets, so we
-        # create a minimal stub for each crate that needs one, run the fetch,
-        # then remove the stubs before COPY . . overlays the real source.
-        needs_root_stub = not is_workspace or workspace_root_is_package
-        stub_dirs = (["src"] if needs_root_stub else []) + [f"{m}/src" for m in members]
-
-        if stub_dirs:
-            fetch_parts = (
-                ["mkdir -p " + " ".join(stub_dirs)]
-                + [f"touch {d}/lib.rs" for d in stub_dirs]
-                + ["cargo fetch --locked"]
-                + ["rm -rf " + " ".join(stub_dirs)]
-            )
-            first, *rest = fetch_parts
-            lines.append("RUN " + first + "".join(f" \\\n    && {p}" for p in rest))
-        else:
-            lines.append("RUN cargo fetch --locked")
-
-        lines += [
-            "",
-            "# layer 2: pre-compile so 'cargo build' is fast (and offline) inside the",
-            "# sandbox. Best-effort: a project that does not yet compile must not block",
-            "# the image build — 'cargo fetch' above already made deps available offline.",
-            "COPY . .",
-            "RUN cargo build || true",
-            (
-                "RUN mkdir -p /opt/cargo-cache /opt/cargo-target"
-                ' && chown -R "${AGENT_UID}:${AGENT_GID}" /opt/cargo-cache /opt/cargo-target'
-            ),
-        ]
+    members = sorted({build_inputs.cargo_path(m) for m in workspace_members or []})
+    if "." in members:
+        raise ValueError("Cargo workspace root must use workspace_root_is_package")
+    needs_root_stub = workspace_members is None or workspace_root_is_package
+    stub_dirs = (["src"] if needs_root_stub else []) + [f"{m}/src" for m in members]
+    content = templating.get_template(
+        "rust-cargo.Dockerfile.j2", trim_blocks=True
+    ).render(
+        base_image=base_image,
+        warm_cache=has_cargo_toml and has_cargo_lock,
+        member_copies=[_literal_copy(f"{m}/Cargo.toml", f"{m}/") for m in members],
+        stub_dirs=stub_dirs,
+    )
     out = context_dir / "Dockerfile.rust-cargo"
-    generated_files.write_text(out, "\n".join(lines) + "\n", encoding="utf-8")
+    generated_files.write_text(out, content.rstrip() + "\n", encoding="utf-8")
     return out
+
+
+def _literal_copy(source: str, destination: str) -> str:
+    # Docker applies environment/quote processing even to JSON-form COPY, then
+    # Go filepath.Match patterns to its sources. Escape that pattern first and
+    # quote the resulting words against Docker's variable/quote processing.
+    pattern = source.translate(
+        str.maketrans(
+            {
+                "[": "[[]",
+                "*": "[*]",
+                "?": "[?]",
+                "\\": "\\\\",
+            }
+        )
+    )
+    return json.dumps([shlex.quote(pattern), shlex.quote(destination)])
 
 
 NODE_NPM_BASE_IMAGE = "debian:trixie-slim"

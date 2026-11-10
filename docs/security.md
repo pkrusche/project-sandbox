@@ -225,6 +225,18 @@ system, so headless runs always pass `--approve`, trusting the project-local
 boundaries remain the safety net, consistent with Pi's own "run in a
 container" guidance.
 
+## Generated build inputs
+
+Generated Cargo builds quote shell paths, terminate command options, and encode
+literal manifest copies as JSON arrays with Docker variable and wildcard
+escaping. Member paths and manifests must remain inside the project after
+symlink resolution. Control characters, parent traversal, absolute paths, and
+backslashes are rejected. Generated `FROM` values accept literal image tokens
+and toolchain tag values only. See [generated Rust builds](cargo-builds.md).
+Project build scripts and user-supplied Dockerfiles still execute as trusted
+build inputs; these checks prevent filename/instruction injection, not arbitrary
+code deliberately supplied by those inputs.
+
 ## VCS metadata access
 
 `--vcs-access full` is the default and exposes Git/jj metadata read-write.
