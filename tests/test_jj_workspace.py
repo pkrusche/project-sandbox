@@ -181,6 +181,7 @@ class SetupLockTests(unittest.TestCase):
         ):
             actual = jj_workspace_mod.setup(repo, "feature")
 
+        actual.lease.close()
         self.assertIs(actual, expected)
         self.assertFalse(lock_active)
 
@@ -192,6 +193,8 @@ class SetupLockTests(unittest.TestCase):
             created_bookmark=True,
             created_workspace=True,
         )
+        ws.lease = jj_workspace_mod.WorkspaceLease("jj", repo, ws.bookmark, ws.path)
+        self.addCleanup(ws.lease.close)
         lock_active = False
 
         @contextlib.contextmanager
@@ -302,6 +305,7 @@ class JjWorkspaceSetupTests(unittest.TestCase):
         )
         (ws.path / "work.txt").write_text("work\n", encoding="utf-8")
 
+        ws.lease.close()
         with self.assertRaises(SystemExit) as raised:
             jj_workspace_mod.setup(self.repo, "feat/old-colocated")
 
@@ -363,8 +367,11 @@ class JjWorkspaceSetupTests(unittest.TestCase):
         self.assertEqual(ws.path.parent, custom)
 
     @requires_jj_046
-    def test_setup_idempotent_reuse(self) -> None:
+    def test_setup_reuses_finished_session(self) -> None:
         ws1 = jj_workspace_mod.setup(self.repo, "feat/x")
+        jj_workspace_mod.finalize(
+            self.repo, ws1, keep_workspace=True, session_failed=False, message="msg"
+        )
         ws2 = jj_workspace_mod.setup(self.repo, "feat/x")
 
         self.assertEqual(ws1.path, ws2.path)
@@ -434,6 +441,7 @@ class JjWorkspaceSetupTests(unittest.TestCase):
             capture_output=True,
         )
         shutil.rmtree(ws.path)
+        ws.lease.close()
 
         ws2 = jj_workspace_mod.setup(self.repo, "feat/reuse")
 
@@ -521,6 +529,7 @@ class JjWorkspaceSetupTests(unittest.TestCase):
             capture_output=True,
         )
         shutil.rmtree(ws1.path)
+        ws1.lease.close()
 
         # Second session reuses the bookmark, but the build fails before the
         # agent runs, so cli calls remove() on the new workspace.

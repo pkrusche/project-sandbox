@@ -11,6 +11,10 @@
   Add recovery for orphan session-input trees after SIGKILL or host crashes,
   checking live containers before removing any credentials or prompts.
 
+- Workspace leases: verify same-branch rejection on live runtimes. Add persistent
+  ownership/runtime reconciliation after SIGKILL or host crashes so an orphan
+  container cannot outlive its host lease; stop orphan containers before reuse.
+
 - Private mount storage: add orphan-mask/helper garbage collection that accounts
   for live containers and persistent devcontainer configurations. Normal CLI
   teardown removes session masks; SIGKILL can leave empty directories behind.
@@ -326,6 +330,16 @@ shared resources. Add tests where one session starts or exits while another is
 waiting to read its prompt and credentials.
 
 #### 9. Medium — workspaces lack lifetime ownership, and Git locks are deleted without proving staleness
+
+**Addressed:** Git and jj now hold an exclusive workspace/ref lease from setup
+through session finalization, reject overlapping same-branch/bookmark launches
+(including alternate roots and symlink aliases), and refuse cleanup through a
+released lease. Git setup and finalization share the repository mutation lock.
+Existing index locks are preserved with recovery guidance; their paths are
+queried from Git instead of inferred from directory names. Regression tests cover
+competing host processes, stale finalizers, failure/retry paths, live external
+index locks, and metadata basename collisions. Runtime orphan recovery remains
+listed above. The original finding follows for context.
 
 **Locations:** `worktree.py:37–78`, `:132`, `:156`, `:212–217`;
 `jj_workspace.py:62–78`, `:141`, `:287–298`.

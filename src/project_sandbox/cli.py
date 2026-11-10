@@ -742,6 +742,10 @@ def _main_scoped(argv: list[str] | None, resources: contextlib.ExitStack) -> int
     _warn_pi_ollama_no_firewall(args, pi_ollama_enabled)
 
     wt, workspace = _setup_worktree(args, project) if run_agent else (None, project)
+    if wt is not None and wt.lease is not None:
+        # Fallback release also covers build failures, skipped capture, and
+        # exceptions in cleanup before finalize/remove can release ownership.
+        resources.callback(wt.lease.close)
 
     # Once a worktree exists, every exit path must run teardown so a failed build
     # or early return does not orphan the worktree (and its branch). agent_ran

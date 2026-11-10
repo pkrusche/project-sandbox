@@ -128,7 +128,7 @@ with open(sys.argv[1], "r") as lock:
                 pass
             with jj_workspace._workspace_lock(Path("/tmp/repo")):
                 pass
-            with worktree._teardown_lock(Path("/tmp/repo")):
+            with worktree._workspace_lock(Path("/tmp/repo")):
                 pass
 
         self.assertEqual(

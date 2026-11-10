@@ -1069,6 +1069,10 @@ class CliTests(TestCase):
                 path=project.parent / f"{project.name}-worktrees" / "feat-x",
                 branch="feat/x",
             )
+            fake_wt.lease = cli.worktree_mod.WorkspaceLease(
+                "git", project, fake_wt.branch, fake_wt.path
+            )
+            self.addCleanup(fake_wt.lease.close)
 
             with (
                 patch.object(
@@ -1116,6 +1120,11 @@ class CliTests(TestCase):
             # Build failed before the agent ran: finalize must NOT run (no commit
             # of an empty/failed session), the git worktree is left in place.
             finalize.assert_not_called()
+            self.assertFalse(fake_wt.lease.active)
+            with cli.worktree_mod.WorkspaceLease(
+                "git", project, fake_wt.branch, fake_wt.path
+            ):
+                pass
 
     def test_branch_start_at_requires_branch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

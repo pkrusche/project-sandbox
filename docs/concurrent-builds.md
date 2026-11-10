@@ -39,3 +39,30 @@ termination can leave running containers and Apple aliases behind; lifecycle
 recovery remains follow-up work. Unit tests simulate runtime
 image stores and force competing invocations to overlap; live runtime acceptance
 checks remain listed in TODO.md.
+
+## Workspace ownership
+
+A `--branch` session holds an exclusive host lease from workspace setup through
+build, agent execution, and finalization. Another invocation using the same
+branch/bookmark or resolved workspace directory is rejected with an “already in
+use” message. Changing `--worktree-dir` or spelling the repository through a
+symlink does not bypass ownership. Different branches/bookmarks can run together.
+A kept workspace becomes reusable when its owning session finishes. Build
+failures and failed sessions release their leases too; dry-runs acquire none.
+
+Git setup and finalization share one repository mutation lock. Jujutsu setup,
+finalization, and build-failure removal likewise share one mutation lock. These
+short locks protect shared repository changes; the per-session lease also
+prevents a delayed finalizer from removing a newer session's workspace.
+
+Git index locks are never automatically removed. Setup of a kept worktree and
+finalization query Git for the actual index path. If its lock exists, the
+worktree is preserved and the lock path is reported. Stop any Git process,
+editor, or container using that worktree, verify the lock is stale, and only then
+remove it manually and retry. The host lease cannot prove that an unrelated Git
+process has stopped, and manual Git operations do not take these advisory locks.
+
+Leases coordinate live host CLI processes, not external devcontainers or manual
+VCS commands. Uncatchable host termination releases advisory leases and may
+leave a container running; stop that container before reusing its workspace.
+Runtime-aware orphan recovery remains tracked in TODO.md.

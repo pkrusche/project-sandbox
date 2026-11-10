@@ -35,8 +35,14 @@ def lock_path(kind: str, target: Path) -> Path:
 
 
 @contextmanager
-def path_lock(kind: str, target: Path) -> Generator[None, None, None]:
-    """Hold an exclusive lock on ``target`` for the duration of the block."""
+def path_lock(
+    kind: str, target: Path, *, blocking: bool = True
+) -> Generator[None, None, None]:
+    """Hold an exclusive lock on ``target`` for the duration of the block.
+
+    With ``blocking=False``, contention raises ``BlockingIOError`` so session
+    ownership can reject a competing launch instead of queueing it.
+    """
     path = lock_path(kind, target)
     try:
         fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
@@ -46,7 +52,7 @@ def path_lock(kind: str, target: Path) -> Generator[None, None, None]:
             f"not a regular file owned by you, then retry."
         ) from exc
     with os.fdopen(fd, "r+") as handle:
-        fcntl.flock(handle, fcntl.LOCK_EX)
+        fcntl.flock(handle, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
         try:
             yield
         finally:

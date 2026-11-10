@@ -9,10 +9,11 @@ import shutil
 import subprocess
 from collections.abc import Generator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import host_locks
+from .workspace_lease import WorkspaceLease
 
 
 @dataclass(slots=True)
@@ -25,6 +26,7 @@ class JjWorkspace:
     # workspace must survive a failed build, just as a git branch/worktree does.
     created_bookmark: bool = False
     created_workspace: bool = False
+    lease: WorkspaceLease | None = field(default=None, repr=False, compare=False)
 
 
 def setup(
@@ -37,8 +39,17 @@ def setup(
     # `jj workspace add` mutates shared repository state and concurrent calls
     # can corrupt the invoking working copy (jj#9314). Keep all observations
     # used to decide how to add the workspace under the same repository lock.
-    with _workspace_lock(repo):
-        return _setup_locked(repo, bookmark, start_at, workspace_dir)
+    lease = WorkspaceLease(
+        "jj", repo, bookmark, path_for(repo, bookmark, workspace_dir=workspace_dir)
+    )
+    try:
+        with _workspace_lock(repo):
+            ws = _setup_locked(repo, bookmark, start_at, workspace_dir)
+            ws.lease = lease
+            return ws
+    except BaseException:
+        lease.close()
+        raise
 
 
 def _setup_locked(
@@ -262,7 +273,10 @@ def finalize(
     reported rather than propagated (which would mask the session's exit code):
     the workspace is left in place so no work is lost.
     """
-    with _workspace_lock(repo):
+    if ws.lease is None or not ws.lease.active:
+        print(f"workspace lease is not active — workspace left in place at {ws.path}")
+        return
+    with ws.lease, _workspace_lock(repo):
         ws_name = ws.path.name
 
         try:
@@ -308,7 +322,10 @@ def remove(repo: Path, ws: JjWorkspace) -> None:
     a kept, reused workspace is left in place so a prior session's work is never
     destroyed by a failed build — matching how a git branch/worktree survives.
     """
-    with _workspace_lock(repo):
+    if ws.lease is None or not ws.lease.active:
+        print(f"workspace lease is not active — workspace left in place at {ws.path}")
+        return
+    with ws.lease, _workspace_lock(repo):
         if ws.created_bookmark:
             try:
                 _jj(repo, ["bookmark", "delete", ws.bookmark])

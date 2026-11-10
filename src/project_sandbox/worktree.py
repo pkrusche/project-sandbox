@@ -1,12 +1,14 @@
 import hashlib
+import os
 import subprocess
 import time
 from collections.abc import Generator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import host_locks
+from .workspace_lease import WorkspaceLease
 
 # VM-backed container runtimes (every runtime on macOS) reach the host
 # filesystem through a share whose metadata cache serves stale directory
@@ -23,6 +25,10 @@ from . import host_locks
 METADATA_CACHE_WINDOW = 1.5
 
 
+class GitIndexLockedError(RuntimeError):
+    """An external index transaction needs manual inspection before reuse."""
+
+
 @dataclass(slots=True)
 class Worktree:
     path: Path
@@ -32,6 +38,7 @@ class Worktree:
     # (nothing was recreated, so no cache entry can be stale). Consumed by
     # wait_for_metadata_visibility() before a container mounts the metadata.
     metadata_created_at: float | None = None
+    lease: WorkspaceLease | None = field(default=None, repr=False, compare=False)
 
 
 def setup(
@@ -41,6 +48,25 @@ def setup(
     worktree_dir: Path | None = None,
 ) -> Worktree:
     repo = repo.resolve()
+    lease = WorkspaceLease(
+        "git", repo, branch, path_for(repo, branch, worktree_dir=worktree_dir)
+    )
+    try:
+        with _workspace_lock(repo):
+            wt = _setup_locked(repo, branch, start_at, worktree_dir)
+            wt.lease = lease
+            return wt
+    except GitIndexLockedError as exc:
+        lease.close()
+        raise SystemExit(str(exc)) from exc
+    except BaseException:
+        lease.close()
+        raise
+
+
+def _setup_locked(
+    repo: Path, branch: str, start_at: str | None, worktree_dir: Path | None
+) -> Worktree:
     wt_path = path_for(repo, branch, worktree_dir=worktree_dir)
 
     # --branch-start-at pins the starting point for a NEW branch only; reusing an
@@ -57,6 +83,7 @@ def setup(
         # git reports resolved absolute paths; wt_path may still contain symlinks
         # (e.g. /tmp -> /private/tmp on macOS), so compare both forms.
         if str(wt_path) in existing or str(wt_path.resolve()) in existing:
+            _check_index_lock(wt_path)
             return Worktree(path=wt_path, branch=branch)
         raise SystemExit(
             f"worktree directory already exists but is not registered: {wt_path}\n"
@@ -99,7 +126,10 @@ def wait_for_metadata_visibility(wt: Worktree) -> float:
 
 
 def _metadata_dir(repo: Path) -> Path:
-    return repo.resolve() / ".git" / "worktrees"
+    common_dir = _git(
+        repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"], capture=True
+    ).strip()
+    return Path(common_dir) / "worktrees"
 
 
 def _branch_exists(repo: Path, branch: str) -> bool:
@@ -118,17 +148,9 @@ def path_for(repo: Path, branch: str, worktree_dir: Path | None = None) -> Path:
 
 
 @contextmanager
-def _teardown_lock(repo: Path) -> Generator[None, None, None]:
-    """Serialize teardown across concurrent host project-sandbox processes.
-
-    Several agents can share one repo through separate worktrees, and each
-    agent's host-side teardown mutates that shared repo — merging or rebasing
-    branches into the main checkout's HEAD, pushing, and removing worktrees. An
-    exclusive file lock keyed by the repo path keeps those teardowns from
-    interleaving. (Concurrent writes from *inside* the containers are a
-    separate, still-open problem — see the clone-per-subagent item in
-    ROADMAP.md.)
-    """
+def _workspace_lock(repo: Path) -> Generator[None, None, None]:
+    """Serialize host setup and finalization mutations for one repository."""
+    # Keep the old lock name to coordinate with older running finalizers too.
     with host_locks.path_lock("git-teardown", repo):
         yield
 
@@ -153,12 +175,18 @@ def finalize(
     reported rather than propagated (which would mask the session's exit code):
     the worktree is left in place so no work is lost.
     """
-    with _teardown_lock(repo):
-        _clear_stale_index_lock(repo, wt)
+    if wt.lease is None or not wt.lease.active:
+        print(f"workspace lease is not active — worktree left in place at {wt.path}")
+        return
+    with wt.lease, _workspace_lock(repo):
         try:
+            _check_index_lock(wt.path)
             if _is_dirty(wt):
                 _git(wt.path, ["add", "-A"])
                 _git(wt.path, ["commit", "-m", message])
+        except GitIndexLockedError as exc:
+            print(str(exc))
+            return
         except subprocess.CalledProcessError:
             print(
                 f"could not commit session changes — worktree left in place at {wt.path}"
@@ -173,7 +201,10 @@ def finalize(
             return
 
         try:
+            _check_index_lock(wt.path)
             _git(repo, ["worktree", "remove", "--force", str(wt.path)])
+        except GitIndexLockedError as exc:
+            print(str(exc))
         except subprocess.CalledProcessError:
             print(
                 f"could not remove worktree at {wt.path}; remove it manually with "
@@ -209,9 +240,18 @@ def _list_worktrees(repo: Path) -> list[str]:
     ]
 
 
-def _clear_stale_index_lock(repo: Path, wt: Worktree) -> None:
-    # A container crash mid-commit may leave index.lock in the worktree metadata.
-    # Remove it so the host-side merge/rebase can proceed.
-    lock = _metadata_dir(repo) / wt.path.name / "index.lock"
-    if lock.exists():
-        lock.unlink()
+def _check_index_lock(path: Path) -> None:
+    # Worktree metadata names can differ from directory basenames. Ask Git for
+    # its actual index path, including relocated metadata and custom indexes.
+    index = _git(
+        path,
+        ["rev-parse", "--path-format=absolute", "--git-path", "index"],
+        capture=True,
+    ).strip()
+    lock = Path(f"{index}.lock")
+    if os.path.lexists(lock):
+        raise GitIndexLockedError(
+            f"Git index lock exists at {lock}; worktree left in place at {path}.\n"
+            "  Stop any Git process, editor, or container using this worktree. "
+            "Only after verifying the lock is stale, remove it manually and retry."
+        )

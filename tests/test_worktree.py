@@ -124,8 +124,11 @@ class WorktreeSetupTests(TestCase):
         self.assertEqual(wt.path, custom / "feat-x-79b4cc")
         self.assertTrue(wt.path.is_dir())
 
-    def test_setup_idempotent_reuse(self) -> None:
+    def test_setup_reuses_finished_session(self) -> None:
         wt1 = worktree_mod.setup(self.repo, "feat/x")
+        worktree_mod.finalize(
+            self.repo, wt1, keep_workspace=True, session_failed=False, message="msg"
+        )
         wt2 = worktree_mod.setup(self.repo, "feat/x")
 
         self.assertEqual(wt1.path, wt2.path)
@@ -136,7 +139,8 @@ class WorktreeSetupTests(TestCase):
         listed = worktree_mod._list_worktrees(self.repo)
 
         self.assertIn(str(wt1.path.resolve()), listed)
-        # Idempotent reuse must recognize the spaced path and not re-add it.
+        # A later session must recognize the spaced path and not re-add it.
+        wt1.lease.close()
         wt2 = worktree_mod.setup(self.repo, "feat/x", worktree_dir=custom)
         self.assertEqual(wt1.path, wt2.path)
 
@@ -315,19 +319,68 @@ class WorktreeTeardownTests(TestCase):
         ).stdout
         self.assertIn("uncommitted.txt", files)
 
-    def test_finalize_clears_stale_index_lock(self) -> None:
-        # Simulate a stale lock left by a crashed container, plus dirty changes so
-        # finalize needs the index to commit.
+    def test_finalize_preserves_live_external_index_lock(self) -> None:
         (self.wt.path / "uncommitted.txt").write_text("later\n", encoding="utf-8")
-        git_dir = self.repo.resolve() / ".git"
-        wt_name = self.wt.path.name
-        lock = git_dir / "worktrees" / wt_name / "index.lock"
-        lock.write_text("locked\n", encoding="utf-8")
+        index = worktree_mod._git(
+            self.wt.path,
+            ["rev-parse", "--path-format=absolute", "--git-path", "index"],
+            capture=True,
+        ).strip()
+        lock = Path(f"{index}.lock")
+        # Another live process owns the lock file, just as Git does while it
+        # writes a replacement index. No project-sandbox advisory lock is used.
+        holder = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                """
+import sys
+with open(sys.argv[1], "x") as handle:
+    handle.write("external index transaction\\n")
+    handle.flush()
+    print("ready", flush=True)
+    sys.stdin.read()
+""",
+                str(lock),
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            self.assertEqual(holder.stdout.readline().strip(), "ready")
+            before = lock.stat().st_ino
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self._finalize()
+            self.assertIsNone(holder.poll())
+            self.assertTrue(self.wt.path.is_dir())
+            self.assertEqual(lock.stat().st_ino, before)
+            self.assertEqual(lock.read_text(), "external index transaction\n")
+            self.assertIn(str(lock), out.getvalue())
+            self.assertIn("verifying the lock is stale", out.getvalue())
+            self.assertNotIn("uncommitted.txt", self._branch_log_files())
+            with self.assertRaisesRegex(SystemExit, "Git index lock exists"):
+                worktree_mod.setup(self.repo, self.wt.branch)
+            # Failed setup must release its lease, allowing a retry once the
+            # external owner completes its transaction.
+        finally:
+            holder.communicate(timeout=5)
+        lock.unlink()
+        retry = worktree_mod.setup(self.repo, self.wt.branch)
+        retry.lease.close()
 
+    def test_clean_worktree_with_index_lock_is_not_removed(self) -> None:
+        index = worktree_mod._git(
+            self.wt.path,
+            ["rev-parse", "--path-format=absolute", "--git-path", "index"],
+            capture=True,
+        ).strip()
+        lock = Path(f"{index}.lock")
+        lock.touch()
         self._finalize()
-
-        self.assertFalse(lock.exists())
-        self.assertIn("uncommitted.txt", self._branch_log_files())
+        self.assertTrue(lock.exists())
+        self.assertTrue(self.wt.path.is_dir())
 
     def _branch_log_files(self) -> str:
         return subprocess.run(
