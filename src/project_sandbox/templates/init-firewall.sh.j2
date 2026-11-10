@@ -235,38 +235,12 @@ for endpoint_ip in "${ENDPOINT_{{ endpoint_hosts.index(destination.hostname) }}[
 done
 {% endfor %}
 
-{% if allow_host_network %}
-# ============================================================
-# Host gateway (port-forwarding / IDE attach)
-# ============================================================
-# Allow only the default gateway address (not the whole interface CIDR), so
-# peers sharing the container subnet are not reachable. Mirrors the IPv6 path.
-HOST_GW4=$(ip -4 route | awk '/default/ {print $3; exit}') || true
-HOST_IF4=$(ip -4 route | awk '/default/ {print $5; exit}') || true
-if [ -n "$HOST_GW4" ]; then
-  echo "Allowing host gateway (IPv4): $HOST_GW4"
-  iptables -A OUTPUT -d "$HOST_GW4" -o "${HOST_IF4:-eth0}" -j ACCEPT
-  iptables -A INPUT  -s "$HOST_GW4" -i "${HOST_IF4:-eth0}" -j ACCEPT
-fi
-
-if [ "$IPV6_FW" = "1" ]; then
-  HOST_GW6=$(ip -6 route | awk '/default/ {print $3; exit}') || true
-  HOST_IF6=$(ip -6 route | awk '/default/ {print $5; exit}') || true
-  if [ -n "$HOST_GW6" ]; then
-    echo "Allowing host gateway (IPv6): $HOST_GW6"
-    ip6tables -A OUTPUT -d "$HOST_GW6" -o "${HOST_IF6:-eth0}" -j ACCEPT
-    ip6tables -A INPUT  -s "$HOST_GW6" -i "${HOST_IF6:-eth0}" -j ACCEPT
-  fi
-fi
-{% endif %}
-
 {% if pi_ollama and policy == "normal" %}
 # ============================================================
 # Host gateway (Pi + Ollama)
 # ============================================================
-# Narrower than the host-gateway rule above: only the Ollama port on the
-# gateway IP, not the whole host. This is what lets a direct CLI run (which
-# does not get the all-ports rule above) reach a host-run Ollama server.
+# Only the Ollama port on the gateway IP, not the whole host. This is what
+# lets a direct CLI run reach a host-run Ollama server.
 # IPv4-only: every supported runtime's (Apple container/Docker/Podman)
 # default gateway is reachable over IPv4, matching the all-ports rule above
 # whose IPv6 counterpart exists only for the unrelated IDE-forwarding case.

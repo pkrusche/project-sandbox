@@ -168,7 +168,7 @@ for prerequisites and the checks performed.
 ## Troubleshooting
 
 - **Separate tmpfs mount required:** use a direct `project-sandbox --node-npm`
-  session. Generated Node/npm devcontainers are not supported yet. The
+  session. Generated Node/npm devcontainers are not supported yet. The session
   entrypoint refuses to populate an ordinary host `node_modules` directory,
   even when the host workspace itself lives on tmpfs.
 - **Browser executable missing:** check that `/usr/bin/chromium` exists and

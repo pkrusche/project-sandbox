@@ -160,6 +160,24 @@ def build_parser() -> ArgumentParser:
         action="store_true",
         help="Build/warm the sandbox image and exit without starting an agent.",
     )
+    p.add_argument(
+        "--devcontainer",
+        action="store_true",
+        help=(
+            "Render .devcontainer/ for this project (a test and debug "
+            "environment with the project's dependencies, no agents) from the "
+            "given build options, and exit without building or starting anything."
+        ),
+    )
+    p.add_argument(
+        "--devcontainer-network",
+        choices=list(devcontainer.NETWORK_MODES),
+        default=None,
+        help=(
+            "Network for the --devcontainer: none (default) runs it with only "
+            "loopback; runtime uses the runtime's default network, unfiltered."
+        ),
+    )
     p.add_argument("--force-build", action="store_true")
     p.add_argument(
         "--no-verify-dockerfile",
@@ -435,7 +453,7 @@ def build_parser() -> ArgumentParser:
         action="store_true",
         help=(
             "Do not stage, mount, or forward host agent credentials (and remove "
-            "any previously staged), and generate a credential-free devcontainer; "
+            "any previously staged); "
             "start unauthenticated and log in inside the sandbox. Disables the host "
             "token refresh and the credential-lifetime warning."
         ),
@@ -520,6 +538,11 @@ def _main(argv: list[str] | None = None) -> int:
         return doctor.main(raw_argv[1:])
     args = build_parser().parse_args(raw_argv)
 
+    _validate_devcontainer_args(args)
+    if args.devcontainer and args.egress != EGRESS_FIREWALL:
+        # The devcontainer has no firewall and no sidecar: --egress doesn't apply.
+        print("[i] --egress does not apply to the devcontainer")
+        args.egress = EGRESS_FIREWALL
     _validate_egress_args(args)
     sidecar = args.egress == EGRESS_SIDECAR
     internet_proxy_config = _validate_internet_proxy_args(args)
@@ -573,6 +596,13 @@ def _main(argv: list[str] | None = None) -> int:
 
     project = _resolve_required_path(args.project, what="project path")
     host_tools.add_untrusted_roots(project)
+    if args.devcontainer:
+        return _render_devcontainer(
+            args,
+            project=project,
+            internet_proxy_config=internet_proxy_config,
+            build_ca_certificates=build_ca_certificates,
+        )
     if args.image_tag is None:
         args.image_tag = _default_image_tag(project)
     # The session id is fixed before planning: a generated bookmark is named
@@ -640,7 +670,7 @@ def _main(argv: list[str] | None = None) -> int:
     )
     # What the sandbox connects to: the external proxy, or on Apple container
     # a host-loopback relay to it. The original stays authoritative for host
-    # preflight and devcontainer configuration.
+    # preflight.
     sandbox_proxy_config = internet_proxy.for_runtime(internet_proxy_config, runtime)
 
     if args.dry_run:
@@ -828,12 +858,6 @@ def _main(argv: list[str] | None = None) -> int:
                     proxy_url=args.agent_proxy,
                     pi_ollama_enabled=pi_ollama_enabled,
                 ),
-                devcontainer_destinations=_local_firewall_destinations(
-                    internet_proxy_config,
-                    proxy_port=proxy_port,
-                    proxy_url=args.agent_proxy,
-                    pi_ollama_enabled=pi_ollama_enabled,
-                ),
                 copilot_tenant_hosts=_copilot_tenant_hosts(run_agent, copilot_host),
                 egress_sidecar=sidecar,
             )
@@ -874,33 +898,6 @@ def _main(argv: list[str] | None = None) -> int:
         _write_project_sandbox_gitignore(context_dir)
         _update_project_gitignore(context_dir.parent)
 
-        # The devcontainer integration targets docker-style build/run tooling
-        # (VS Code "Reopen in Container"); chroot renders no Dockerfile/firewall
-        # for it to reference, so skip it rather than write dangling symlinks.
-        if _renders_devcontainer(args, is_chroot=is_chroot):
-            devcontainer.render(
-                context_dir.parent,
-                identity=identity,
-                firewall_enabled=not args.no_firewall,
-                memory=args.memory,
-                cpus=args.cpus,
-                extra_mounts=args.extra_mounts,
-                credential_dirs=credential_dirs,
-                forward_credentials=forward_credentials,
-                build_context=build_context,
-                proxy_environment=(
-                    internet_proxy.environment(
-                        internet_proxy_config,
-                        bypass_local_services=pi_ollama_enabled,
-                        bypass_hosts=(proxy_endpoint.sandbox_host,)
-                        if proxy_endpoint
-                        else (),
-                    )
-                    if internet_proxy_config
-                    else None
-                ),
-            )
-
         if run_agent is None and not args.build_only:
             _print_next_steps(
                 context_dir=context_dir,
@@ -913,7 +910,7 @@ def _main(argv: list[str] | None = None) -> int:
         rc = container_cli.ensure_system_started(runtime=runtime, verbose=args.verbose)
         if rc != 0:
             print(
-                "[W] Apple container system not running - if you're on a Mac, you may need to install or start it. Otherwise, you can still work with the devcontainer setup."
+                "[W] Apple container system not running - if you're on a Mac, you may need to install or start it. Otherwise, you can still render a devcontainer with --devcontainer."
             )
 
         tracked_dockerfiles = _tracked_project_dockerfiles(base_dockerfile, context_dir)
@@ -1724,18 +1721,121 @@ def _print_egress_denials(
         print(line)
 
 
-def _renders_devcontainer(args, *, is_chroot: bool) -> bool:
-    """Devcontainers are firewall-only; sidecar sessions leave them untouched."""
-    if is_chroot:
-        # chroot renders no Dockerfile/firewall for a devcontainer to reference.
-        return False
-    if args.egress == EGRESS_SIDECAR:
-        print(
-            "[i] --egress sidecar: not rendering .devcontainer/ "
-            "(devcontainers support firewall egress only)"
+DEVCONTAINER_NETWORK_WARNING = (
+    "[!] --devcontainer-network=runtime: the devcontainer uses the runtime's "
+    "default network, unfiltered: no firewall, no egress policy. Use it only "
+    "for code you trust like your own development environment."
+)
+
+
+def _validate_devcontainer_args(args) -> None:
+    """--devcontainer is a terminal mode: render .devcontainer/ and exit."""
+    if args.devcontainer_network is not None and not args.devcontainer:
+        raise SystemExit("--devcontainer-network requires --devcontainer")
+    if not args.devcontainer:
+        return
+    for flag, given in (
+        ("--agent", args.agent),
+        ("--prompt", args.prompt),
+        ("--prompt-text", args.prompt_text),
+        ("--branch", args.branch),
+        ("--build-only", args.build_only),
+    ):
+        if given:
+            raise SystemExit(
+                f"--devcontainer cannot be combined with {flag}: it only renders "
+                ".devcontainer/ and starts no session"
+            )
+    if args.runtime == container_cli.CHROOT.name:
+        raise SystemExit(
+            "--devcontainer does not support --runtime chroot: the devcontainer "
+            "is built from a generated Dockerfile"
         )
-        return False
-    return True
+
+
+def _render_devcontainer(
+    args,
+    *,
+    project: Path,
+    internet_proxy_config: internet_proxy.InternetProxy | None,
+    build_ca_certificates: tuple[bytes, ...],
+) -> int:
+    """Render .devcontainer/ and its image inputs; build and start nothing."""
+    network = args.devcontainer_network or devcontainer.NETWORK_NONE
+    context_dir = project / ".project-sandbox"
+    dc_dir = project / ".devcontainer"
+    if args.dry_run:
+        print("DRY RUN: no files, images, or containers will be created.")
+    if network == devcontainer.NETWORK_RUNTIME:
+        print(DEVCONTAINER_NETWORK_WARNING)
+    elif internet_proxy_config is not None:
+        print(
+            "[i] --internet-proxy is not applied: the devcontainer has no network "
+            "(use --devcontainer-network=runtime to give it one)"
+        )
+    if args.ca_cert:
+        print(
+            "[i] --ca-cert is not installed in the devcontainer image (it has no "
+            "runtime CA trust); use --build-ca-cert for a CA that it needs."
+        )
+
+    if args.dry_run:
+        _, base_dockerfile, build_context = _resolve_build_source(
+            args, project=project, context_dir=context_dir, write_generated=False
+        )
+        print(f"Devcontainer network: {network}")
+        print("Would write:")
+        if base_dockerfile is not None and _synthesises_dockerfile(args):
+            print(f"  {base_dockerfile}")
+        print(f"  {context_dir / devcontainer.DOCKERFILE_NAME}")
+        print(f"  {context_dir / 'project-sandbox-devcontainer-init'}")
+        print(f"  {dc_dir / devcontainer.CONFIG_NAME}")
+        print(
+            f"  {dc_dir / 'Dockerfile'} -> ../.project-sandbox/{devcontainer.DOCKERFILE_NAME}"
+        )
+        print(f"Would use build context: {build_context}")
+        return 0
+
+    ensure_dir(context_dir)
+    base_image, base_dockerfile, build_context = _resolve_build_source(
+        args, project=project, context_dir=context_dir
+    )
+    dockerfile.render(
+        context_dir,
+        base_image=base_image,
+        base_dockerfile=base_dockerfile,
+        build_context=build_context,
+        build_ca_certificates=build_ca_certificates,
+        warn=print,
+        devcontainer=True,
+    )
+    if _synthesises_dockerfile(args):
+        dockerfile.render_dockerignore(
+            context_dir, build_context=build_context, devcontainer=True
+        )
+    dockerfile.render_devcontainer_entrypoint(context_dir)
+    _write_project_sandbox_gitignore(context_dir)
+    _update_project_gitignore(project)
+    devcontainer.render(
+        project,
+        identity=read_identity(),
+        network=network,
+        memory=args.memory,
+        cpus=args.cpus,
+        extra_mounts=args.extra_mounts,
+        build_context=build_context,
+        proxy_environment=(
+            internet_proxy.environment(
+                internet_proxy_config, bypass_local_services=False
+            )
+            if internet_proxy_config is not None
+            and network == devcontainer.NETWORK_RUNTIME
+            else None
+        ),
+    )
+    print(f"[i] Wrote {dc_dir / devcontainer.CONFIG_NAME} (network: {network})")
+    print("  → Open this project in VS Code and choose 'Reopen in Container'.")
+    return 0
 
 
 def _validate_internet_proxy_args(args) -> internet_proxy.InternetProxy | None:
@@ -1901,8 +2001,7 @@ def _dry_run(
     codex_cfg = context_dir / "codex" / "config.toml"
     pi_cfg = context_dir / "pi" / "settings.json"
     # Only the keys _build_session_command consumes ("claude", and optionally
-    # "codex"/"opencode"/"pi" when available); the devcontainer-specific dirs
-    # are not used on the CLI run path.
+    # "codex"/"opencode"/"pi" when available).
     credential_dirs = {
         "claude": config_agents.credentials_dir(context_dir, "claude"),
         **{
@@ -1960,19 +2059,11 @@ def _dry_run(
             print("Would exclude from the build proxy: " + ",".join(build_no_proxy))
     for certificate in args.build_ca_cert:
         print(
-            f"Would install build CA before downloads in sandbox and devcontainer images: {certificate}"
+            f"Would install build CA before downloads in the sandbox image: {certificate}"
         )
     for certificate in args.ca_cert:
-        print(
-            f"Would bake CA certificate into sandbox and devcontainer images: {certificate}"
-        )
+        print(f"Would bake CA certificate into the sandbox image: {certificate}")
     print(f"Would render sandbox assets under: {context_dir}")
-    if egress is not None:
-        print(
-            "Would not render devcontainer (devcontainers support firewall egress only)"
-        )
-    else:
-        print(f"Would render devcontainer under: {asset_project / '.devcontainer'}")
     preview_runtime = (
         container_cli.select_runtime(args.runtime, dry_run=True)
         if run_agent or args.build_only
@@ -3378,13 +3469,25 @@ def _build_session_command(
         f"type=bind,source={mask_source},target={WORKSPACE_SANDBOX_TARGET},readonly"
     )
     # Hide the .devcontainer directory from inside the sandbox by masking it with
-    # the same empty dir. It holds host-path mounts and config the agent has no
-    # reason to read or edit. Only mask when it exists so the bind target is
-    # present (apple/container rejects a bind onto a missing target).
-    if (workspace / ".devcontainer").exists():
-        extra_mounts.append(
-            f"type=bind,source={mask_source},target={WORKSPACE_DEVCONTAINER_TARGET},readonly"
+    # the same empty dir, read-only. devcontainer.json's initializeCommand runs
+    # on the host, so the agent must not be able to read, edit or create it.
+    # Launches no longer render it, so create an empty one when absent: the
+    # bind target must exist (apple/container rejects a bind onto a missing
+    # target), and an unmasked path would let the agent plant a config.
+    devcontainer_dir = workspace / ".devcontainer"
+    if devcontainer_dir.is_symlink():
+        raise SystemExit(
+            f"{devcontainer_dir} is a symlink; remove it so the sandbox can mask "
+            "the devcontainer configuration"
         )
+    if not devcontainer_dir.exists():
+        if create_prompt_files:
+            devcontainer_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            print(f"Would create empty directory to mask: {devcontainer_dir}")
+    extra_mounts.append(
+        f"type=bind,source={mask_source},target={WORKSPACE_DEVCONTAINER_TARGET},readonly"
+    )
     # Hide the Rust build artifact tree from the sandbox when using --rust-cargo.
     # CARGO_TARGET_DIR=/opt/cargo-target already redirects cargo output, but a
     # visible host target/ would expose thousands of files to the agent and allow
@@ -3505,9 +3608,8 @@ def _print_next_steps(
     print(f"  Project:  {project}")
     print(f"  Sandbox:  {context_dir}")
     print()
-    print("  Devcontainer:")
-    print(f"    {project / '.devcontainer' / 'devcontainer.json'}")
-    print("  → Open this project in VS Code / Cursor and choose 'Reopen in Container'.")
+    print("  Devcontainer (tests and debugging, no agents):")
+    print(f"    project-sandbox {project} --devcontainer ...")
     print()
     if not launching:
         # When an agent is about to start, this hint is redundant noise.
@@ -3559,16 +3661,11 @@ def _write_project_sandbox_gitignore(context_dir: Path) -> None:
 !.gitignore
 !claude/
 !claude/settings.json
-!claude-devcontainer/
-!claude-devcontainer/settings.json
 !codex/
 !codex/config.toml
-!codex-devcontainer/
-!codex-devcontainer/config.toml
 !copilot/
 !copilot/config.json
 !init-firewall.sh
-!init-firewall-devcontainer.sh
 !Dockerfile
 !Dockerfile.devcontainer
 !entrypoint.sh

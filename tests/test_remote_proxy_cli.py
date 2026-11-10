@@ -1,6 +1,5 @@
 import contextlib
 import io
-import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -203,13 +202,9 @@ class RemoteProxyCliTests(unittest.TestCase):
                 def launch(command, *, root=root, agent=agent, url=url, **kwargs):
                     self.assertNotIn("gateway-secret", " ".join(command))
                     self.assertNotIn("--add-host", command)
-                    dev_env = json.loads(
-                        (root / ".devcontainer/devcontainer.json").read_text()
-                    )["containerEnv"]
-                    self.assertEqual(
-                        dev_env["HTTPS_PROXY"], "https://proxy.example:443"
+                    self.assertFalse(
+                        (root / ".devcontainer/devcontainer.json").exists()
                     )
-                    self.assertNotIn("gateway-secret", str(dev_env))
                     for configured in (
                         ("pi", "opencode") if agent == "bash" else (agent,)
                     ):

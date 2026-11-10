@@ -13,9 +13,10 @@ mount was authorized and supplied.
 `--agent bash` is intentionally a multi-agent environment: every detected
 supported agent credential is mounted and can be read by any process in that
 session. The one exception is the Copilot token, which is never mounted into a
-bash session (see [GitHub Copilot token](#github-copilot-token)). Generated devcontainers are also intentionally multi-agent and receive
-all detected forwarded credentials. Use `--no-forward-credentials` when a bash
-session or devcontainer should start unauthenticated.
+bash session (see [GitHub Copilot token](#github-copilot-token)). Use
+`--no-forward-credentials` when a bash session should start unauthenticated.
+The generated devcontainer receives no credentials at all (see
+[Devcontainer](#devcontainer)).
 
 The private `/tmp/project-sandbox-<uid>/...` staging tree is host-side storage,
 not a mount exposed as a whole. Individual authorized credential directories are
@@ -79,7 +80,6 @@ Codex and Pi also stage only credential files; a directory named `auth.json`
 is never copied recursively. Prompt mounts expose only the current staged file,
 so older files in the prompt staging directory remain hidden.
 Interactive runs continue to forward OpenCode's data and state.
-Generated devcontainers use the credentials staged by the generating invocation.
 
 In every mode, `/workspace/.project-sandbox` is masked with an empty read-only
 mount, hiding generated host configuration and host session logs. Project files
@@ -118,8 +118,7 @@ for as long as possible and make any shortfall visible:
   behavior applies.
 - `--no-forward-credentials` starts the container unauthenticated. Host
   credentials are not read, staged, or mounted; any credentials left in the
-  staging area by a previous forwarding run are removed, and the generated
-  `devcontainer.json` is rendered credential-free. It also disables the host
+  staging area by a previous forwarding run are removed. It also disables the host
   refresh and start-of-session warning. Direct CLI runs may opt in to API-key
   environment injection with `--api-key-env NAME` or `--api-key-env-file FILE`;
   dry-runs redact values, but real runs still pass those values through the
@@ -164,15 +163,12 @@ the container and:
   `copilot-api.<tenant>.ghe.com`, and `copilot-telemetry-service.<tenant>.ghe.com`.
   GitHub's allowlist reference lists `*.<tenant>.ghe.com`, which a per-IP
   firewall cannot express, so these are the concrete names Copilot CLI uses; add
-  any missing one with `--extra-domain`. The devcontainer firewall variant never
-  includes them.
-- In the devcontainer firewall variant only, allows the host gateway address so
-  port-forwarding and IDE attach work. Direct CLI runs omit this host-network
-  allowlist.
-- When `--pi-ollama` is set, both firewall variants additionally allow outbound
+  any missing one with `--extra-domain`.
+- The firewall never admits the host gateway as a whole. Host services are
+  reachable only through the exact address/port pairs listed here.
+- When `--pi-ollama` is set, the firewall additionally allows outbound
   TCP to the runtime-adapter-selected host endpoint restricted to port `11434`
-  (Ollama's default port) — narrower than the devcontainer's all-ports gateway
-  rule above. The endpoint is exposed only through the runtime-private native
+  (Ollama's default port). The endpoint is exposed only through the runtime-private native
   mapping or exact Linux bridge listener, but other peers able to reach that
   private runtime network remain in the trust boundary. The fixed hostname is
   pinned where the runtime permits it.
@@ -212,7 +208,7 @@ the container and:
 Domain allowlists are resolved once when the container starts, then pinned as IP
 addresses in `ipset`. CDN-backed services can rotate IPs during long sessions; if
 an allowlisted service starts failing after it initially worked, restart the
-container or devcontainer so the firewall resolves fresh addresses.
+session so the firewall resolves fresh addresses.
 
 Customize:
 
@@ -227,6 +223,32 @@ Customize:
   selected runtime-private endpoint and bakes Pi's provider config to use it;
   see `docs/usage.md` for the runtime matrix and Apple setup. `--ollama-model` overrides the
   default model list.
+
+## Devcontainer
+
+`project-sandbox --devcontainer` renders a test and debug environment, not an
+agent sandbox. No agent runs there, so its profile removes what an agent
+session needs and adds nothing in its place:
+
+- **No agents or credentials.** The image installs no agent CLIs.
+  `devcontainer.json` mounts no staged credentials, agent configs or Claude
+  history, sets no agent environment variables and recommends no agent
+  extensions. No credentials are staged for it.
+- **No network by default.** `runArgs` contains `--network none`: only
+  loopback, enforced by the kernel without capabilities, a firewall script or a
+  root step. `--devcontainer-network=runtime` is an explicit, unfiltered opt-in
+  to the runtime's default network. It has no firewall or egress policy, and
+  the command warns about it. Treat it like your own development environment.
+- **No privilege path.** No `--cap-add`, no sudoers rule, no firewall script in
+  the image, and a `postStartCommand` that only applies the git/jj identity as
+  `agent`. The image keeps build-time CA trust (`--build-ca-cert`) but has no
+  session-time trust (`--ca-cert`).
+- **Masks.** `/workspace/.devcontainer` and `/workspace/.project-sandbox` are
+  masked with an empty read-only mount, after any `--mount` values. Test code
+  may come from an agent session, and must not rewrite `devcontainer.json`,
+  whose `initializeCommand` runs on the host.
+
+The devcontainer is rendered only on request; launches never rewrite it.
 
 ## Node.js + npm images (`--node-npm`)
 
@@ -279,7 +301,7 @@ Customize:
 | Agent sends telemetry / usage data | `CLAUDE_TELEMETRY_DISABLED=1` for Claude; `analytics.enabled = false` and `feedback.enabled = false` for Codex; `PI_OFFLINE=1` for Pi (disables startup update/telemetry network calls); `OPENSPEC_TELEMETRY=0` for OpenSpec. OpenCode config is not currently filtered for telemetry settings; see `TODO.md`. |
 | API token leakage via process environment | Default forwarded agent tokens are passed through mounted credential files, not environment variables; host staging files are kept under a private `/tmp` directory. Explicit `--api-key-env*` injection is opt-in, requires `--no-forward-credentials`, and redacts dry-run output, but the selected keys are still present in the runtime process environment during real runs. |
 | Agent rewrites the project `--dockerfile` to poison the next build | The project Dockerfile's SHA256 is recorded under the masked `.project-sandbox/.dockerfile-checksums.json`, which the sandbox cannot read or modify; a later run warns when the Dockerfile changed since it was last built. |
-| Agent reads or edits `.devcontainer` host-path mounts and config | `/workspace/.devcontainer` is masked with an empty read-only mount in both direct runs and devcontainers. |
+| Agent reads, edits or plants `.devcontainer` config (its `initializeCommand` runs on the host) | `/workspace/.devcontainer` is masked with an empty read-only mount in both direct runs and devcontainers. Sessions create an empty `.devcontainer/` when it is missing, so the mask always applies, and refuse a symlinked one. |
 
 The tool does not protect against:
 
@@ -446,8 +468,7 @@ The container runtime's `build` still runs in its build context, which Apple
   boundary. Incus is a future backend candidate, but it has a different
   image/import and launch lifecycle from the generated Dockerfile flow used here.
 - The generated `.devcontainer/` targets local Docker-compatible runtimes such as
-  Docker Desktop or OrbStack; remote services may require rewriting local mounts
-  and relaxing or replacing firewall capability requirements.
+  Docker Desktop or OrbStack; remote services may require rewriting local mounts.
 - Sessions in jj projects run in isolated VCS mode by default (see
   [Isolated sessions](#isolated-vcs-sessions)); `--vcs shared` mounts the
   project in place with its `.git` and `.jj` writable.
@@ -469,7 +490,7 @@ configs contain the same gateway key, are mode 0600 before mounting, and are
 removed from staging after the session.
 
 Proxy-mode egress is gateway-only by default: normal OpenAI/Anthropic domains
-and the devcontainer's broad host-gateway exception are omitted. The exact
+are omitted. The exact
 forwarded gateway address and TCP port remain allowed. Only explicit
 `--extra-domain` and `--allow-github` options widen that policy.
 

@@ -216,11 +216,24 @@ class BuildEnvironmentTests(TestCase):
                     ),
                     0,
                 )
-            for name in ("init-firewall.sh", "init-firewall-devcontainer.sh"):
                 self.assertEqual(
-                    (plain / ".project-sandbox" / name).read_bytes(),
-                    (corporate / ".project-sandbox" / name).read_bytes(),
+                    cli.main(
+                        [
+                            "--devcontainer",
+                            "--build-proxy",
+                            "http://proxy.example:3128",
+                            "--build-ca-cert",
+                            str(CERTIFICATE),
+                            str(corporate),
+                            "debian:bookworm",
+                        ]
+                    ),
+                    0,
                 )
+            self.assertEqual(
+                (plain / ".project-sandbox" / "init-firewall.sh").read_bytes(),
+                (corporate / ".project-sandbox" / "init-firewall.sh").read_bytes(),
+            )
             for name in ("Dockerfile", "Dockerfile.devcontainer"):
                 self.assertNotIn(
                     "proxy.example",
@@ -275,11 +288,13 @@ class BuildNetworkRendererTests(TestCase):
                 "FROM prefix AS final\n"
                 "RUN echo final\n"
             )
-            dockerfile.render(
-                root,
-                base_dockerfile=source,
-                build_ca_certificates=(CERTIFICATE.read_bytes(),),
-            )
+            for devcontainer in (False, True):
+                dockerfile.render(
+                    root,
+                    base_dockerfile=source,
+                    build_ca_certificates=(CERTIFICATE.read_bytes(),),
+                    devcontainer=devcontainer,
+                )
             for name in ("Dockerfile", "Dockerfile.devcontainer"):
                 text = (root / name).read_text()
                 self.assertIn('SHELL ["/bin/bash", "-euc"]', text)
@@ -305,13 +320,15 @@ class BuildNetworkRendererTests(TestCase):
             source.write_text(
                 "FROM scratch AS untouched\nFROM python:3.12-slim AS prefix\nRUN echo early\nFROM prefix AS final\nRUN echo late\n"
             )
-            dockerfile.render(
-                context,
-                base_dockerfile=source,
-                build_context=root,
-                build_ca_certificates=certificates,
-                ca_certificates=certificates,
-            )
+            for devcontainer in (False, True):
+                dockerfile.render(
+                    context,
+                    base_dockerfile=source,
+                    build_context=root,
+                    build_ca_certificates=certificates,
+                    ca_certificates=certificates,
+                    devcontainer=devcontainer,
+                )
             for name in ("Dockerfile", "Dockerfile.devcontainer"):
                 text = (context / name).read_text()
                 self.assertNotIn(
@@ -324,9 +341,13 @@ class BuildNetworkRendererTests(TestCase):
                 self.assertLess(
                     text.index("NODE_EXTRA_CA_CERTS"), text.index("RUN npm install")
                 )
-                self.assertGreater(
-                    text.index("# Session trust"), text.index("RUN echo late")
-                )
+                if name == "Dockerfile":
+                    self.assertGreater(
+                        text.index("# Session trust"), text.index("RUN echo late")
+                    )
+                else:
+                    # The devcontainer keeps build-time trust only.
+                    self.assertNotIn("# Session trust", text)
                 self.assertNotIn("_proxy", text)
                 self.assertNotIn("Acquire::http::Proxy", text)
                 self.assertIn(

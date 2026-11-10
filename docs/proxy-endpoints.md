@@ -33,8 +33,9 @@ For **remote `--internet-proxy` on Apple container**, the route above is replace
 by `sandbox -> http://host.docker.internal:PORT -> host relay -> upstream`.
 The host uses its VPN routes and DNS. Complete the
 [Apple localhost alias setup](apple-container-dns.md) for both local and remote
-Internet proxies. Docker, Podman, devcontainers, and remote `--agent-proxy`
-connections keep the direct routes in the table.
+Internet proxies. Docker, Podman, devcontainers (with
+`--devcontainer-network=runtime`), and remote `--agent-proxy` connections keep
+the direct routes in the table.
 
 Explicit ports override defaults. Agent API paths such as `/api/v1` are retained;
 Internet proxy paths must be empty or `/`. Userinfo (including empty userinfo),
@@ -95,13 +96,13 @@ passes through CONNECT with its own certificate verification.
 
 Use repeatable `--ca-cert PATH` with either proxy to add public CA certificates.
 The host loads these into connection-specific TLS contexts without changing its
-trust store. Generated sandbox and devcontainer images install them into system
-trust; Node receives `NODE_USE_SYSTEM_CA=1`. Inputs must be individual CA PEMs;
+trust store. Generated sandbox images install them into system
+trust (the devcontainer image does not; use `--build-ca-cert` there); Node receives `NODE_USE_SYSTEM_CA=1`. Inputs must be individual CA PEMs;
 private keys, bundles, malformed data, and leaf certificates are rejected.
 Certificates are readable public image contents and expand image-wide trust.
 Private client trust stores may need separate configuration.
 
-Rebuild images and devcontainers after changing CA inputs. `--no-build` retains
+Rebuild images after changing CA inputs. `--no-build` retains
 the existing image trust, even though host preflight uses the new CA inputs.
 Certificates are installed after build steps and do not change build-time trust.
 

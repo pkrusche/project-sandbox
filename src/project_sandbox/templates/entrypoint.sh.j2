@@ -4,7 +4,9 @@ set -eu
 NAME="${PROJECT_SANDBOX_USER_NAME:-}"
 EMAIL="${PROJECT_SANDBOX_USER_EMAIL:-}"
 
-{% include "_provision.sh.j2" %}
+{% include "_provision_identity.sh.j2" %}
+
+{% include "_provision_agents.sh.j2" %}
 
 # --node-npm: fill the sandbox-provided tmpfs at /workspace/node_modules from
 # the dependencies baked into the image. Copy only into an empty tmpfs mount so

@@ -60,6 +60,14 @@ else
   uv run project-sandbox --no-build "$TMP_PROJECT" python:3.12-slim
 fi
 echo
+# Ordinary runs write no devcontainer; it is rendered only on request.
+if [ -e "$TMP_PROJECT/.devcontainer/devcontainer.json" ]; then
+  echo "BAD   a plain run rendered .devcontainer/devcontainer.json" >&2
+  exit 1
+fi
+echo "Running: uv run project-sandbox --devcontainer $TMP_PROJECT python:3.12-slim"
+uv run project-sandbox --devcontainer "$TMP_PROJECT" python:3.12-slim
+echo
 
 PS="$TMP_PROJECT/.project-sandbox"
 DC="$TMP_PROJECT/.devcontainer"
@@ -69,24 +77,26 @@ REQUIRED=(
   "$PS/Dockerfile.devcontainer"
   "$PS/entrypoint.sh"
   "$PS/init-firewall.sh"
-  "$PS/init-firewall-devcontainer.sh"
   "$PS/project-sandbox-devcontainer-init"
   "$PS/.gitignore"
   "$PS/claude/settings.json"
-  "$PS/claude-devcontainer/settings.json"
   "$PS/codex/config.toml"
-  "$PS/codex-devcontainer/config.toml"
   "$DC/devcontainer.json"
   "$TMP_PROJECT/.gitignore"
 )
 
-SYMLINKS=(
-  "$DC/Dockerfile"
+# Removed with the agent-free devcontainer.
+ABSENT=(
+  "$PS/init-firewall-devcontainer.sh"
+  "$PS/claude-devcontainer"
+  "$PS/codex-devcontainer"
   "$DC/init-firewall.sh"
   "$DC/claude"
-  "$DC/claude-devcontainer"
   "$DC/codex"
-  "$DC/codex-devcontainer"
+)
+
+SYMLINKS=(
+  "$DC/Dockerfile"
 )
 
 fail=0
@@ -97,6 +107,15 @@ for f in "${REQUIRED[@]}"; do
   else
     echo "  MISS  $f"
     fail=1
+  fi
+done
+
+for f in "${ABSENT[@]}"; do
+  if [ -e "$f" ] || [ -L "$f" ]; then
+    echo "  BAD   $f (should not exist)"
+    fail=1
+  else
+    echo "  ok    absent: $f"
   fi
 done
 
@@ -147,6 +166,8 @@ check_contains "$PS/codex/config.toml" 'approval_policy = "never"'
 check_contains "$PS/entrypoint.sh" "project-sandbox-init-firewall"
 check_contains "$PS/entrypoint.sh" "bash-headless"
 check_contains "$TMP_PROJECT/.gitignore" "project-sandbox — do not commit agent secrets"
+check_contains "$DC/devcontainer.json" '"none"'
+check_contains "$DC/devcontainer.json" '"UV_OFFLINE": "1"'
 
 if command -v python3 >/dev/null 2>&1; then
   if python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$DC/devcontainer.json" 2>/dev/null; then

@@ -119,7 +119,7 @@ class CaCertificateTests(TestCase):
             self.assertIn("Would bake CA certificate", output.getvalue())
             self.assertEqual(list(root.iterdir()), [])
 
-    def test_render_all_sources_and_devcontainer_with_cache_invalidation(self):
+    def test_render_all_sources_with_cache_invalidation(self):
         certificates = dockerfile.read_ca_certificates([str(CERTIFICATE)])
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -152,7 +152,16 @@ class CaCertificateTests(TestCase):
                 staged = list(context.glob("project-sandbox-ca-*.crt"))
                 self.assertEqual(len(staged), 1)
                 self.assertEqual(staged[0].read_bytes(), certificates[0])
-                for name in ("Dockerfile", "Dockerfile.devcontainer"):
+                self.assertNotIn(
+                    "project-sandbox-ca-",
+                    dockerfile.render(
+                        context,
+                        ca_certificates=certificates,
+                        base_image="debian:bookworm",
+                        devcontainer=True,
+                    ).read_text(),
+                )
+                for name in ("Dockerfile",):
                     text = (context / name).read_text()
                     self.assertIn("ENV NODE_USE_SYSTEM_CA=1", text)
                     self.assertIn(

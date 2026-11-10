@@ -118,6 +118,19 @@ RUN set -eux; \
     fi; \
     useradd -m -u "${AGENT_UID}" -g "${AGENT_GID}" -s /bin/bash agent
 
+{% if devcontainer -%}
+{#- Devcontainer profile: a test and debug environment. No agent configs, no
+    firewall, no sudoers rule and no session entrypoint; it runs offline
+    (--network none) or on the runtime's unfiltered network. -#}
+COPY {{ sandbox_copy_prefix }}project-sandbox-devcontainer-init /usr/local/bin/project-sandbox-devcontainer-init
+
+RUN chmod 0755 /usr/local/bin/project-sandbox-devcontainer-init
+
+USER agent
+WORKDIR /workspace
+ENTRYPOINT []
+CMD ["bash"]
+{%- else -%}
 RUN install -d /project-sandbox-config/claude /project-sandbox-config/codex \
         /project-sandbox-secrets/claude /project-sandbox-secrets/codex \
         /project-sandbox-secrets/opencode /project-sandbox-secrets/pi && \
@@ -125,7 +138,7 @@ RUN install -d /project-sandbox-config/claude /project-sandbox-config/codex \
     install -m 0644 -o agent -g "${AGENT_GID}" /dev/null /home/agent/.claude/settings.json && \
     install -m 0644 -o agent -g "${AGENT_GID}" /dev/null /home/agent/.codex/config.toml
 
-COPY {{ sandbox_copy_prefix }}{{ firewall_src_filename }} /usr/local/bin/project-sandbox-init-firewall
+COPY {{ sandbox_copy_prefix }}init-firewall.sh /usr/local/bin/project-sandbox-init-firewall
 COPY {{ sandbox_copy_prefix }}entrypoint.sh /usr/local/bin/project-sandbox-entrypoint
 COPY {{ sandbox_copy_prefix }}project-sandbox-devcontainer-init /usr/local/bin/project-sandbox-devcontainer-init
 
@@ -148,3 +161,4 @@ USER agent
 WORKDIR /workspace
 ENTRYPOINT ["/usr/local/bin/project-sandbox-entrypoint"]
 CMD ["bash"]
+{%- endif %}

@@ -15,7 +15,6 @@ from . import host_tools
 # encodes Claude's permission posture.
 CLAUDE_PROFILES = {
     "claude": "bypassPermissions",
-    "claude-devcontainer": "auto",
 }
 
 _CLAUDE_CONFIG_BASE = {
@@ -147,14 +146,10 @@ def render(
         out = out_dir / "settings.json"
         out.write_text(_claude_settings_json(permission_mode), encoding="utf-8")
         paths[key] = out
-    for key, approval_policy in (
-        ("codex", "never"),
-        ("codex-devcontainer", "on-request"),
-    ):
-        out_dir = _ensure_project_subdir(context_dir, key)
-        out = out_dir / "config.toml"
-        out.write_text(_codex_config_toml(approval_policy), encoding="utf-8")
-        paths[key] = out
+    out_dir = _ensure_project_subdir(context_dir, "codex")
+    out = out_dir / "config.toml"
+    out.write_text(_codex_config_toml("never"), encoding="utf-8")
+    paths["codex"] = out
     out_dir = _ensure_project_subdir(context_dir, "pi")
     # These files contain the agent-proxy bearer key.  Remove any copy left by
     # an interrupted prior run before deciding which provider (if any) this
@@ -217,11 +212,14 @@ def sync_credentials(
     Unsupervised sessions exclude OpenCode's host history and runtime state.
 
     Returns a dict keyed by agent name:
-      "claude", "claude-devcontainer" — always present
-      "codex", "opencode", "pi"       — present only if the agent is installed
+      "claude"                  — always present
+      "codex", "opencode", "pi" — present only if the agent is installed
     """
     _home = home or Path.home()
     host_paths = _agent_host_paths(_home)
+    # Older versions also staged Claude credentials for the devcontainer, which
+    # no longer has agents; don't leave that copy behind.
+    _remove_path_if_exists(credentials_dir(project_sandbox_dir, "claude-devcontainer"))
     result: dict[str, Path] = {}
     for profile, permission_mode in CLAUDE_PROFILES.items():
         result[profile] = _sync_claude_credentials(

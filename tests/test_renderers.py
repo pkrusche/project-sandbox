@@ -36,7 +36,7 @@ class RendererTests(TestCase):
     def test_codex_configs_forward_uv_environment(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config_agents.render(Path(tmp))
-            for agent in ("codex", "codex-devcontainer"):
+            for agent in ("codex",):
                 config = tomllib.loads(
                     (Path(tmp) / agent / "config.toml").read_text(encoding="utf-8")
                 )
@@ -70,7 +70,7 @@ class RendererTests(TestCase):
     def test_codex_configs_disable_startup_update_check(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config_agents.render(Path(tmp))
-            for agent in ("codex", "codex-devcontainer"):
+            for agent in ("codex",):
                 config = tomllib.loads(
                     (Path(tmp) / agent / "config.toml").read_text(encoding="utf-8")
                 )
@@ -269,10 +269,7 @@ class RendererTests(TestCase):
                 extra_domains=[],
                 agent_proxy_port=4000,
             )
-            for filename in (
-                "init-firewall.sh",
-                "init-firewall-devcontainer.sh",
-            ):
+            for filename in ("init-firewall.sh",):
                 with self.subTest(filename=filename):
                     text = (context / filename).read_text(encoding="utf-8")
                     self.assertIn("--dport 4000", text)
@@ -693,7 +690,7 @@ class RendererTests(TestCase):
             self.assertNotIn("claude-secret-token", docker_text)
             self.assertNotIn("codex-secret-token", docker_text)
 
-    def test_claude_settings_disable_auto_mode_outside_the_auto_profile(self) -> None:
+    def test_claude_settings_disable_auto_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             context = Path(tmp)
             paths = config_agents.render(context)
@@ -704,13 +701,7 @@ class RendererTests(TestCase):
             # unselected: that is what stops Claude Code offering it at start.
             self.assertEqual(bypass["permissions"]["disableAutoMode"], "disable")
             self.assertTrue(bypass["skipDangerousModePermissionPrompt"])
-
-            devcontainer = json.loads(
-                paths["claude-devcontainer"].read_text(encoding="utf-8")
-            )
-            self.assertEqual(devcontainer["permissions"]["defaultMode"], "auto")
-            self.assertNotIn("disableAutoMode", devcontainer["permissions"])
-            self.assertNotIn("skipDangerousModePermissionPrompt", devcontainer)
+            self.assertNotIn("claude-devcontainer", paths)
 
     def test_claude_config_state_marks_the_auto_mode_nudge_as_seen(self) -> None:
         for profile in config_agents.CLAUDE_PROFILES:
@@ -932,7 +923,7 @@ class RendererTests(TestCase):
             with _credentials_root(root):
                 staged = config_agents.sync_credentials(context, home=home)
 
-            for profile in ("claude", "claude-devcontainer"):
+            for profile in ("claude",):
                 staged_consent = staged[profile] / "remote-settings-consent.json"
                 self.assertEqual(staged_consent.read_text(encoding="utf-8"), consent)
                 self.assertEqual(staged_consent.stat().st_mode & 0o777, 0o600)
@@ -1719,7 +1710,19 @@ class RendererTests(TestCase):
             self.assertNotIn(".git", patterns)
             # Must not exclude the generated dir whose scripts are COPY'd in.
             self.assertNotIn(".project-sandbox", patterns)
-            self.assertTrue((context / "Dockerfile.devcontainer.dockerignore").exists())
+            self.assertFalse(
+                (context / "Dockerfile.devcontainer.dockerignore").exists()
+            )
+
+            dockerfile.render_dockerignore(
+                context, build_context=project, devcontainer=True
+            )
+            self.assertEqual(
+                (context / "Dockerfile.devcontainer.dockerignore").read_text(
+                    encoding="utf-8"
+                ),
+                ignore.read_text(encoding="utf-8"),
+            )
 
     def test_render_dockerignore_skips_when_context_is_sandbox(self) -> None:
         # When the build context is just .project-sandbox/ there is nothing heavy
@@ -2150,58 +2153,61 @@ class RendererTests(TestCase):
             self.assertIn("/project-sandbox-secrets/claude/.claude.json", text)
             self.assertNotIn("/project-sandbox-config/claude/.claude.json", text)
 
-    def test_devcontainer_entrypoint_copies_staged_claude_credentials(self) -> None:
+    def test_devcontainer_entrypoint_provisions_identity_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             context = Path(tmp)
             dockerfile.render_devcontainer_entrypoint(context)
             text = (context / "project-sandbox-devcontainer-init").read_text(
                 encoding="utf-8"
             )
-            self.assertIn("/project-sandbox-config/claude/settings.json", text)
-            self.assertIn("/project-sandbox-secrets/claude/.claude.json", text)
+            self.assertIn('git config --global user.name "$NAME"', text)
+            self.assertIn('jj config set --user user.name "$NAME"', text)
+            self.assertIn('jj config set --user user.email "$EMAIL"', text)
+            self.assertIn("safe.directory /workspace", text)
+            for agent_path in (
+                "/project-sandbox-config",
+                "/project-sandbox-secrets",
+                ".claude",
+                ".codex",
+                "opencode",
+                ".pi/agent",
+                "COPILOT_HOME",
+                "sudo",
+            ):
+                self.assertNotIn(agent_path, text)
+
+    def test_session_entrypoint_provisions_identity_and_agents(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            text = dockerfile.render_entrypoint(context).read_text(encoding="utf-8")
+
+            identity = text.index('git config --global user.name "$NAME"')
+            agents = text.index('mkdir -p "$HOME/.claude"')
+            self.assertLess(identity, agents)
             self.assertIn("/project-sandbox-secrets/claude/.credentials.json", text)
             self.assertIn(
                 "/project-sandbox-secrets/claude/remote-settings-consent.json", text
             )
-            self.assertIn('"$HOME/.claude/remote-settings-consent.json"', text)
-            self.assertIn('"$HOME/.claude/.claude.json"', text)
+            self.assertIn("/project-sandbox-config/codex/config.toml", text)
+            self.assertIn("/project-sandbox-secrets/opencode/.config/opencode", text)
             self.assertIn("CLAUDE_SECURESTORAGE_CONFIG_DIR", text)
             self.assertNotIn("CLAUDE_CONFIG_DIR", text)
-            self.assertIn("re-run 'project-sandbox <project> <base_image>'", text)
-            self.assertNotIn(".claude.host", text)
-            self.assertIn("/project-sandbox-config/codex/config.toml", text)
-            self.assertIn("/project-sandbox-secrets/codex/auth.json", text)
-            self.assertIn("/project-sandbox-secrets/opencode/.config/opencode", text)
-            self.assertIn(
-                "/project-sandbox-secrets/opencode/.local/share/opencode", text
-            )
-            self.assertIn(
-                "/project-sandbox-secrets/opencode/.local/state/opencode", text
-            )
-            self.assertNotIn(".codex.host", text)
-            self.assertNotIn("opencode.host", text)
-            self.assertIn('jj config set --user user.name "$NAME"', text)
-            self.assertIn('jj config set --user user.email "$EMAIL"', text)
 
-    def test_devcontainer_entrypoint_renderer_overwrites_config_dir_claude_credentials(
-        self,
-    ) -> None:
+    def test_devcontainer_entrypoint_renderer_overwrites_existing_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             context = Path(tmp)
             existing = context / "project-sandbox-devcontainer-init"
             existing.write_text(
                 "#!/bin/sh\n"
-                'if [ -f "/project-sandbox-config/claude/.claude.json" ]; then\n'
-                '  cp "/project-sandbox-config/claude/.claude.json" "$HOME/.claude.json"\n'
-                "fi\n",
+                'cp "/project-sandbox-secrets/claude/.claude.json" "$HOME/.claude.json"\n',
                 encoding="utf-8",
             )
 
             dockerfile.render_devcontainer_entrypoint(context)
             text = existing.read_text(encoding="utf-8")
 
-            self.assertIn("/project-sandbox-secrets/claude/.claude.json", text)
-            self.assertNotIn("/project-sandbox-config/claude/.claude.json", text)
+            self.assertNotIn("/project-sandbox-secrets", text)
+            self.assertIn("devcontainer init complete", text)
 
     def test_entrypoint_renderer_overwrites_stale_claude_config_dir_env(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2234,56 +2240,45 @@ class RendererTests(TestCase):
             self.assertIn('jj config set --user user.name "$NAME"', text)
             self.assertIn('jj config set --user user.email "$EMAIL"', text)
 
-    def test_firewall_render_writes_both_container_and_devcontainer_scripts(
-        self,
-    ) -> None:
+    def test_firewall_render_writes_only_the_sandbox_script(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             context = Path(tmp)
             fw = firewall.render(context, extra_domains=[])
-            container_text = (context / "init-firewall.sh").read_text(encoding="utf-8")
-            devcontainer_text = (context / "init-firewall-devcontainer.sh").read_text(
-                encoding="utf-8"
-            )
+            text = fw.read_text(encoding="utf-8")
 
             self.assertEqual(fw, context / "init-firewall.sh")
-            self.assertNotIn("HOST_GW4", container_text)
-            self.assertNotIn("HOST_GW6", container_text)
-            self.assertNotIn("Host gateway", container_text)
-            self.assertIn("HOST_GW4", devcontainer_text)
-            self.assertIn("HOST_GW6", devcontainer_text)
-            self.assertIn("Host gateway", devcontainer_text)
-            for text in (container_text, devcontainer_text):
-                self.assertIn('"api.anthropic.com"', text)
-                self.assertIn('"claude.ai"', text)
-
-    def test_firewall_host_network_allows_gateway_not_interface_cidr(self) -> None:
-        # Regression: the devcontainer (allow_host_network) variant must allow
-        # only the default IPv4 gateway, not the entire interface CIDR, so peers
-        # sharing the container subnet are not reachable. Mirrors the IPv6 path,
-        # which already restricts to the gateway.
-        with tempfile.TemporaryDirectory() as tmp:
-            context = Path(tmp)
-            firewall.render(context, extra_domains=[])
-            text = (context / "init-firewall-devcontainer.sh").read_text(
-                encoding="utf-8"
+            self.assertEqual(
+                sorted(p.name for p in context.iterdir()), ["init-firewall.sh"]
             )
-            # Must derive the gateway from the default route and allow only it.
-            self.assertIn("HOST_GW4", text)
-            self.assertIn('iptables -A OUTPUT -d "$HOST_GW4"', text)
-            self.assertIn('iptables -A INPUT  -s "$HOST_GW4"', text)
-            # Must NOT open the whole interface CIDR any more.
-            self.assertNotIn("HOST_NET4", text)
-            self.assertNotIn('-d "$HOST_NET4"', text)
-            self.assertNotIn('-s "$HOST_NET4"', text)
-            # The IPv4 narrowing should match the IPv6 gateway derivation style.
-            self.assertIn("ip -4 route", text)
-            self.assertIn("/default/ {print $3; exit}", text)
+            self.assertIn('"api.anthropic.com"', text)
+            self.assertIn('"claude.ai"', text)
+
+    def test_no_firewall_variant_has_the_host_gateway_block(self) -> None:
+        # The all-ports host-gateway exception existed only for the removed
+        # devcontainer variant; no configuration may render it.
+        variants = {
+            "normal": {},
+            "agent-proxy": {"agent_proxy_port": 4000},
+            "pi-ollama": {"pi_ollama": True},
+            "internet-proxy": {"policy": firewall.INTERNET_PROXY},
+            "sidecar": {"policy": firewall.INTERNET_PROXY, "egress_sidecar": True},
+        }
+        for label, kwargs in variants.items():
+            with self.subTest(variant=label), tempfile.TemporaryDirectory() as tmp:
+                context = Path(tmp)
+                text = firewall.render(context, extra_domains=[], **kwargs).read_text(
+                    encoding="utf-8"
+                )
+                self.assertNotIn("HOST_GW4", text)
+                self.assertNotIn("HOST_GW6", text)
+                self.assertNotIn("port-forwarding / IDE attach", text)
+                self.assertFalse((context / "init-firewall-devcontainer.sh").exists())
 
     def test_firewall_collects_all_resolvers_not_just_first(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             context = Path(tmp)
             firewall.render(context, extra_domains=[])
-            for name in ("init-firewall.sh", "init-firewall-devcontainer.sh"):
+            for name in ("init-firewall.sh",):
                 text = (context / name).read_text(encoding="utf-8")
                 # Must NOT use the single-resolver awk pattern
                 self.assertNotIn("{print $2; exit}", text)
@@ -2304,7 +2299,7 @@ class RendererTests(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             context = Path(tmp)
             firewall.render(context, extra_domains=[])
-            for name in ("init-firewall.sh", "init-firewall-devcontainer.sh"):
+            for name in ("init-firewall.sh",):
                 text = (context / name).read_text(encoding="utf-8")
                 # Execute the rendered control-rule loops with an argv recorder.
                 # Inspect all ICMPv6 commands too, so a blanket rule outside
@@ -2351,7 +2346,7 @@ class RendererTests(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             context = Path(tmp)
             firewall.render(context, extra_domains=[])
-            for name in ("init-firewall.sh", "init-firewall-devcontainer.sh"):
+            for name in ("init-firewall.sh",):
                 text = (context / name).read_text(encoding="utf-8")
                 # No blanket DNS ACCEPT to/from the resolver any more.
                 self.assertNotIn('--dport 53 -d "$dns" -j ACCEPT', text)
@@ -2379,7 +2374,7 @@ class RendererTests(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             context = Path(tmp)
             firewall.render(context, extra_domains=[])
-            for name in ("init-firewall.sh", "init-firewall-devcontainer.sh"):
+            for name in ("init-firewall.sh",):
                 text = (context / name).read_text(encoding="utf-8")
                 self.assertNotIn("--noflush -t nat", text)
                 self.assertIn(
@@ -2450,7 +2445,7 @@ class RendererTests(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             context = Path(tmp)
             firewall.render(context, extra_domains=["example.com"])
-            for name in ("init-firewall.sh", "init-firewall-devcontainer.sh"):
+            for name in ("init-firewall.sh",):
                 text = (context / name).read_text(encoding="utf-8")
                 # Rendered as a shell-safe token inside the DOMAINS=( ... ) array.
                 array = text.split("DOMAINS=(", 1)[1].split(")", 1)[0]
@@ -2460,7 +2455,7 @@ class RendererTests(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             context = Path(tmp)
             firewall.render(context, extra_domains=[], allow_github=True)
-            for name in ("init-firewall.sh", "init-firewall-devcontainer.sh"):
+            for name in ("init-firewall.sh",):
                 text = (context / name).read_text(encoding="utf-8")
                 self.assertIn("https://api.github.com/meta", text)
                 self.assertIn('"github.com"', text)
@@ -2481,7 +2476,7 @@ class RendererTests(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             context = Path(tmp)
             firewall.render(context, extra_domains=[], pi_ollama=True)
-            for name in ("init-firewall.sh", "init-firewall-devcontainer.sh"):
+            for name in ("init-firewall.sh",):
                 text = (context / name).read_text(encoding="utf-8")
                 self.assertIn("--dport 11434", text)
                 self.assertIn(
@@ -2538,7 +2533,7 @@ class RendererTests(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             context = Path(tmp)
             firewall.render(context, extra_domains=[])
-            for name in ("init-firewall.sh", "init-firewall-devcontainer.sh"):
+            for name in ("init-firewall.sh",):
                 text = (context / name).read_text(encoding="utf-8")
                 self.assertNotIn("11434", text)
                 self.assertNotIn("# project-sandbox-dns-pin' /etc/hosts", text)
@@ -2557,29 +2552,12 @@ class RendererTests(TestCase):
                 text,
             )
 
-    def test_render_returns_all_four_config_paths(self) -> None:
+    def test_render_returns_agent_config_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             context = Path(tmp)
             cfg = config_agents.render(context)
             self.assertEqual(cfg["claude"], context / "claude" / "settings.json")
-            self.assertEqual(
-                cfg["claude-devcontainer"],
-                context / "claude-devcontainer" / "settings.json",
-            )
             self.assertEqual(cfg["codex"], context / "codex" / "config.toml")
-            self.assertEqual(
-                cfg["codex-devcontainer"],
-                context / "codex-devcontainer" / "config.toml",
-            )
-
-    def test_render_claude_devcontainer_uses_auto_permission_mode(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            context = Path(tmp)
-            cfg = config_agents.render(context)
-            out = cfg["claude-devcontainer"]
-            settings = json.loads(out.read_text(encoding="utf-8"))
-            self.assertEqual(settings["permissions"]["defaultMode"], "auto")
-            self.assertNotIn("bypassPermissions", out.read_text(encoding="utf-8"))
 
     def test_render_claude_container_uses_bypass_permission_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2590,13 +2568,15 @@ class RendererTests(TestCase):
                 settings["permissions"]["defaultMode"], "bypassPermissions"
             )
 
-    def test_render_codex_devcontainer_uses_on_request_approval(self) -> None:
+    def test_render_writes_no_devcontainer_agent_profiles(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             context = Path(tmp)
-            out = config_agents.render(context)["codex-devcontainer"]
-            self.assertIn(
-                'approval_policy = "on-request"', out.read_text(encoding="utf-8")
-            )
+            cfg = config_agents.render(context)
+
+            self.assertNotIn("claude-devcontainer", cfg)
+            self.assertNotIn("codex-devcontainer", cfg)
+            self.assertFalse((context / "claude-devcontainer").exists())
+            self.assertFalse((context / "codex-devcontainer").exists())
 
     def test_render_codex_container_uses_never_approval(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2903,27 +2883,39 @@ class RendererTests(TestCase):
             self.assertTrue(any("apt-get" in w for w in warnings))
             self.assertTrue(any("/workspace" in w for w in warnings))
 
-    def test_sync_credentials_devcontainer_uses_auto_permission_mode(self) -> None:
+    def test_sync_credentials_stages_nothing_for_the_devcontainer(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             home = root / "home"
             context = root / ".project-sandbox"
-            home.mkdir()
+            (home / ".claude").mkdir(parents=True)
             with _credentials_root(root):
-                staged_dir = config_agents.sync_credentials(context, home=home)[
-                    "claude-devcontainer"
-                ]
-            state = json.loads(
-                (staged_dir / ".claude.json").read_text(encoding="utf-8")
-            )
-            self.assertEqual(state["permissions"]["defaultMode"], "auto")
-            self.assertNotIn("bypassPermissionsModeAccepted", state)
-            self.assertNotIn(
-                "skipDangerousModePermissionPrompt", state.get("permissions", {})
-            )
-            self.assertEqual(staged_dir.stat().st_mode & 0o777, 0o700)
+                stale = config_agents.credentials_dir(context, "claude-devcontainer")
+                stale.mkdir(parents=True)
+                (stale / ".credentials.json").write_text("{}", encoding="utf-8")
 
-    def test_dockerfile_renderer_produces_separate_container_and_devcontainer_dockerfiles(
+                staged = config_agents.sync_credentials(context, home=home)
+
+                self.assertNotIn("claude-devcontainer", staged)
+                # A copy staged by an older version is removed.
+                self.assertFalse(stale.exists())
+                self.assertTrue(staged["claude"].is_dir())
+
+    def test_session_render_writes_no_devcontainer_dockerfile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            out = dockerfile.render(context, base_image="python:3.12-slim")
+
+            self.assertEqual(out, context / "Dockerfile")
+            self.assertFalse((context / "Dockerfile.devcontainer").exists())
+            text = out.read_text(encoding="utf-8")
+            self.assertIn(
+                "COPY init-firewall.sh /usr/local/bin/project-sandbox-init-firewall",
+                text,
+            )
+            self.assertEqual(text.count("NOPASSWD"), 1)
+
+    def test_devcontainer_profile_has_no_agents_firewall_sudo_or_runtime_ca(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2931,41 +2923,56 @@ class RendererTests(TestCase):
             context = project / ".project-sandbox"
             context.mkdir()
             source = project / "Dockerfile"
-            source.write_text("FROM ubuntu:24.04\n", encoding="utf-8")
-            dockerfile.render(
+            source.write_text("FROM ubuntu:24.04\nRUN echo hi\n", encoding="utf-8")
+            session = dockerfile.render(
                 context,
                 base_dockerfile=source,
                 build_context=project,
-                install_agents=("claude",),
+                install_agents=("claude", "codex", "opencode", "pi", "copilot"),
+                ca_certificates=(b"runtime-ca\n",),
+                build_ca_certificates=(b"build-ca\n",),
             )
-            container_text = (context / "Dockerfile").read_text(encoding="utf-8")
-            devcontainer_text = (context / "Dockerfile.devcontainer").read_text(
-                encoding="utf-8"
-            )
+            session_before = session.read_text(encoding="utf-8")
+            staged_before = sorted(p.name for p in context.glob("*.crt"))
 
+            out = dockerfile.render(
+                context,
+                base_dockerfile=source,
+                build_context=project,
+                install_agents=("claude", "codex", "opencode", "pi", "copilot"),
+                ca_certificates=(b"runtime-ca\n",),
+                build_ca_certificates=(b"build-ca\n",),
+                devcontainer=True,
+            )
+            text = out.read_text(encoding="utf-8")
+
+            self.assertEqual(out, context / "Dockerfile.devcontainer")
+            # The session image and its staged inputs are untouched.
+            self.assertEqual(session.read_text(encoding="utf-8"), session_before)
+            self.assertEqual(
+                sorted(p.name for p in context.glob("*.crt")), staged_before
+            )
+            self.assertNotIn("npm install -g @anthropic-ai", text)
+            self.assertNotIn("npm install -g @openai", text)
+            self.assertNotIn("opencode-ai", text)
+            self.assertNotIn("pi-coding-agent", text)
+            self.assertNotIn("@github/copilot", text)
+            self.assertNotIn("sudoers", text)
+            self.assertNotIn("init-firewall", text)
+            self.assertNotIn("project-sandbox-entrypoint", text)
+            self.assertNotIn("/project-sandbox-secrets", text)
+            self.assertNotIn("project-sandbox-ca-", text)
+            # Kept: the base toolchain, the agent user, build-time CA trust.
+            self.assertIn("@fission-ai/openspec", text)
+            self.assertIn("useradd -m -u", text)
+            self.assertIn("project-sandbox-build-ca-", text)
             self.assertIn(
-                "COPY .project-sandbox/init-firewall.sh /usr/local/bin/project-sandbox-init-firewall",
-                container_text,
+                "COPY .project-sandbox/project-sandbox-devcontainer-init "
+                "/usr/local/bin/project-sandbox-devcontainer-init",
+                text,
             )
-            self.assertNotIn("init-firewall-devcontainer", container_text)
-            self.assertIn(
-                "COPY .project-sandbox/init-firewall-devcontainer.sh /usr/local/bin/project-sandbox-init-firewall",
-                devcontainer_text,
-            )
-            self.assertNotIn(
-                "init-firewall.sh",
-                devcontainer_text.replace("init-firewall-devcontainer.sh", ""),
-            )
-            # Both Dockerfiles have the same binary name — only one sudoers entry each
-            self.assertEqual(container_text.count("NOPASSWD"), 1)
-            self.assertEqual(devcontainer_text.count("NOPASSWD"), 1)
-            self.assertIn(
-                "NOPASSWD: /usr/local/bin/project-sandbox-init-firewall", container_text
-            )
-            self.assertIn(
-                "NOPASSWD: /usr/local/bin/project-sandbox-init-firewall",
-                devcontainer_text,
-            )
+            self.assertIn("USER agent", text)
+            self.assertIn("ENTRYPOINT []", text)
 
 
 class NodeNpmDockerfileTests(TestCase):
@@ -3426,7 +3433,7 @@ class CopilotRendererTests(TestCase):
         )
         self.assertEqual(lines, ["TOKEN=<unset>"])
 
-    def test_firewall_pins_tenant_hosts_only_in_sandbox_script(self) -> None:
+    def test_firewall_pins_tenant_hosts_in_sandbox_script(self) -> None:
         hosts = (
             "acme.ghe.com",
             "api.acme.ghe.com",
@@ -3442,13 +3449,9 @@ class CopilotRendererTests(TestCase):
                 copilot_tenant_hosts=hosts,
             )
             sandbox = (context / "init-firewall.sh").read_text(encoding="utf-8")
-            devcontainer = (context / "init-firewall-devcontainer.sh").read_text(
-                encoding="utf-8"
-            )
         domains = sandbox[sandbox.index("DOMAINS=(") : sandbox.index("\n)\n")]
         for host in hosts:
             self.assertIn(f"\n  {host}\n", domains)
-            self.assertNotIn(host, devcontainer)
         # Pinned through the same DNS-pinning loop as the GitHub hosts.
         self.assertIn('for domain in "${DOMAINS[@]}"; do', sandbox)
 
@@ -3456,7 +3459,7 @@ class CopilotRendererTests(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             context = Path(tmp)
             firewall.render(context, extra_domains=[], allow_github=True)
-            for name in ("init-firewall.sh", "init-firewall-devcontainer.sh"):
+            for name in ("init-firewall.sh",):
                 self.assertNotIn(
                     "ghe.com", (context / name).read_text(encoding="utf-8")
                 )

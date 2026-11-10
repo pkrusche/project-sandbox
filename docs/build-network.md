@@ -12,7 +12,7 @@ project-sandbox --build-proxy http://proxy.corp.example:3128 \
 
 These options work with base images, `--dockerfile`, `--python-uv`, `--rust-cargo`,
 and `--node-npm`. They require an image-based runtime; chroot is unsupported.
-Build CAs are included in both generated sandbox and devcontainer Dockerfiles.
+Build CAs are included in the generated sandbox and devcontainer Dockerfiles.
 They also work independently of a proxy, for example with an internal HTTPS mirror.
 
 ## Proxy settings
@@ -100,8 +100,9 @@ build inputs. Other host processes can use the forwarder while it is running.
 
 Devcontainer tools build outside project-sandbox and need their own proxy
 configuration, such as Docker's `proxies` settings in `~/.docker/config.json`.
-The generated `devcontainer.json` contains no build proxy arguments because it
-can be copied into image layers by a whole-project build.
+The `devcontainer.json` that `--devcontainer` renders contains no build proxy
+arguments because it can be copied into image layers by a whole-project build.
+`--build-proxy` is not used by `--devcontainer`; `--build-ca-cert` is.
 
 Registry pulls and remote `ADD` downloads run outside image stages and need
 separate daemon/builder proxy and trust configuration. Allow all package hosts

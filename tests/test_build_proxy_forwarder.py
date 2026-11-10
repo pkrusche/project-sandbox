@@ -317,9 +317,10 @@ class CliForwardingTests(TestCase):
 
         def build_image(*, context_dir, build_args=(), **_kwargs):
             observed["dockerfile"] = (context_dir / "Dockerfile").read_text()
-            observed["devcontainer"] = (
+            # Launches render only the session image's Dockerfile.
+            observed["devcontainer_written"] = (
                 context_dir / "Dockerfile.devcontainer"
-            ).read_text()
+            ).exists()
             observed["build_args"] = list(build_args)
             values = dict(
                 arg.split("=", 1) for arg in build_args if arg != "--build-arg"
@@ -409,7 +410,8 @@ class CliForwardingTests(TestCase):
             observed["env"],
             build_network.environment(f"http://203.0.113.113:{port}", ("mirror.corp",)),
         )
-        for text in (observed["dockerfile"], observed["devcontainer"]):
+        self.assertFalse(observed["devcontainer_written"])
+        for text in (observed["dockerfile"],):
             self.assertNotIn("203.0.113.113", text)
             self.assertNotIn("corp.proxy.example", text)
             self.assertNotIn("_proxy", text)
@@ -437,7 +439,6 @@ class CliForwardingTests(TestCase):
             fallback = self.run_build(container_cli.APPLE_CONTAINER)
         self.assertNotEqual(fallback["port"], port)
         self.assertEqual(free["dockerfile"], fallback["dockerfile"])
-        self.assertEqual(free["devcontainer"], fallback["devcontainer"])
 
     def test_other_runtimes_use_the_proxy_verbatim(self):
         observed = self.run_build(container_cli.DOCKER)

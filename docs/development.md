@@ -14,11 +14,13 @@ uv run pytest -q
 
 `uv sync` installs dependencies from `pyproject.toml` / `uv.lock`. The compile
 command catches syntax errors. `pytest -q` runs the unit tests without probing
-Docker/Podman or launching containers. The Git and jj container integration
-classes require an explicit opt-in (and may download their test images):
+Docker/Podman or launching containers. The jj and devcontainer container
+integration classes require an explicit opt-in (and may download their test
+images). The devcontainer test builds `Dockerfile.devcontainer` on every
+available Docker/Podman runtime and runs it with the rendered `runArgs`:
 
 ```bash
-PROJECT_SANDBOX_CONTAINER_TESTS=1 uv run pytest -q tests/test_worktree.py tests/test_jj_workspace.py
+PROJECT_SANDBOX_CONTAINER_TESTS=1 uv run pytest -q tests/test_jj_workspace.py tests/test_devcontainer_container.py
 ```
 
 The repository TUI's `:test` command runs pytest in parallel with
@@ -62,7 +64,7 @@ Checked on Apple `container` 1.7.1 on 2026-11-09, for `private-build-context`:
 ## Tests
 
 Tests cover CLI surface, runtime selection, dry-run non-mutation, renderer
-output, container `argv` construction, devcontainer JSON validity and symlinks,
+output, container `argv` construction, devcontainer JSON contents and symlinks,
 gitignore helpers, image-build caching, and Python-native unsupervised-session
 timeout handling.
 
@@ -70,7 +72,7 @@ A self-contained end-to-end smoke test creates a throwaway hello-world project,
 runs the tool against it, and validates every generated artefact:
 
 ```bash
-./scripts/e2e-test.sh                  # portable: devcontainer-only path
+./scripts/e2e-test.sh                  # portable: generated files and --devcontainer
 ./scripts/e2e-test.sh --with-container # also exercises direct CLI container runs
 ```
 

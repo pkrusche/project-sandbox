@@ -17,7 +17,7 @@ Many sandboxes exist - this is the one with a feature-set / configureable agency
 
 * **Strong isolation** - on OSX with Apple Container VMs. Custom Dockerfile support (as long as it's based on Debian)
 * **Agent config glue**: Forward host credentials / agent subscriptions into containers selectively, update settings to bypass permissions inside the container.
-* **Devcontainer support**: Creates a matched devcontainer config for editor support (weaker isolation but integrated workflow).
+* **Devcontainer support**: `--devcontainer` renders an agent-free devcontainer for running and debugging tests with the project's dependencies, offline by default.
 * **Unsupervised job runs** - submit batch jobs.
 * **Network access restrictions**: restrict to allowed domains, (somewhat) hardened firewall script, or opt into the global [Squid egress sidecar](docs/egress-sidecar.md) for one hostname-based policy, managed with `project-sandbox-egress`.
 * **jj integration**: Isolated sessions by default: the agent works in its own jj workspace with a private repository, and the result arrives as one commit on a bookmark. No credentials to push inside containers.

@@ -4,8 +4,7 @@ set -eu
 NAME="${PROJECT_SANDBOX_USER_NAME:-$(git config --global user.name 2>/dev/null || echo '')}"
 EMAIL="${PROJECT_SANDBOX_USER_EMAIL:-$(git config --global user.email 2>/dev/null || echo '')}"
 
-echo "project-sandbox: devcontainer uses generated config; re-run 'project-sandbox <project> <base_image>' on the host after credential or config changes." >&2
-
-{% include "_provision.sh.j2" %}
+{# The devcontainer has no agents, so only the identity is provisioned. -#}
+{% include "_provision_identity.sh.j2" %}
 
 echo "project-sandbox: devcontainer init complete."

@@ -25,7 +25,8 @@ The relay binds before image work and listens only on loopback for the session.
 Its port is stable because the firewall admits that specific endpoint. Sequential
 sessions can reuse it immediately; concurrent sessions using the same proxy
 conflict and fail early. Other host processes can use the relay while it runs.
-Devcontainers connect directly because their tooling runs without this relay.
+A devcontainer rendered with `--devcontainer-network=runtime --internet-proxy`
+connects to the proxy directly, because its tooling runs without this relay.
 
 `--internet-proxy` is a firewall-mode option. In sidecar mode it is rejected:
 configure the proxy as the global sidecar's parent with `[egress.upstream] url`
@@ -133,8 +134,8 @@ Certificates are copied into the generated build context under content-based
 `.crt` names and baked into the image with `update-ca-certificates`, after all
 package installation and project build steps. The installed public certificates
 are readable by the unprivileged agent regardless of the host's file creation
-permissions. This works with a base image,
-`--dockerfile`, and the generated `.devcontainer/`. It configures session trust;
+permissions. This works with a base image and
+`--dockerfile`; the devcontainer image has no session trust. It configures session trust;
 it does not make build-time downloads trust the proxy. For build-time trust, use
 [`--build-ca-cert`](build-network.md#build-trust-and-runtime-trust).
 
@@ -147,7 +148,7 @@ Only inject CAs you trust: they can authenticate any TLS destination accepted by
 applications using this store, including permitted local services. Certificates
 are public image contents, not runtime secrets; never pass private keys. Changing
 or removing inputs updates the generated files and invalidates the image cache.
-Rebuild the image (including a devcontainer rebuild) to apply changes; `--no-build`
+Rebuild the image to apply changes; `--no-build`
 continues using the existing image. Dry-run validates certificates and previews
 injection without writing files or starting containers.
 

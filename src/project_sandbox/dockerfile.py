@@ -181,7 +181,15 @@ def render(
     warn: Callable[[str], None] | None = None,
     ca_certificates: tuple[bytes, ...] = (),
     build_ca_certificates: tuple[bytes, ...] = (),
+    devcontainer: bool = False,
 ) -> Path:
+    """Render the session ``Dockerfile``, or with ``devcontainer`` only
+    ``Dockerfile.devcontainer``.
+
+    The devcontainer profile installs no agent CLIs and has no firewall script,
+    sudoers rule, session entrypoint or runtime CA trust. It keeps the base
+    image, the project dependency layers and build-time CA handling.
+    """
     if (base_image is None) == (base_dockerfile is None):
         raise ValueError("Provide exactly one of base_image or base_dockerfile")
 
@@ -207,8 +215,14 @@ def render(
             build_context=build_context,
         )
 
-    certificate_sources = _stage_certificates(
-        context_dir, copy_prefix, ca_certificates, prefix="project-sandbox-ca-"
+    # The devcontainer has no runtime CA trust. It also leaves the session's
+    # staged runtime CAs alone, which its stale-file cleanup would remove.
+    certificate_sources = (
+        []
+        if devcontainer
+        else _stage_certificates(
+            context_dir, copy_prefix, ca_certificates, prefix="project-sandbox-ca-"
+        )
     )
     build_certificate_sources = _stage_certificates(
         context_dir,
@@ -217,6 +231,8 @@ def render(
         prefix="project-sandbox-build-ca-",
     )
 
+    if devcontainer:
+        install_agents = ()
     tmpl = templating.get_template("Dockerfile.j2")
     shared = {
         "source_before_dependencies": source_before_dependencies,
@@ -231,42 +247,33 @@ def render(
         "install_pi": "pi" in install_agents,
         "install_copilot": "copilot" in install_agents,
     }
-    container = _write_dockerfile(
-        tmpl,
-        context_dir / "Dockerfile",
-        **shared,
-        firewall_src_filename="init-firewall.sh",
-    )
-    _write_dockerfile(
-        tmpl,
-        context_dir / "Dockerfile.devcontainer",
-        **shared,
-        firewall_src_filename="init-firewall-devcontainer.sh",
+    out = context_dir / ("Dockerfile.devcontainer" if devcontainer else "Dockerfile")
+    out.write_text(
+        tmpl.render(devcontainer=devcontainer, **shared) + "\n", encoding="utf-8"
     )
     if build_certificate_sources:
         setup = templating.get_template("_build-network.Dockerfile.j2").render(**shared)
         skipped: dict[str, None] = {}
-        for path in (container, context_dir / "Dockerfile.devcontainer"):
-            blocks = _dockerfile_blocks(path.read_text(encoding="utf-8"))
-            stages = _dockerfile_stages(blocks)
-            # Inject without adding stages, preserving all positional references.
-            for index in reversed(range(len(stages))):
-                stage = stages[index]
-                body = blocks[stage.from_block_index + 1 : stage.end_block_index]
-                if not any(_is_run_block(block) for block in body):
-                    continue
-                if not _stage_uses_apt(blocks, stages, index):
-                    skipped[stage.alias or stage.base] = None
-                    continue
-                blocks.insert(_build_setup_index(blocks, stage), [setup])
-            path.write_text(_join_dockerfile_blocks(blocks), encoding="utf-8")
+        blocks = _dockerfile_blocks(out.read_text(encoding="utf-8"))
+        stages = _dockerfile_stages(blocks)
+        # Inject without adding stages, preserving all positional references.
+        for index in reversed(range(len(stages))):
+            stage = stages[index]
+            body = blocks[stage.from_block_index + 1 : stage.end_block_index]
+            if not any(_is_run_block(block) for block in body):
+                continue
+            if not _stage_uses_apt(blocks, stages, index):
+                skipped[stage.alias or stage.base] = None
+                continue
+            blocks.insert(_build_setup_index(blocks, stage), [setup])
+        out.write_text(_join_dockerfile_blocks(blocks), encoding="utf-8")
         if warn is not None:
             for name in skipped:
                 warn(
                     f"WARNING: --build-ca-cert is not applied to stage '{name}': "
                     "its base is not recognized as Debian/Ubuntu."
                 )
-    return container
+    return out
 
 
 def _stage_certificates(
@@ -362,7 +369,10 @@ _DOCKERIGNORE_PATTERNS = (
 
 
 def render_dockerignore(
-    context_dir: Path, *, build_context: Path | None = None
+    context_dir: Path,
+    *,
+    build_context: Path | None = None,
+    devcontainer: bool = False,
 ) -> tuple[Path, ...]:
     """Write build-ignore files scoped to a generated whole-project Dockerfile.
 
@@ -379,6 +389,9 @@ def render_dockerignore(
     per-Dockerfile file would *override* (not merge with) it, re-including paths
     they deliberately excluded — so generation is skipped when one is present, and
     also when the build context is just the .project-sandbox dir (nothing to trim).
+
+    Only the file for the Dockerfile being rendered is written: the session
+    ``Dockerfile``, or with ``devcontainer`` ``Dockerfile.devcontainer``.
     """
     root = build_context if build_context is not None else context_dir
     if root.resolve(strict=False) == context_dir.resolve(strict=False):
@@ -386,20 +399,10 @@ def render_dockerignore(
     if (root / ".dockerignore").exists():
         return ()
     body = "\n".join(_DOCKERIGNORE_PATTERNS) + "\n"
-    written = []
-    for dockerfile_name in ("Dockerfile", "Dockerfile.devcontainer"):
-        out = context_dir / f"{dockerfile_name}.dockerignore"
-        out.write_text(body, encoding="utf-8")
-        written.append(out)
-    return tuple(written)
-
-
-def _write_dockerfile(tmpl, out: Path, *, firewall_src_filename: str, **kwargs) -> Path:
-    out.write_text(
-        tmpl.render(firewall_src_filename=firewall_src_filename, **kwargs) + "\n",
-        encoding="utf-8",
-    )
-    return out
+    dockerfile_name = "Dockerfile.devcontainer" if devcontainer else "Dockerfile"
+    out = context_dir / f"{dockerfile_name}.dockerignore"
+    out.write_text(body, encoding="utf-8")
+    return (out,)
 
 
 def source_warnings(base_dockerfile: Path) -> tuple[str, ...]:

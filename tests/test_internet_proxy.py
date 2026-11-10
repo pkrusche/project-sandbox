@@ -262,8 +262,7 @@ class InternetProxyTests(TestCase):
                 ],
             )
             rendered = [
-                (Path(tmp) / name).read_text()
-                for name in ("init-firewall.sh", "init-firewall-devcontainer.sh")
+                (Path(tmp) / name).read_text() for name in ("init-firewall.sh",)
             ]
         for text in rendered:
             with self.subTest(script=text.splitlines()[-1]):

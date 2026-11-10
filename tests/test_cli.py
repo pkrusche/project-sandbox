@@ -309,8 +309,13 @@ class CliTests(TestCase):
 
             self.assertEqual(rc, 0)
             self.assertTrue((project / ".project-sandbox" / "Dockerfile").exists())
-            self.assertTrue((project / ".devcontainer" / "devcontainer.json").exists())
+            # The devcontainer is rendered only on request (--devcontainer).
+            self.assertFalse((project / ".devcontainer").exists())
+            self.assertFalse(
+                (project / ".project-sandbox" / "Dockerfile.devcontainer").exists()
+            )
             self.assertIn("project-sandbox ready", out.getvalue())
+            self.assertIn("--devcontainer", out.getvalue())
             ensure_system_started.assert_not_called()
             build_image.assert_not_called()
             run.assert_not_called()
@@ -386,9 +391,10 @@ class CliTests(TestCase):
                 'approval_policy = "never"',
                 (sandbox / "codex" / "config.toml").read_text(encoding="utf-8"),
             )
-            self.assertIn(
-                '"remoteUser": "agent"',
+            # A devcontainer.json from an earlier render is left as it was.
+            self.assertEqual(
                 (dc_dir / "devcontainer.json").read_text(encoding="utf-8"),
+                '{"old":true}\n',
             )
 
     def test_bash_agent_is_available_without_host_agent_config(self) -> None:
@@ -3738,7 +3744,9 @@ class BuildCacheReuseTests(TestCase):
                 generated = (context / "Dockerfile.python-uv").read_text()
                 self.assertEqual("RUN uv sync --frozen" in generated, has_lock)
                 self.assertTrue((context / "Dockerfile.dockerignore").is_file())
-                self.assertTrue((workspace / ".devcontainer/Dockerfile").is_file())
+                self.assertFalse((context / "Dockerfile.devcontainer").exists())
+                # Created empty, only so the session can mask it.
+                self.assertEqual(list((workspace / ".devcontainer").iterdir()), [])
 
     def test_first_run_builds_and_records_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -6550,12 +6558,9 @@ class CopilotAgentTests(TestCase):
         self.assertIn("COPILOT_GH_HOST=acme.ghe.com", run["cmd"])
         context = self.project / ".project-sandbox"
         sandbox = (context / "init-firewall.sh").read_text(encoding="utf-8")
-        devcontainer = (context / "init-firewall-devcontainer.sh").read_text(
-            encoding="utf-8"
-        )
         self.assertIn("copilot-api.acme.ghe.com", sandbox)
         self.assertIn('"api.individual.githubcopilot.com"', sandbox)
-        self.assertNotIn("acme.ghe.com", devcontainer)
+        self.assertFalse((context / "init-firewall-devcontainer.sh").exists())
 
     def test_launch_installs_copilot_in_image(self) -> None:
         runner = _copilot_runner(pass_result=(0, COPILOT_PAT))
@@ -6841,26 +6846,27 @@ class EgressModeCliTests(TestCase):
                 self._main(project, ["--egress", "sidecar", "--agent", "bash"])
             self.assertFalse((project / ".project-sandbox").exists())
 
-    def test_sidecar_dry_run_skips_devcontainer(self) -> None:
+    def test_sidecar_dry_run_mentions_no_devcontainer(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = self._project(tmp)
             rc, out, run = self._main(
                 project, ["--dry-run", "--no-build", "--egress", "sidecar"]
             )
             self.assertEqual(rc, 0)
-            self.assertIn("Would not render devcontainer", out)
-            self.assertNotIn("Would render devcontainer under", out)
+            self.assertNotIn("render devcontainer", out)
             self.assertFalse((project / ".project-sandbox").exists())
             run.assert_not_called()
 
-    def test_sidecar_skips_devcontainer_render(self) -> None:
-        args = cli.build_parser().parse_args(["--egress", "sidecar", "project"])
-        with contextlib.redirect_stdout(io.StringIO()) as out:
-            self.assertFalse(cli._renders_devcontainer(args, is_chroot=False))
-        self.assertIn("firewall egress only", out.getvalue())
-        default = cli.build_parser().parse_args(["project"])
-        self.assertTrue(cli._renders_devcontainer(default, is_chroot=False))
-        self.assertFalse(cli._renders_devcontainer(default, is_chroot=True))
+    def test_sidecar_launch_writes_no_devcontainer_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self._project(tmp)
+            rc, _, run = self._main(project, ["--no-build", "--egress", "sidecar"])
+            self.assertEqual(rc, 0)
+            run.assert_not_called()
+            self.assertFalse((project / ".devcontainer").exists())
+            self.assertFalse(
+                (project / ".project-sandbox" / "Dockerfile.devcontainer").exists()
+            )
 
     def test_explicit_firewall_mode_is_byte_identical_to_default(self) -> None:
         """Regression: omitting --egress and --egress firewall render the same files."""
@@ -7066,7 +7072,7 @@ class EgressSidecarLaunchTests(TestCase):
             "Sidecar: would start project-sandbox-egress",
             "--publish 127.0.0.1:3140:3128 --memory 256M --cpus 1",
             "Would inject proxy environment: HTTP_PROXY=http://host.docker.internal:3140",
-            "Would not render devcontainer",
+            "Would create empty directory to mask: ",
         ):
             self.assertIn(needle, text)
         self.assertNotIn("network create", text)
@@ -7472,8 +7478,9 @@ class EgressSidecarLaunchTests(TestCase):
             (context / "entrypoint.sh").read_text(),
         )
         self.assertFalse((context / "init-firewall-devcontainer.sh").exists())
-        self.assertFalse((self.project / ".devcontainer").exists())
-        self.assertIn("not rendering .devcontainer/", out)
+        self.assertFalse((context / "Dockerfile.devcontainer").exists())
+        # Only the empty mask target, never a devcontainer configuration.
+        self.assertEqual(list((self.project / ".devcontainer").iterdir()), [])
 
     ENGINE: ClassVar[dict] = {
         "OperatingSystem": "Debian GNU/Linux 13 (trixie)",
@@ -7684,3 +7691,279 @@ class LocalForwarderDryRunTests(TestCase):
                 out.getvalue(),
             )
             self.assertFalse((state / "project-sandbox" / "local-forward").exists())
+
+
+class DevcontainerCommandTests(TestCase):
+    """--devcontainer renders on request only (minimal-devcontainer tasks 5.1, 5.2)."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.project = Path(self._tmp.name) / "project"
+        self.project.mkdir()
+        (self.project / "README.md").write_text("# demo\n", encoding="utf-8")
+        (self.project / "pyproject.toml").write_text(
+            "[project]\nname = 'demo'\nversion = '0'\n", encoding="utf-8"
+        )
+        (self.project / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+
+    def _main(self, *argv: str) -> tuple[int, str, dict[str, Mock]]:
+        out = io.StringIO()
+        mocks: dict[str, Mock] = {}
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                )
+            )
+            stack.enter_context(
+                patch.object(
+                    cli.config_agents,
+                    "_agent_host_paths",
+                    return_value=_agent_paths(self.project.parent / "home"),
+                )
+            )
+            for owner, name in (
+                (cli.config_agents, "sync_credentials"),
+                (cli.config_agents, "purge_staged_credentials"),
+                (cli.container_cli, "select_runtime"),
+                (cli.container_cli, "ensure_system_started"),
+                (cli.container_cli, "build_image"),
+                (cli.container_cli, "run"),
+                (cli.internet_proxy, "preflight"),
+            ):
+                mocks[name] = stack.enter_context(patch.object(owner, name))
+            mocks["sync_credentials"].return_value = {}
+            mocks["run"].return_value = 0
+            mocks["select_runtime"].return_value = cli.container_cli.DOCKER
+            mocks["ensure_system_started"].return_value = 0
+            stack.enter_context(
+                patch.object(cli.container_cli, "image_exists", return_value=True)
+            )
+            stack.enter_context(contextlib.redirect_stdout(out))
+            rc = cli.main([*argv, str(self.project)])
+        return rc, out.getvalue(), mocks
+
+    def _spec(self) -> dict:
+        return json.loads(
+            (self.project / ".devcontainer" / "devcontainer.json").read_text(
+                encoding="utf-8"
+            )
+        )
+
+    def _assert_nothing_started(self, mocks: dict[str, Mock]) -> None:
+        for name in (
+            "select_runtime",
+            "ensure_system_started",
+            "build_image",
+            "run",
+            "sync_credentials",
+            "preflight",
+        ):
+            mocks[name].assert_not_called()
+
+    def test_renders_and_starts_nothing(self) -> None:
+        rc, out, mocks = self._main("--devcontainer", "--python-uv")
+
+        self.assertEqual(rc, 0)
+        self._assert_nothing_started(mocks)
+        context = self.project / ".project-sandbox"
+        spec = self._spec()
+        self.assertEqual(spec["runArgs"][:2], ["--network", "none"])
+        self.assertEqual(spec["containerEnv"]["UV_OFFLINE"], "1")
+        self.assertEqual(spec["build"]["context"], "..")
+        dockerfile_text = (context / "Dockerfile.devcontainer").read_text()
+        self.assertIn("uv sync", dockerfile_text)
+        self.assertNotIn("@anthropic-ai/claude-code", dockerfile_text)
+        self.assertNotIn("sudoers", dockerfile_text)
+        self.assertTrue((context / "Dockerfile.devcontainer.dockerignore").exists())
+        self.assertTrue((context / "project-sandbox-devcontainer-init").exists())
+        # The session image's inputs and agent configs are not rendered.
+        for name in (
+            "Dockerfile",
+            "Dockerfile.dockerignore",
+            "entrypoint.sh",
+            "init-firewall.sh",
+            "init-firewall-devcontainer.sh",
+            "claude",
+            "codex",
+            "claude-devcontainer",
+            "codex-devcontainer",
+        ):
+            self.assertFalse((context / name).exists(), name)
+        self.assertIn(".devcontainer/", (self.project / ".gitignore").read_text())
+        self.assertIn("devcontainer.json (network: none)", out)
+        self.assertNotIn("unfiltered", out)
+
+    def test_ordinary_launches_write_no_devcontainer_files(self) -> None:
+        for egress in ("firewall", "sidecar"):
+            for agent_args in ((), ("--agent", "bash", "--no-build")):
+                if egress == "sidecar" and agent_args:
+                    continue  # covered by EgressSidecarLaunchTests
+                with self.subTest(egress=egress, agent=bool(agent_args)):
+                    shutil.rmtree(self.project / ".devcontainer", ignore_errors=True)
+                    shutil.rmtree(self.project / ".project-sandbox", ignore_errors=True)
+                    with patch.object(
+                        cli.config_agents, "available_agents", return_value=("bash",)
+                    ):
+                        rc, _, _ = self._main(
+                            "--no-forward-credentials",
+                            "--egress",
+                            egress,
+                            *agent_args,
+                            "--python-uv",
+                        )
+                    self.assertEqual(rc, 0)
+                    dc_dir = self.project / ".devcontainer"
+                    self.assertFalse((dc_dir / "devcontainer.json").exists())
+                    self.assertFalse(
+                        (
+                            self.project / ".project-sandbox/Dockerfile.devcontainer"
+                        ).exists()
+                    )
+                    if agent_args:
+                        # Created empty only so the session can mask it.
+                        self.assertEqual(list(dc_dir.iterdir()), [])
+
+    def test_launch_masks_devcontainer_and_leaves_an_existing_render_alone(
+        self,
+    ) -> None:
+        self._main("--devcontainer", "--python-uv")
+        before = (self.project / ".devcontainer/devcontainer.json").read_bytes()
+        with patch.object(
+            cli.config_agents, "available_agents", return_value=("bash",)
+        ):
+            rc, _, mocks = self._main(
+                "--no-forward-credentials",
+                "--agent",
+                "bash",
+                "--no-build",
+                "--python-uv",
+            )
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            (self.project / ".devcontainer/devcontainer.json").read_bytes(), before
+        )
+        argv = mocks["run"].call_args.args[0]
+        self.assertTrue(
+            any("target=/workspace/.devcontainer,readonly" in arg for arg in argv)
+        )
+
+    def test_launch_refuses_a_symlinked_devcontainer_directory(self) -> None:
+        _make_git_repo(self.project)
+        (self.project / "elsewhere").mkdir()
+        (self.project / ".devcontainer").symlink_to(self.project / "elsewhere")
+        with (
+            patch.object(cli.config_agents, "available_agents", return_value=("bash",)),
+            self.assertRaisesRegex(SystemExit, "is a symlink"),
+        ):
+            self._main(
+                "--no-forward-credentials",
+                "--agent",
+                "bash",
+                "--no-build",
+                "--vcs",
+                "shared",
+                "--python-uv",
+            )
+
+    def test_dry_run_lists_files_and_network_and_writes_nothing(self) -> None:
+        rc, out, mocks = self._main("--devcontainer", "--dry-run", "--python-uv")
+
+        self.assertEqual(rc, 0)
+        self._assert_nothing_started(mocks)
+        self.assertIn("Devcontainer network: none", out)
+        self.assertIn(str(self.project / ".devcontainer" / "devcontainer.json"), out)
+        self.assertIn(
+            str(self.project / ".project-sandbox" / "Dockerfile.devcontainer"), out
+        )
+        self.assertFalse((self.project / ".devcontainer").exists())
+        self.assertFalse((self.project / ".project-sandbox").exists())
+        self.assertFalse((self.project / ".gitignore").exists())
+
+    def test_runtime_network_mode(self) -> None:
+        rc, out, mocks = self._main(
+            "--devcontainer",
+            "--devcontainer-network",
+            "runtime",
+            "--internet-proxy",
+            "http://proxy.example:3128",
+            "--python-uv",
+        )
+
+        self.assertEqual(rc, 0)
+        self._assert_nothing_started(mocks)
+        spec = self._spec()
+        self.assertFalse(any(a.startswith("--network") for a in spec["runArgs"]))
+        self.assertFalse(any(a.startswith("--cap-add") for a in spec["runArgs"]))
+        self.assertNotIn("sudo", spec["postStartCommand"])
+        for name in ("UV_OFFLINE", "CARGO_NET_OFFLINE", "npm_config_offline"):
+            self.assertNotIn(name, spec["containerEnv"])
+        self.assertEqual(
+            spec["containerEnv"]["HTTPS_PROXY"], "http://proxy.example:3128"
+        )
+        self.assertIn(cli.DEVCONTAINER_NETWORK_WARNING, out)
+        self.assertIn("unfiltered", out)
+
+    def test_runtime_network_dry_run_shows_mode_and_warning(self) -> None:
+        rc, out, _ = self._main(
+            "--devcontainer",
+            "--devcontainer-network=runtime",
+            "--dry-run",
+            "--python-uv",
+        )
+        self.assertEqual(rc, 0)
+        self.assertIn("Devcontainer network: runtime", out)
+        self.assertIn(cli.DEVCONTAINER_NETWORK_WARNING, out)
+
+    def test_none_mode_does_not_apply_internet_proxy(self) -> None:
+        rc, out, _ = self._main(
+            "--devcontainer",
+            "--internet-proxy",
+            "http://proxy.example:3128",
+            "--python-uv",
+        )
+        self.assertEqual(rc, 0)
+        self.assertNotIn("HTTPS_PROXY", self._spec()["containerEnv"])
+        self.assertIn("--internet-proxy is not applied", out)
+
+    def test_egress_is_ignored(self) -> None:
+        rc, out, mocks = self._main(
+            "--devcontainer", "--egress", "sidecar", "--python-uv"
+        )
+        self.assertEqual(rc, 0)
+        self._assert_nothing_started(mocks)
+        self.assertIn("--egress does not apply", out)
+        self.assertEqual(self._spec()["runArgs"][:2], ["--network", "none"])
+
+    def test_invalid_network_value_lists_choices(self) -> None:
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), self.assertRaises(SystemExit):
+            cli.build_parser().parse_args(
+                ["--devcontainer", "--devcontainer-network=bridge", "project"]
+            )
+        self.assertIn("'none', 'runtime'", err.getvalue())
+
+    def test_network_flag_requires_devcontainer(self) -> None:
+        with self.assertRaisesRegex(
+            SystemExit, "--devcontainer-network requires --devcontainer"
+        ):
+            self._main("--devcontainer-network", "none", "--python-uv")
+        self.assertFalse((self.project / ".project-sandbox").exists())
+
+    def test_rejected_combinations(self) -> None:
+        for extra, flag in (
+            (("--agent", "claude"), "--agent"),
+            (("--prompt-text", "hi"), "--prompt-text"),
+            (("--prompt", "prompt.md"), "--prompt"),
+            (("--branch", "feature"), "--branch"),
+            (("--build-only",), "--build-only"),
+            (("--runtime", "chroot"), "--runtime chroot"),
+        ):
+            with self.subTest(flag=flag):
+                with self.assertRaisesRegex(SystemExit, re.escape(flag)):
+                    self._main("--devcontainer", *extra)
+                self.assertFalse((self.project / ".project-sandbox").exists())
+                self.assertFalse((self.project / ".devcontainer").exists())

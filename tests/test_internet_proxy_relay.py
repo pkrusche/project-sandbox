@@ -195,12 +195,12 @@ class CliRelayTests(TestCase):
             observed["firewall"] = (
                 root / ".project-sandbox/init-firewall.sh"
             ).read_text()
-            observed["devcontainer_firewall"] = (
+            # Launches render no devcontainer files.
+            observed["devcontainer_written"] = (
+                root / ".devcontainer/devcontainer.json"
+            ).exists() or (
                 root / ".project-sandbox/init-firewall-devcontainer.sh"
-            ).read_text()
-            observed["devcontainer"] = json.loads(
-                (root / ".devcontainer/devcontainer.json").read_text()
-            )
+            ).exists()
         if failure is None:
             self.assertEqual(rc, 0)
         observed["output"] = out.getvalue()
@@ -227,19 +227,44 @@ class CliRelayTests(TestCase):
         self.assertTrue(observed["listening"])
         self.assertIn(f"--dport {port} ", observed["firewall"])
         self.assertNotIn("corp.proxy.example", observed["firewall"])
-        # Devcontainer tooling runs on Docker and reaches the proxy directly.
-        self.assertIn("corp.proxy.example", observed["devcontainer_firewall"])
-        self.assertIn("--dport 3128 ", observed["devcontainer_firewall"])
-        self.assertEqual(
-            observed["devcontainer"]["containerEnv"]["HTTP_PROXY"],
-            "http://corp.proxy.example:3128",
-        )
+        self.assertFalse(observed["devcontainer_written"])
         self.assertIn("container system dns create", observed["output"])
         # The relay stops with the session.
         with self.assertRaises(OSError):
             socket.create_connection(("127.0.0.1", port), timeout=1).close()
         for thread in set(threading.enumerate()) - threads_before:
             self.assertNotIn("forwarder", thread.name)
+
+    def test_runtime_network_devcontainer_uses_the_proxy_directly(self):
+        # Devcontainer tooling runs outside project-sandbox and has no relay,
+        # so it gets the external proxy itself, on every runtime.
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                mock_container_runtime(container_cli.APPLE_CONTAINER),
+                patch.object(cli.internet_proxy, "preflight") as preflight,
+                patch.object(cli.container_cli, "run") as run,
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                rc = cli.main(
+                    [
+                        "--devcontainer",
+                        "--devcontainer-network",
+                        "runtime",
+                        "--internet-proxy",
+                        PROXY,
+                        tmp,
+                        "debian:bookworm",
+                    ]
+                )
+            spec = json.loads(
+                (Path(tmp) / ".devcontainer/devcontainer.json").read_text()
+            )
+        self.assertEqual(rc, 0)
+        preflight.assert_not_called()
+        run.assert_not_called()
+        self.assertEqual(
+            spec["containerEnv"]["HTTP_PROXY"], "http://corp.proxy.example:3128"
+        )
 
     def test_docker_connects_to_remote_proxy_directly(self):
         observed = self.run_session(container_cli.DOCKER)

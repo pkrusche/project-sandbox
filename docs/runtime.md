@@ -5,19 +5,21 @@
 Given `project-sandbox /path/to/repo python:3.12-slim`:
 
 1. Read host `git config --global` identity.
-2. Render `<project>/.project-sandbox/` with generated Dockerfiles, entrypoint,
-   firewall scripts, sanitized agent configs, a local `.gitignore` safeguard, and
-   a devcontainer post-start init script. Agent credentials are staged separately
-   under `/tmp` with private directory permissions to reduce the chance of
-   accidentally committing them.
-3. Render `<project>/.devcontainer/` with symlinks back into
-   `.project-sandbox/` so the Dockerfile and firewall script remain a single
-   source of truth.
-4. Detect available host agent configs (`~/.claude`, `~/.codex`,
+2. Render `<project>/.project-sandbox/` with the generated Dockerfile, entrypoint,
+   firewall script, sanitized agent configs, a local `.gitignore` safeguard, and
+   the identity init script the image also carries. Agent credentials are staged
+   separately under `/tmp` with private directory permissions to reduce the
+   chance of accidentally committing them.
+3. Detect available host agent configs (`~/.claude`, `~/.codex`,
    `~/.config/opencode`, `~/.pi/agent`) and install only those agent CLIs into
    the generated Dockerfile. OpenSpec and Bash are always available.
-5. Append `.project-sandbox/` and `.devcontainer/` to `<project>/.gitignore`
+4. Append `.project-sandbox/` and `.devcontainer/` to `<project>/.gitignore`
    idempotently.
+
+It writes no devcontainer files. `project-sandbox --devcontainer
+/path/to/repo python:3.12-slim` renders `<project>/.devcontainer/` and
+`.project-sandbox/Dockerfile.devcontainer` instead, and exits (see
+[Devcontainer Flow](usage.md#devcontainer-flow)).
 
 Given `project-sandbox --agent claude /path/to/repo python:3.12-slim`, it also:
 
@@ -35,8 +37,8 @@ Given `project-sandbox --agent claude /path/to/repo python:3.12-slim`, it also:
 Interactive `--agent codex` launches with `--no-daemon` to bypass Codex's shared
 background app server, which can fail to start inside the sandbox. Model, effort,
 fast mode, and forwarded arguments still apply. Headless runs continue to use `codex exec`.
-When launching Codex manually from a sandbox shell or devcontainer, use
-`codex --no-daemon` as well. Both generated Codex configs set
+When launching Codex manually from a sandbox shell, use
+`codex --no-daemon` as well. The generated Codex config sets
 `check_for_update_on_startup = false`; update Codex by rebuilding the image.
 
 With `--agent pi --pi-ollama`, a runtime networking adapter is selected before
@@ -72,36 +74,27 @@ for this reason (see `.github/workflows/e2e.yml`).
 |-- .project-sandbox/
 |   |-- .gitignore                     # local safeguard
 |   |-- Dockerfile                     # generated for direct CLI runs
-|   |-- Dockerfile.devcontainer        # generated for devcontainer build
+|   |-- Dockerfile.devcontainer        # only with --devcontainer
 |   |-- entrypoint.sh                  # container PID 1
-|   |-- init-firewall.sh               # CLI firewall variant
-|   |-- init-firewall-devcontainer.sh  # devcontainer firewall variant
-|   |-- project-sandbox-devcontainer-init
+|   |-- init-firewall.sh               # session firewall
+|   |-- project-sandbox-devcontainer-init  # git/jj identity setup
 |   |-- claude/settings.json
-|   |-- claude-devcontainer/settings.json
 |   |-- codex/config.toml
-|   |-- codex-devcontainer/config.toml
 |   |-- pi/models.json                 # only with --pi-ollama
 |   |-- pi/settings.json               # only with --pi-ollama
 |   |-- .dockerfile-checksums.json     # trusted project Dockerfile hashes
 |   `-- sessions/                      # unsupervised-mode logs
-`-- .devcontainer/
+`-- .devcontainer/                  # empty unless --devcontainer was run
     |-- devcontainer.json
-    |-- Dockerfile                 -> ../.project-sandbox/Dockerfile.devcontainer
-    |-- init-firewall.sh           -> ../.project-sandbox/init-firewall-devcontainer.sh
-    |-- claude                     -> ../.project-sandbox/claude
-    |-- claude-devcontainer        -> ../.project-sandbox/claude-devcontainer
-    |-- codex                      -> ../.project-sandbox/codex
-    `-- codex-devcontainer         -> ../.project-sandbox/codex-devcontainer
+    `-- Dockerfile                 -> ../.project-sandbox/Dockerfile.devcontainer
 ```
 
 The `.project-sandbox/` and `.devcontainer/` directories are generated local
 state and are ignored as a whole. Re-run `project-sandbox` after cloning, pulling
 generated config changes, or refreshing credentials. Agent credential staging
 lives outside the project under `/tmp/project-sandbox-<uid>/...`; that private
-root is not mounted wholesale. Generated devcontainers are intentionally
-multi-agent and mount all detected credential directories. Use
-`--no-forward-credentials` to render an unauthenticated devcontainer.
+root is not mounted wholesale. The generated devcontainer has no agents and
+mounts no credentials.
 
 ## Image Tags and OpenSpec
 
@@ -126,9 +119,10 @@ receive the generated config, credentials, prompts, and history through their
 dedicated mounts, but cannot edit the generated files through the workspace.
 
 The `/workspace/.devcontainer` directory is masked the same way (with the same
-empty read-only mount), so the agent cannot read the devcontainer's host-path
-mounts and config or edit them. For direct runs the mask is added only when a
-`.devcontainer` directory exists in the workspace.
+empty read-only mount), so the agent cannot read, edit or create the
+devcontainer config, whose `initializeCommand` runs on the host. Direct runs
+create an empty `.devcontainer/` when it is missing so the mask always applies,
+and refuse to start when it is a symlink.
 
 ## Project Dockerfile Tamper Detection
 

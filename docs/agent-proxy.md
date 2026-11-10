@@ -36,8 +36,7 @@ Responses API rather than chat completions. Images that include OpenCode also
 install an exact, OpenCode-compatible version of that provider package.
 
 Proxy mode is gateway-only by default. The firewall omits the normal OpenAI and
-Anthropic endpoint allowlist and the devcontainer's broad host-gateway rule;
-only the gateway’s admitted addresses and selected TCP port are reachable. Add
+Anthropic endpoint allowlist; only the gateway’s admitted addresses and selected TCP port are reachable. Add
 other destinations deliberately with `--extra-domain DOMAIN` or
 `--allow-github`. No provider endpoint is added automatically, including when a
 headless Bash command invokes another CLI.

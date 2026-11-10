@@ -113,9 +113,9 @@ Host state lives in `$XDG_STATE_HOME/project-sandbox/egress/<runtime>/` (mode
   forwarder;
 - each running session's sandbox inputs under `sessions/<id>/`.
 
-Sidecar mode cannot be combined with `--no-firewall` or `--runtime chroot`. It
-does not render or modify `.devcontainer/`, because devcontainers support
-firewall egress only.
+Sidecar mode cannot be combined with `--no-firewall` or `--runtime chroot`.
+`--devcontainer` ignores `--egress`: the devcontainer has no network by default,
+or the runtime's unfiltered network with `--devcontainer-network=runtime`.
 
 The first sidecar start builds a small Alpine/Squid image
 (`project-sandbox-egress-sidecar:<hash>`). Switching a project between

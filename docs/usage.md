@@ -178,7 +178,7 @@ uv run project-sandbox --agent copilot --model gpt-5-mini --effort high \
 ```
 
 Copilot runs only on a Copilot subscription: `--agent-proxy` and `--fast` are
-rejected. It is not offered in the generated devcontainer.
+rejected.
 
 ### Host
 
@@ -429,8 +429,8 @@ In an isolated session, `--node-npm` builds the image from the session
 directory, like `--python-uv`.
 
 Generated Node/npm devcontainers are not supported yet: their config lacks the
-`node_modules` tmpfs and `--shm-size`. Starting a Node image through the sandbox
-entrypoint without the required tmpfs fails; use a direct CLI session instead.
+`node_modules` tmpfs and `--shm-size`, so the dependencies baked into the image
+are not available at `/workspace/node_modules`. Use a direct CLI session instead.
 
 ## Session observability and image warm-up
 
@@ -463,31 +463,92 @@ apply. `--dry-run --build-only` previews the build without writing files.
 
 ## Devcontainer Flow
 
-Before starting the devcontainer, run
-`project-sandbox /absolute/path/to/repo python:3.12-slim` once on the host. This
-refreshes the `/tmp/project-sandbox-<uid>/...` agent credential staging
-directories that the devcontainer mounts at startup.
+The generated devcontainer is a place to run and debug the project's tests with
+all of its dependencies installed. It uses the same base image and dependency
+layers as a direct session, but **no agent runs there**: it has no agent CLIs,
+credentials, agent configs or agent IDE extensions. To run an agent, start a
+direct session (`project-sandbox --agent …`) or use the TUI.
 
-Then open the project in VS Code, Cursor, or any devcontainer-aware IDE and
-choose **Reopen in Container**. The generated `devcontainer.json` builds the same
-image, mounts the same sanitized configs and staged credentials, runs the same
-firewall via `postStartCommand`, and waits for it before opening a terminal.
-Re-run the same `project-sandbox` command before starting or rebuilding the
-devcontainer again whenever credentials may have changed, `/tmp` may have been
-cleaned, or you are on a different host.
-
-Generate the devcontainer without building or running anything:
+Render it explicitly, with the same build options you use for sessions:
 
 ```bash
-uv run project-sandbox /absolute/path/to/repo python:3.12-slim
+uv run project-sandbox /absolute/path/to/repo --devcontainer --python-uv
+uv run project-sandbox /absolute/path/to/repo --devcontainer python:3.12-slim
 ```
 
-This is useful for repos whose owners do not want to run a direct CLI runtime but
-want the sandboxed agent environment in a local devcontainer-capable IDE. Remote
-devcontainer services such as Codespaces need additional adaptation because the
-generated spec uses local `.project-sandbox/` files, absolute host credential
-staging under `/tmp/project-sandbox-<uid>/...`, and firewall capabilities
-(`NET_ADMIN`/`NET_RAW`) that may not be available remotely.
+`--devcontainer` writes `.devcontainer/devcontainer.json` (plus a `Dockerfile`
+link) and `.project-sandbox/Dockerfile.devcontainer`, prints where it wrote and
+the network mode, and exits. It builds no image, stages no credentials and
+starts no container. `--devcontainer --dry-run` lists the files it would write
+and the network mode, and writes nothing. Then open the project in VS Code (or
+another devcontainer-aware IDE) and choose **Reopen in Container**. Re-run
+`--devcontainer` after changing build options, and rebuild the container in
+the IDE.
+
+Ordinary launches never write or change devcontainer files. They only create an
+empty `.devcontainer/` when it is missing, so the session can mask it.
+`--devcontainer` can't be combined with `--agent`, a prompt, `--branch`,
+`--build-only` or `--runtime chroot`. It ignores `--egress`.
+
+### Network
+
+By default the devcontainer has **no network**: `runArgs` contains
+`--network none`, so only loopback works. Servers a test starts on `127.0.0.1`
+are reachable. Outbound connections, including to services on the host, fail
+immediately. The offline switches of the generated toolchains are set
+(`UV_OFFLINE=1`, `CARGO_NET_OFFLINE=true`, `npm_config_offline=true`), so tools
+fail fast instead of timing out. Building the image is not affected: the IDE
+builds with normal network access.
+
+If your IDE or tests need a network, opt in:
+
+```bash
+uv run project-sandbox /absolute/path/to/repo --devcontainer \
+  --devcontainer-network=runtime --python-uv
+```
+
+`--devcontainer-network=runtime` gives the devcontainer the runtime's default
+network, **unfiltered**: there is no firewall, no egress policy and no added
+capability, and the command prints a warning saying so. The offline switches
+are not set. With `--internet-proxy URL`, its proxy environment is applied.
+`--devcontainer-network=none` is the default. The flag is only valid with
+`--devcontainer`.
+
+### Privileges and masks
+
+The devcontainer runs as `agent` with no added capabilities and no sudoers
+rule. Its `postStartCommand` applies your git/jj identity and runs nothing as
+root. `/workspace/.devcontainer` and `/workspace/.project-sandbox` are masked
+with an empty read-only mount, so test code (which may come from an agent
+session) cannot change `devcontainer.json`, whose `initializeCommand` runs on
+the host. Bash history persists across rebuilds, and `--mount`, `--memory` and
+`--cpus` apply.
+
+### IDE compatibility
+
+- **VS Code** (Dev Containers extension) works offline. It downloads its server
+  and extensions on the host and copies them in. Tested with VS Code 1.145 and
+  Dev Containers 0.463 on Docker Desktop: opening the container, installing the
+  Python, debugpy and Pylance extensions, and running and debugging a pytest
+  test all worked with `--network none`.
+- **JetBrains** IDEs download their backend inside the container, so they
+  probably can't start offline. They are not tested; use
+  `--devcontainer-network=runtime`.
+- **Extensions that download components inside the container at runtime**
+  (for example C#/.NET or some debuggers) need `--devcontainer-network=runtime`.
+- **Tests that need host services**, such as a database on the host, need
+  `--devcontainer-network=runtime`.
+
+Remote devcontainer services such as Codespaces are not supported: the
+generated spec uses local `.project-sandbox/` files.
+
+### Upgrading from older versions
+
+Earlier versions rendered `.devcontainer/` on every launch, with agents,
+staged credentials and a firewall. Those files stay until you run
+`--devcontainer` once, which rewrites `devcontainer.json` and removes the stale
+`claude*`, `codex*` and `init-firewall.sh` links. Rebuild the container in the
+IDE afterwards.
 
 ## Image Builds
 
@@ -838,11 +899,11 @@ uv run python -m compileall src tests scripts
 uv run pytest -q
 ```
 
-For session-time proxy trust, use repeatable [`--ca-cert PATH`](internet-proxy.md#injecting-proxy-ca-certificates) with `--internet-proxy`. This also applies to generated devcontainers.
+For session-time proxy trust, use repeatable [`--ca-cert PATH`](internet-proxy.md#injecting-proxy-ca-certificates) with `--internet-proxy`. The devcontainer has no session-time trust; give it a CA it needs with `--build-ca-cert`.
 
 In an isolated session, `--python-uv` builds the image from the session
 directory, including its `pyproject.toml` and `uv.lock`. Generated sandbox
-and devcontainer files live in that workspace so the baked environment matches
+files live in that workspace so the baked environment matches
 the sources mounted at `/workspace`. Builds use the runtime's layer cache;
 `--no-build` still skips rebuilding, so the existing image must already contain
 the bookmark's dependencies.
