@@ -7,8 +7,9 @@
 - Build/session isolation: verify concurrent launches, image-ID execution, and
   Apple session-alias retention/deletion on live Docker, Podman, and Apple
   container. Add orphan alias cleanup that checks live containers after SIGKILL.
-  Item 8 should replace shared session inputs with private staging so sessions
-  sharing a generated context no longer need to queue through teardown.
+  Verify private session input mounts and concurrent provisioning on each runtime.
+  Add recovery for orphan session-input trees after SIGKILL or host crashes,
+  checking live containers before removing any credentials or prompts.
 
 - Private mount storage: add orphan-mask/helper garbage collection that accounts
   for live containers and persistent devcontainer configurations. Normal CLI
@@ -218,8 +219,10 @@ forms that can expose host directories.
 
 #### 6. High — the build lock does not protect generated policy or the image selected at launch
 
-**Addressed:** the context lock now covers the first generated write through
-session cleanup, including generation-only and build-only invocations. A
+**Addressed:** the context lock covers the first generated write through
+image selection, including generation-only and build-only invocations. Item 8
+moves runtime inputs into independent private trees, allowing release before
+the session starts. A
 runtime image-store lock covers cache checks, building, and image pinning across
 projects and tag aliases. Docker/Podman launches use image IDs; Apple launches
 use unique, digest-verified session aliases removed on teardown. Cache reuse
@@ -228,7 +231,7 @@ are removed before builds. Controlled concurrency tests cover differing policies
 shared tags across projects, secret staging, cache replacement, failures, and
 non-mutating dry-runs. See [concurrent builds](docs/concurrent-builds.md) for
 serialization tradeoffs and the external-builder boundary. Live runtime checks
-remain listed above; private staging and crash recovery remain item 8 work.
+remain listed above; crash recovery remains follow-up work.
 The original finding below describes the reviewed revision before this fix.
 
 **Locations:** `cli.py:744–840`, `:907–986`;
@@ -290,6 +293,20 @@ older applications from winning. Test concurrent add/remove and a delayed
 launch following a revocation.
 
 #### 8. Medium — credentials, proxy configs, and prompts are shared across live sessions
+
+**Addressed:** every CLI session now exclusively allocates a private input tree
+outside the checkout and build context. Configs, credentials, Copilot tokens,
+proxy provider files, API env files, and prompts use that tree; chroot launcher
+and jail paths are private too. Runtime mounts select only the session's own
+inputs and cleanup removes only its tree. CLI runs neither refresh nor purge
+persistent devcontainer credentials. The context build lock can now be released
+after image selection, allowing overlapping sessions without shared input writes.
+Regression tests hold one session before reading while another starts/exits,
+cover no-forward launches, distinct Copilot/proxy keys, cleanup after interrupts,
+prompt snapshots, private permissions, storage exposure, chroot, and dry-runs.
+See [private session inputs](docs/security.md#private-session-inputs). Live runtime
+verification and crash/orphan recovery remain listed above. The original finding
+below describes the reviewed revision before this fix.
 
 **Locations:** `config_agents.py:254–268`, `:573–581`;
 `copilot_auth.py:198–220`; `cli.py:817–824`, `:1219–1227`, `:3166–3195`.

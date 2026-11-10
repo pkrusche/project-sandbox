@@ -12,6 +12,8 @@ from tempfile import TemporaryDirectory
 from typing import cast
 from unittest.mock import Mock, patch
 
+from runtime_inputs import mounted_source
+
 from project_sandbox import agent_proxy, cli, config_agents
 from project_sandbox.git_identity import GitIdentity
 
@@ -342,7 +344,12 @@ class AgentProxyTests(unittest.TestCase):
                 return 0
 
             def run(_command, **_kwargs) -> int:
-                self.assertIn("gateway-key", secret_file.read_text(encoding="utf-8"))
+                self.assertFalse(secret_file.exists())
+                private_secret = (
+                    mounted_source(_command, "/project-sandbox-config/pi")
+                    / "models.json"
+                )
+                self.assertIn("gateway-key", private_secret.read_text(encoding="utf-8"))
                 self.assertIn("PROJECT_SANDBOX_MODEL=agent-proxy/model", _command)
                 return 0
 
@@ -410,17 +417,20 @@ class AgentProxyTests(unittest.TestCase):
                     _captured["env"] = kwargs.get("env")
                     pi_models = json.loads(
                         (
-                            _project / ".project-sandbox" / "pi" / "models.json"
+                            mounted_source(command, "/project-sandbox-config/pi")
+                            / "models.json"
                         ).read_text()
                     )
                     pi_settings = json.loads(
                         (
-                            _project / ".project-sandbox" / "pi" / "settings.json"
+                            mounted_source(command, "/project-sandbox-config/pi")
+                            / "settings.json"
                         ).read_text()
                     )
                     opencode = json.loads(
                         (
-                            _project / ".project-sandbox" / "opencode" / "opencode.json"
+                            mounted_source(command, "/project-sandbox-config/opencode")
+                            / "opencode.json"
                         ).read_text()
                     )
                     self.assertEqual(
@@ -596,14 +606,13 @@ class AgentProxyTests(unittest.TestCase):
     def test_bash_proxy_apple_env_file_is_private_and_removed(self) -> None:
         with TemporaryDirectory() as tmp:
             project = Path(tmp)
-            env_file = project / ".project-sandbox" / "api-keys.env"
+            env_file = None
 
             def run(command, **_kwargs) -> int:
+                nonlocal env_file
                 self.assertIn("--env-file", command)
-                self.assertEqual(
-                    Path(command[command.index("--env-file") + 1]).resolve(),
-                    env_file.resolve(),
-                )
+                env_file = Path(command[command.index("--env-file") + 1])
+                self.assertFalse(env_file.is_relative_to(project))
                 self.assertEqual(env_file.stat().st_mode & 0o777, 0o600)
                 self.assertIn("OPENAI_API_KEY=gateway-key", env_file.read_text())
                 self.assertNotIn("gateway-key", command)
@@ -659,6 +668,7 @@ class AgentProxyTests(unittest.TestCase):
                     ),
                     0,
                 )
+            self.assertIsNotNone(env_file)
             self.assertFalse(env_file.exists())
 
     def test_checker_runs_both_agents_and_requires_both_to_pass(self) -> None:

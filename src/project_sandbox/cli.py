@@ -42,6 +42,7 @@ from . import (
     oauth_refresh,
     observability,
     session,
+    session_inputs,
     sidecar_image,
     token_expiry,
     transcript,
@@ -706,8 +707,8 @@ def _main_scoped(argv: list[str] | None, resources: contextlib.ExitStack) -> int
     # python-uv/rust-cargo Dockerfile, but only into .project-sandbox
     # (project-level, not the worktree).
     implicit_mounts.validate_sources(project, extra_mounts=args.extra_mounts)
-    # Acquire before even synthesized Dockerfiles are written; release only
-    # after session cleanup, when no mounted provider config is still in use.
+    # Acquire before even synthesized Dockerfiles are written; release after
+    # image selection, before staging the session's independent private inputs.
     context_resources = resources.enter_context(contextlib.ExitStack())
     context_resources.enter_context(
         build_cache.build_lock(project / ".project-sandbox")
@@ -759,9 +760,8 @@ def _main_scoped(argv: list[str] | None, resources: contextlib.ExitStack) -> int
     # behind by an interrupt or an exception. Stays None when the session could
     # not be recorded at all, which never blocks the run.
     record_path: Path | None = None
-    copilot_token_staged = False
-    # Owns this session's sidecar inputs (sessions/<sid>/) in sidecar mode; the
-    # global sidecar itself keeps running after the session.
+    # Owns this session's private inputs, masks, and sidecar inputs. The global
+    # sidecar itself keeps running after the session.
     egress_stack = contextlib.ExitStack()
     egress_state: egress_sidecar.Sidecar | None = None
     egress_started_at: float | None = None
@@ -885,24 +885,16 @@ def _main_scoped(argv: list[str] | None, resources: contextlib.ExitStack) -> int
             ollama_base_url=ollama_base_url,
         )
         forward_credentials = not args.no_forward_credentials and not args.agent_proxy
-        # Before staging, ask the agent's own CLI to refresh its host token so the
-        # container starts with a near-full window. bash may run claude, so it
-        # refreshes the claude token; opencode/pi have no delegated refresh (no-op).
-        if run_agent is not None and forward_credentials and not args.no_token_refresh:
-            oauth_refresh.refresh_host_token(
-                "claude" if run_agent == "bash" else run_agent,
-                home=Path.home(),
-                verbose=args.verbose,
+        # Persistent devcontainer credentials are updated only by explicit
+        # generation/build-only invocations. CLI sessions stage their own copy
+        # after the image is selected and never purge this persistent tree.
+        credential_dirs = None
+        if run_agent is None:
+            credential_dirs = (
+                config_agents.sync_credentials(context_dir)
+                if forward_credentials
+                else {}
             )
-        if forward_credentials:
-            credential_dirs = config_agents.sync_credentials(
-                context_dir, unsupervised=bool(args.prompt or args.prompt_text)
-            )
-        else:
-            # Read/copy no host credentials, and remove any staged by a previous
-            # forwarding run so nothing lingers on disk or can be mounted.
-            config_agents.purge_staged_credentials(context_dir)
-            credential_dirs = {}
 
         _write_project_sandbox_gitignore(context_dir)
         _update_project_gitignore(context_dir.parent)
@@ -1082,24 +1074,44 @@ def _main_scoped(argv: list[str] | None, resources: contextlib.ExitStack) -> int
 
         assert run_agent is not None
 
-        # The image build is complete, so it is now safe to stage the selected
-        # agent's private proxy provider configuration in the project context.
-        if proxy_base_url and proxy_key and run_agent:
-            cfg = config_agents.render(
-                context_dir,
-                agent_proxy=(proxy_base_url, proxy_models, proxy_key, run_agent),
-                agent_proxy_model=(
-                    proxy_selected_model if run_agent == "bash" else None
-                ),
+        # No running session reads shared generated files. Release the build
+        # context before allocating and staging this session's private inputs.
+        context_owned = False
+        context_resources.close()
+        inputs_dir = egress_stack.enter_context(session_inputs.allocate())
+        cfg = config_agents.render(
+            inputs_dir,
+            pi_ollama=pi_ollama_enabled,
+            ollama_models=args.ollama_model,
+            ollama_base_url=ollama_base_url,
+            agent_proxy=(proxy_base_url, proxy_models, proxy_key, run_agent)
+            if proxy_base_url and proxy_key
+            else None,
+            agent_proxy_model=proxy_selected_model if run_agent == "bash" else None,
+        )
+        if is_chroot:
+            chroot.render(inputs_dir)
+        if forward_credentials and not args.no_token_refresh:
+            oauth_refresh.refresh_host_token(
+                "claude" if run_agent == "bash" else run_agent,
+                home=Path.home(),
+                verbose=args.verbose,
             )
-
+        credential_dirs = (
+            config_agents.sync_credentials(
+                inputs_dir,
+                unsupervised=bool(args.prompt or args.prompt_text),
+                staging_root=inputs_dir / "credentials",
+            )
+            if forward_credentials
+            else {}
+        )
         if copilot_token is not None:
-            # Staged outside the repo (0600 file, 0700 dir), rewritten every
-            # launch, and removed in the finally block below.
-            copilot_token_staged = True
             credential_dirs = {
                 **credential_dirs,
-                "copilot": copilot_auth.stage_token(context_dir, copilot_token),
+                "copilot": copilot_auth.stage_token(
+                    inputs_dir, copilot_token, staging_root=inputs_dir / "credentials"
+                ),
             }
 
         services = _local_services(
@@ -1194,6 +1206,7 @@ def _main_scoped(argv: list[str] | None, resources: contextlib.ExitStack) -> int
             copilot_host=copilot_host,
             runtime=runtime,
             create_prompt_files=True,
+            inputs_dir=inputs_dir,
             image_reference=image_reference,
             vcs_layout=vcs_layout,
             vcs_mask_dir=vcs_masks,
@@ -1304,7 +1317,7 @@ def _main_scoped(argv: list[str] | None, resources: contextlib.ExitStack) -> int
         return exit_code
     finally:
         # The sandbox container has exited (--rm) by now; remove this session's
-        # sidecar inputs and count what the shared sidecar denied meanwhile.
+        # private inputs and count what the shared sidecar denied meanwhile.
         egress_stack.close()
         if vcs_masks is not None:
             shutil.rmtree(vcs_masks)
@@ -1322,8 +1335,6 @@ def _main_scoped(argv: list[str] | None, resources: contextlib.ExitStack) -> int
             plan.close()
         if internet_proxy_relay is not None:
             internet_proxy_relay.close()
-        if copilot_token_staged:
-            copilot_auth.remove_staged_token(context_dir)
         if context_owned:
             generated_files.remove(context_dir / "api-keys.env")
         if context_owned and args.agent_proxy:
@@ -1957,27 +1968,25 @@ def _dry_run(
         workspace if (args.python_uv or args.node_npm) and args.branch else project
     )
     context_dir = asset_project / ".project-sandbox"
-    claude_cfg = context_dir / "claude" / "settings.json"
-    codex_cfg = context_dir / "codex" / "config.toml"
-    pi_cfg = context_dir / "pi" / "settings.json"
-    # Only the keys _build_session_command consumes ("claude", and optionally
-    # "codex"/"opencode"/"pi" when available); the devcontainer-specific dirs
-    # are not used on the CLI run path.
+    inputs_dir = session_inputs.preview_path()
+    claude_cfg = inputs_dir / "claude" / "settings.json"
+    codex_cfg = inputs_dir / "codex" / "config.toml"
+    pi_cfg = inputs_dir / "pi" / "settings.json"
     credential_dirs = {
-        "claude": config_agents.credentials_dir(context_dir, "claude"),
-        **{
-            agent: config_agents.credentials_dir(
-                context_dir, agent, unsupervised=bool(args.prompt or args.prompt_text)
-            )
-            for agent in ("codex", "opencode", "pi")
-            if agent in available_agents
-        },
+        agent: config_agents.credentials_dir(
+            inputs_dir,
+            agent,
+            unsupervised=bool(args.prompt or args.prompt_text),
+            staging_root=inputs_dir / "credentials",
+        )
+        for agent in ("claude", "codex", "opencode", "pi")
+        if agent == "claude" or agent in available_agents
     }
     run_agent = _requested_agent(args)
     copilot_host = getattr(args, "copilot_host", None)
-    copilot_cfg = context_dir / "copilot" / "config.json"
+    copilot_cfg = inputs_dir / "copilot" / "config.json"
     if _copilot_forwards_token(args, run_agent):
-        credential_dirs["copilot"] = copilot_auth.staged_token_dir(context_dir)
+        credential_dirs["copilot"] = inputs_dir / "credentials" / "copilot"
     pi_ollama_enabled = _pi_ollama_enabled(args, run_agent)
     _warn_byok_provider_allowlist(args, run_agent)
     _warn_pi_ollama_no_firewall(args, pi_ollama_enabled)
@@ -1987,7 +1996,7 @@ def _dry_run(
     print("DRY RUN: no files, worktrees, images, or containers will be created.")
     if run_agent == "copilot":
         assert copilot_host is not None
-        _print_copilot_dry_run(args, context_dir=context_dir, host=copilot_host)
+        _print_copilot_dry_run(args, inputs_dir=inputs_dir, host=copilot_host)
     if args.agent_proxy:
         endpoint = agent_proxy.parse(args.agent_proxy)
         print(
@@ -2207,6 +2216,7 @@ def _dry_run(
         copilot_host=copilot_host,
         runtime=runtime,
         create_prompt_files=False,
+        inputs_dir=inputs_dir,
         api_key_values=preview_api_key_values,
         ollama_add_hosts=[p.add_host for p in forwarding_plans if p.add_host],
         network=local_service_network.network_argument(forwarding_plans),
@@ -2367,7 +2377,7 @@ def _print_egress_dry_run(
     return egress_sidecar.sandbox_mount(session_dir)
 
 
-def _print_copilot_dry_run(args, *, context_dir: Path, host: str) -> None:
+def _print_copilot_dry_run(args, *, inputs_dir: Path, host: str) -> None:
     """Describe the Copilot token plan without invoking pass or gh."""
     print(f"Would run GitHub Copilot CLI for host: {host}")
     if getattr(args, "no_forward_credentials", False):
@@ -2384,7 +2394,7 @@ def _print_copilot_dry_run(args, *, context_dir: Path, host: str) -> None:
                 f"Would resolve the Copilot token from: pass show {entry}, "
                 f"falling back to gh auth token --hostname {host}"
             )
-        token_dir = copilot_auth.staged_token_dir(context_dir)
+        token_dir = inputs_dir / "credentials" / "copilot"
         print(
             f"Would stage the Copilot token at {token_dir / copilot_auth.TOKEN_FILENAME} "
             f"(0600) and mount it read-only at {copilot_auth.SECRETS_TARGET}"
@@ -3192,6 +3202,7 @@ def _build_session_command(
     copilot_host: str | None = None,
     runtime: container_cli.Runtime,
     create_prompt_files: bool,
+    inputs_dir: Path | None = None,
     image_reference: str | None = None,
     api_key_values: dict[str, str] | None = None,
     ollama_add_host: str | None = None,
@@ -3202,6 +3213,7 @@ def _build_session_command(
     vcs_layout: vcs_access.Layout | None = None,
     vcs_mask_dir: Path | None = None,
 ) -> tuple[list[str], Path | None, bool, list[str] | None]:
+    inputs_dir = inputs_dir or context_dir
     try:
         implicit_mounts.validate_sources(
             project,
@@ -3220,7 +3232,7 @@ def _build_session_command(
         extra_mounts.append(egress_mount)
     if getattr(args, "agent_proxy", None) and run_agent in ("opencode", "bash"):
         extra_mounts.append(
-            f"type=bind,source={(context_dir / 'opencode').resolve(strict=False)},"
+            f"type=bind,source={(inputs_dir / 'opencode').resolve(strict=False)},"
             "target=/project-sandbox-config/opencode,readonly"
         )
     vcs_mode = getattr(args, "vcs_access", "full")
@@ -3279,7 +3291,7 @@ def _build_session_command(
         extra_env.append("GIT_OPTIONAL_LOCKS=0")
     if api_key_values is None:
         api_key_values = _api_key_env_values(args)
-    staged_api_key_env_file = context_dir / "api-keys.env"
+    staged_api_key_env_file = inputs_dir / "api-keys.env"
     use_api_key_env_file = bool(api_key_values) and (
         runtime.name == container_cli.APPLE_CONTAINER.name
     )
@@ -3355,7 +3367,7 @@ def _build_session_command(
             source_prompt = _resolve_required_path(args.prompt, what="--prompt file")
             # Copy the prompt into a private staging dir so we mount only the
             # prompt file, not its source parent (which could be $HOME).
-            prompt_staging = context_dir / "prompt"
+            prompt_staging = inputs_dir / "prompt"
             prompt_file = prompt_staging / source_prompt.name
             if create_prompt_files:
                 # apple/container can only bind-mount *directories* (see
@@ -3377,7 +3389,7 @@ def _build_session_command(
             )
             extra_env.append(f"PROJECT_SANDBOX_PROMPT_FILE={prompt_target}")
         elif args.prompt_text:
-            prompts_dir = context_dir / "prompts"
+            prompts_dir = inputs_dir / "prompts"
             prompt_file = prompts_dir / "prompt.txt"
             if create_prompt_files:
                 # Same apple/container constraint and stale-prompt concern as
@@ -3399,6 +3411,7 @@ def _build_session_command(
         project,
         workspace=workspace,
         extra_mounts=extra_mounts,
+        owned_session=inputs_dir,
     )
     if not unsupervised:
         shell_dir, claude_projects = ensure_history_paths(
@@ -3508,8 +3521,8 @@ def _build_session_command(
         )
         try:
             command = container_cli.build_chroot_argv(
-                script=context_dir / "chroot-run.sh",
-                jail_root=context_dir / "chroot-root",
+                script=inputs_dir / "chroot-run.sh",
+                jail_root=inputs_dir / "chroot-root",
                 mounts=mounts,
                 identity=identity,
                 agent=run_mode_agent,

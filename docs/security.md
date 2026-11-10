@@ -26,7 +26,7 @@ relative to verified directories, with symlink-resistant recursive cleanup.
 Dry-runs do not perform these mutations.
 
 These protections prevent redirected host writes. Separately, CLI invocations
-hold a context lock from rendering through session cleanup and pin the image
+hold a context lock from rendering through image selection and pin the image
 selected for launch. See [concurrent builds](concurrent-builds.md) for cache
 identity checks, serialization, and the external-builder boundary.
 
@@ -87,12 +87,35 @@ bash session (see [GitHub Copilot token](#github-copilot-token)). Generated devc
 all detected forwarded credentials. Use `--no-forward-credentials` when a bash
 session or devcontainer should start unauthenticated.
 
-The private `/tmp/project-sandbox-<uid>/...` staging tree is host-side storage,
-not a mount exposed as a whole. Individual authorized credential directories are
-mounted at `/project-sandbox-secrets/<agent>`; credentials are never placed in
-the generated configuration directories or image build context. Explicit
-`--mount` values are user-authorized exposure and can still reveal any host path
-the user chooses, including a credential-bearing path.
+CLI credentials use [private session inputs](#private-session-inputs).
+Persistent devcontainer credentials remain under `/tmp/project-sandbox-<uid>/...`.
+Neither root is mounted as a whole. Individual authorized credential directories
+are mounted at `/project-sandbox-secrets/<agent>`; credentials never enter the
+checkout or image build context. Extra mounts that expose private CLI session
+storage are rejected.
+
+## Private session inputs
+
+Each CLI session exclusively creates a random directory under
+`$XDG_STATE_HOME/project-sandbox/session-inputs` (default
+`~/.local/state/project-sandbox/session-inputs`). Ownership and permissions are
+validated through no-follow directory traversal. The root and session directory
+are private (`0700`); token, API environment, and prompt files use `0600`.
+
+Agent configs, forwarded credentials, Copilot tokens, proxy provider keys, and
+prompts are staged there. Only the required subdirectories are mounted, read-only;
+the session tree is never a workspace or build context. Chroot sessions also
+keep their launcher and jail in this directory. Each session removes only its
+own tree on exit, including handled interrupts and startup failures. SIGKILL or
+a host crash can leave files behind; orphan cleanup must account for live
+containers and remains follow-up work.
+
+CLI launches neither refresh nor purge persistent devcontainer credential
+staging. Use generation without `--agent` or a prompt (or `--build-only`) to
+refresh those credentials before reopening a devcontainer. Regenerating a live,
+externally managed devcontainer remains a separate lifecycle operation.
+`--no-forward-credentials` skips copying and mounting credentials; it does not
+delete inputs owned by another CLI session or persistent devcontainer.
 
 Claude's forwarded files are its OAuth credentials (`~/.claude/.credentials.json`
 or the macOS Keychain entry), a sanitized `~/.claude.json`, and, when present,
@@ -117,8 +140,8 @@ tracking for Copilot.
   falls back to `gh` prints a `[W]` warning naming the pass entry to fill.
   Classic `ghp_` tokens are rejected.
 - **Where it lives.** The token is written to a 0600 file in a 0700 directory
-  under `/tmp/project-sandbox-<uid>/` (outside the repository, rewritten every
-  launch, removed best-effort at session end) and mounted read-only at
+  in its private session input tree (outside the repository, unique to the
+  launch, removed at session end) and mounted read-only at
   `/project-sandbox-secrets/copilot` only when Copilot is the selected agent. It
   is never baked into the image, written into generated project files, passed
   in argv, or copied into `$COPILOT_HOME`. Resolved tokens are redacted from
@@ -184,8 +207,8 @@ for as long as possible and make any shortfall visible:
   expiry warning is shown for Pi and the in-container agent's own refresh
   behavior applies.
 - `--no-forward-credentials` starts the container unauthenticated. Host
-  credentials are not read, staged, or mounted; any credentials left in the
-  staging area by a previous forwarding run are removed, and the generated
+  credentials are not read, staged, or mounted; other sessions' and persistent
+  devcontainer inputs are preserved, and the generated
   `devcontainer.json` is rendered credential-free. It also disables the host
   refresh and start-of-session warning. Direct CLI runs may opt in to API-key
   environment injection with `--api-key-env NAME` or `--api-key-env-file FILE`;
@@ -365,7 +388,7 @@ Customize:
 | Malicious npm post-install scripts | Run as the unprivileged `agent` user (host-matched for Docker/Podman on Linux); no access to unmounted host paths. |
 | Agent updates itself to a malicious version | `autoUpdaterStatus: disabled` for Claude and `check_for_update_on_startup = false` for Codex; `PI_SKIP_VERSION_CHECK=1` for Pi. OpenCode config is not currently sanitized; see `TODO.md`. |
 | Agent sends telemetry / usage data | `CLAUDE_TELEMETRY_DISABLED=1` for Claude; `analytics.enabled = false` and `feedback.enabled = false` for Codex; `PI_OFFLINE=1` for Pi (disables startup update/telemetry network calls); `OPENSPEC_TELEMETRY=0` for OpenSpec. OpenCode config is not currently filtered for telemetry settings; see `TODO.md`. |
-| API token leakage via process environment | Default forwarded agent tokens are passed through mounted credential files, not environment variables; host staging files are kept under a private `/tmp` directory. Explicit `--api-key-env*` injection is opt-in, requires `--no-forward-credentials`, and redacts dry-run output, but the selected keys are still present in the runtime process environment during real runs. |
+| API token leakage via process environment | Default forwarded agent tokens are passed through mounted credential files, not environment variables; CLI staging files are kept in private per-session storage. Explicit `--api-key-env*` injection is opt-in, requires `--no-forward-credentials`, and redacts dry-run output, but the selected keys are still present in the runtime process environment during real runs. |
 | Agent rewrites the project `--dockerfile` to poison the next build | The project Dockerfile's SHA256 is recorded under the masked `.project-sandbox/.dockerfile-checksums.json`, which the sandbox cannot read or modify; a later run warns when the Dockerfile changed since it was last built. |
 | Agent reads or edits `.devcontainer` host-path mounts and config | `/workspace/.devcontainer` is masked with an empty read-only mount in both direct runs and devcontainers. |
 

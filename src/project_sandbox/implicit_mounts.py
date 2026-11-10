@@ -7,7 +7,7 @@ import uuid
 from collections.abc import Sequence
 from pathlib import Path
 
-from . import mount_options, mount_storage
+from . import mount_options, mount_storage, session_inputs
 
 
 def validate_sources(
@@ -17,13 +17,32 @@ def validate_sources(
     build_context: Path | None = None,
     extra_mounts: Sequence[str] = (),
     sources: Sequence[Path] = (),
+    owned_session: Path | None = None,
 ) -> list[Path]:
     exposed = [project, workspace or project, *sources]
     if build_context is not None:
         exposed.append(build_context)
-    for value in extra_mounts:
-        # Preserve source aliases for validation when devcontainers reopen.
-        exposed.append(mount_options.bind_source(value))
+    # Preserve source aliases for validation when devcontainers reopen.
+    extra_sources = [mount_options.bind_source(value) for value in extra_mounts]
+    exposed.extend(extra_sources)
+    # Session-owned mounts below this root are authorized individually by the
+    # caller. A workspace, build context, or user mount must never expose it.
+    if (
+        owned_session is not None
+        and owned_session.parent == session_inputs.storage_root()
+    ):
+        extra_sources = [
+            p for p in extra_sources if not p.resolve().is_relative_to(owned_session)
+        ]
+    mount_storage.check_exposure(
+        session_inputs.storage_root(),
+        [
+            project,
+            workspace or project,
+            *([build_context] if build_context else []),
+            *extra_sources,
+        ],
+    )
     mount_storage.check_exposure(mount_storage.storage_root(), exposed)
     return exposed
 

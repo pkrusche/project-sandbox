@@ -219,8 +219,9 @@ Only the first line of the entry is used. Classic `ghp_` tokens are rejected
 because Copilot does not accept them. To use the GitHub CLI fallback instead,
 run `gh auth login --hostname <host>` once.
 
-The token is written to a mode-0600 file in a private directory under
-`/tmp/project-sandbox-<uid>/` (never into the project), mounted read-only at
+The token is written to a mode-0600 file in its
+[private session input directory](security.md#private-session-inputs) outside
+the project, mounted read-only at
 `/project-sandbox-secrets/copilot` for Copilot sessions only, and removed when
 the session ends. The entrypoint exports it as `COPILOT_GITHUB_TOKEN` just for
 the Copilot process. `--no-forward-credentials` skips the lookup entirely;
@@ -600,7 +601,7 @@ uv run project-sandbox \
 - `--prompt FILE` copies the file into a private generated staging directory,
   bind-mounts only that directory read-only, and reads the prompt from
   `/project-sandbox-prompt/<name>`.
-- `--prompt-text "..."` writes the prompt under `.project-sandbox/prompts/`,
+- `--prompt-text "..."` writes the prompt in a private per-session directory,
   bind-mounts that directory read-only, and reads it from
   `/project-sandbox-prompt/prompt.txt`.
 - `--agent {claude,codex,opencode,pi,copilot,bash}` selects which agent to run.

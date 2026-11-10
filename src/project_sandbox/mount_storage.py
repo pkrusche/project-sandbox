@@ -196,6 +196,11 @@ def main(argv: list[str] | None = None) -> int:
                 "Workspace moved or changed; regenerate its devcontainer configuration"
             )
         check_exposure(args.root, [args.project, *args.source])
+        # CLI session inputs are a separate private sibling tree. Reopening a
+        # persisted devcontainer must not expose it through a relocated mount.
+        check_exposure(
+            args.root.parent / "session-inputs", [args.project, *args.source]
+        )
         for trusted in (
             Path(sys.executable).resolve(),
             Path(sys.base_prefix).resolve(),

@@ -25,12 +25,16 @@ Given `project-sandbox --agent claude /path/to/repo python:3.12-slim`, it also:
    Linux. Podman must be rootless; a rootful Podman is refused.
 2. Verifies the Apple `container` system service is running when that runtime is
    selected.
-3. Builds the image with the selected runtime.
+3. Builds or reuses the image, pins it for this session, and releases the build
+   context lock. CLI configs, credentials, prompts, and env files are staged in
+   a unique private directory outside the checkout; persistent devcontainer
+   credentials are left alone.
 4. Starts the container entrypoint, which wires Git and jj identity, copies only
    the selected agent's mounted credentials into the container's home, then runs
    the firewall before exec'ing the agent. Headless modes use the same base-agent
    credential policy. `--agent bash` is intentionally multi-agent and receives
-   every detected forwarded credential.
+   every detected forwarded credential except Copilot's token. On exit, the
+   CLI removes only its own private session input tree.
 
 Interactive `--agent codex` launches with `--no-daemon` to bypass Codex's shared
 background app server, which can fail to start inside the sandbox. Model, effort,
@@ -97,9 +101,11 @@ for this reason (see `.github/workflows/e2e.yml`).
 
 The `.project-sandbox/` and `.devcontainer/` directories are generated local
 state and are ignored as a whole. Re-run `project-sandbox` after cloning, pulling
-generated config changes, or refreshing credentials. Agent credential staging
-lives outside the project under `/tmp/project-sandbox-<uid>/...`; that private
-root is not mounted wholesale. Generated devcontainers are intentionally
+generated config changes, or refreshing devcontainer credentials. Persistent
+devcontainer staging lives under `/tmp/project-sandbox-<uid>/...`; CLI runs use
+separate [private session inputs](security.md#private-session-inputs) and never
+refresh or purge that persistent tree. Neither root is mounted wholesale.
+Generated devcontainers are intentionally
 multi-agent and mount all detected credential directories. Use
 `--no-forward-credentials` to render an unauthenticated devcontainer.
 

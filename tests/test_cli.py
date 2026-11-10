@@ -17,6 +17,8 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from runtime_inputs import mounted_source
+
 from project_sandbox import cli, container_cli, firewall
 from project_sandbox import worktree as worktree_mod
 from project_sandbox.git_identity import GitIdentity
@@ -1251,7 +1253,10 @@ class CliTests(TestCase):
         output = out.getvalue()
         self.assertIn("opencode-headless", output)
         staged = cli.config_agents.credentials_dir(
-            project.resolve() / ".project-sandbox", "opencode", unsupervised=True
+            project.resolve() / ".project-sandbox",
+            "opencode",
+            unsupervised=True,
+            staging_root=cli.session_inputs.preview_path() / "credentials",
         )
         self.assertIn(
             f"source={staged.resolve(strict=False)},"
@@ -5287,7 +5292,9 @@ class NoForwardCredentialsTests(TestCase):
                     patch.object(
                         cli.container_cli, "ensure_system_started", return_value=0
                     ),
-                    patch.object(cli.container_cli, "build_image", return_value=1),
+                    patch.object(cli.container_cli, "build_image", return_value=0),
+                    patch.object(cli.container_cli, "run", return_value=0),
+                    patch.object(cli.session, "run", return_value=0),
                     contextlib.redirect_stdout(io.StringIO()),
                 ):
                     cli.main(
@@ -5301,12 +5308,18 @@ class NoForwardCredentialsTests(TestCase):
                             "python:3.12-slim",
                         ]
                     )
-                sync.assert_called_once_with(
-                    project.resolve() / ".project-sandbox",
-                    unsupervised=mode != "interactive",
+                sync.assert_called_once()
+                inputs = sync.call_args.args[0]
+                self.assertEqual(inputs.parent, cli.session_inputs.storage_root())
+                self.assertEqual(
+                    sync.call_args.kwargs,
+                    {
+                        "unsupervised": mode != "interactive",
+                        "staging_root": inputs / "credentials",
+                    },
                 )
 
-    def test_skips_staging_and_purges_instead(self) -> None:
+    def test_skips_staging_without_purging_other_sessions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
             (project / "README.md").write_text("# demo\n", encoding="utf-8")
@@ -5346,7 +5359,7 @@ class NoForwardCredentialsTests(TestCase):
                     ]
                 )
             sync.assert_not_called()
-            purge.assert_called_once()
+            purge.assert_not_called()
 
     def test_allows_missing_host_agent_config(self) -> None:
         """--no-forward-credentials promises to start unauthenticated and log
@@ -6628,9 +6641,7 @@ class CopilotAgentTests(TestCase):
         def fake_run(cmd, *, log_path, **kwargs):
             captured["cmd"] = cmd
             captured["kwargs"] = kwargs
-            token_dir = cli.copilot_auth.staged_token_dir(
-                self.project.resolve() / ".project-sandbox"
-            )
+            token_dir = mounted_source(cmd, "/project-sandbox-secrets/copilot")
             token_file = token_dir / "token"
             captured["token_mode"] = token_file.stat().st_mode & 0o777
             captured["dir_mode"] = token_dir.stat().st_mode & 0o777
@@ -6823,9 +6834,7 @@ class CopilotAgentTests(TestCase):
         cmd = run["cmd"]
         self.assertNotIn(COPILOT_PAT, " ".join(cmd))
         self.assertIn("copilot-headless", cmd)
-        token_dir = cli.copilot_auth.staged_token_dir(
-            self.project.resolve() / ".project-sandbox"
-        )
+        token_dir = mounted_source(cmd, "/project-sandbox-secrets/copilot")
         self.assertIn(
             f"type=bind,source={token_dir.resolve()},"
             "target=/project-sandbox-secrets/copilot,readonly",

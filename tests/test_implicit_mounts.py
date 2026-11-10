@@ -331,6 +331,20 @@ class ImplicitMountTests(TestCase):
         self.assertIn("Cannot prepare private container mounts", proc.stderr)
         self.assertEqual(sorted(p.name for p in self.outside.iterdir()), ["keep"])
 
+    def test_devcontainer_reopen_cannot_expose_cli_session_inputs(self) -> None:
+        spec = self.render()
+        source = self.root.parent / "session-inputs" / "another-session"
+        proc = subprocess.run(
+            [*self.initialize_command(spec), "--source", str(source)],
+            cwd=self.project,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("overlaps exposed host path", proc.stderr)
+        self.assertFalse(source.exists())
+
     def test_devcontainer_reopen_refuses_nonempty_mask(self) -> None:
         spec = self.render()
         mask = mount_storage.mask_path(self.project, "devcontainer")

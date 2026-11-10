@@ -219,10 +219,13 @@ def sync_credentials(
     *,
     home: Path | None = None,
     unsupervised: bool = False,
+    staging_root: Path | None = None,
 ) -> dict[str, Path]:
     """Stage credentials for all agents present on this host.
 
     Unsupervised sessions exclude OpenCode's host history and runtime state.
+    CLI callers supply a private session staging_root; the default location is
+    persistent devcontainer storage, which CLI sessions must never purge.
 
     Returns a dict keyed by agent name:
       "claude", "claude-devcontainer" — always present
@@ -237,6 +240,7 @@ def sync_credentials(
             agent=profile,
             config_state=_claude_config_state(permission_mode),
             home=home,
+            staging_root=staging_root,
         )
     if host_paths["codex"].exists():
         result["codex"] = _sync_generic_credentials(
@@ -244,12 +248,14 @@ def sync_credentials(
             "codex",
             host_paths["codex"],
             include_files=("auth.json",),
+            staging_root=staging_root,
         )
     if host_paths["opencode"].exists():
         result["opencode"] = _sync_opencode_credentials(
             project_sandbox_dir,
             home=_home,
             unsupervised=unsupervised,
+            staging_root=staging_root,
         )
     if host_paths["pi"].exists():
         result["pi"] = _sync_generic_credentials(
@@ -257,19 +263,30 @@ def sync_credentials(
             "pi",
             host_paths["pi"],
             include_files=("auth.json",),
+            staging_root=staging_root,
         )
     return result
 
 
 def credentials_dir(
-    project_sandbox_dir: Path, agent: str = "claude", *, unsupervised: bool = False
+    project_sandbox_dir: Path,
+    agent: str = "claude",
+    *,
+    unsupervised: bool = False,
+    staging_root: Path | None = None,
 ) -> Path:
     # An interactive sync must never repopulate a directory mounted by an
     # unsupervised container with host history, even after provisioning finishes.
     if agent == "opencode" and unsupervised:
         agent = "opencode-headless"
-    if not all(c.isalnum() or c in "._-" for c in agent):
+    if (
+        not agent
+        or agent in (".", "..")
+        or not all(c.isalnum() or c in "._-" for c in agent)
+    ):
         raise ValueError(f"Invalid credential agent name: {agent}")
+    if staging_root is not None:
+        return staging_root / agent
     key = str(project_sandbox_dir.resolve(strict=False))
     digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
     uid = os.getuid() if hasattr(os, "getuid") else "user"
@@ -449,10 +466,11 @@ def _sync_claude_credentials(
     agent: str,
     config_state: dict,
     home: Path | None,
+    staging_root: Path | None = None,
 ) -> Path:
     use_host_keychain = home is None
     home = home or Path.home()
-    out_dir = credentials_dir(project_sandbox_dir, agent)
+    out_dir = credentials_dir(project_sandbox_dir, agent, staging_root=staging_root)
     _ensure_private_dir(out_dir)
     if agent == "claude":
         _remove_stale_project_credentials(project_sandbox_dir)
@@ -485,8 +503,9 @@ def _sync_generic_credentials(
     source_dir: Path,
     *,
     include_files: tuple[str, ...] | None = None,
+    staging_root: Path | None = None,
 ) -> Path:
-    out_dir = credentials_dir(project_sandbox_dir, agent)
+    out_dir = credentials_dir(project_sandbox_dir, agent, staging_root=staging_root)
     _ensure_private_dir(out_dir)
     _remove_stale_project_agent_credentials(project_sandbox_dir, agent, include_files)
     _clear_dir(out_dir)
@@ -508,9 +527,13 @@ def _sync_opencode_credentials(
     *,
     home: Path,
     unsupervised: bool = False,
+    staging_root: Path | None = None,
 ) -> Path:
     out_dir = credentials_dir(
-        project_sandbox_dir, "opencode", unsupervised=unsupervised
+        project_sandbox_dir,
+        "opencode",
+        unsupervised=unsupervised,
+        staging_root=staging_root,
     )
     _ensure_private_dir(out_dir)
     _remove_stale_project_agent_credentials(project_sandbox_dir, "opencode", None)

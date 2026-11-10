@@ -55,6 +55,11 @@ proxy sessions it configures both Pi and OpenCode; for other sessions it
 configures the selected agent. `--dry-run` performs no pass/environment lookup,
 network access, file write, or container start.
 
+Provider configs and Apple runtime environment files are staged in
+[private session inputs](security.md#private-session-inputs) outside the checkout
+after image selection. Concurrent sessions cannot replace one another's keys;
+teardown removes only the exiting session's files.
+
 Run the non-billable isolation check with a real container runtime:
 
 ```bash

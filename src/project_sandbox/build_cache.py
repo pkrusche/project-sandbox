@@ -37,12 +37,12 @@ _STATE_FILENAME = ".build-state.json"
 
 @contextmanager
 def build_lock(context_dir: Path) -> Generator[None, None, None]:
-    """Serialize rendering, builds, and session use of one generated context.
+    """Serialize rendering and builds of one generated context.
 
     The lock lives outside the project so it is neither included in build
     contexts nor exposed to a sandbox. Hold it before the first generated write
-    through session teardown: post-build provider configs must not enter a
-    concurrent build, and mounted configs must stay stable during a session.
+    through image selection. Running CLI sessions mount private inputs and can
+    release this lock before staging credentials or starting the agent.
     """
     with host_locks.path_lock("build", context_dir):
         yield

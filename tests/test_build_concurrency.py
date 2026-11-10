@@ -9,6 +9,8 @@ from pathlib import Path
 from unittest import TestCase
 from unittest.mock import patch
 
+from runtime_inputs import mounted_source
+
 from project_sandbox import build_cache, cli, container_cli, host_locks
 from project_sandbox.git_identity import GitIdentity
 
@@ -113,7 +115,7 @@ class BuildConcurrencyTests(TestCase):
         self.finish_threads()
         self.assertEqual(self.errors, [])
 
-    def test_context_is_locked_before_render_until_session_cleanup(self):
+    def test_context_is_locked_through_build_and_sessions_have_private_inputs(self):
         building, running, attempted, rendered = [threading.Event() for _ in range(4)]
         finish_build, finish_session = self.event(), self.event()
         original_lock = build_cache.build_lock
@@ -147,13 +149,12 @@ class BuildConcurrencyTests(TestCase):
 
         def run(argv, **kwargs):
             if threading.current_thread().name == "first":
-                # Simulate post-build env-file staging; the second builder
-                # must remain blocked until this session's cleanup removes it.
-                (context / "api-keys.env").write_text("SESSION_KEY=private")
+                inputs = mounted_source(argv, "/project-sandbox-config/claude").parent
+                (inputs / "api-keys.env").write_text("SESSION_KEY=private")
                 running.set()
                 self.assertTrue(finish_session.wait(10))
                 self.assertEqual(
-                    (context / "api-keys.env").read_text(), "SESSION_KEY=private"
+                    (inputs / "api-keys.env").read_text(), "SESSION_KEY=private"
                 )
             return self.run_image(argv, **kwargs)
 
@@ -164,12 +165,14 @@ class BuildConcurrencyTests(TestCase):
             self.build.side_effect, self.run.side_effect = build, run
             self.start("first", None, "--extra-domain", "strict.example")
             self.assertTrue(building.wait(10))
-            self.start("second", None, "--extra-domain", "permissive.example")
+            second = self.start("second", None, "--extra-domain", "permissive.example")
             self.assertTrue(attempted.wait(10))
             self.assertFalse(rendered.wait(0.1))
             finish_build.set()
             self.assertTrue(running.wait(10))
-            self.assertFalse(rendered.wait(0.1))
+            self.assertTrue(rendered.wait(10))
+            second.join(10)
+            self.assertFalse(second.is_alive())
             finish_session.set()
             self.assert_finished()
         self.assertEqual(len(self.built), 2)
@@ -177,8 +180,7 @@ class BuildConcurrencyTests(TestCase):
         self.assertNotIn(b"permissive.example", self.built[0][1])
         self.assertIn(b"permissive.example", self.built[1][1])
         self.assertEqual(
-            [identity for _, identity in self.launched],
-            [item[2] for item in self.built],
+            dict(self.launched), {"first": self.built[0][2], "second": self.built[1][2]}
         )
 
     def test_shared_tag_builds_are_locked_and_launches_keep_selected_identity(self):

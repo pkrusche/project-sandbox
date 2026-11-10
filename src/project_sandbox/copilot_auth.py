@@ -197,9 +197,13 @@ def staged_token_dir(project_sandbox_dir: Path) -> Path:
     return config_agents.credentials_dir(project_sandbox_dir, "copilot")
 
 
-def stage_token(project_sandbox_dir: Path, token: str) -> Path:
+def stage_token(
+    project_sandbox_dir: Path, token: str, *, staging_root: Path | None = None
+) -> Path:
     """Write the token to a fresh 0600 file in a 0700 dir outside the repo."""
-    directory = staged_token_dir(project_sandbox_dir)
+    directory = config_agents.credentials_dir(
+        project_sandbox_dir, "copilot", staging_root=staging_root
+    )
     config_agents.ensure_private_dir(directory)
     path = directory / TOKEN_FILENAME
     path.unlink(missing_ok=True)

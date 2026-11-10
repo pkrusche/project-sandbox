@@ -6,6 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from runtime_inputs import mounted_source
+
 from project_sandbox import (
     agent_proxy,
     cli,
@@ -215,7 +217,10 @@ class RemoteProxyCliTests(unittest.TestCase):
                     ):
                         name = "models.json" if configured == "pi" else "opencode.json"
                         text = (
-                            root / ".project-sandbox" / configured / name
+                            mounted_source(
+                                command, f"/project-sandbox-config/{configured}"
+                            )
+                            / name
                         ).read_text()
                         self.assertIn(url, text)
                         self.assertIn("gateway-secret", text)
