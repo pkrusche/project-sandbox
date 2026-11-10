@@ -490,6 +490,11 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _main(argv: list[str] | None = None) -> int:
+    with contextlib.ExitStack() as resources:
+        return _main_scoped(argv, resources)
+
+
+def _main_scoped(argv: list[str] | None, resources: contextlib.ExitStack) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     if raw_argv[:2] == ["sessions", "list"]:
         extra = raw_argv[2:]
@@ -562,6 +567,8 @@ def _main(argv: list[str] | None = None) -> int:
     project = _resolve_required_path(args.project, what="project path")
     if args.image_tag is None:
         args.image_tag = _default_image_tag(project)
+    if args.image_tag.rsplit("/", 1)[-1].split(":", 1)[0] == "project-sandbox-session":
+        raise SystemExit("The project-sandbox-session image repository is reserved")
     # --egress sidecar: the global policy, checked to lie outside every mount
     # before any worktree exists. The sandbox is then planned exactly like
     # firewall mode with --internet-proxy at the sidecar's published endpoint.
@@ -699,6 +706,12 @@ def _main(argv: list[str] | None = None) -> int:
     # python-uv/rust-cargo Dockerfile, but only into .project-sandbox
     # (project-level, not the worktree).
     implicit_mounts.validate_sources(project, extra_mounts=args.extra_mounts)
+    # Acquire before even synthesized Dockerfiles are written; release only
+    # after session cleanup, when no mounted provider config is still in use.
+    context_resources = resources.enter_context(contextlib.ExitStack())
+    context_resources.enter_context(
+        build_cache.build_lock(project / ".project-sandbox")
+    )
     _validate_generated_dirs(project)
     context_dir = ensure_dir(project / ".project-sandbox")
     if is_chroot:
@@ -754,6 +767,7 @@ def _main(argv: list[str] | None = None) -> int:
     egress_started_at: float | None = None
     vcs_layout = None
     vcs_masks = None
+    context_owned = True
     try:
         _validate_generated_dirs(workspace)
         if run_agent and args.vcs_access != "full":
@@ -785,6 +799,15 @@ def _main(argv: list[str] | None = None) -> int:
             # The venv / npm workspace manifests must match the tree mounted at
             # /workspace. Keep generated
             # assets inside that build context so COPY paths remain valid.
+            if workspace.resolve() != project.resolve():
+                # The preliminary source is discarded below. Release its
+                # context before taking another lock, avoiding lock inversion
+                # when callers enter through different worktrees.
+                context_owned = False
+                context_resources.close()
+                context_dir = workspace / ".project-sandbox"
+                context_resources.enter_context(build_cache.build_lock(context_dir))
+                context_owned = True
             context_dir = ensure_dir(workspace / ".project-sandbox")
             base_image, base_dockerfile, build_context = _resolve_build_source(
                 args, project=workspace, context_dir=context_dir
@@ -795,6 +818,9 @@ def _main(argv: list[str] | None = None) -> int:
             build_context=build_context,
             extra_mounts=args.extra_mounts,
         )
+        # Remove a prior interrupted session's env file before exposing this
+        # context to a builder. config_agents.render clears old provider keys.
+        generated_files.remove(context_dir / "api-keys.env")
         if not is_chroot:
             dockerfile.render(
                 context_dir,
@@ -949,23 +975,21 @@ def _main(argv: list[str] | None = None) -> int:
                 if answer.strip().lower() not in ("y", "yes"):
                     return 1
 
-        if runtime.is_container and not args.no_build:
-            # Reuse an existing image when its build inputs are unchanged. This
-            # auto-skip is limited to the default flow where the build context is
-            # the generated .project-sandbox dir, which fully determines the
-            # image; whole-project contexts (--python-uv / --rust-cargo /
-            # --dockerfile) keep building and rely on the runtime's layer
-            # cache + the generated .dockerignore instead of fingerprinting an
-            # arbitrary source tree.
-            # Hold the lock across the cache check and build. A concurrent first
-            # caller waits, then observes the state and image written by the
-            # winner instead of starting an identical build.
-            with build_cache.build_lock(context_dir):
+        image_reference = args.image_tag
+        # Tags can be shared by unrelated projects and have equivalent
+        # spellings. Protect the runtime store until we have a pinned launch.
+        with (
+            build_cache.image_lock(runtime.name)
+            if runtime.is_container
+            else contextlib.nullcontext()
+        ):
+            if runtime.is_container and not args.no_build:
                 host_identity = container_cli.host_build_identity(runtime)
                 fingerprint = build_cache.compute_fingerprint(
                     context_dir,
                     extra={
                         "image_tag": args.image_tag,
+                        "runtime": runtime.name,
                         "base_image": base_image or "",
                         "host_identity": (
                             "default"
@@ -977,15 +1001,21 @@ def _main(argv: list[str] | None = None) -> int:
                 context_is_sandbox = build_context.resolve(
                     strict=False
                 ) == context_dir.resolve(strict=False)
+                current_image_id = (
+                    container_cli.image_identity(runtime, args.image_tag)
+                    if container_cli.image_exists(runtime, args.image_tag)
+                    else None
+                )
                 cache_hit = (
-                    not args.force_build
+                    current_image_id is not None
+                    and not args.force_build
                     and context_is_sandbox
                     and build_cache.is_cache_valid(
                         context_dir,
                         image_tag=args.image_tag,
                         fingerprint=fingerprint,
+                        image_id=current_image_id,
                     )
-                    and container_cli.image_exists(runtime, args.image_tag)
                 )
                 if cache_hit:
                     print("Reusing cached image (inputs unchanged)")
@@ -1018,24 +1048,33 @@ def _main(argv: list[str] | None = None) -> int:
                         )
                     if rc != 0:
                         return rc
+                    current_image_id = container_cli.image_identity(
+                        runtime, args.image_tag
+                    )
                     build_cache.write_state(
                         context_dir,
                         image_tag=args.image_tag,
                         fingerprint=fingerprint,
+                        image_id=current_image_id,
                     )
                     # Record the trusted baseline after a real build into the masked
                     # .project-sandbox dir the sandbox cannot reach.
                     dockerfile_checksum.record(context_dir, tracked_dockerfiles)
                     print(f"Built image in {time.monotonic() - start:.1f}s")
-        elif runtime.is_container and not container_cli.image_exists(
-            runtime, args.image_tag
-        ):
-            # Fail early with a clear message instead of letting `container run`
-            # surface its own raw runtime error for a nonexistent image.
-            raise SystemExit(
-                f"--no-build was given but image {args.image_tag!r} does not exist; "
-                "drop --no-build so the image can be built."
-            )
+            elif runtime.is_container:
+                if not container_cli.image_exists(runtime, args.image_tag):
+                    raise SystemExit(
+                        f"--no-build was given but image {args.image_tag!r} does not exist; "
+                        "drop --no-build so the image can be built."
+                    )
+                current_image_id = container_cli.image_identity(runtime, args.image_tag)
+            if runtime.is_container and not args.build_only:
+                assert current_image_id is not None
+                image_reference = resources.enter_context(
+                    container_cli.pinned_image(
+                        runtime, args.image_tag, current_image_id
+                    )
+                )
 
         if args.build_only:
             print(f"Image ready: {args.image_tag}")
@@ -1155,6 +1194,7 @@ def _main(argv: list[str] | None = None) -> int:
             copilot_host=copilot_host,
             runtime=runtime,
             create_prompt_files=True,
+            image_reference=image_reference,
             vcs_layout=vcs_layout,
             vcs_mask_dir=vcs_masks,
             api_key_values=api_key_values,
@@ -1284,13 +1324,14 @@ def _main(argv: list[str] | None = None) -> int:
             internet_proxy_relay.close()
         if copilot_token_staged:
             copilot_auth.remove_staged_token(context_dir)
-        if args.agent_proxy:
+        if context_owned:
+            generated_files.remove(context_dir / "api-keys.env")
+        if context_owned and args.agent_proxy:
             for secret_file in (
                 context_dir / "pi" / "models.json",
                 context_dir / "opencode" / "opencode.json",
-                context_dir / "api-keys.env",
             ):
-                secret_file.unlink(missing_ok=True)
+                generated_files.remove(secret_file)
         if wt is not None:
             if agent_ran:
                 capture_allowed = True
@@ -3151,6 +3192,7 @@ def _build_session_command(
     copilot_host: str | None = None,
     runtime: container_cli.Runtime,
     create_prompt_files: bool,
+    image_reference: str | None = None,
     api_key_values: dict[str, str] | None = None,
     ollama_add_host: str | None = None,
     ollama_add_hosts: list[str] | None = None,
@@ -3420,7 +3462,7 @@ def _build_session_command(
         # build_run_argv computes its own MountSpecs from these same inputs.
         command = container_cli.build_run_argv(
             runtime=runtime,
-            image=args.image_tag,
+            image=image_reference or args.image_tag,
             project_abs=workspace,
             claude_cfg=claude_cfg,
             claude_credentials_dir=runtime_credential_dirs.get("claude"),

@@ -1,9 +1,13 @@
+import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
 import sys
-from collections.abc import Sequence
+import uuid
+from collections.abc import Generator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -534,6 +538,72 @@ def image_exists(runtime: Runtime, image_tag: str, *, dry_run: bool = False) -> 
     except FileNotFoundError:
         return False
     return proc.returncode == 0
+
+
+def image_identity(runtime: Runtime, reference: str) -> str:
+    """Resolve a local image to its full content identity, failing closed.
+
+    The caller holds the runtime image lock while resolving mutable tags.
+    Apple reports the OCI descriptor; Docker/Podman report the image config ID.
+    """
+    try:
+        proc = subprocess.run(
+            [runtime.binary, "image", "inspect", reference],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        images = json.loads(proc.stdout)
+        if not isinstance(images, list) or len(images) != 1:
+            raise ValueError("expected exactly one image")
+        if runtime.name == APPLE_CONTAINER.name:
+            identity = images[0]["configuration"]["descriptor"]["digest"]
+        else:
+            identity = images[0]["Id"]
+            if isinstance(identity, str) and re.fullmatch(r"[0-9a-f]{64}", identity):
+                identity = "sha256:" + identity
+        if not isinstance(identity, str) or not re.fullmatch(
+            r"sha256:[0-9a-f]{64}", identity
+        ):
+            raise ValueError("expected a full SHA256 image identity")
+        return identity
+    except (
+        OSError,
+        subprocess.CalledProcessError,
+        ValueError,
+        KeyError,
+        TypeError,
+    ) as exc:
+        raise SystemExit(
+            f"Cannot determine the local identity of image {reference!r} "
+            f"for {runtime.name}; refusing to launch an unpinned image."
+        ) from exc
+
+
+@contextmanager
+def pinned_image(
+    runtime: Runtime, reference: str, identity: str
+) -> Generator[str, None, None]:
+    """Pin a launch while the caller holds the image lock during entry.
+
+    Docker/Podman run local config IDs. Apple cannot reliably resolve locally
+    built images by digest, so keep a unique, verified alias until teardown.
+    """
+    if runtime.name != APPLE_CONTAINER.name:
+        yield identity
+        return
+    alias = f"localhost/project-sandbox-session:{uuid.uuid4().hex}"
+    try:
+        rc = run([runtime.binary, "image", "tag", reference, alias])
+        if rc != 0:
+            raise SystemExit("Could not pin the Apple container image for this session")
+        if image_identity(runtime, alias) != identity:
+            raise SystemExit("Pinned Apple container image identity changed; aborting")
+        yield alias
+    finally:
+        # Remove only our alias, never force deletion or prune shared layers.
+        if run([runtime.binary, "image", "delete", alias]) != 0:
+            print(f"[W] Could not remove session image alias {alias}")
 
 
 def ensure_system_started(

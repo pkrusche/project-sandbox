@@ -51,30 +51,85 @@ class BuildCacheTests(TestCase):
             )
             self.assertNotEqual(base, other)
 
+    def test_fingerprint_includes_certificate_bytes_and_ignore_files(self) -> None:
+        for name in (
+            "project-sandbox-ca-root.crt",
+            "project-sandbox-build-ca-root.crt",
+            ".dockerignore",
+            "Dockerfile.dockerignore",
+        ):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                context = Path(tmp)
+                _seed_context(context)
+                before = build_cache.compute_fingerprint(context, extra={})
+                (context / name).write_text("first")
+                added = build_cache.compute_fingerprint(context, extra={})
+                (context / name).write_text("second")
+                changed = build_cache.compute_fingerprint(context, extra={})
+                self.assertEqual(len({before, added, changed}), 3)
+
+    def test_cache_requires_selected_identity_and_rejects_legacy_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp)
+            build_cache.write_state(
+                context, image_tag="img", fingerprint="abc", image_id="first"
+            )
+            self.assertFalse(
+                build_cache.is_cache_valid(
+                    context, image_tag="img", fingerprint="abc", image_id="second"
+                )
+            )
+            self.assertTrue(
+                build_cache.is_cache_valid(
+                    context, image_tag="img", fingerprint="abc", image_id="first"
+                )
+            )
+            build_cache.state_path(context).write_text(
+                '{"image_tag": "img", "fingerprint": "abc"}'
+            )
+            self.assertFalse(
+                build_cache.is_cache_valid(
+                    context, image_tag="img", fingerprint="abc", image_id="first"
+                )
+            )
+
     def test_state_round_trip_and_cache_validity(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             context = Path(tmp)
             _seed_context(context)
             self.assertIsNone(build_cache.read_state(context))
-            build_cache.write_state(context, image_tag="img:latest", fingerprint="abc")
+            build_cache.write_state(
+                context, image_tag="img:latest", fingerprint="abc", image_id="identity"
+            )
             self.assertTrue(
                 build_cache.is_cache_valid(
-                    context, image_tag="img:latest", fingerprint="abc"
+                    context,
+                    image_tag="img:latest",
+                    fingerprint="abc",
+                    image_id="identity",
                 )
             )
 
     def test_cache_invalid_on_tag_or_fingerprint_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             context = Path(tmp)
-            build_cache.write_state(context, image_tag="img:latest", fingerprint="abc")
+            build_cache.write_state(
+                context, image_tag="img:latest", fingerprint="abc", image_id="identity"
+            )
             self.assertFalse(
                 build_cache.is_cache_valid(
-                    context, image_tag="other:latest", fingerprint="abc"
+                    context,
+                    image_tag="other:latest",
+                    fingerprint="abc",
+                    image_id="identity",
                 )
             )
             self.assertFalse(
                 build_cache.is_cache_valid(
-                    context, image_tag="img:latest", fingerprint="zzz"
+                    context,
+                    image_tag="img:latest",
+                    fingerprint="zzz",
+                    image_id="identity",
                 )
             )
 

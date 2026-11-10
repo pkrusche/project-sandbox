@@ -1,5 +1,8 @@
 # Proxied network access during image builds
 
+See [concurrent builds](concurrent-builds.md) for context locking, cache reuse,
+and image selection when several CLI invocations run together.
+
 Use `--build-proxy URL` for downloads during image construction and
 `--build-ca-cert PATH` to install additional certificates to trust (e.g. in a
 corporate network) before those downloads:

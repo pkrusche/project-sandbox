@@ -1,5 +1,11 @@
 # TODO - outstanding items for next release
 
+- Build/session isolation: verify concurrent launches, image-ID execution, and
+  Apple session-alias retention/deletion on live Docker, Podman, and Apple
+  container. Add orphan alias cleanup that checks live containers after SIGKILL.
+  Item 8 should replace shared session inputs with private staging so sessions
+  sharing a generated context no longer need to queue through teardown.
+
 - Private mount storage: add orphan-mask/helper garbage collection that accounts
   for live containers and persistent devcontainer configurations. Normal CLI
   teardown removes session masks; SIGKILL can leave empty directories behind.
@@ -207,6 +213,19 @@ Cover mount aliases, additional options, quoted fields, and indirect volume
 forms that can expose host directories.
 
 #### 6. High — the build lock does not protect generated policy or the image selected at launch
+
+**Addressed:** the context lock now covers the first generated write through
+session cleanup, including generation-only and build-only invocations. A
+runtime image-store lock covers cache checks, building, and image pinning across
+projects and tag aliases. Docker/Podman launches use image IDs; Apple launches
+use unique, digest-verified session aliases removed on teardown. Cache reuse
+checks runtime and current image identity. Stale generated provider/env keys
+are removed before builds. Controlled concurrency tests cover differing policies,
+shared tags across projects, secret staging, cache replacement, failures, and
+non-mutating dry-runs. See [concurrent builds](docs/concurrent-builds.md) for
+serialization tradeoffs and the external-builder boundary. Live runtime checks
+remain listed above; private staging and crash recovery remain item 8 work.
+The original finding below describes the reviewed revision before this fix.
 
 **Locations:** `cli.py:744–840`, `:907–986`;
 `build_cache.py:35–44`.

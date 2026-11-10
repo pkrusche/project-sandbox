@@ -90,7 +90,10 @@ class GeneratedFilesTests(TestCase):
             (
                 ".build-state.json",
                 lambda: build_cache.write_state(
-                    self.context, image_tag="test", fingerprint="test"
+                    self.context,
+                    image_tag="test",
+                    fingerprint="test",
+                    image_id="identity",
                 ),
             ),
             (

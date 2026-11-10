@@ -3,12 +3,12 @@
 The CLI rebuilds the container image on every run by default. When the build
 inputs have not changed and the image still exists, that work is wasted. This
 module computes a deterministic fingerprint of the build inputs and records it,
-alongside the image tag, in a sidecar JSON file under the generated
-``.project-sandbox`` directory. The caller compares the current fingerprint with
-the recorded one (and confirms the image still exists) to decide whether the
-build can be skipped.
+alongside the image tag and resolved identity, in a sidecar JSON file under
+the generated ``.project-sandbox`` directory. The caller compares the current
+fingerprint with the recorded one and the tag's current identity to decide
+whether the build can be skipped.
 
-Skipping is correctness-safe: it only happens on an exact fingerprint+tag match,
+Reuse requires an exact fingerprint, tag, and image identity match,
 and any read/parse problem degrades to "not cached" so the build runs.
 """
 
@@ -28,6 +28,8 @@ _BUILD_INPUT_FILES = (
     "entrypoint.sh",
     "init-firewall.sh",
     "project-sandbox-devcontainer-init",
+    ".dockerignore",
+    "Dockerfile.dockerignore",
 )
 
 _STATE_FILENAME = ".build-state.json"
@@ -35,14 +37,26 @@ _STATE_FILENAME = ".build-state.json"
 
 @contextmanager
 def build_lock(context_dir: Path) -> Generator[None, None, None]:
-    """Serialize cache checks and image builds for one generated context.
+    """Serialize rendering, builds, and session use of one generated context.
 
     The lock lives outside the project so it is neither included in build
-    contexts nor exposed to a sandbox. Callers must hold it across the complete
-    cache-check/build/state-write sequence; locking only ``write_state`` would
-    still allow two first-time callers to build the same image.
+    contexts nor exposed to a sandbox. Hold it before the first generated write
+    through session teardown: post-build provider configs must not enter a
+    concurrent build, and mounted configs must stay stable during a session.
     """
     with host_locks.path_lock("build", context_dir):
+        yield
+
+
+@contextmanager
+def image_lock(runtime_name: str) -> Generator[None, None, None]:
+    """Protect shared tags from cache inspection through session image pinning.
+
+    Serialize the runtime's image store, rather than spellings of a tag: tags
+    such as foo and foo:latest can alias the same image. Different projects
+    must share this lock too. Always acquire context locks before this lock.
+    """
+    with host_locks.path_lock("image", Path("/") / runtime_name):
         yield
 
 
@@ -58,7 +72,9 @@ def compute_fingerprint(context_dir: Path, *, extra: dict[str, str]) -> str:
     the fingerprint still reflects which files are present.
     """
     h = hashlib.sha256()
-    for name in sorted(_BUILD_INPUT_FILES):
+    names = set(_BUILD_INPUT_FILES)
+    names.update(p.name for p in context_dir.glob("project-sandbox-*.crt"))
+    for name in sorted(names):
         path = context_dir / name
         if not path.is_file():
             continue
@@ -79,18 +95,34 @@ def read_state(context_dir: Path) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-def write_state(context_dir: Path, *, image_tag: str, fingerprint: str) -> None:
+def write_state(
+    context_dir: Path,
+    *,
+    image_tag: str,
+    fingerprint: str,
+    image_id: str,
+) -> None:
     generated_files.write_text(
         state_path(context_dir),
-        json.dumps({"image_tag": image_tag, "fingerprint": fingerprint}) + "\n",
+        json.dumps(
+            {"image_tag": image_tag, "fingerprint": fingerprint, "image_id": image_id}
+        )
+        + "\n",
         encoding="utf-8",
     )
 
 
-def is_cache_valid(context_dir: Path, *, image_tag: str, fingerprint: str) -> bool:
+def is_cache_valid(
+    context_dir: Path,
+    *,
+    image_tag: str,
+    fingerprint: str,
+    image_id: str,
+) -> bool:
     state = read_state(context_dir)
     return (
         state is not None
         and state.get("image_tag") == image_tag
         and state.get("fingerprint") == fingerprint
+        and state.get("image_id") == image_id
     )

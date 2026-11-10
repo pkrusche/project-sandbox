@@ -25,9 +25,10 @@ replacement too. Stale certificates and project credential remnants are removed
 relative to verified directories, with symlink-resistant recursive cleanup.
 Dry-runs do not perform these mutations.
 
-These protections prevent redirected host writes. They do not make generated
-build inputs immutable or fix concurrent sessions overwriting one another's
-configuration; those are separate trust and lifecycle boundaries.
+These protections prevent redirected host writes. Separately, CLI invocations
+hold a context lock from rendering through session cleanup and pin the image
+selected for launch. See [concurrent builds](concurrent-builds.md) for cache
+identity checks, serialization, and the external-builder boundary.
 
 ## Implicit history and mask mounts
 
