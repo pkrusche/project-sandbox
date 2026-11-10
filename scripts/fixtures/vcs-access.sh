@@ -45,13 +45,21 @@ case "${1:?expected access mode}" in
 import errno
 from pathlib import Path
 for root in (".git", ".jj"):
-    try:
-        (Path(root) / "vcs-access-canary").write_text("tampered\n")
-    except OSError as error:
-        if error.errno not in (errno.EROFS, errno.EACCES, errno.EPERM):
-            raise
-    else:
-        raise RuntimeError(f"metadata write succeeded: {root}")
+    canary = Path(root) / "vcs-access-canary"
+    for name, operation in (
+        ("write", lambda: canary.write_text("tampered\n")),
+        ("unlink", canary.unlink),
+        ("rename file", lambda: canary.rename("stolen-metadata")),
+        ("rename store", lambda: Path(root).rename(root + "-moved")),
+        ("remove store", lambda: Path(root).rmdir()),
+    ):
+        try:
+            operation()
+        except OSError as error:
+            if error.errno not in (errno.EROFS, errno.EACCES, errno.EPERM, errno.EBUSY, errno.EXDEV):
+                raise
+        else:
+            raise RuntimeError(f"metadata {name} succeeded: {root}")
 PY
     ;;
   hidden)

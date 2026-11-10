@@ -66,6 +66,7 @@ class ImageMatchTests(TestCase):
             "project-sandbox-build-proxy:3f9a1c",
             "project-sandbox-vcs-access:3f9a1c",
             "project-sandbox-firewall:3f9a1c",
+            "project-sandbox-security:123456abcdef",
             "localhost/project-sandbox-jj-e2e.lv6bl1-3ee8ea75:latest",
         ):
             with self.subTest(reference=reference):
@@ -177,12 +178,14 @@ class ProcessTests(TestCase):
             12: (1, "python scripts/e2e-cleanup.py --dry-run"),
             13: (1, "python scripts/e2e-reap-orphans.py --runtime docker"),
             14: (1, "vim scripts/e2e-cleanup.py"),
+            15: (1, "uv run pytest scripts/security_e2e --security-runtime docker"),
         }
         self.assertEqual(
             cleanup.active_e2e(table),
             [
                 "bash scripts/run-e2e-tests.sh --runtime docker",
                 "python /repo/scripts/e2e-build-proxy.py --runtime docker",
+                "uv run pytest scripts/security_e2e --security-runtime docker",
             ],
         )
 

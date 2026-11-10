@@ -694,5 +694,10 @@ recorded forwarder processes and listeners on port 11434 every second.
   forwarder alive. Killing the only session, and then attaching a fresh session,
   was not run (see TODO.md).
 
-Pre-build images for this check with a session run, not `--build-only` (see
-TODO.md): an image built without `--agent pi` lacks the Ollama firewall rule.
+Pre-build with `--build-only --pi-ollama`: this installs Pi and includes the
+Ollama firewall rule. The automated sole-owner SIGKILL/re-attach fixture is
+documented in [Security verification](security-verification.md).
+
+The [security verification suite](security-verification.md) maps the remaining
+TODO verification and hardening probes to executable tests, with strict coverage
+reporting and per-runtime prerequisites. It is separate from the default unit suite.

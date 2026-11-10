@@ -1,5 +1,9 @@
 # TODO - outstanding items for next release
 
+Verification tasks below have runnable cases in the [security verification
+suite](docs/security-verification.md). Live runtime results are still pending;
+adding a test does not close the task or implement the proposed hardening.
+
 - Generated Cargo builds: verify literal filename COPY behavior on Docker,
   Podman, and Apple container with spaces, quotes, dollar signs, and wildcard
   characters.
@@ -34,8 +38,8 @@
   repositories/submodules, and lifecycle cleanup for old devcontainer masks.
   Consider reserving absent metadata paths without modifying the host checkout.
 
-- Manually verify that `kill -9` of the only `--pi-ollama` session releases the
-  shared bridge forwarder (it should exit within about one poll interval) and
+- Run the automated sole-owner crash test to verify that `kill -9` of the only
+  `--pi-ollama` session releases the shared bridge forwarder (it should exit within about one poll interval) and
   that a fresh session then attaches cleanly.
 
 ## Networking allowlist recommendations
@@ -58,12 +62,11 @@ Source paths below are relative to `src/project_sandbox/`.
 
 ## Additional hardening
 
-- **Mount encoding:** `_mount_arg()` and devcontainer mounts concatenate paths
-  into comma-delimited strings. JSON escaping and an argv list do not escape
-  the runtime's nested mount syntax. Encode fields according to each runtime's
-  grammar, or reject unsupported commas/control characters explicitly. Verify
-  parse/render round trips for unusual project names. Docker documents the
-  outer CSV parsing requirement in its [mount documentation](https://docs.docker.com/engine/storage/volumes/).
+- **Mount encoding:** CLI bind mounts use CSV encoding, but devcontainer mount
+  strings still need consistent runtime encoding. Verify live parse/render round trips for unusual project names (including commas, quotes,
+  dollars, spaces, and wildcards) on each runtime, and fail closed for unsupported
+  control characters and mount forms. Keep raw user mount parsing aligned with
+  runtime grammar; JSON or argv escaping alone does not cover nested syntax.
 - **Host lock files:** `host_locks.path_lock()` correctly uses `O_NOFOLLOW` and
   avoids truncation, but does not verify the opened inode is a regular file
   owned by the caller. Names are predictable in shared temporary storage. Use a

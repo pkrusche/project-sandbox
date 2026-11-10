@@ -67,6 +67,7 @@ E2E_IMAGE = re.compile(
     # e2e-python-uv.sh projects use fixed directory names.
     r"|(?:managed|base)-python-[0-9a-f]{8}"
     # Explicit --image-tag values.
+    r"|security"
     r"|internet-proxy-smoke"
     r"|proxy-endpoints-[a-z0-9_]{8}"
     r"|build-proxy"
@@ -200,7 +201,11 @@ def active_e2e(table: dict[int, tuple[int, str]]) -> list[str]:
     return [
         args
         for pid, (_, args) in table.items()
-        if pid != os.getpid() and ACTIVE_E2E.search(args)
+        if pid != os.getpid()
+        and (
+            ACTIVE_E2E.search(args)
+            or ("pytest" in args and "scripts/security_e2e" in args)
+        )
     ]
 
 

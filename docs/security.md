@@ -1,5 +1,11 @@
 # Security Model
 
+Executable regression checks and adversarial probes are mapped in
+[Security verification](security-verification.md). A passing ordinary unit run
+does not establish live runtime coverage. The security release gate treats
+skips and known limitations as incomplete coverage; the documented limitations
+below remain until their fixes and live verification are complete.
+
 ## Generated files
 
 Repository contents are untrusted when the host generates sandbox files. Before

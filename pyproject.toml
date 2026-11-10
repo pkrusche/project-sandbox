@@ -46,3 +46,7 @@ cache-dir = ".uv_cache"
 "scripts/update-pins.py" = ["TRY004"]
 # Keeping resource-owning contexts nested makes their cleanup boundaries explicit.
 "tests/*.py" = ["SIM117"]
+
+[tool.pytest.ini_options]
+# Live security audits are explicitly invoked from scripts/security_e2e.
+testpaths = ["tests"]

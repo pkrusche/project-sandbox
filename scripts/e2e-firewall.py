@@ -58,6 +58,8 @@ def run_session(
         ) from None
     if marker.read_text() != "initialized; sudo revoked\n":
         raise RuntimeError("firewall audit did not complete")
+    if (project / "shadow-imported").exists():
+        raise RuntimeError("privileged initialization imported a workspace module")
     for name in ("sudo-policy.log", "sudo-attempt.log"):
         shutil.copyfile(project / name, workdir / f"session-{attempt}-{name}")
 
@@ -85,6 +87,14 @@ def main() -> None:
         shutil.copyfile(
             ROOT / "scripts/fixtures/firewall.py", project / "firewall-audit.py"
         )
+        # These run if a privileged Python helper accidentally imports from cwd.
+        # The audit itself uses -I, so only initialization can trigger the trap.
+        for module in ("socket", "ipaddress", "json", "os", "sitecustomize"):
+            (project / f"{module}.py").write_text(
+                "from pathlib import Path\n"
+                "Path('/workspace/shadow-imported').write_text('imported')\n"
+                "raise RuntimeError('workspace import shadow executed')\n"
+            )
         for attempt in (1, 2):
             run_session(project, workdir, args, image, attempt)
         success = True
