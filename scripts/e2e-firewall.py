@@ -26,8 +26,6 @@ def run_session(
         "project-sandbox",
         "--runtime",
         args.runtime,
-        "--base-image",
-        args.base_image,
         "--image-tag",
         image,
         "--agent",
@@ -43,15 +41,21 @@ def run_session(
     ]
     if attempt > 1:
         argv.append("--no-build")
-    argv.append(str(project))
+    argv.extend((str(project), args.base_image))
     marker = project / "firewall.ok"
     marker.unlink(missing_ok=True)
     log = workdir / f"session-{attempt}.log"
     print(f"Running fresh container {attempt}: {log}", flush=True)
-    with log.open("w") as stream:
-        subprocess.run(
-            argv, cwd=ROOT, stdout=stream, stderr=subprocess.STDOUT, check=True
-        )
+    try:
+        with log.open("w") as stream:
+            subprocess.run(
+                argv, cwd=ROOT, stdout=stream, stderr=subprocess.STDOUT, check=True
+            )
+    except subprocess.CalledProcessError as error:
+        tail = "\n".join(log.read_text(errors="replace").splitlines()[-20:])
+        raise SystemExit(
+            f"session {attempt} exited {error.returncode}; log: {log}\n{tail}"
+        ) from None
     if marker.read_text() != "initialized; sudo revoked\n":
         raise RuntimeError("firewall audit did not complete")
     for name in ("sudo-policy.log", "sudo-attempt.log"):

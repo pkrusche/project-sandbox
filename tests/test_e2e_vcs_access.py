@@ -10,6 +10,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from project_sandbox.cli import build_parser
+
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
     "e2e_vcs_access", ROOT / "scripts/e2e-vcs-access.py"
@@ -96,12 +98,35 @@ class VcsAccessAuditTests(unittest.TestCase):
             with self.subTest(mode=mode), patch.object(audit.subprocess, "run") as run:
                 audit.run_session(self.project, self.project, args, "fixture:tag", mode)
                 argv = run.call_args.args[0]
+                parsed = build_parser().parse_args(argv[3:])
+                self.assertEqual(parsed.project, str(self.project))
+                self.assertEqual(parsed.base_image, args.base_image)
                 self.assertEqual(argv[argv.index("--agent") + 1], "bash")
                 self.assertEqual(argv[argv.index("--runtime") + 1], "docker")
                 self.assertEqual(argv[argv.index("--vcs-access") + 1], mode)
                 self.assertEqual("--no-build" in argv, mode != "full")
                 self.assertNotIn("--branch", argv)
                 self.assertTrue(run.call_args.kwargs["check"])
+
+    def test_session_error_includes_underlying_log(self) -> None:
+        args = argparse.Namespace(
+            runtime="docker", base_image="python:3.12-slim", timeout=120
+        )
+
+        def fail(argv, **kwargs):
+            kwargs["stdout"].write("container build failed: diagnostic from runtime\n")
+            raise subprocess.CalledProcessError(2, argv)
+
+        with patch.object(audit.subprocess, "run", side_effect=fail):
+            with self.assertRaises(SystemExit) as error:
+                audit.run_session(
+                    self.project, self.project, args, "fixture:tag", "full"
+                )
+        self.assertIn("full session exited 2", str(error.exception))
+        self.assertIn("diagnostic from runtime", str(error.exception))
+        self.assertIn(
+            "diagnostic from runtime", (self.project / "full.log").read_text()
+        )
 
 
 class HiddenAuditTests(unittest.TestCase):

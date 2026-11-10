@@ -9,6 +9,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from project_sandbox.cli import build_parser
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -105,10 +107,31 @@ class FirewallRunnerTests(unittest.TestCase):
                             project, project, args, "fixture:tag", attempt
                         )
                     argv = run.call_args.args[0]
+                    parsed = build_parser().parse_args(argv[3:])
+                    self.assertEqual(parsed.project, str(project))
+                    self.assertEqual(parsed.base_image, args.base_image)
                     self.assertEqual(argv[argv.index("--agent") + 1], "bash")
                     self.assertEqual(argv[argv.index("--egress") + 1], "firewall")
                     self.assertNotIn("--no-firewall", argv)
                     self.assertEqual("--no-build" in argv, attempt == 2)
+
+    def test_session_error_includes_underlying_log(self) -> None:
+        args = argparse.Namespace(runtime="docker", base_image="python:3.12-slim")
+
+        def fail(argv, **kwargs):
+            kwargs["stdout"].write("firewall startup failed: diagnostic from runtime\n")
+            raise subprocess.CalledProcessError(1, argv)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            with patch.object(runner.subprocess, "run", side_effect=fail):
+                with self.assertRaises(SystemExit) as error:
+                    runner.run_session(project, project, args, "fixture:tag", 1)
+            self.assertIn("session 1 exited 1", str(error.exception))
+            self.assertIn("diagnostic from runtime", str(error.exception))
+            self.assertIn(
+                "diagnostic from runtime", (project / "session-1.log").read_text()
+            )
 
     def test_suite_runs_by_default_and_requires_containers_and_builds(self) -> None:
         for args, status in (

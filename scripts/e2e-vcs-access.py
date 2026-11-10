@@ -111,8 +111,6 @@ def run_session(
         "project-sandbox",
         "--runtime",
         args.runtime,
-        "--base-image",
-        args.base_image,
         "--image-tag",
         image,
         "--agent",
@@ -129,13 +127,19 @@ def run_session(
     ]
     if mode != "full":
         argv.append("--no-build")
-    argv.append(str(project))
+    argv.extend((str(project), args.base_image))
     log = workdir / f"{mode}.log"
     print(f"Running {mode}: {log}", flush=True)
-    with log.open("w") as stream:
-        subprocess.run(
-            argv, cwd=ROOT, stdout=stream, stderr=subprocess.STDOUT, check=True
-        )
+    try:
+        with log.open("w") as stream:
+            subprocess.run(
+                argv, cwd=ROOT, stdout=stream, stderr=subprocess.STDOUT, check=True
+            )
+    except subprocess.CalledProcessError as error:
+        tail = "\n".join(log.read_text(errors="replace").splitlines()[-20:])
+        raise SystemExit(
+            f"{mode} session exited {error.returncode}; log: {log}\n{tail}"
+        ) from None
 
 
 def main() -> None:
