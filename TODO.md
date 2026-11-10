@@ -19,7 +19,7 @@ The plan was reviewed and every proposal revised on 2026-11-09.
 | --- | --- | --- | --- |
 | 1 | `vcs-session-modes` | **done** (archived 2026-11-10); covered #9, the isolated half of #2, the jj pointer-file mounts and the ROADMAP separate-clones item | — |
 | 2 | `harden-host-command-execution` | **done** (archived 2026-11-10); covered host tool lookup, neutral cwd, jj overrides | — |
-| 3 | `minimal-devcontainer` | devcontainer gateway row; devcontainer half of #1 | — |
+| 3 | `minimal-devcontainer` | **done** (archived 2026-11-10); covered the devcontainer gateway row and the devcontainer half of #1 | — |
 | 4 | `isolate-firewall-helpers` | #1; sudo re-invocation | 3 |
 | 5 | `quote-generated-build-inputs` | #10; image/version strings in `FROM` | — |
 | 6 | `serialize-egress-policy-updates` | #7 | — |
