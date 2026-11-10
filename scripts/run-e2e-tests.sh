@@ -359,18 +359,18 @@ fi
 
 # 2. Env/API-key forwarding via headless bash-agent
 if selected env-injection; then
-  run_suite "env-injection" "$ROOT/scripts/e2e-env-injection.sh" "${WORKFLOW_ARGS[@]}"
+  run_suite "env-injection" "$ROOT/scripts/e2e-env-injection.sh" ${WORKFLOW_ARGS[@]+"${WORKFLOW_ARGS[@]}"}
 fi
 
 # 3. Git workflow: rebase / merge / nothing
 if selected git-workflow; then
-  run_suite "git-workflow" "$ROOT/scripts/e2e-git-workflow.sh" "${WORKFLOW_ARGS[@]}"
+  run_suite "git-workflow" "$ROOT/scripts/e2e-git-workflow.sh" ${WORKFLOW_ARGS[@]+"${WORKFLOW_ARGS[@]}"}
 fi
 
 # 4. Jj workflow: rebase / merge / nothing (only if jj is on PATH)
 if selected jj-workflow; then
   if command -v jj >/dev/null 2>&1; then
-    run_suite "jj-workflow" "$ROOT/scripts/e2e-jj-workflow.sh" "${WORKFLOW_ARGS[@]}"
+    run_suite "jj-workflow" "$ROOT/scripts/e2e-jj-workflow.sh" ${WORKFLOW_ARGS[@]+"${WORKFLOW_ARGS[@]}"}
   else
     skip_suite "jj-workflow" "jj not found on PATH"
   fi
@@ -384,7 +384,7 @@ if selected dockerfile-tamper; then
   if [ -n "$CONTAINER_RUNTIME" ] && [ "$NO_BUILD" = 0 ]; then
     TAMPER_ARGS+=(--with-container --runtime "$CONTAINER_RUNTIME" --base-image "$BASE_IMAGE")
   fi
-  run_suite "dockerfile-tamper" "$ROOT/scripts/e2e-dockerfile-tamper.sh" "${TAMPER_ARGS[@]}"
+  run_suite "dockerfile-tamper" "$ROOT/scripts/e2e-dockerfile-tamper.sh" ${TAMPER_ARGS[@]+"${TAMPER_ARGS[@]}"}
 fi
 
 # 6. Timeout teardown necessarily builds and kills a real container. Skip it
@@ -404,7 +404,7 @@ if selected python-uv; then
   if [ -n "$CONTAINER_RUNTIME" ] && [ "$NO_BUILD" = 0 ]; then
     PYTHON_UV_ARGS=(--runtime "$CONTAINER_RUNTIME")
     [ "$KEEP" = 1 ] && PYTHON_UV_ARGS+=(--keep)
-    run_suite "python-uv" "$ROOT/scripts/e2e-python-uv.sh" "${PYTHON_UV_ARGS[@]}"
+    run_suite "python-uv" "$ROOT/scripts/e2e-python-uv.sh" ${PYTHON_UV_ARGS[@]+"${PYTHON_UV_ARGS[@]}"}
   else
     skip_suite "python-uv" "select a container runtime without --no-build"
   fi
@@ -415,7 +415,7 @@ if selected node-npm; then
   if [ -n "$CONTAINER_RUNTIME" ] && [ "$NO_BUILD" = 0 ] && command -v npm >/dev/null 2>&1; then
     NODE_NPM_ARGS=(--runtime "$CONTAINER_RUNTIME")
     [ "$KEEP" = 1 ] && NODE_NPM_ARGS+=(--keep)
-    run_suite "node-npm" "$ROOT/scripts/e2e-node-npm.sh" "${NODE_NPM_ARGS[@]}"
+    run_suite "node-npm" "$ROOT/scripts/e2e-node-npm.sh" ${NODE_NPM_ARGS[@]+"${NODE_NPM_ARGS[@]}"}
   else
     skip_suite "node-npm" "requires host npm and a container runtime without --no-build"
   fi
@@ -430,7 +430,7 @@ if selected pi-ollama; then
     PI_OLLAMA_ARGS=(--runtime "$PI_OLLAMA_RUNTIME" --base-image "$BASE_IMAGE")
     [ "$NO_BUILD" = 1 ] && PI_OLLAMA_ARGS+=(--no-build)
     [ "$KEEP"     = 1 ] && PI_OLLAMA_ARGS+=(--keep)
-    run_suite "pi-ollama" "$ROOT/scripts/e2e-pi-ollama.sh" "${PI_OLLAMA_ARGS[@]}"
+    run_suite "pi-ollama" "$ROOT/scripts/e2e-pi-ollama.sh" ${PI_OLLAMA_ARGS[@]+"${PI_OLLAMA_ARGS[@]}"}
   else
     skip_suite "pi-ollama" "Ollama not reachable on 127.0.0.1:11434"
   fi
@@ -447,7 +447,7 @@ if selected internet-proxy-smoke; then
       INTERNET_SMOKE_ARGS+=(--ca-cert "$ca_cert")
     done
     run_suite "internet-proxy-smoke" \
-      uv run python "$ROOT/scripts/e2e-internet-proxy-smoke.py" "${INTERNET_SMOKE_ARGS[@]}"
+      uv run python "$ROOT/scripts/e2e-internet-proxy-smoke.py" ${INTERNET_SMOKE_ARGS[@]+"${INTERNET_SMOKE_ARGS[@]}"}
   else
     skip_suite "internet-proxy-smoke" "select a real container runtime"
   fi
@@ -472,7 +472,7 @@ if selected internet-proxy-isolation; then
         INTERNET_AUDIT_ARGS+=(--ca-cert "$ca_cert")
       done
       run_suite "internet-proxy-isolation" \
-        uv run python "$ROOT/scripts/e2e-internet-proxy-isolation.py" "${INTERNET_AUDIT_ARGS[@]}"
+        uv run python "$ROOT/scripts/e2e-internet-proxy-isolation.py" ${INTERNET_AUDIT_ARGS[@]+"${INTERNET_AUDIT_ARGS[@]}"}
     fi
   else
     skip_suite "internet-proxy-isolation" "pass --with-internet-proxy; destructive and billable"
@@ -488,7 +488,7 @@ if [ "$WITH_AGENT_PROXY" = 1 ]; then
       [ "$NO_BUILD" = 1 ] && PROXY_ISOLATION_ARGS+=(--no-build)
       [ "$KEEP" = 1 ] && PROXY_ISOLATION_ARGS+=(--keep)
       run_suite "agent-proxy-isolation" \
-        uv run python "$ROOT/scripts/e2e-agent-proxy-isolation.py" "${PROXY_ISOLATION_ARGS[@]}"
+        uv run python "$ROOT/scripts/e2e-agent-proxy-isolation.py" ${PROXY_ISOLATION_ARGS[@]+"${PROXY_ISOLATION_ARGS[@]}"}
     else
       fail_suite "agent-proxy-isolation" \
         "select apple-container, docker, podman, or an available auto runtime"
@@ -519,7 +519,7 @@ if selected proxy-endpoints; then
       [ -n "$PROXY_FIXTURE_IPV6_HOST" ] && ENDPOINT_ARGS+=(--ipv6-host "$PROXY_FIXTURE_IPV6_HOST")
       [ -n "$PROXY_FIXTURE_HOSTNAME" ] && ENDPOINT_ARGS+=(--fixture-hostname "$PROXY_FIXTURE_HOSTNAME")
       [ "$KEEP" = 1 ] && ENDPOINT_ARGS+=(--keep)
-      run_suite "proxy-endpoints" uv run python "$ROOT/scripts/e2e-proxy-endpoints.py" "${ENDPOINT_ARGS[@]}"
+      run_suite "proxy-endpoints" uv run python "$ROOT/scripts/e2e-proxy-endpoints.py" ${ENDPOINT_ARGS[@]+"${ENDPOINT_ARGS[@]}"}
     fi
   else
     skip_suite "proxy-endpoints" "pass --with-proxy-endpoints"
@@ -535,7 +535,7 @@ if selected build-proxy; then
       BUILD_PROXY_ARGS=(--runtime "$CONTAINER_RUNTIME" --base-image "$BASE_IMAGE" --internet-proxy-dir "$INTERNET_PROXY_DIR")
       [ -n "$PROXY_FIXTURE_HOST" ] && BUILD_PROXY_ARGS+=(--fixture-host "$PROXY_FIXTURE_HOST")
       [ "$KEEP" = 1 ] && BUILD_PROXY_ARGS+=(--keep)
-      run_suite "build-proxy" uv run python "$ROOT/scripts/e2e-build-proxy.py" "${BUILD_PROXY_ARGS[@]}"
+      run_suite "build-proxy" uv run python "$ROOT/scripts/e2e-build-proxy.py" ${BUILD_PROXY_ARGS[@]+"${BUILD_PROXY_ARGS[@]}"}
     fi
   else
     skip_suite "build-proxy" "pass --with-build-proxy, --internet-proxy-dir,"
@@ -554,7 +554,7 @@ if selected copilot; then
       [ -n "$COPILOT_CAPTURE_DIR" ] && COPILOT_ARGS+=(--capture-dir "$COPILOT_CAPTURE_DIR")
       [ "$NO_BUILD" = 1 ] && COPILOT_ARGS+=(--no-build)
       [ "$KEEP" = 1 ] && COPILOT_ARGS+=(--keep)
-      run_suite "copilot" uv run python "$ROOT/scripts/e2e-copilot.py" "${COPILOT_ARGS[@]}"
+      run_suite "copilot" uv run python "$ROOT/scripts/e2e-copilot.py" ${COPILOT_ARGS[@]+"${COPILOT_ARGS[@]}"}
     fi
   else
     skip_suite "copilot" "pass --with-copilot; makes billable Copilot requests"
@@ -571,7 +571,7 @@ if selected copilot-egress; then
       [ -n "$COPILOT_EGRESS_REPORT_DIR" ] && COPILOT_EGRESS_ARGS+=(--report-dir "$COPILOT_EGRESS_REPORT_DIR")
       # No --no-build: each run bakes a fresh fixture CA into the image.
       [ "$KEEP" = 1 ] && COPILOT_EGRESS_ARGS+=(--keep)
-      run_suite "copilot-egress" uv run python "$ROOT/scripts/e2e-copilot-egress.py" "${COPILOT_EGRESS_ARGS[@]}"
+      run_suite "copilot-egress" uv run python "$ROOT/scripts/e2e-copilot-egress.py" ${COPILOT_EGRESS_ARGS[@]+"${COPILOT_EGRESS_ARGS[@]}"}
     fi
   else
     skip_suite "copilot-egress" "pass --with-copilot-egress; makes billable Copilot requests"
@@ -587,7 +587,7 @@ if selected egress-sidecar; then
       EGRESS_SIDECAR_ARGS=(--runtime "$CONTAINER_RUNTIME" --base-image "$BASE_IMAGE")
       [ "$NO_BUILD" = 1 ] && EGRESS_SIDECAR_ARGS+=(--no-build)
       [ "$KEEP" = 1 ] && EGRESS_SIDECAR_ARGS+=(--keep)
-      run_suite "egress-sidecar" uv run python "$ROOT/scripts/e2e-egress-sidecar.py" "${EGRESS_SIDECAR_ARGS[@]}"
+      run_suite "egress-sidecar" uv run python "$ROOT/scripts/e2e-egress-sidecar.py" ${EGRESS_SIDECAR_ARGS[@]+"${EGRESS_SIDECAR_ARGS[@]}"}
     fi
   else
     skip_suite "egress-sidecar" "pass --with-egress-sidecar; needs network and builds"
