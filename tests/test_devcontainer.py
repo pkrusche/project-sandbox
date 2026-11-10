@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from project_sandbox import devcontainer
+from project_sandbox import devcontainer, mount_storage
 from project_sandbox.git_identity import GitIdentity
 
 
@@ -106,14 +106,14 @@ class DevcontainerTests(TestCase):
                 mounts,
             )
             self.assertIn(
-                "source=${localWorkspaceFolder}/.project-sandbox/workspace-mask,target=/workspace/.project-sandbox,type=bind,readonly",
+                f"source={mount_storage.mask_path(project, 'devcontainer')},target=/workspace/.project-sandbox,type=bind,readonly",
                 mounts,
             )
             self.assertIn(
-                "source=${localWorkspaceFolder}/.project-sandbox/workspace-mask,target=/workspace/.devcontainer,type=bind,readonly",
+                f"source={mount_storage.mask_path(project, 'devcontainer')},target=/workspace/.devcontainer,type=bind,readonly",
                 mounts,
             )
-            self.assertTrue((project / ".project-sandbox" / "workspace-mask").is_dir())
+            self.assertTrue(mount_storage.mask_path(project, "devcontainer").is_dir())
             self.assertNotIn("/home/agent/.claude/settings.json", mounts)
             self.assertNotIn("/home/agent/.claude.host", mounts)
 
@@ -168,7 +168,7 @@ class DevcontainerTests(TestCase):
             )
 
             mask_mount = (
-                "source=${localWorkspaceFolder}/.project-sandbox/workspace-mask,"
+                f"source={mount_storage.mask_path(project, 'devcontainer')},"
                 "target=/workspace/.project-sandbox,type=bind,readonly"
             )
             self.assertIn(custom_mount, spec["mounts"])
@@ -177,7 +177,7 @@ class DevcontainerTests(TestCase):
                 spec["mounts"].index(custom_mount), spec["mounts"].index(mask_mount)
             )
             self.assertIn(
-                "${localWorkspaceFolder}/.project-sandbox/workspace-mask",
+                str(mount_storage.storage_root()),
                 spec["initializeCommand"],
             )
 
@@ -194,11 +194,11 @@ class DevcontainerTests(TestCase):
             mounts = "\n".join(spec["mounts"])
             # Both sources are directories (apple/container rejects file mounts).
             self.assertIn(
-                "source=${localWorkspaceFolder}/.project-sandbox/history/shell,target=/home/agent/.bash_history.d,type=bind",
+                f"source={mount_storage.history_paths(project)[0]},target=/home/agent/.bash_history.d,type=bind",
                 mounts,
             )
             self.assertIn(
-                "source=${localWorkspaceFolder}/.project-sandbox/history/claude_projects,target=/home/agent/.claude/projects,type=bind",
+                f"source={mount_storage.history_paths(project)[1]},target=/home/agent/.claude/projects,type=bind",
                 mounts,
             )
             # HISTFILE redirects bash history into the mounted shell directory.
@@ -208,7 +208,7 @@ class DevcontainerTests(TestCase):
             )
 
             # Host directories for the bind mounts must be created.
-            history_dir = project / ".project-sandbox" / "history"
+            history_dir = mount_storage.history_paths(project)[0].parent
             self.assertTrue((history_dir / "shell").is_dir())
             self.assertTrue((history_dir / "claude_projects").is_dir())
 
@@ -229,7 +229,7 @@ class DevcontainerTests(TestCase):
             self.assertIsInstance(command, list)
 
             # Simulate a fresh/cleaned checkout: the gitignored history dir is gone.
-            shutil.rmtree(project / ".project-sandbox" / "history")
+            shutil.rmtree(mount_storage.history_paths(project)[0].parent)
 
             # Run the host command exactly as a devcontainer host would, with the
             # ${localWorkspaceFolder} variable resolved to the project root.
@@ -238,7 +238,7 @@ class DevcontainerTests(TestCase):
             ]
             subprocess.run(resolved, check=True)
 
-            history_dir = project / ".project-sandbox" / "history"
+            history_dir = mount_storage.history_paths(project)[0].parent
             self.assertTrue((history_dir / "shell").is_dir())
             self.assertTrue((history_dir / "claude_projects").is_dir())
 
@@ -258,29 +258,29 @@ class DevcontainerTests(TestCase):
 
             # Array form, not a shell string.
             self.assertIsInstance(command, list)
-            self.assertEqual(command[:2], ["mkdir", "-p"])
+            self.assertEqual(command[1], "-I")
 
             # The history paths appear as whole literal elements with the
             # apostrophe intact and no shell quoting wrapping the value.
             self.assertIn(
-                "${localWorkspaceFolder}/.project-sandbox/history/shell",
+                str(project.resolve()),
                 command,
             )
             self.assertIn(
-                "${localWorkspaceFolder}/.project-sandbox/history/claude_projects",
+                str(mount_storage.storage_root()),
                 command,
             )
 
             # Simulate the host resolving ${localWorkspaceFolder} to the real
             # apostrophe-containing path and running the argv directly (no shell):
             # the correct directories must be created.
-            shutil.rmtree(project / ".project-sandbox" / "history")
+            shutil.rmtree(mount_storage.history_paths(project)[0].parent)
             resolved = [
                 arg.replace("${localWorkspaceFolder}", str(project)) for arg in command
             ]
             subprocess.run(resolved, check=True)
 
-            history_dir = project / ".project-sandbox" / "history"
+            history_dir = mount_storage.history_paths(project)[0].parent
             self.assertTrue((history_dir / "shell").is_dir())
             self.assertTrue((history_dir / "claude_projects").is_dir())
 
@@ -473,7 +473,8 @@ class DevcontainerTests(TestCase):
             # Simulate credentials that were staged once but whose /tmp
             # directory has since been reaped/rebooted away.
             for path in credentials.values():
-                path.mkdir(parents=True)
+                path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+                path.mkdir(mode=0o700)
 
             with patch.object(devcontainer.Path, "home", return_value=fake_home):
                 devcontainer.render(
@@ -548,8 +549,8 @@ class DevcontainerTests(TestCase):
             command = spec["initializeCommand"]
             for path in credentials.values():
                 self.assertNotIn(path.resolve(strict=False).as_posix(), command)
-            # Only the history/mask dirs remain: mkdir, -p, and three targets.
-            self.assertEqual(len(command), 5)
+            # No credentials are recreated when forwarding is disabled.
+            self.assertNotIn("--credential-dir", command)
 
     def test_render_escapes_injection_in_strings(self) -> None:
         # Quotes, braces, and newlines in the project name, git identity, and an
@@ -559,9 +560,7 @@ class DevcontainerTests(TestCase):
             project = Path(tmp) / 'pro"ject\n{"injected": true}'
             (project / ".project-sandbox").mkdir(parents=True)
 
-            malicious_mount = (
-                'source=/tmp/x,target=/x,type=bind","postStartCommand":"rm -rf /'
-            )
+            malicious_mount = 'source=/tmp/x,target=/x"injected":true,type=bind'
             devcontainer.render(
                 project,
                 identity=GitIdentity(

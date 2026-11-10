@@ -130,6 +130,38 @@ empty read-only mount), so the agent cannot read the devcontainer's host-path
 mounts and config or edit them. For direct runs the mask is added only when a
 `.devcontainer` directory exists in the workspace.
 
+History and mask sources live outside the repository in
+`$XDG_STATE_HOME/project-sandbox/mounts`, defaulting to
+`~/.local/state/project-sandbox/mounts`. The layout is:
+
+```text
+mounts/
+|-- helpers/                       # isolated devcontainer startup helper
+`-- projects/<hash-of-project-path>/
+    |-- history/
+    |   |-- shell/                 # bash_history is written by the container
+    |   `-- claude_projects/
+    `-- masks/
+        |-- <session-id>/empty/    # removed at CLI session teardown
+        `-- devcontainer/empty/    # retained for subsequent reopen operations
+```
+
+Each CLI session gets its own empty read-only mask. Interactive CLI sessions and
+devcontainers share persistent history for the same canonical project path;
+headless sessions do not mount that history. Dry-runs create no host storage.
+
+Regenerate existing devcontainer configurations with `project-sandbox` to adopt
+the private sources and startup helper. Regeneration is also required after
+moving a workspace or removing the helper installation. Devcontainer startup
+recreates missing history/mask directories and empty credential mount roots,
+but refuses symlinks, unexpected ownership or permissions, and nonempty masks.
+
+Existing `.project-sandbox/history` contents are left untouched and are not
+automatically migrated; history in the new location starts empty. Broad extra
+mounts such as the entire home directory are rejected when they expose private
+mount storage. Ambiguous or unmodeled `--mount` options are also rejected; use
+explicit supported bind mounts. See [implicit mount security](security.md#implicit-history-and-mask-mounts).
+
 ## Project Dockerfile Tamper Detection
 
 When you build from a project Dockerfile supplied with `--dockerfile`, that file

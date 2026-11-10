@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from . import generated_files
+from . import generated_files, mount_storage
 
 
 def resolve_strict(path: str | Path) -> Path:
@@ -29,37 +29,16 @@ WORKSPACE_NODE_MODULES_TARGET = "/workspace/node_modules"
 
 
 def ensure_history_paths(project: Path, *, create: bool = True) -> tuple[Path, Path]:
-    """Return the persistent history *directories* for ``project`` and
-    (optionally) create them on the host so the bind mounts have something to
-    bind to.
-
-    Returns ``(shell_history_dir, claude_projects_dir)`` under
-    ``.project-sandbox/history/``. Both are directories so the mounts work on
-    apple/container; bash history lives in ``shell/bash_history`` (see
-    ``HISTORY_HISTFILE``).
-    """
-    history_dir = project / ".project-sandbox" / "history"
-    shell_dir = history_dir / "shell"
-    claude_projects = history_dir / "claude_projects"
+    """Return persistent history roots in private host storage outside the repo."""
     if create:
-        ensure_dir(shell_dir)
-        ensure_dir(claude_projects)
-        histfile = shell_dir / "bash_history"
-        if not histfile.exists():
-            # A fresh inode prevents a planted link from redirecting creation.
-            generated_files.write_text(histfile, "", mode=0o600)
-    return shell_dir, claude_projects
+        return mount_storage.prepare_history(project)
+    return mount_storage.history_paths(project)
 
 
-def ensure_workspace_sandbox_mask(project: Path, *, create: bool = True) -> Path:
-    """Return the empty host directory mounted over /workspace/.project-sandbox.
-
-    Generated sandbox files must exist on the host for image/devcontainer builds,
-    but exposing them through the writable workspace mount lets an agent tamper
-    with files that might be copied into a later image. Mount this empty
-    directory read-only over the in-workspace generated directory instead.
-    """
-    mask_dir = project / ".project-sandbox" / "workspace-mask"
+def ensure_workspace_sandbox_mask(
+    project: Path, *, create: bool = True, token: str = "devcontainer"
+) -> Path:
+    """Return an empty private mask; CLI callers supply a unique session token."""
     if create:
-        ensure_dir(mask_dir)
-    return mask_dir
+        return mount_storage.prepare_mask(project, token)
+    return mount_storage.mask_path(project, token)

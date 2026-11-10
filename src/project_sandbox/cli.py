@@ -34,8 +34,10 @@ from . import (
     egress_sidecar,
     firewall,
     generated_files,
+    implicit_mounts,
     internet_proxy,
     local_service_network,
+    mount_storage,
     oauth_refresh,
     observability,
     session,
@@ -695,6 +697,7 @@ def _main(argv: list[str] | None = None) -> int:
     # branch/worktree. _resolve_build_source also writes the synthesised
     # python-uv/rust-cargo Dockerfile, but only into .project-sandbox
     # (project-level, not the worktree).
+    implicit_mounts.validate_sources(project, extra_mounts=args.extra_mounts)
     _validate_generated_dirs(project)
     context_dir = ensure_dir(project / ".project-sandbox")
     if is_chroot:
@@ -785,6 +788,12 @@ def _main(argv: list[str] | None = None) -> int:
             base_image, base_dockerfile, build_context = _resolve_build_source(
                 args, project=workspace, context_dir=context_dir
             )
+        implicit_mounts.validate_sources(
+            project,
+            workspace=workspace,
+            build_context=build_context,
+            extra_mounts=args.extra_mounts,
+        )
         if not is_chroot:
             dockerfile.render(
                 context_dir,
@@ -1122,6 +1131,13 @@ def _main(argv: list[str] | None = None) -> int:
             egress_started_at = egress_sidecar.sidecar_clock(
                 runtime, egress_sidecar.default_runner
             )
+        # Each live CLI session owns one private mask; cleanup also runs when
+        # command construction or container startup fails.
+        egress_stack.callback(
+            mount_storage.cleanup_mask,
+            mount_storage.mask_path(project, session_id),
+            root=mount_storage.storage_root(),
+        )
         cmd, log_path, unsupervised, container_stop_argv = _build_session_command(
             args,
             project=project,
@@ -3141,6 +3157,17 @@ def _build_session_command(
     vcs_layout: vcs_access.Layout | None = None,
     vcs_mask_dir: Path | None = None,
 ) -> tuple[list[str], Path | None, bool, list[str] | None]:
+    try:
+        implicit_mounts.validate_sources(
+            project,
+            workspace=workspace,
+            extra_mounts=args.extra_mounts,
+            sources=[*credential_dirs.values(), claude_cfg.parent, codex_cfg.parent],
+        )
+    except (OSError, ValueError) as exc:
+        raise SystemExit(
+            f"Invalid --mount for --runtime {runtime.name}: {exc}"
+        ) from exc
     # Agent availability is validated up front in main() via _ensure_agent_available.
     extra_mounts = list(args.extra_mounts)
     if egress_mount is not None:
@@ -3323,23 +3350,30 @@ def _build_session_command(
                 f"PROJECT_SANDBOX_PROMPT_FILE={PROMPT_MOUNT_TARGET}/prompt.txt"
             )
 
+    implicit_mounts.validate_sources(
+        project,
+        workspace=workspace,
+        extra_mounts=extra_mounts,
+    )
     if not unsupervised:
         shell_dir, claude_projects = ensure_history_paths(
             project, create=create_prompt_files
         )
         extra_mounts.append(
-            f"type=bind,source={shell_dir.resolve()},target={HISTORY_SHELL_TARGET}"
+            f"type=bind,source={shell_dir},target={HISTORY_SHELL_TARGET}"
         )
         extra_mounts.append(
-            f"type=bind,source={claude_projects.resolve()},target={HISTORY_CLAUDE_PROJECTS_TARGET}"
+            f"type=bind,source={claude_projects},target={HISTORY_CLAUDE_PROJECTS_TARGET}"
         )
         extra_env.append(f"HISTFILE={HISTORY_HISTFILE}")
 
     workspace_mask = ensure_workspace_sandbox_mask(
         project,
         create=create_prompt_files,
+        token=session_id
+        or (observability.new_session_id() if create_prompt_files else "preview"),
     )
-    mask_source = workspace_mask.resolve(strict=False)
+    mask_source = workspace_mask
     if not create_prompt_files:
         print(f"Would mask workspace sandbox files with: {mask_source}")
     # Keep this after user-supplied mounts so a writable --mount cannot expose
@@ -3500,9 +3534,6 @@ def _validate_generated_dirs(project: Path) -> None:
         context / "sessions",
         context / "prompt",
         context / "prompts",
-        context / "history" / "shell",
-        context / "history" / "claude_projects",
-        context / "workspace-mask",
     ):
         generated_files.validate_dir(path)
 

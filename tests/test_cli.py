@@ -2134,7 +2134,7 @@ class CliTests(TestCase):
                 create_prompt_files=True,
             )
 
-            history_dir = project / ".project-sandbox" / "history"
+            history_dir = cli.mount_storage.history_paths(project)[0].parent
             shell_dir = history_dir / "shell"
             claude_projects = history_dir / "claude_projects"
 

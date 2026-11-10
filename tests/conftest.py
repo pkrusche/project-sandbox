@@ -15,7 +15,18 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from project_sandbox import oauth_refresh
+from project_sandbox import config_agents, mount_storage, oauth_refresh
+
+
+@pytest.fixture(autouse=True)
+def _private_mount_storage(tmp_path):
+    # Keep persistent history and generated helper installations out of the
+    # developer's real state directory, including in CLI/render integration tests.
+    with (
+        patch.object(mount_storage, "storage_root", return_value=tmp_path / "mounts"),
+        patch.object(config_agents, "CREDENTIALS_ROOT", tmp_path / "credentials"),
+    ):
+        yield
 
 
 @pytest.fixture(autouse=True)

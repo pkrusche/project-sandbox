@@ -137,7 +137,6 @@ class GeneratedFilesTests(TestCase):
             ".devcontainer",
             ".project-sandbox/codex",
             ".project-sandbox/sessions",
-            ".project-sandbox/history/shell",
         ):
             with self.subTest(name=name):
                 path = self.project / name

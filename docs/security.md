@@ -29,6 +29,45 @@ These protections prevent redirected host writes. They do not make generated
 build inputs immutable or fix concurrent sessions overwriting one another's
 configuration; those are separate trust and lifecycle boundaries.
 
+## Implicit history and mask mounts
+
+Shell history, Claude conversation history, and empty workspace masks are stored
+under `$XDG_STATE_HOME/project-sandbox/mounts` (default
+`~/.local/state/project-sandbox/mounts`). A hash of the canonical project path
+separates projects. Repository-local `.project-sandbox/history` and
+`.project-sandbox/workspace-mask` paths are no longer used as mount sources.
+
+The host opens each storage directory with `O_NOFOLLOW`, verifies ownership and
+permissions, and refuses unexpected entries instead of chmodding them into
+compliance. Private parents and history roots are owned by the invoking user
+with mode `0700`; ancestors must not be writable by other users, except for
+root-owned sticky temporary directories. Empty mask leaves use mode `0755` and
+are mounted read-only. Only the leaf history and mask directories are mounted;
+their parents remain outside the sandbox, so an agent cannot replace a source
+directory between validation and the runtime's path lookup. History contents
+remain agent-writable and are never traversed or rewritten by host setup.
+
+The storage tree must not overlap the checkout, a worktree, build context, or
+another mounted source. Explicit mounts of the storage tree, its ancestors, or
+its descendants are refused, even when read-only. Only fully understood bind
+mount options are accepted here; ambiguous and unmodeled passthrough forms fail
+closed. A fresh CLI mask belongs to one session and is removed on normal or
+exceptional teardown without deleting other sessions' masks or history.
+
+Generated devcontainers retain a private empty mask and run a standalone helper
+from protected host storage before each creation. The helper uses an absolute
+Python interpreter with `-I -S`, imports only the standard library, and validates
+sources again. It refuses substituted directories, nonempty masks, extra mounts
+redirected into protected storage, and relocated workspaces. The interpreter and
+its base installation must also remain outside exposed paths. Missing history
+or mask directories are recreated; unexpected ownership or permissions cause
+startup to fail. If the helper itself is missing, regenerate the configuration.
+
+These controls address repository and sandbox modification of implicit mount
+sources. They do not isolate state from an independently malicious host process
+running as the same user or as root. Devcontainer configuration itself is
+host-executable configuration and must be trusted before opening it.
+
 ## Credential Isolation
 
 Direct named-agent runs forward only the selected agent's staged credentials:

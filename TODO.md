@@ -1,5 +1,12 @@
 # TODO - outstanding items for next release
 
+- Private mount storage: add orphan-mask/helper garbage collection that accounts
+  for live containers and persistent devcontainer configurations. Normal CLI
+  teardown removes session masks; SIGKILL can leave empty directories behind.
+  Verify private mounts and devcontainer reopen on live Docker, Podman, and Apple
+  container runtimes. Extend the understood bind-mount options where safe;
+  unmodeled passthrough mounts are currently rejected at this boundary.
+
 - VCS access: run the `vcs-access` e2e suite on Docker, Podman and Apple
   container; extend coverage to unlink/rename attempts and branch host capture
   after exit. Add Apple support for Git pointer-file layouts, nested
@@ -133,6 +140,18 @@ certificates, and cleanup paths. A separate `is_symlink()` check is insufficient
 against concurrent replacement. Cover both pre-existing links and link swaps.
 
 #### 4. High — implicit history and mask mounts can expose arbitrary host directories
+
+**Addressed:** history and workspace masks now live in private per-user host
+storage outside the checkout and build contexts. No-follow descriptor traversal
+checks ownership and permissions; masks must be empty. CLI masks are unique per
+session and cleaned on teardown. Devcontainers use a private standalone helper
+with isolated Python to validate sources on every reopen, including extra-mount
+aliases and workspace relocation. Extra mounts exposing storage or its ancestors
+are rejected, as are ambiguous/unmodeled mount forms. Regression tests inspect
+final runtime mounts, exercise repository link swaps and devcontainer startup,
+and cover permissions, cleanup, and dry-runs. Live runtime verification remains
+listed above. See [implicit mounts](docs/security.md#implicit-history-and-mask-mounts).
+The original finding below describes the reviewed revision before this fix.
 
 **Locations:** `paths.py:30–63`; `cli.py:3205–3237`;
 `devcontainer.py:97–110`.

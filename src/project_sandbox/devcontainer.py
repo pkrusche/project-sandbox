@@ -3,7 +3,7 @@ import os
 import re
 from pathlib import Path
 
-from . import config_agents, container_cli, generated_files, vcs_access
+from . import config_agents, container_cli, generated_files, implicit_mounts, vcs_access
 from .git_identity import GitIdentity
 from .paths import (
     HISTORY_CLAUDE_PROJECTS_TARGET,
@@ -45,6 +45,12 @@ def render(
     proxy_environment: dict[str, str] | None = None,
     vcs_mode: str = "full",
 ) -> Path:
+    implicit_mounts.validate_sources(
+        project,
+        build_context=build_context,
+        extra_mounts=extra_mounts,
+        sources=list((credential_dirs or {}).values()),
+    )
     vcs_mounts = []
     if vcs_mode != "full":
         try:
@@ -95,20 +101,17 @@ def render(
         ),
     )
     # Persist bash and Claude session history across devcontainer rebuilds, the
-    # same way the interactive CLI run path does. Create the host files so the
-    # bind mounts have something to bind to, and reference them relative to the
-    # workspace folder so the config stays portable.
-    ensure_history_paths(project, create=True)
-    history_root = "${localWorkspaceFolder}/.project-sandbox/history"
+    # same way the interactive CLI run path does. Sources live under private
+    # host storage; relocating the workspace requires regenerating this config.
+    shell_history, claude_history = ensure_history_paths(project, create=True)
     # Both sources are directories: apple/container rejects single-file bind
     # mounts ("is not a directory"), so bash history is persisted via a directory
     # mount + HISTFILE rather than mounting ~/.bash_history.
     history_mounts = [
-        f"source={history_root}/shell,target={HISTORY_SHELL_TARGET},type=bind",
-        f"source={history_root}/claude_projects,target={HISTORY_CLAUDE_PROJECTS_TARGET},type=bind",
+        f"source={shell_history},target={HISTORY_SHELL_TARGET},type=bind",
+        f"source={claude_history},target={HISTORY_CLAUDE_PROJECTS_TARGET},type=bind",
     ]
-    ensure_workspace_sandbox_mask(project, create=True)
-    workspace_mask_root = "${localWorkspaceFolder}/.project-sandbox/workspace-mask"
+    workspace_mask_root = str(ensure_workspace_sandbox_mask(project, create=True))
     workspace_mask_mount = f"source={workspace_mask_root},target={WORKSPACE_SANDBOX_TARGET},type=bind,readonly"
     # Mask .devcontainer the same way so its host-path mounts and config are not
     # visible from inside the running devcontainer.
@@ -204,33 +207,29 @@ def render(
     mounts.append(workspace_mask_mount)
     mounts.append(devcontainer_mask_mount)
 
-    # Several bind-mount sources live under ephemeral host directories: the
-    # gitignored history dir under the workspace, and the staged credential
-    # dirs under /tmp (see config_agents.CREDENTIALS_ROOT). Both can vanish
-    # between "project-sandbox run" and "Reopen in Container" (fresh clone,
-    # cleaned .project-sandbox, or a host reboot/tmp-reaper clearing /tmp), and
-    # a missing bind source makes the runtime fail to start. initializeCommand
-    # runs on the host before the container is created, recreating all of
-    # these directories so the mounts always succeed; self-healed credential
-    # directories come back empty (unauthenticated) until the CLI is re-run to
-    # restage real content. Use the argv (array) form so each path is passed
-    # as a single literal argument with no shell parsing: a workspace path
-    # containing an apostrophe (or any shell metacharacter) is then safe and
-    # cannot create the wrong directories.
-    initialize_command_dirs = [
-        f"{history_root}/shell",
-        f"{history_root}/claude_projects",
-        workspace_mask_root,
-    ]
+    # Revalidate host-owned sources at every reopen using an isolated helper
+    # installed outside the workspace. The agent cannot replace its code or the
+    # parent directories of the mounted history/mask roots.
+    initialize_credentials = []
     if forward_credentials:
-        initialize_command_dirs.append(str(claude_credentials_mount))
+        initialize_credentials.append(claude_credentials_mount)
         if mount_codex_secrets:
-            initialize_command_dirs.append(str(codex_credentials_mount))
+            initialize_credentials.append(codex_credentials_mount)
         if mount_opencode_secrets:
-            initialize_command_dirs.append(str(opencode_credentials_mount))
+            initialize_credentials.append(opencode_credentials_mount)
         if mount_pi_secrets:
-            initialize_command_dirs.append(str(pi_credentials_mount))
-    initialize_command = ["mkdir", "-p", *initialize_command_dirs]
+            initialize_credentials.append(pi_credentials_mount)
+    exposed = implicit_mounts.validate_sources(
+        project,
+        build_context=build_context,
+        extra_mounts=[*extra_mounts, *vcs_mounts],
+        sources=[Path(p) for p in initialize_credentials],
+    )
+    initialize_command = implicit_mounts.initialize_command(
+        project,
+        sources=exposed,
+        credential_dirs=[Path(p) for p in initialize_credentials],
+    )
 
     post_start_command = (
         "sudo -n /usr/local/bin/project-sandbox-init-firewall && "
