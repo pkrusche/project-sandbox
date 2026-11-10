@@ -2,13 +2,12 @@
 
 import json
 import os
-import tempfile
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from . import transcript
+from . import generated_files, transcript
 
 RATE_LIMIT_EXIT_CODE = 75  # EX_TEMPFAIL: callers should retry after a backoff.
 TIMEOUT_EXIT_CODE = 124  # Matches session.run()'s timeout exit code.
@@ -301,13 +300,9 @@ def _now() -> str:
 
 
 def _write(path: Path, value: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, raw_tmp = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    tmp = Path(raw_tmp)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(value, handle, separators=(",", ":"), sort_keys=True)
-            handle.write("\n")
-        os.replace(tmp, path)
-    finally:
-        tmp.unlink(missing_ok=True)
+    generated_files.ensure_dir(path.parent)
+    generated_files.write_text(
+        path,
+        json.dumps(value, separators=(",", ":"), sort_keys=True) + "\n",
+        mode=0o600,
+    )

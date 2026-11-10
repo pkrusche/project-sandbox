@@ -3,7 +3,7 @@ import os
 import re
 from pathlib import Path
 
-from . import config_agents, container_cli, vcs_access
+from . import config_agents, container_cli, generated_files, vcs_access
 from .git_identity import GitIdentity
 from .paths import (
     HISTORY_CLAUDE_PROJECTS_TARGET,
@@ -58,7 +58,7 @@ def render(
         except (ValueError, OSError) as exc:
             raise SystemExit(str(exc)) from exc
     dc_dir = project / ".devcontainer"
-    dc_dir.mkdir(exist_ok=True)
+    generated_files.ensure_dir(dc_dir)
 
     _symlink(dc_dir / "Dockerfile", Path("../.project-sandbox/Dockerfile.devcontainer"))
     _symlink(
@@ -281,7 +281,9 @@ def render(
             host_requirements["memory"] = memory_hostreq
         config["hostRequirements"] = host_requirements
 
-    out.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+    generated_files.write_text(
+        out, json.dumps(config, indent=2) + "\n", encoding="utf-8"
+    )
     return dc_dir
 
 
@@ -293,13 +295,7 @@ def _credential_dirs(context_dir: Path) -> dict[str, Path]:
 
 
 def _symlink(link: Path, target: Path) -> None:
-    if link.exists() or link.is_symlink():
-        if link.resolve() == (link.parent / target).resolve():
-            return
-        if link.is_dir() and not link.is_symlink():
-            raise RuntimeError(f"Cannot replace directory with symlink: {link}")
-        link.unlink()
-    link.symlink_to(target)
+    generated_files.symlink(link, target)
 
 
 def _devcontainer_ref(dc_dir: Path, path: Path) -> str:

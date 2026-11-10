@@ -22,6 +22,8 @@ import hashlib
 import json
 from pathlib import Path
 
+from . import generated_files
+
 _STATE_FILENAME = ".dockerfile-checksums.json"
 
 
@@ -85,6 +87,8 @@ def record(context_dir: Path, dockerfiles: list[Path]) -> None:
             data[_key(path)] = checksum(path)
         except OSError:
             continue
-    state_path(context_dir).write_text(
-        json.dumps(data, sort_keys=True) + "\n", encoding="utf-8"
+    generated_files.write_text(
+        state_path(context_dir),
+        json.dumps(data, sort_keys=True) + "\n",
+        encoding="utf-8",
     )

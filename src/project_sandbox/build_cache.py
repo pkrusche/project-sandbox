@@ -18,7 +18,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 
-from . import host_locks
+from . import generated_files, host_locks
 
 # Top-level files in the generated context that fully determine the CLI image.
 # The CLI always builds context_dir/"Dockerfile"; entrypoint.sh, init-firewall.sh
@@ -80,7 +80,8 @@ def read_state(context_dir: Path) -> dict | None:
 
 
 def write_state(context_dir: Path, *, image_tag: str, fingerprint: str) -> None:
-    state_path(context_dir).write_text(
+    generated_files.write_text(
+        state_path(context_dir),
         json.dumps({"image_tag": image_tag, "fingerprint": fingerprint}) + "\n",
         encoding="utf-8",
     )

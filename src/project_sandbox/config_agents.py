@@ -7,6 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from . import generated_files
+
 # Claude profiles: a profile's settings.json defaultMode IS its .claude.json
 # permission posture, so both the rendered settings file and the staged config
 # state derive from a single value per profile. This is the one place that
@@ -139,11 +141,14 @@ def render(
     agent_proxy_model: str | None = None,
 ) -> dict[str, Path]:
     """Render all agent config files and return a dict of written paths."""
+    validate_project_dirs(context_dir)
     paths: dict[str, Path] = {}
     for key, permission_mode in CLAUDE_PROFILES.items():
         out_dir = _ensure_project_subdir(context_dir, key)
         out = out_dir / "settings.json"
-        out.write_text(_claude_settings_json(permission_mode), encoding="utf-8")
+        generated_files.write_text(
+            out, _claude_settings_json(permission_mode), encoding="utf-8"
+        )
         paths[key] = out
     for key, approval_policy in (
         ("codex", "never"),
@@ -151,7 +156,9 @@ def render(
     ):
         out_dir = _ensure_project_subdir(context_dir, key)
         out = out_dir / "config.toml"
-        out.write_text(_codex_config_toml(approval_policy), encoding="utf-8")
+        generated_files.write_text(
+            out, _codex_config_toml(approval_policy), encoding="utf-8"
+        )
         paths[key] = out
     out_dir = _ensure_project_subdir(context_dir, "pi")
     # These files contain the agent-proxy bearer key.  Remove any copy left by
@@ -159,47 +166,50 @@ def render(
     # render should configure.  In particular, Pi mounts this whole directory
     # for ordinary runs, so retaining a stale models.json would silently admit
     # an old gateway credential into a non-proxy container.
-    (out_dir / "models.json").unlink(missing_ok=True)
+    generated_files.remove(out_dir / "models.json")
     opencode_dir = _ensure_project_subdir(context_dir, "opencode")
-    (opencode_dir / "opencode.json").unlink(missing_ok=True)
+    generated_files.remove(opencode_dir / "opencode.json")
     settings_out = out_dir / "settings.json"
     if agent_proxy and agent_proxy[3] in ("pi", "bash"):
         base_url, models, key, _agent = agent_proxy
         models_out = out_dir / "models.json"
-        models_out.write_text(
-            _pi_proxy_models_json(base_url, models, key), encoding="utf-8"
+        generated_files.write_text(
+            models_out, _pi_proxy_models_json(base_url, models, key), mode=0o600
         )
-        models_out.chmod(0o600)
-        settings_out.write_text(
-            _pi_proxy_settings_json(agent_proxy_model), encoding="utf-8"
+        generated_files.write_text(
+            settings_out, _pi_proxy_settings_json(agent_proxy_model), encoding="utf-8"
         )
     elif pi_ollama:
         models = list(ollama_models) if ollama_models else list(DEFAULT_OLLAMA_MODELS)
         models_out = out_dir / "models.json"
-        models_out.write_text(
-            _pi_ollama_models_json(models, base_url=ollama_base_url), encoding="utf-8"
+        generated_files.write_text(
+            models_out,
+            _pi_ollama_models_json(models, base_url=ollama_base_url),
+            encoding="utf-8",
         )
-        settings_out.write_text(_pi_ollama_settings_json(models[0]), encoding="utf-8")
+        generated_files.write_text(
+            settings_out, _pi_ollama_settings_json(models[0]), encoding="utf-8"
+        )
     else:
-        settings_out.write_text(_pi_settings_json(), encoding="utf-8")
+        generated_files.write_text(settings_out, _pi_settings_json(), encoding="utf-8")
     paths["pi"] = settings_out
     copilot_dir = _ensure_project_subdir(context_dir, "copilot")
     copilot_out = copilot_dir / "config.json"
-    copilot_out.write_text(_copilot_config_json(), encoding="utf-8")
+    generated_files.write_text(copilot_out, _copilot_config_json(), encoding="utf-8")
     paths["copilot"] = copilot_out
     if agent_proxy and agent_proxy[3] in ("opencode", "bash"):
         base_url, models, key, _agent = agent_proxy
         out = opencode_dir / "opencode.json"
-        out.write_text(
+        generated_files.write_text(
+            out,
             _opencode_proxy_json(
                 base_url,
                 models,
                 key,
                 default_model=agent_proxy_model,
             ),
-            encoding="utf-8",
+            mode=0o600,
         )
-        out.chmod(0o600)
         paths["opencode"] = out
     return paths
 
@@ -547,11 +557,26 @@ def _reject_symlinked_project_path(path: Path) -> None:
             )
 
 
+def validate_project_dirs(context_dir: Path) -> None:
+    """Reject unsafe managed directories before rendering any agent config."""
+    for name in (
+        *CLAUDE_PROFILES,
+        "codex",
+        "codex-devcontainer",
+        "pi",
+        "opencode",
+        "copilot",
+    ):
+        path = context_dir / name
+        _reject_symlinked_project_path(path)
+        generated_files.validate_dir(path)
+
+
 def _ensure_project_subdir(context_dir: Path, name: str) -> Path:
     """Create `context_dir / name`, refusing symlinked components."""
     out_dir = context_dir / name
     _reject_symlinked_project_path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    generated_files.ensure_dir(out_dir)
     return out_dir
 
 
@@ -604,20 +629,11 @@ def _remove_stale_project_agent_credentials(
 
 
 def _remove_if_exists(path: Path) -> None:
-    try:
-        path.unlink()
-    except FileNotFoundError:
-        pass
+    generated_files.remove(path)
 
 
 def _remove_path_if_exists(path: Path) -> None:
-    try:
-        if path.is_dir() and not path.is_symlink():
-            shutil.rmtree(path)
-        else:
-            path.unlink()
-    except FileNotFoundError:
-        pass
+    generated_files.remove(path, recursive=True)
 
 
 def _clear_dir(path: Path) -> None:

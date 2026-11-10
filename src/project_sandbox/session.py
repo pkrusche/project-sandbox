@@ -7,7 +7,7 @@ import threading
 from collections.abc import Sequence
 from pathlib import Path
 
-from project_sandbox import transcript
+from project_sandbox import generated_files, transcript
 
 REDACTED = "[REDACTED]"
 
@@ -36,7 +36,7 @@ def default_log_path(
     stem = f"{agent}-{branch.replace('/', '-') if branch else 'main'}-{ts}"
     log_dir = project / ".project-sandbox" / "sessions"
     if create:
-        log_dir.mkdir(parents=True, exist_ok=True)
+        generated_files.ensure_dir(log_dir)
     return log_dir / f"{stem}.log"
 
 
@@ -64,7 +64,7 @@ def run(
             print(f"# timeout: {timeout}s")
         return 0
 
-    with log_path.open("w", encoding="utf-8") as handle:
+    with generated_files.open_log(log_path) as handle:
         # start_new_session puts the child in its own process group so a timeout
         # can signal the whole group (the `container` CLI and anything it spawns),
         # not just the immediate child.

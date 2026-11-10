@@ -33,6 +33,7 @@ from . import (
     egress_policy,
     egress_sidecar,
     firewall,
+    generated_files,
     internet_proxy,
     local_service_network,
     oauth_refresh,
@@ -694,6 +695,7 @@ def _main(argv: list[str] | None = None) -> int:
     # branch/worktree. _resolve_build_source also writes the synthesised
     # python-uv/rust-cargo Dockerfile, but only into .project-sandbox
     # (project-level, not the worktree).
+    _validate_generated_dirs(project)
     context_dir = ensure_dir(project / ".project-sandbox")
     if is_chroot:
         base_image, base_dockerfile, build_context = None, None, context_dir
@@ -749,6 +751,7 @@ def _main(argv: list[str] | None = None) -> int:
     vcs_layout = None
     vcs_masks = None
     try:
+        _validate_generated_dirs(workspace)
         if run_agent and args.vcs_access != "full":
             try:
                 vcs_layout = vcs_access.inspect(workspace)
@@ -1373,8 +1376,8 @@ def _write_json_summary_unguarded(
         print(line)
         return
     path = Path(destination).expanduser()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(line + "\n", encoding="utf-8")
+    generated_files.ensure_dir(path.parent)
+    generated_files.write_text(path, line + "\n", mode=0o600)
 
 
 def _write_transcript_markdown(log_path: Path, agent: str | None = None) -> None:
@@ -2844,7 +2847,8 @@ def _validate_session_inputs(args) -> None:
         if not source_prompt.is_file():
             raise SystemExit(f"--prompt must point to a file: {source_prompt}")
     if args.log:
-        log_parent = Path(args.log).expanduser().resolve().parent
+        log_parent = Path(args.log).expanduser().absolute().parent
+        generated_files.validate_dir(log_parent)
         if not log_parent.is_dir():
             raise SystemExit(f"--log parent directory does not exist: {log_parent}")
     # The summary is written from main()'s finally block, where a failure can
@@ -3268,7 +3272,7 @@ def _build_session_command(
 
     if unsupervised:
         log_path = (
-            Path(args.log).expanduser().resolve()
+            Path(args.log).expanduser().absolute()
             if args.log
             else session.default_log_path(
                 project, args.branch, run_agent, create=create_prompt_files
@@ -3287,10 +3291,11 @@ def _build_session_command(
                 # mounted below rather than the prompt file. Clear it first so a
                 # stale prompt file left by an earlier unsupervised run in this
                 # project is never exposed alongside the current one.
-                if prompt_staging.exists():
-                    shutil.rmtree(prompt_staging)
+                generated_files.remove(prompt_staging, recursive=True)
                 ensure_dir(prompt_staging)
-                shutil.copyfile(source_prompt, prompt_file)
+                generated_files.write_bytes(
+                    prompt_file, source_prompt.read_bytes(), mode=0o600
+                )
             else:
                 print(f"Would stage prompt to: {prompt_file}")
             prompt_target = f"{PROMPT_MOUNT_TARGET}/{source_prompt.name}"
@@ -3305,10 +3310,9 @@ def _build_session_command(
             if create_prompt_files:
                 # Same apple/container constraint and stale-prompt concern as
                 # above: mount the directory, but clear it first.
-                if prompts_dir.exists():
-                    shutil.rmtree(prompts_dir)
+                generated_files.remove(prompts_dir, recursive=True)
                 ensure_dir(prompts_dir)
-                prompt_file.write_text(args.prompt_text, encoding="utf-8")
+                generated_files.write_text(prompt_file, args.prompt_text, mode=0o600)
             else:
                 print(f"Would write prompt to: {prompt_file}")
             extra_mounts.append(
@@ -3483,6 +3487,26 @@ def _print_next_steps(
         print()
 
 
+def _validate_generated_dirs(project: Path) -> None:
+    """Preflight managed directories before the first generated-file mutation.
+
+    Actual operations still reopen components without following links: this
+    check improves failure ordering but is not the security boundary.
+    """
+    context = project / ".project-sandbox"
+    config_agents.validate_project_dirs(context)
+    for path in (
+        project / ".devcontainer",
+        context / "sessions",
+        context / "prompt",
+        context / "prompts",
+        context / "history" / "shell",
+        context / "history" / "claude_projects",
+        context / "workspace-mask",
+    ):
+        generated_files.validate_dir(path)
+
+
 def _update_project_gitignore(project: Path) -> None:
     """Idempotently append credential-secret ignore entries to project .gitignore."""
     marker = "# project-sandbox — do not commit agent secrets"
@@ -3492,7 +3516,10 @@ def _update_project_gitignore(project: Path) -> None:
         ".devcontainer/",
     ]
     gi = project / ".gitignore"
-    existing = gi.read_text(encoding="utf-8") if gi.exists() else ""
+    try:
+        existing = generated_files.read_text(gi)
+    except FileNotFoundError:
+        existing = ""
     existing_lines = set(existing.splitlines())
     # Append only entries that are not already present anywhere in the file, so a
     # project that already ignores .project-sandbox/ (without our marker) does not
@@ -3501,7 +3528,7 @@ def _update_project_gitignore(project: Path) -> None:
     if not missing:
         return
     sep = "\n" if existing and not existing.endswith("\n") else ""
-    gi.write_text(existing + sep + "\n".join(missing) + "\n", encoding="utf-8")
+    generated_files.write_text(gi, existing + sep + "\n".join(missing) + "\n")
 
 
 def _write_project_sandbox_gitignore(context_dir: Path) -> None:
@@ -3540,4 +3567,4 @@ def _write_project_sandbox_gitignore(context_dir: Path) -> None:
 !entrypoint.sh
 !project-sandbox-devcontainer-init
 """
-    (context_dir / ".gitignore").write_text(content, encoding="utf-8")
+    generated_files.write_text(context_dir / ".gitignore", content)

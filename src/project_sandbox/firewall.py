@@ -3,7 +3,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import templating
+from . import generated_files, templating
 from .proxy_endpoint import ProxyEndpoint
 
 # Strict hostname: dot-separated labels of letters/digits/hyphens (no leading or
@@ -174,7 +174,8 @@ def _write(
     copilot_tenant_hosts: list[str],
     egress_sidecar: bool = False,
 ) -> Path:
-    out.write_text(
+    generated_files.write_text(
+        out,
         tmpl.render(
             extra_domains=extra_domains,
             allow_github=allow_github,
@@ -195,7 +196,6 @@ def _write(
             egress_input_dir=SIDECAR_INPUT_DIR,
         )
         + "\n",
-        encoding="utf-8",
+        mode=0o755,
     )
-    out.chmod(0o755)
     return out

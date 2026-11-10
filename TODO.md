@@ -101,6 +101,15 @@ confirm none execute on the host.
 
 #### 3. High — generated-file writes follow repository-controlled symlinks
 
+**Addressed:** generated writes and cleanup now use verified directory
+descriptors and no-follow traversal. Output leaves are atomically replaced;
+`.gitignore` reads reject symlinks. This covers scripts, Dockerfiles, agent
+configs, certificates, devcontainer files, cache records, prompts, and logs.
+Regression tests cover existing/dangling links, hard links, permission changes,
+directory/leaf swaps, cleanup races, and non-mutating dry-runs. See
+[generated-file security](docs/security.md#generated-files). The original
+finding below describes the reviewed revision before this fix.
+
 **Locations:** `dockerfile.py:174–262`, `:1134–1146`; `firewall.py:174`;
 `config_agents.py:146–154`, `:534–556`; `devcontainer.py:50–70`, `:268`;
 `cli.py:3378–3388`.

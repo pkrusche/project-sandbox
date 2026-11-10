@@ -1,12 +1,11 @@
 from pathlib import Path
 
-from . import templating
+from . import generated_files, templating
 
 
 def render(context_dir: Path) -> Path:
     out = context_dir / "chroot-run.sh"
-    out.write_text(
-        templating.get_template("chroot-run.sh.j2").render() + "\n", encoding="utf-8"
+    generated_files.write_text(
+        out, templating.get_template("chroot-run.sh.j2").render() + "\n", mode=0o700
     )
-    out.chmod(0o700)
     return out

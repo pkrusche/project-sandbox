@@ -7,7 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import templating
+from . import generated_files, templating
 
 _USER_SETUP_COMMAND_RE = re.compile(
     r"(?<![\w.-])(addgroup|adduser|groupadd|groupmod|useradd|usermod)(?![\w.-])"
@@ -259,7 +259,9 @@ def render(
                     skipped[stage.alias or stage.base] = None
                     continue
                 blocks.insert(_build_setup_index(blocks, stage), [setup])
-            path.write_text(_join_dockerfile_blocks(blocks), encoding="utf-8")
+            generated_files.write_text(
+                path, _join_dockerfile_blocks(blocks), encoding="utf-8"
+            )
         if warn is not None:
             for name in skipped:
                 warn(
@@ -282,11 +284,13 @@ def _stage_certificates(
     sources = []
     for certificate in dict.fromkeys(certificates):
         name = f"{prefix}{hashlib.sha256(certificate).hexdigest()}.crt"
-        (context_dir / name).write_bytes(certificate)
+        generated_files.write_bytes(context_dir / name, certificate)
         sources.append(copy_prefix + name)
-    for stale in context_dir.glob(f"{prefix}*.crt"):
-        if copy_prefix + stale.name not in sources:
-            stale.unlink()
+    generated_files.remove_matching(
+        context_dir,
+        f"{prefix}*.crt",
+        keep={source.removeprefix(copy_prefix) for source in sources},
+    )
     return sources
 
 
@@ -389,13 +393,14 @@ def render_dockerignore(
     written = []
     for dockerfile_name in ("Dockerfile", "Dockerfile.devcontainer"):
         out = context_dir / f"{dockerfile_name}.dockerignore"
-        out.write_text(body, encoding="utf-8")
+        generated_files.write_text(out, body, encoding="utf-8")
         written.append(out)
     return tuple(written)
 
 
 def _write_dockerfile(tmpl, out: Path, *, firewall_src_filename: str, **kwargs) -> Path:
-    out.write_text(
+    generated_files.write_text(
+        out,
         tmpl.render(firewall_src_filename=firewall_src_filename, **kwargs) + "\n",
         encoding="utf-8",
     )
@@ -925,7 +930,7 @@ def render_python_uv_dockerfile(
             'RUN uv sync --frozen && chown -R "${AGENT_UID}:${AGENT_GID}" /opt/uv-cache /opt/venv /opt/uv-python',
         ]
     out = context_dir / "Dockerfile.python-uv"
-    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    generated_files.write_text(out, "\n".join(lines) + "\n", encoding="utf-8")
     return out
 
 
@@ -1048,7 +1053,7 @@ def render_rust_cargo_dockerfile(
             ),
         ]
     out = context_dir / "Dockerfile.rust-cargo"
-    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    generated_files.write_text(out, "\n".join(lines) + "\n", encoding="utf-8")
     return out
 
 
@@ -1127,21 +1132,21 @@ def render_node_npm_dockerfile(
         "WORKDIR /workspace",
     ]
     out = context_dir / "Dockerfile.node-npm"
-    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    generated_files.write_text(out, "\n".join(lines) + "\n", encoding="utf-8")
     return out
 
 
 def render_entrypoint(context_dir: Path, *, egress_sidecar: bool = False) -> Path:
     out = context_dir / "entrypoint.sh"
     tmpl = templating.get_template("entrypoint.sh.j2")
-    out.write_text(tmpl.render(egress_sidecar=egress_sidecar) + "\n", encoding="utf-8")
-    out.chmod(0o755)
+    generated_files.write_text(
+        out, tmpl.render(egress_sidecar=egress_sidecar) + "\n", mode=0o755
+    )
     return out
 
 
 def render_devcontainer_entrypoint(context_dir: Path) -> Path:
     out = context_dir / "project-sandbox-devcontainer-init"
     tmpl = templating.get_template("devcontainer-entrypoint.sh.j2")
-    out.write_text(tmpl.render() + "\n", encoding="utf-8")
-    out.chmod(0o755)
+    generated_files.write_text(out, tmpl.render() + "\n", mode=0o755)
     return out

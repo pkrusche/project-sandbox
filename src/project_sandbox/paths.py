@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from . import generated_files
+
 
 def resolve_strict(path: str | Path) -> Path:
     p = Path(path).expanduser()
@@ -9,8 +11,7 @@ def resolve_strict(path: str | Path) -> Path:
 
 
 def ensure_dir(path: Path) -> Path:
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+    return generated_files.ensure_dir(path)
 
 
 # Container-side targets for the persisted history bind mounts. apple/container
@@ -45,7 +46,8 @@ def ensure_history_paths(project: Path, *, create: bool = True) -> tuple[Path, P
         ensure_dir(claude_projects)
         histfile = shell_dir / "bash_history"
         if not histfile.exists():
-            histfile.touch()
+            # A fresh inode prevents a planted link from redirecting creation.
+            generated_files.write_text(histfile, "", mode=0o600)
     return shell_dir, claude_projects
 
 

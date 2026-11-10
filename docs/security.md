@@ -1,5 +1,34 @@
 # Security Model
 
+## Generated files
+
+Repository contents are untrusted when the host generates sandbox files. Before
+generation, the CLI checks managed directories under `.project-sandbox` and
+`.devcontainer`. Every write and cleanup operation also opens parent directories
+component by component with `O_NOFOLLOW` and operates relative to those open
+descriptors. A directory swapped for a symlink after validation cannot redirect
+the operation to its target. Symlinked directory components are refused, except
+for macOS's system `/tmp`, `/var`, and `/etc` aliases.
+
+Dockerfiles, scripts, agent settings, certificates, cache records, prompts, and
+devcontainer JSON are written to fresh files and atomically renamed into place.
+Existing output symlinks (including dangling links) and hard links are replaced
+without changing their targets or their targets' permissions. Script permissions
+are set through the open file descriptor before publication. Configs containing
+proxy keys are created privately and published with mode `0600`. Intentional
+relative symlinks in `.devcontainer` are still generated.
+
+The root `.gitignore` must be read to preserve existing entries, so a symlink there
+is rejected instead of replaced. Session logs use a fresh `0600` file and keep its
+descriptor open while streaming; transcripts and JSON summaries use safe
+replacement too. Stale certificates and project credential remnants are removed
+relative to verified directories, with symlink-resistant recursive cleanup.
+Dry-runs do not perform these mutations.
+
+These protections prevent redirected host writes. They do not make generated
+build inputs immutable or fix concurrent sessions overwriting one another's
+configuration; those are separate trust and lifecycle boundaries.
+
 ## Credential Isolation
 
 Direct named-agent runs forward only the selected agent's staged credentials:

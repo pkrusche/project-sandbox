@@ -13,6 +13,8 @@ tolerates and skips any line that is not a JSON object.
 import json
 from pathlib import Path
 
+from . import generated_files
+
 # Tool results (and to a lesser extent tool inputs) can be enormous. Cap them so
 # the transcript stays readable; the full payload remains in the .log sidecar.
 _MAX_BLOCK_CHARS = 2000
@@ -26,7 +28,7 @@ def log_to_markdown(log_path: Path, agent: str | None = None) -> Path | None:
     the log held no parseable agent events (e.g. a non-JSON agent or a run that
     never started).
     """
-    events = _parse_events(log_path.read_text(encoding="utf-8", errors="replace"))
+    events = _parse_events(generated_files.read_text(log_path, errors="replace"))
     markdown: str | None
     if agent == "copilot":
         if not events:
@@ -45,7 +47,7 @@ def log_to_markdown(log_path: Path, agent: str | None = None) -> Path | None:
     else:
         return None
     md_path = log_path.with_suffix(".md")
-    md_path.write_text(markdown, encoding="utf-8")
+    generated_files.write_text(md_path, markdown, mode=0o600)
     return md_path
 
 
