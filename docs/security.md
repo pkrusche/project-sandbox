@@ -18,10 +18,13 @@ bash session (see [GitHub Copilot token](#github-copilot-token)). Use
 The generated devcontainer receives no credentials at all (see
 [Devcontainer](#devcontainer)).
 
-The private `/tmp/project-sandbox-<uid>/...` staging tree is host-side storage,
-not a mount exposed as a whole. Individual authorized credential directories are
-mounted at `/project-sandbox-secrets/<agent>`; credentials are never placed in
-the generated configuration directories or image build context. Explicit
+Credentials are staged into the session's own private staging directory
+(`<runtime root>/staging/<session-id>/secrets/`, see
+[Host state](#host-state)), which is host-side storage, not a mount exposed as a
+whole. Individual authorized credential directories are mounted at
+`/project-sandbox-secrets/<agent>`; credentials are never placed in the
+generated configuration directories or image build context, and no other
+session can see or delete them. Explicit
 `--mount` values are user-authorized exposure and can still reveal any host path
 the user chooses, including a credential-bearing path.
 
@@ -47,9 +50,9 @@ tracking for Copilot.
   push branches, edit workflows, or read private repositories. Every run that
   falls back to `gh` prints a `[W]` warning naming the pass entry to fill.
   Classic `ghp_` tokens are rejected.
-- **Where it lives.** The token is written to a 0600 file in a 0700 directory
-  under `/tmp/project-sandbox-<uid>/` (outside the repository, rewritten every
-  launch, removed best-effort at session end) and mounted read-only at
+- **Where it lives.** The token is written to a file that is 0600 from its first
+  open, in the session's private `secrets/` staging directory (outside the
+  repository, deleted with the session's staging) and mounted read-only at
   `/project-sandbox-secrets/copilot` only when Copilot is the selected agent. It
   is never baked into the image, written into generated project files, passed
   in argv, or copied into `$COPILOT_HOME`. Resolved tokens are redacted from
@@ -73,18 +76,65 @@ in `.local/share/opencode/auth.json`; it excludes session databases, logs,
 caches, and all `.local/state/opencode` files. This authentication file location
 is documented in [OpenCode's provider guide](https://opencode.ai/docs/providers/).
 OpenCode configuration entries must be files; directories with those names are
-not recursively staged. Staging is cleared before each sync. Unsupervised
-OpenCode credentials use a separate host staging directory, so a later interactive
-run cannot add history to an unsupervised container's credential mount.
+not recursively staged. Every session stages into its own fresh directory.
+Unsupervised OpenCode credentials use a separate staging directory
+(`opencode-headless`), so that staging never holds host history.
 Codex and Pi also stage only credential files; a directory named `auth.json`
-is never copied recursively. Prompt mounts expose only the current staged file,
-so older files in the prompt staging directory remain hidden.
+is never copied recursively. The prompt mount is the session's own `prompt/`
+directory, which holds only the current prompt.
 Interactive runs continue to forward OpenCode's data and state.
 
-In every mode, `/workspace/.project-sandbox` is masked with an empty read-only
-mount, hiding generated host configuration and host session logs. Project files
-and explicitly requested extra mounts remain accessible; history stored there
-is outside this automatic isolation.
+Host session logs and history live in private host state, outside the
+workspace. A `/workspace/.project-sandbox` left by an older version (or a
+whole-project flow's build-input copy) is masked with an empty read-only mount.
+Project files and explicitly requested extra mounts remain accessible.
+
+## Host state
+
+The host keeps everything it generates outside every project, so a repository
+or an earlier agent session cannot plant links or files where the host later
+writes, reads or mounts (see [Where state lives](runtime.md#where-state-lives)):
+
+- **Private roots.** Persistent state lives under
+  `$XDG_STATE_HOME/project-sandbox/` and per-session staging under the runtime
+  root (`$PROJECT_SANDBOX_RUNTIME_DIR`, `$XDG_RUNTIME_DIR` or a per-user
+  `$TMPDIR`, else `/tmp/project-sandbox-<uid>`). Every directory is created
+  `0700`; before use, each is checked to be owned by you, not a symlink and not
+  writable by group or others. A directory failing the check is refused by
+  name and never repaired or deleted.
+- **No-follow writes.** Every file is written through a verified directory
+  descriptor: created with `O_EXCL|O_NOFOLLOW` next to its name, then renamed
+  into place, so a link at the target is replaced rather than followed and a
+  link swapped in mid-write cannot redirect it. Secret files (`api-keys.env`,
+  agent-proxy configs, the Copilot token, staged credentials) are `0600` from
+  their first open.
+- **Per-session staging.** Each session's build context, configs, secrets and
+  prompt live in `staging/<session-id>/`, leased with `flock` for the session's
+  lifetime. A session mounts and deletes only its own. A later launch deletes
+  staging whose lease is free (the owner died), which is immune to PID reuse.
+- **Validated mount sources.** Every mount the CLI adds on its own (history,
+  masks, staging, the egress CA directory) is checked immediately before the
+  container command is built: it must resolve under a state root, not be a
+  symlink, and be owned by you. A symlinked legacy `.project-sandbox/history`
+  or `workspace-mask` is never mounted.
+- **Locks.** Host advisory locks live in `$XDG_STATE_HOME/project-sandbox/locks/`
+  and must be regular files owned by you (checked with `fstat`); a FIFO, link
+  or foreign file is refused instead of waited on. Lock files are never
+  unlinked.
+- **No project edits.** A launch writes only `.devcontainer/` (an empty mask
+  target with a self-ignoring `.gitignore`) and, for whole-project builds, a
+  secret-free copy of the build inputs in `.project-sandbox/`, through the same
+  no-follow writer; a symlinked `.devcontainer` or `.project-sandbox` is
+  refused. The project's root `.gitignore` is never rewritten.
+- **Migration.** The first launch moves a legacy `.project-sandbox/` history
+  and logs into private state and deletes its generated files, including stale
+  secrets, and the project's old `/tmp/project-sandbox-<uid>/<digest>/`
+  credential staging, without following links; it postpones while an older
+  session of the project still runs.
+
+Remaining gap: whole-project builds still read their generated inputs from
+`.project-sandbox/` in the build context, which another process could replace
+between the copy and the build (`private-build-context` removes this).
 
 ## OAuth Token Lifetime
 
@@ -117,8 +167,8 @@ for as long as possible and make any shortfall visible:
   expiry warning is shown for Pi and the in-container agent's own refresh
   behavior applies.
 - `--no-forward-credentials` starts the container unauthenticated. Host
-  credentials are not read, staged, or mounted; any credentials left in the
-  staging area by a previous forwarding run are removed. It also disables the host
+  credentials are not read, staged, or mounted, and other sessions' staging is
+  left alone. It also disables the host
   refresh and start-of-session warning. Direct CLI runs may opt in to API-key
   environment injection with `--api-key-env NAME` or `--api-key-env-file FILE`;
   dry-runs redact values, but real runs still pass those values through the
@@ -292,8 +342,9 @@ session needs and adds nothing in its place:
   the image, and a `postStartCommand` that only applies the git/jj identity as
   `agent`. The image keeps build-time CA trust (`--build-ca-cert`) but has no
   session-time trust (`--ca-cert`).
-- **Masks.** `/workspace/.devcontainer` and `/workspace/.project-sandbox` are
-  masked with an empty read-only mount, after any `--mount` values. Test code
+- **Masks.** `/workspace/.devcontainer` (and a legacy `/workspace/.project-sandbox`
+  when present) is masked with an empty read-only directory from private state,
+  after any `--mount` values. Test code
   may come from an agent session, and must not rewrite `devcontainer.json`,
   whose `initializeCommand` runs on the host.
 
@@ -350,9 +401,11 @@ The devcontainer is rendered only on request; launches never rewrite it.
 | Malicious npm post-install scripts | Run as the unprivileged `agent` user (host-matched for Docker/Podman on Linux); no access to unmounted host paths. |
 | Agent updates itself to a malicious version | `autoUpdaterStatus: disabled` for Claude and `check_for_update_on_startup = false` for Codex; `PI_SKIP_VERSION_CHECK=1` for Pi. OpenCode config is not currently sanitized; see `TODO.md`. |
 | Agent sends telemetry / usage data | `CLAUDE_TELEMETRY_DISABLED=1` for Claude; `analytics.enabled = false` and `feedback.enabled = false` for Codex; `PI_OFFLINE=1` for Pi (disables startup update/telemetry network calls); `OPENSPEC_TELEMETRY=0` for OpenSpec. OpenCode config is not currently filtered for telemetry settings; see `TODO.md`. |
-| API token leakage via process environment | Default forwarded agent tokens are passed through mounted credential files, not environment variables; host staging files are kept under a private `/tmp` directory. Explicit `--api-key-env*` injection is opt-in, requires `--no-forward-credentials`, and redacts dry-run output, but the selected keys are still present in the runtime process environment during real runs. |
-| Agent rewrites the project `--dockerfile` to poison the next build | The project Dockerfile's SHA256 is recorded under the masked `.project-sandbox/.dockerfile-checksums.json`, which the sandbox cannot read or modify; a later run warns when the Dockerfile changed since it was last built. |
-| Agent reads, edits or plants `.devcontainer` config (its `initializeCommand` runs on the host) | `/workspace/.devcontainer` is masked with an empty read-only mount in both direct runs and devcontainers. Sessions create an empty `.devcontainer/` when it is missing, so the mask always applies, and refuse a symlinked one. |
+| API token leakage via process environment | Default forwarded agent tokens are passed through mounted credential files, not environment variables; host staging files are kept in the session's private staging directory and deleted when it ends. Explicit `--api-key-env*` injection is opt-in, requires `--no-forward-credentials`, and redacts dry-run output, but the selected keys are still present in the runtime process environment during real runs. |
+| Agent rewrites the project `--dockerfile` to poison the next build | The project Dockerfile's SHA256 is recorded in the project's private host state (`dockerfile-checksums.json`), which the sandbox cannot read or modify; a later run warns when the Dockerfile changed since it was last built. |
+| Agent reads, edits or plants `.devcontainer` config (its `initializeCommand` runs on the host) | `/workspace/.devcontainer` is masked with an empty read-only mount in both direct runs and devcontainers. Sessions create `.devcontainer/` (only its self-ignoring `.gitignore`) when it is missing, so the mask always applies, and refuse a symlinked one. |
+| Repository or earlier session plants links in generated state (`.project-sandbox/...`) to redirect host writes or mounts | Generated state lives in private per-user roots outside every project, written through verified directory descriptors without following links; implicit mount sources are validated before each launch (see [Host state](#host-state)). |
+| Concurrent sessions overwrite or delete each other's prompt, keys or credentials | Each session stages into its own leased directory and deletes only its own. |
 
 The tool does not protect against:
 
@@ -478,8 +531,8 @@ The container runtime's `build` still runs in its build context, which Apple
   `project-sandbox`.
 - **Stale image after an out-of-band change.** Builds are skipped when the
   generated inputs are unchanged and the image still exists; the decision uses a
-  fingerprint recorded in `.project-sandbox/.build-state.json` (a non-sensitive
-  tag + hash). If the image was modified outside project-sandbox, pass
+  fingerprint recorded in the project's private state (`build-state.json`, a
+  non-sensitive tag + hash). If the image was modified outside project-sandbox, pass
   `--force-build` to rebuild.
 - **Host service times out on Apple `container`.** A curl timeout (rather than
   a refusal) reaching the agent proxy, Internet proxy, or Ollama means the
@@ -492,9 +545,8 @@ The container runtime's `build` still runs in its build context, which Apple
 - **`ip6tables` unavailable.** The script attempts
   `sysctl net.ipv6.conf.all.disable_ipv6=1` first. If that also fails, the script
   aborts with an error.
-- **Credentials look stale.** Re-run `project-sandbox` on the host to refresh the
-  `/tmp` credential staging directory from the host agent config or macOS
-  Keychain. The CLI also refreshes a near-expiry host Claude token before staging
+- **Credentials look stale.** Each launch stages fresh credentials from the host
+  agent config or macOS Keychain; restart the session to pick up new ones. The CLI also refreshes a near-expiry host Claude token before staging
   unless `--no-token-refresh` is set.
 - **Env vars in `vminitd.log`.** apple/container logs the full process
   environment. Default forwarded agent tokens are passed through mounted
@@ -537,8 +589,8 @@ bare environment names through argv; values travel in the protected subprocess
 environment.
 Because Bash can launch either bundled agent, Bash proxy sessions mount private
 Pi and OpenCode proxy configs in addition to the `OPENAI_*` environment. Both
-configs contain the same gateway key, are mode 0600 before mounting, and are
-removed from staging after the session.
+configs contain the same gateway key, are mode 0600 from creation, and are
+deleted with the session's staging after the session.
 
 Proxy-mode egress is gateway-only by default: normal OpenAI/Anthropic domains
 are omitted. The exact

@@ -7,7 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import host_tools
+from . import host_tools, paths
 
 # Claude profiles: a profile's settings.json defaultMode IS its .claude.json
 # permission posture, so both the rendered settings file and the staged config
@@ -57,7 +57,6 @@ CLAUDE_CREDENTIAL_STATE_KEYS = frozenset(
     )
 )
 
-CREDENTIALS_ROOT = Path("/tmp")
 # Claude Code records the user's acceptance of server-managed settings here;
 # without it the sandbox re-prompts with the managed settings dialog each run.
 CLAUDE_MANAGED_SETTINGS_CONSENT = "remote-settings-consent.json"
@@ -131,7 +130,7 @@ def available_agents(home: Path | None = None) -> tuple[str, ...]:
 
 
 def render(
-    context_dir: Path,
+    context_dir: "paths.Target",
     *,
     pi_ollama: bool = False,
     ollama_models: list[str] | None = None,
@@ -139,77 +138,86 @@ def render(
     agent_proxy: tuple[str, list[str], str, str] | None = None,
     agent_proxy_model: str | None = None,
 ) -> dict[str, Path]:
-    """Render all agent config files and return a dict of written paths."""
-    paths: dict[str, Path] = {}
-    for key, permission_mode in CLAUDE_PROFILES.items():
-        out_dir = _ensure_project_subdir(context_dir, key)
-        out = out_dir / "settings.json"
-        out.write_text(_claude_settings_json(permission_mode), encoding="utf-8")
-        paths[key] = out
-    out_dir = _ensure_project_subdir(context_dir, "codex")
-    out = out_dir / "config.toml"
-    out.write_text(_codex_config_toml("never"), encoding="utf-8")
-    paths["codex"] = out
-    out_dir = _ensure_project_subdir(context_dir, "pi")
-    # These files contain the agent-proxy bearer key.  Remove any copy left by
-    # an interrupted prior run before deciding which provider (if any) this
-    # render should configure.  In particular, Pi mounts this whole directory
-    # for ordinary runs, so retaining a stale models.json would silently admit
-    # an old gateway credential into a non-proxy container.
-    (out_dir / "models.json").unlink(missing_ok=True)
-    opencode_dir = _ensure_project_subdir(context_dir, "opencode")
-    (opencode_dir / "opencode.json").unlink(missing_ok=True)
-    settings_out = out_dir / "settings.json"
-    if agent_proxy and agent_proxy[3] in ("pi", "bash"):
-        base_url, models, key, _agent = agent_proxy
-        models_out = out_dir / "models.json"
-        models_out.write_text(
-            _pi_proxy_models_json(base_url, models, key), encoding="utf-8"
-        )
-        models_out.chmod(0o600)
-        settings_out.write_text(
-            _pi_proxy_settings_json(agent_proxy_model), encoding="utf-8"
-        )
-    elif pi_ollama:
-        models = list(ollama_models) if ollama_models else list(DEFAULT_OLLAMA_MODELS)
-        models_out = out_dir / "models.json"
-        models_out.write_text(
-            _pi_ollama_models_json(models, base_url=ollama_base_url), encoding="utf-8"
-        )
-        settings_out.write_text(_pi_ollama_settings_json(models[0]), encoding="utf-8")
-    else:
-        settings_out.write_text(_pi_settings_json(), encoding="utf-8")
-    paths["pi"] = settings_out
-    copilot_dir = _ensure_project_subdir(context_dir, "copilot")
-    copilot_out = copilot_dir / "config.json"
-    copilot_out.write_text(_copilot_config_json(), encoding="utf-8")
-    paths["copilot"] = copilot_out
-    if agent_proxy and agent_proxy[3] in ("opencode", "bash"):
-        base_url, models, key, _agent = agent_proxy
-        out = opencode_dir / "opencode.json"
-        out.write_text(
-            _opencode_proxy_json(
-                base_url,
-                models,
-                key,
-                default_model=agent_proxy_model,
-            ),
-            encoding="utf-8",
-        )
-        out.chmod(0o600)
-        paths["opencode"] = out
-    return paths
+    """Render all agent config files and return a dict of written paths.
+
+    Files go through the no-follow writer: a symlinked agent directory is
+    refused and a symlinked file is replaced. Files carrying the agent-proxy
+    key are ``0600`` from creation.
+    """
+    out: dict[str, Path] = {}
+    with paths.target_dir(context_dir) as root:
+
+        def write(agent: str, name: str, text: str, *, secret: bool = False) -> Path:
+            with root.subdir(agent, private=False) as directory:
+                directory.write(name, text, mode=0o600 if secret else 0o644)
+            return paths.target_path(context_dir, agent) / name
+
+        def remove(agent: str, name: str) -> None:
+            with root.subdir(agent, private=False) as directory:
+                directory.unlink(name)
+
+        for key, permission_mode in CLAUDE_PROFILES.items():
+            out[key] = write(
+                key, "settings.json", _claude_settings_json(permission_mode)
+            )
+        out["codex"] = write("codex", "config.toml", _codex_config_toml("never"))
+        # These files contain the agent-proxy bearer key. Remove any copy
+        # before deciding which provider (if any) this render configures: Pi
+        # mounts this whole directory for ordinary runs, so a stale models.json
+        # would admit an old gateway credential into a non-proxy container.
+        remove("pi", "models.json")
+        remove("opencode", "opencode.json")
+        if agent_proxy and agent_proxy[3] in ("pi", "bash"):
+            base_url, models, key, _agent = agent_proxy
+            write(
+                "pi",
+                "models.json",
+                _pi_proxy_models_json(base_url, models, key),
+                secret=True,
+            )
+            out["pi"] = write(
+                "pi", "settings.json", _pi_proxy_settings_json(agent_proxy_model)
+            )
+        elif pi_ollama:
+            models = (
+                list(ollama_models) if ollama_models else list(DEFAULT_OLLAMA_MODELS)
+            )
+            write(
+                "pi",
+                "models.json",
+                _pi_ollama_models_json(models, base_url=ollama_base_url),
+            )
+            out["pi"] = write(
+                "pi", "settings.json", _pi_ollama_settings_json(models[0])
+            )
+        else:
+            out["pi"] = write("pi", "settings.json", _pi_settings_json())
+        out["copilot"] = write("copilot", "config.json", _copilot_config_json())
+        if agent_proxy and agent_proxy[3] in ("opencode", "bash"):
+            base_url, models, key, _agent = agent_proxy
+            out["opencode"] = write(
+                "opencode",
+                "opencode.json",
+                _opencode_proxy_json(
+                    base_url, models, key, default_model=agent_proxy_model
+                ),
+                secret=True,
+            )
+    return out
 
 
 def sync_credentials(
-    project_sandbox_dir: Path,
+    secrets_dir: Path,
     *,
     home: Path | None = None,
     unsupervised: bool = False,
 ) -> dict[str, Path]:
-    """Stage credentials for all agents present on this host.
+    """Stage credentials for all agents present on this host into ``secrets_dir``.
 
-    Unsupervised sessions exclude OpenCode's host history and runtime state.
+    ``secrets_dir`` is the session's private ``secrets/`` staging directory:
+    every session stages its own copy, and deleting it touches no other
+    session. Unsupervised sessions exclude OpenCode's host history and runtime
+    state.
 
     Returns a dict keyed by agent name:
       "claude"                  — always present
@@ -217,9 +225,7 @@ def sync_credentials(
     """
     _home = home or Path.home()
     host_paths = _agent_host_paths(_home)
-    # Older versions also staged Claude credentials for the devcontainer, which
-    # no longer has agents; don't leave that copy behind.
-    _remove_path_if_exists(credentials_dir(project_sandbox_dir, "claude-devcontainer"))
+    project_sandbox_dir = secrets_dir
     result: dict[str, Path] = {}
     for profile, permission_mode in CLAUDE_PROFILES.items():
         result[profile] = _sync_claude_credentials(
@@ -252,18 +258,20 @@ def sync_credentials(
 
 
 def credentials_dir(
-    project_sandbox_dir: Path, agent: str = "claude", *, unsupervised: bool = False
+    secrets_dir: Path, agent: str = "claude", *, unsupervised: bool = False
 ) -> Path:
-    # An interactive sync must never repopulate a directory mounted by an
-    # unsupervised container with host history, even after provisioning finishes.
+    """Where ``agent``'s credentials are staged in a session's ``secrets_dir``."""
+    # Headless OpenCode gets a separate directory holding only auth.json, so
+    # its staging can never contain host history.
     if agent == "opencode" and unsupervised:
         agent = "opencode-headless"
-    if not all(c.isalnum() or c in "._-" for c in agent):
+    if (
+        not agent
+        or agent in (".", "..")
+        or not all(c.isalnum() or c in "._-" for c in agent)
+    ):
         raise ValueError(f"Invalid credential agent name: {agent}")
-    key = str(project_sandbox_dir.resolve(strict=False))
-    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
-    uid = os.getuid() if hasattr(os, "getuid") else "user"
-    return CREDENTIALS_ROOT / f"project-sandbox-{uid}" / digest / agent
+    return secrets_dir / agent
 
 
 def _claude_settings_json(permission_mode: str) -> str:
@@ -444,8 +452,6 @@ def _sync_claude_credentials(
     home = home or Path.home()
     out_dir = credentials_dir(project_sandbox_dir, agent)
     _ensure_private_dir(out_dir)
-    if agent == "claude":
-        _remove_stale_project_credentials(project_sandbox_dir)
     if not (use_host_keychain and _stage_macos_keychain_credentials(out_dir)):
         copied = _copy_if_file(
             home / ".claude" / ".credentials.json",
@@ -478,7 +484,6 @@ def _sync_generic_credentials(
 ) -> Path:
     out_dir = credentials_dir(project_sandbox_dir, agent)
     _ensure_private_dir(out_dir)
-    _remove_stale_project_agent_credentials(project_sandbox_dir, agent, include_files)
     _clear_dir(out_dir)
     if not source_dir.is_dir():
         return out_dir
@@ -503,7 +508,6 @@ def _sync_opencode_credentials(
         project_sandbox_dir, "opencode", unsupervised=unsupervised
     )
     _ensure_private_dir(out_dir)
-    _remove_stale_project_agent_credentials(project_sandbox_dir, "opencode", None)
     _clear_dir(out_dir)
     source_config = home / ".config" / "opencode"
     target_config = out_dir / ".config" / "opencode"
@@ -531,76 +535,17 @@ def _sync_opencode_credentials(
     return out_dir
 
 
-def _reject_symlinked_project_path(path: Path) -> None:
-    """Refuse a managed .project-sandbox path reached through a symlink.
-
-    A hostile repository can pre-place an in-repo `.project-sandbox/<agent>`
-    path as a symlink to e.g. ~/.claude, so that rendering writes outside the
-    project and stale-cleanup unlinks host credentials. Mirror the
-    `_ensure_private_dir` guard: lstat each managed component and reject any
-    symlink before writing or unlinking.
-    """
-    for component in (path.parent, path):
-        if component.is_symlink():
-            raise RuntimeError(
-                f"Refusing to use symlinked project config path: {component}"
-            )
-
-
-def _ensure_project_subdir(context_dir: Path, name: str) -> Path:
-    """Create `context_dir / name`, refusing symlinked components."""
-    out_dir = context_dir / name
-    _reject_symlinked_project_path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    return out_dir
-
-
 def ensure_private_dir(path: Path) -> None:
     """Create a 0700 credential dir (and its two parents), refusing symlinks."""
     _ensure_private_dir(path)
 
 
 def _ensure_private_dir(path: Path) -> None:
-    for directory in (path.parent.parent, path.parent, path):
-        if directory.is_symlink():
-            raise RuntimeError(
-                f"Refusing to use symlinked credential directory: {directory}"
-            )
-        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-        directory.chmod(0o700)
-
-
-def purge_staged_credentials(project_sandbox_dir: Path) -> None:
-    """Delete this project's staged credential tree under /tmp.
-
-    Used with --no-forward-credentials: no host tokens are staged, and any left
-    over from a previous forwarding run are removed so nothing lingers on disk or
-    can be mounted. The per-project digest directory holds only this project's
-    staged agent credentials, so removing it is safe.
-    """
-    digest_dir = credentials_dir(project_sandbox_dir, "claude").parent
-    _remove_path_if_exists(digest_dir)
-
-
-def _remove_stale_project_credentials(project_sandbox_dir: Path) -> None:
-    project_claude_dir = project_sandbox_dir / "claude"
-    _reject_symlinked_project_path(project_claude_dir)
-    for name in (".credentials.json", ".claude.json"):
-        _remove_if_exists(project_claude_dir / name)
-
-
-def _remove_stale_project_agent_credentials(
-    project_sandbox_dir: Path,
-    agent: str,
-    include_files: tuple[str, ...] | None,
-) -> None:
-    project_agent_dir = project_sandbox_dir / agent
-    _reject_symlinked_project_path(project_agent_dir)
-    if include_files is None:
-        _remove_path_if_exists(project_agent_dir)
-        return
-    for name in include_files:
-        _remove_path_if_exists(project_agent_dir / name)
+    """Create a 0700 staging directory below its existing private parent."""
+    if path.is_symlink():
+        raise RuntimeError(f"Refusing to use symlinked credential directory: {path}")
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path.chmod(0o700)
 
 
 def _remove_if_exists(path: Path) -> None:
@@ -640,8 +585,7 @@ def _copy_path(source: Path, target: Path) -> None:
         return
     if source.is_file() and source.stat().st_size > 0:
         target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        shutil.copyfile(source, target)
-        target.chmod(0o600)
+        _write_secret_bytes(target, source.read_bytes())
 
 
 def _copy_dir_contents(source: Path, target: Path) -> None:
@@ -655,8 +599,7 @@ def _copy_dir_contents(source: Path, target: Path) -> None:
 def _copy_if_file(source: Path, target: Path) -> bool:
     if not source.is_file() or source.stat().st_size == 0:
         return False
-    shutil.copyfile(source, target)
-    target.chmod(0o600)
+    _write_secret_bytes(target, source.read_bytes())
     return True
 
 
@@ -758,8 +701,17 @@ def _is_claude_oauth_credentials(raw: str) -> bool:
 
 
 def _write_secure_text(target: Path, content: str) -> None:
-    target.write_text(
-        content if content.endswith("\n") else content + "\n",
-        encoding="utf-8",
-    )
-    target.chmod(0o600)
+    text = content if content.endswith("\n") else content + "\n"
+    _write_secret_bytes(target, text.encode("utf-8"))
+
+
+def _write_secret_bytes(target: Path, data: bytes) -> None:
+    """Write a fresh ``0600`` file: the mode holds from the first open, and a
+    link at ``target`` is removed rather than followed."""
+    try:
+        target.unlink()
+    except FileNotFoundError:
+        pass
+    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(data)

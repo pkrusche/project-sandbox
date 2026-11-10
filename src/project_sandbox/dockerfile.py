@@ -7,7 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import templating
+from . import paths, templating
 
 _USER_SETUP_COMMAND_RE = re.compile(
     r"(?<![\w.-])(addgroup|adduser|groupadd|groupmod|useradd|usermod)(?![\w.-])"
@@ -178,7 +178,7 @@ def read_ca_certificates(
 
 
 def render(
-    context_dir: Path,
+    context_dir: "paths.Target",
     *,
     base_image: str | None = None,
     base_dockerfile: Path | None = None,
@@ -188,14 +188,58 @@ def render(
     ca_certificates: tuple[bytes, ...] = (),
     build_ca_certificates: tuple[bytes, ...] = (),
     devcontainer: bool = False,
+    copy_prefix: str | None = None,
+    dockerfile_name: str | None = None,
 ) -> Path:
     """Render the session ``Dockerfile``, or with ``devcontainer`` only
-    ``Dockerfile.devcontainer``.
+    ``Dockerfile.devcontainer``, into ``context_dir``.
 
     The devcontainer profile installs no agent CLIs and has no firewall script,
     sudoers rule, session entrypoint or runtime CA trust. It keeps the base
     image, the project dependency layers and build-time CA handling.
+
+    ``copy_prefix`` is where the generated files sit relative to
+    ``build_context`` at build time. By default it is derived from where
+    ``context_dir`` lies in ``build_context``; the CLI renders into private
+    session staging and passes the prefix of the in-context copy instead.
     """
+    with paths.target_dir(context_dir) as directory:
+        name = _render_into(
+            directory,
+            context_path=(
+                Path(context_dir)
+                if not isinstance(context_dir, paths.PrivateDir)
+                else context_dir.path
+            ),
+            base_image=base_image,
+            base_dockerfile=base_dockerfile,
+            build_context=build_context,
+            install_agents=install_agents,
+            warn=warn,
+            ca_certificates=ca_certificates,
+            build_ca_certificates=build_ca_certificates,
+            devcontainer=devcontainer,
+            copy_prefix=copy_prefix,
+            dockerfile_name=dockerfile_name,
+        )
+    return paths.target_path(context_dir, name)
+
+
+def _render_into(
+    directory: "paths.PrivateDir",
+    *,
+    context_path: Path,
+    base_image: str | None,
+    base_dockerfile: Path | None,
+    build_context: Path | None,
+    install_agents: tuple[str, ...],
+    warn: Callable[[str], None] | None,
+    ca_certificates: tuple[bytes, ...],
+    build_ca_certificates: tuple[bytes, ...],
+    devcontainer: bool,
+    copy_prefix: str | None,
+    dockerfile_name: str | None,
+) -> str:
     if (base_image is None) == (base_dockerfile is None):
         raise ValueError("Provide exactly one of base_image or base_dockerfile")
 
@@ -214,12 +258,13 @@ def render(
             for warning in warnings:
                 warn(warning)
 
-    copy_prefix = ""
-    if build_context is not None:
-        copy_prefix = _sandbox_copy_prefix(
-            context_dir=context_dir,
-            build_context=build_context,
-        )
+    if copy_prefix is None:
+        copy_prefix = ""
+        if build_context is not None:
+            copy_prefix = _sandbox_copy_prefix(
+                context_dir=context_path,
+                build_context=build_context,
+            )
 
     # The devcontainer has no runtime CA trust. It also leaves the session's
     # staged runtime CAs alone, which its stale-file cleanup would remove.
@@ -227,11 +272,11 @@ def render(
         []
         if devcontainer
         else _stage_certificates(
-            context_dir, copy_prefix, ca_certificates, prefix="project-sandbox-ca-"
+            directory, copy_prefix, ca_certificates, prefix="project-sandbox-ca-"
         )
     )
     build_certificate_sources = _stage_certificates(
-        context_dir,
+        directory,
         copy_prefix,
         build_ca_certificates,
         prefix="project-sandbox-build-ca-",
@@ -253,14 +298,14 @@ def render(
         "install_pi": "pi" in install_agents,
         "install_copilot": "copilot" in install_agents,
     }
-    out = context_dir / ("Dockerfile.devcontainer" if devcontainer else "Dockerfile")
-    out.write_text(
-        tmpl.render(devcontainer=devcontainer, **shared) + "\n", encoding="utf-8"
+    name = dockerfile_name or (
+        "Dockerfile.devcontainer" if devcontainer else "Dockerfile"
     )
+    text = tmpl.render(devcontainer=devcontainer, **shared) + "\n"
     if build_certificate_sources:
         setup = templating.get_template("_build-network.Dockerfile.j2").render(**shared)
         skipped: dict[str, None] = {}
-        blocks = _dockerfile_blocks(out.read_text(encoding="utf-8"))
+        blocks = _dockerfile_blocks(text)
         stages = _dockerfile_stages(blocks)
         # Inject without adding stages, preserving all positional references.
         for index in reversed(range(len(stages))):
@@ -272,18 +317,19 @@ def render(
                 skipped[stage.alias or stage.base] = None
                 continue
             blocks.insert(_build_setup_index(blocks, stage), [setup])
-        out.write_text(_join_dockerfile_blocks(blocks), encoding="utf-8")
+        text = _join_dockerfile_blocks(blocks)
         if warn is not None:
-            for name in skipped:
+            for stage_name in skipped:
                 warn(
-                    f"WARNING: --build-ca-cert is not applied to stage '{name}': "
+                    f"WARNING: --build-ca-cert is not applied to stage '{stage_name}': "
                     "its base is not recognized as Debian/Ubuntu."
                 )
-    return out
+    directory.write(name, text)
+    return name
 
 
 def _stage_certificates(
-    context_dir: Path,
+    directory: "paths.PrivateDir",
     copy_prefix: str,
     certificates: tuple[bytes, ...],
     *,
@@ -295,11 +341,15 @@ def _stage_certificates(
     sources = []
     for certificate in dict.fromkeys(certificates):
         name = f"{prefix}{hashlib.sha256(certificate).hexdigest()}.crt"
-        (context_dir / name).write_bytes(certificate)
+        directory.write(name, certificate)
         sources.append(copy_prefix + name)
-    for stale in context_dir.glob(f"{prefix}*.crt"):
-        if copy_prefix + stale.name not in sources:
-            stale.unlink()
+    for stale in directory.listdir():
+        if (
+            stale.startswith(prefix)
+            and stale.endswith(".crt")
+            and copy_prefix + stale not in sources
+        ):
+            directory.unlink(stale)
     return sources
 
 
@@ -375,10 +425,11 @@ _DOCKERIGNORE_PATTERNS = (
 
 
 def render_dockerignore(
-    context_dir: Path,
+    context_dir: "paths.Target",
     *,
     build_context: Path | None = None,
     devcontainer: bool = False,
+    dockerfile_name: str | None = None,
 ) -> tuple[Path, ...]:
     """Write build-ignore files scoped to a generated whole-project Dockerfile.
 
@@ -399,16 +450,20 @@ def render_dockerignore(
     Only the file for the Dockerfile being rendered is written: the session
     ``Dockerfile``, or with ``devcontainer`` ``Dockerfile.devcontainer``.
     """
-    root = build_context if build_context is not None else context_dir
-    if root.resolve(strict=False) == context_dir.resolve(strict=False):
+    context_path = paths.target_path(context_dir, ".")
+    root = build_context if build_context is not None else context_path
+    if root.resolve(strict=False) == context_path.resolve(strict=False):
         return ()
     if (root / ".dockerignore").exists():
         return ()
     body = "\n".join(_DOCKERIGNORE_PATTERNS) + "\n"
-    dockerfile_name = "Dockerfile.devcontainer" if devcontainer else "Dockerfile"
-    out = context_dir / f"{dockerfile_name}.dockerignore"
-    out.write_text(body, encoding="utf-8")
-    return (out,)
+    dockerfile_name = dockerfile_name or (
+        "Dockerfile.devcontainer" if devcontainer else "Dockerfile"
+    )
+    name = f"{dockerfile_name}.dockerignore"
+    with paths.target_dir(context_dir) as directory:
+        directory.write(name, body)
+    return (paths.target_path(context_dir, name),)
 
 
 def source_warnings(base_dockerfile: Path) -> tuple[str, ...]:
@@ -866,8 +921,14 @@ def _sandbox_copy_prefix(*, context_dir: Path, build_context: Path) -> str:
     return relative.as_posix().rstrip("/") + "/"
 
 
+def _write_generated(context_dir: "paths.Target", name: str, lines: list[str]) -> Path:
+    with paths.target_dir(context_dir) as directory:
+        directory.write(name, "\n".join(lines) + "\n")
+    return paths.target_path(context_dir, name)
+
+
 def render_python_uv_dockerfile(
-    context_dir: Path,
+    context_dir: "paths.Target",
     python_version: str,
     has_pyproject: bool,
     has_uvlock: bool,
@@ -933,13 +994,11 @@ def render_python_uv_dockerfile(
             "COPY . .",
             'RUN uv sync --frozen && chown -R "${AGENT_UID}:${AGENT_GID}" /opt/uv-cache /opt/venv /opt/uv-python',
         ]
-    out = context_dir / "Dockerfile.python-uv"
-    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return out
+    return _write_generated(context_dir, "Dockerfile.python-uv", lines)
 
 
 def render_rust_cargo_dockerfile(
-    context_dir: Path,
+    context_dir: "paths.Target",
     rust_version: str | None,
     has_cargo_toml: bool,
     has_cargo_lock: bool,
@@ -1056,9 +1115,7 @@ def render_rust_cargo_dockerfile(
                 ' && chown -R "${AGENT_UID}:${AGENT_GID}" /opt/cargo-cache /opt/cargo-target'
             ),
         ]
-    out = context_dir / "Dockerfile.rust-cargo"
-    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return out
+    return _write_generated(context_dir, "Dockerfile.rust-cargo", lines)
 
 
 NODE_NPM_BASE_IMAGE = "debian:trixie-slim"
@@ -1067,7 +1124,7 @@ PLAYWRIGHT_BROWSERS_DIR = "/opt/ms-playwright"
 
 
 def render_node_npm_dockerfile(
-    context_dir: Path,
+    context_dir: "paths.Target",
     *,
     lockfiles: list[str],
     workspace_members: list[str] | None = None,
@@ -1135,35 +1192,50 @@ def render_node_npm_dockerfile(
         ),
         "WORKDIR /workspace",
     ]
-    out = context_dir / "Dockerfile.node-npm"
-    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return out
+    return _write_generated(context_dir, "Dockerfile.node-npm", lines)
 
 
-def render_entrypoint(context_dir: Path, *, egress_sidecar: bool = False) -> Path:
-    out = context_dir / "entrypoint.sh"
+ENTRYPOINT_NAME = "entrypoint.sh"
+DEVCONTAINER_ENTRYPOINT_NAME = "project-sandbox-devcontainer-init"
+
+
+def entrypoint_text(*, egress_sidecar: bool = False) -> str:
     tmpl = templating.get_template("entrypoint.sh.j2")
-    out.write_text(tmpl.render(egress_sidecar=egress_sidecar) + "\n", encoding="utf-8")
-    out.chmod(0o755)
-    return out
+    return tmpl.render(egress_sidecar=egress_sidecar) + "\n"
 
 
-def render_root_stage(context_dir: Path) -> Path:
-    """Render the session image's root-stage ENTRYPOINT.
+def root_stage_text() -> str:
+    """The session image's root-stage ENTRYPOINT.
 
     It runs as root, installs the firewall, then drops to the agent user and
     execs ``project-sandbox-entrypoint``.
     """
-    out = context_dir / ROOT_STAGE_NAME
-    tmpl = templating.get_template("root-stage.sh.j2")
-    out.write_text(tmpl.render() + "\n", encoding="utf-8")
-    out.chmod(0o755)
-    return out
+    return templating.get_template("root-stage.sh.j2").render() + "\n"
 
 
-def render_devcontainer_entrypoint(context_dir: Path) -> Path:
-    out = context_dir / "project-sandbox-devcontainer-init"
-    tmpl = templating.get_template("devcontainer-entrypoint.sh.j2")
-    out.write_text(tmpl.render() + "\n", encoding="utf-8")
-    out.chmod(0o755)
-    return out
+def devcontainer_entrypoint_text() -> str:
+    return templating.get_template("devcontainer-entrypoint.sh.j2").render() + "\n"
+
+
+def _write_script(context_dir: "paths.Target", name: str, text: str) -> Path:
+    with paths.target_dir(context_dir) as directory:
+        directory.write(name, text, mode=0o755)
+    return paths.target_path(context_dir, name)
+
+
+def render_entrypoint(
+    context_dir: "paths.Target", *, egress_sidecar: bool = False
+) -> Path:
+    return _write_script(
+        context_dir, ENTRYPOINT_NAME, entrypoint_text(egress_sidecar=egress_sidecar)
+    )
+
+
+def render_root_stage(context_dir: "paths.Target") -> Path:
+    return _write_script(context_dir, ROOT_STAGE_NAME, root_stage_text())
+
+
+def render_devcontainer_entrypoint(context_dir: "paths.Target") -> Path:
+    return _write_script(
+        context_dir, DEVCONTAINER_ENTRYPOINT_NAME, devcontainer_entrypoint_text()
+    )

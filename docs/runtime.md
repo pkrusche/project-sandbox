@@ -5,20 +5,18 @@
 Given `project-sandbox /path/to/repo python:3.12-slim`:
 
 1. Read host `git config --global` identity.
-2. Render `<project>/.project-sandbox/` with the generated Dockerfile, entrypoint,
-   firewall script, sanitized agent configs, a local `.gitignore` safeguard, and
-   the identity init script the image also carries. Agent credentials are staged
-   separately under `/tmp` with private directory permissions to reduce the
-   chance of accidentally committing them.
+2. Create this session's private staging directory under the runtime root and
+   render into it: the generated Dockerfile, entrypoint, firewall script and
+   identity init script (`build/`), sanitized agent configs (`config/`) and
+   staged agent credentials (`secrets/`). Nothing is written into the project
+   (see [Where state lives](#where-state-lives)).
 3. Detect available host agent configs (`~/.claude`, `~/.codex`,
    `~/.config/opencode`, `~/.pi/agent`) and install only those agent CLIs into
    the generated Dockerfile. OpenSpec and Bash are always available.
-4. Append `.project-sandbox/` and `.devcontainer/` to `<project>/.gitignore`
-   idempotently.
 
-It writes no devcontainer files. `project-sandbox --devcontainer
-/path/to/repo python:3.12-slim` renders `<project>/.devcontainer/` and
-`.project-sandbox/Dockerfile.devcontainer` instead, and exits (see
+It writes no devcontainer files and never edits the project's `.gitignore`.
+`project-sandbox --devcontainer /path/to/repo python:3.12-slim` renders
+`<project>/.devcontainer/` instead, and exits (see
 [Devcontainer Flow](usage.md#devcontainer-flow)).
 
 Given `project-sandbox --agent claude /path/to/repo python:3.12-slim`, it also:
@@ -68,36 +66,71 @@ blocking `unshare --map-root-user`, or a mount policy rejecting a bind or
 fresh mount of `/proc`) — the CI e2e workflow uses `--runtime docker` instead
 for this reason (see `.github/workflows/e2e.yml`).
 
-## File Layout
+## Where state lives
+
+Generated state lives outside every project, in two private per-user roots.
+Every directory is created `0700` and checked before use: owned by you, not a
+symbolic link, not writable by group or others. A directory that fails the
+check is refused by name, never repaired or deleted. All writes go through
+directory descriptors without following links, and secret files are `0600`
+from their first open.
 
 ```text
-<project>/
-|-- .gitignore                         # appended idempotently
-|-- .project-sandbox/
-|   |-- .gitignore                     # local safeguard
-|   |-- Dockerfile                     # generated for direct CLI runs
-|   |-- Dockerfile.devcontainer        # only with --devcontainer
-|   |-- project-sandbox-init           # root stage: firewall, then privilege drop
-|   |-- entrypoint.sh                  # PID 1 after the drop (runs as agent)
-|   |-- init-firewall.sh               # session firewall
-|   |-- project-sandbox-devcontainer-init  # git/jj identity setup
-|   |-- claude/settings.json
-|   |-- codex/config.toml
-|   |-- pi/models.json                 # only with --pi-ollama
-|   |-- pi/settings.json               # only with --pi-ollama
-|   |-- .dockerfile-checksums.json     # trusted project Dockerfile hashes
-|   `-- sessions/                      # unsupervised-mode logs
-`-- .devcontainer/                  # empty unless --devcontainer was run
-    |-- devcontainer.json
-    `-- Dockerfile                 -> ../.project-sandbox/Dockerfile.devcontainer
+$XDG_STATE_HOME/project-sandbox/        # default ~/.local/state/project-sandbox (persistent)
+|-- sessions/<session-id>.json          # session records (sessions list, project-sandbox-tui)
+|-- locks/<kind>-<hash>.lock            # host advisory locks
+`-- projects/<name>-<hash16>/           # one per project (hash of the resolved path)
+    |-- build-state.json                # image-cache fingerprint
+    |-- dockerfile-checksums.json       # trusted project Dockerfile hashes
+    |-- history/shell/bash_history      # interactive shell history
+    |-- history/claude_projects/        # interactive Claude history
+    |-- sessions/<agent>-<branch>-<ts>.log   # default headless logs (+ .md transcripts)
+    |-- devcontainer-mask/              # empty; masks paths in the devcontainer
+    `-- migrated                        # the legacy .project-sandbox/ was migrated
+
+<runtime root>/                         # ephemeral, per session
+`-- staging/<session-id>/
+    |-- lease                           # held while the session runs
+    |-- build/                          # rendered build context (Dockerfile, scripts, CA files)
+    |-- config/                         # agent configs, mounted read-only
+    |-- secrets/                        # staged credentials, Copilot token, api-keys.env
+    |-- prompt/                         # the headless prompt
+    `-- empty/                          # this session's mask source
 ```
 
-The `.project-sandbox/` and `.devcontainer/` directories are generated local
-state and are ignored as a whole. Re-run `project-sandbox` after cloning, pulling
-generated config changes, or refreshing credentials. Agent credential staging
-lives outside the project under `/tmp/project-sandbox-<uid>/...`; that private
-root is not mounted wholesale. The generated devcontainer has no agents and
-mounts no credentials.
+The runtime root is the first of:
+
+1. `$PROJECT_SANDBOX_RUNTIME_DIR`, when set (absolute; checked like every
+   state directory);
+2. `$XDG_RUNTIME_DIR/project-sandbox` (Linux), when that directory is yours
+   with no group or other access;
+3. `$TMPDIR/project-sandbox` under the same condition (macOS's per-user
+   `/var/folders/.../T`);
+4. `/tmp/project-sandbox-<uid>`.
+
+A session mounts only its own staging and deletes it when it exits. A later
+launch deletes the staging of any session whose process is gone (its lease can
+be taken), so a crash or `SIGKILL` leaves nothing behind for long.
+
+Inside the project, a launch writes only an empty `.devcontainer/` holding a
+`.gitignore` of `*` (the mask target; see below), and whole-project builds
+(`--python-uv`, `--rust-cargo`, `--node-npm`, `--dockerfile`) receive a
+secret-free copy of the generated build inputs in `.project-sandbox/` of their
+build context, written right before the build. `--devcontainer` writes its
+files as real files into `.devcontainer/`:
+
+```text
+<project>/.devcontainer/
+|-- .gitignore                          # "*": the directory ignores itself
+|-- devcontainer.json
+|-- Dockerfile
+|-- Dockerfile.dockerignore             # whole-project flows only
+`-- project-sandbox-devcontainer-init   # git/jj identity setup
+```
+
+Re-run `project-sandbox --devcontainer` after cloning or pulling changes that
+affect the devcontainer. The generated devcontainer has no agents and mounts no
+credentials.
 
 ## Image Tags and OpenSpec
 
@@ -115,26 +148,28 @@ inside the project only when that project should own those files.
 
 ## Workspace Masking
 
-The generated `.project-sandbox/` directory remains on the host for image builds
-and devcontainer setup, but direct runs and devcontainers mask
-`/workspace/.project-sandbox` with an empty read-only bind mount. Agents still
-receive the generated config, credentials, prompts, and history through their
-dedicated mounts, but cannot edit the generated files through the workspace.
+`/workspace/.devcontainer` is always masked with this session's empty `empty/`
+directory, read-only, so the agent cannot read, edit or create the devcontainer
+config, whose `initializeCommand` runs on the host. A launch creates
+`.devcontainer/` (holding only its `.gitignore`) when it is missing, so the mask
+always has a target, and refuses to start when it is a symlink: masking the
+link's path would leave its target writable.
 
-The `/workspace/.devcontainer` directory is masked the same way (with the same
-empty read-only mount), so the agent cannot read, edit or create the
-devcontainer config, whose `initializeCommand` runs on the host. Direct runs
-create an empty `.devcontainer/` when it is missing so the mask always applies,
-and refuse to start when it is a symlink.
+A `.project-sandbox/` left in the workspace, by an older version or as a
+whole-project flow's copy of the build inputs, is masked the same way when it
+exists. Agents receive their config, credentials, prompts and history only
+through their dedicated mounts, and every such source the CLI adds is checked
+right before the container command is built: it must resolve under a state
+root, not be a symlink, and be owned by you.
 
 ## Project Dockerfile Tamper Detection
 
 When you build from a project Dockerfile supplied with `--dockerfile`, that file
 lives in the writable workspace where an agent could rewrite it during a session.
-After each build, project-sandbox records a SHA256 of the Dockerfile in
-`.project-sandbox/.dockerfile-checksums.json` — inside the masked directory, so a
-running sandbox can neither read nor alter it. On a later run the current
+After each build, project-sandbox records a SHA256 of the Dockerfile in the
+project's private state (`dockerfile-checksums.json`), which no sandbox mounts, so
+a running sandbox can neither read nor alter it. On a later run the current
 Dockerfile is re-hashed and compared; a mismatch prints a `[W]` warning so you can
 review the change before rebuilding. Generated Dockerfiles (the `base_image` and
-`--python-uv` flows) live in the masked directory and cannot be tampered with, so
-they are not tracked.
+`--python-uv` flows) are rendered fresh into private staging for every session,
+so they are not tracked.

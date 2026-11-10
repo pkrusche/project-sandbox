@@ -1,5 +1,4 @@
 import json
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -8,16 +7,27 @@ from unittest import TestCase
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from project_sandbox import config_agents, devcontainer
+from project_sandbox import devcontainer, paths
 from project_sandbox.git_identity import GitIdentity
 
-MASK_ROOT = "${localWorkspaceFolder}/.project-sandbox/workspace-mask"
-HISTORY_SHELL = "${localWorkspaceFolder}/.project-sandbox/history/shell"
 OFFLINE = {
     "UV_OFFLINE": "1",
     "CARGO_NET_OFFLINE": "true",
     "npm_config_offline": "true",
 }
+
+
+def _state(project: Path) -> Path:
+    # Stands in for the project's private state directory.
+    return project.parent / "state"
+
+
+def _history(project: Path) -> Path:
+    return _state(project) / "history" / "shell"
+
+
+def _mask(project: Path) -> Path:
+    return _state(project) / "devcontainer-mask"
 
 
 def _render(project: Path, **overrides) -> dict:
@@ -26,6 +36,8 @@ def _render(project: Path, **overrides) -> dict:
         "memory": "8g",
         "cpus": 4,
         "extra_mounts": [],
+        "history_shell": _history(project),
+        "mask_dir": _mask(project),
     }
     kwargs.update(overrides)
     devcontainer.render(project, **kwargs)
@@ -38,8 +50,8 @@ class _ProjectTestCase(TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
-        self.project = Path(self._tmp.name)
-        (self.project / ".project-sandbox").mkdir()
+        self.project = Path(self._tmp.name) / "project"
+        (self.project / ".project-sandbox").mkdir(parents=True)
 
 
 class HostMemoryTests(_ProjectTestCase):
@@ -128,8 +140,8 @@ class NoAgentTests(_ProjectTestCase):
         for forbidden in (
             "/project-sandbox-secrets",
             "/project-sandbox-config",
-            str(config_agents.CREDENTIALS_ROOT / "project-sandbox-"),
-            str(config_agents.credentials_dir(self.project / ".project-sandbox")),
+            "/staging/",
+            "secrets",
             "claude_projects",
             "/home/agent/.claude",
         ):
@@ -174,11 +186,7 @@ class NoAgentTests(_ProjectTestCase):
         for name in stale:
             self.assertFalse((dc_dir / name).is_symlink(), name)
         self.assertTrue((dc_dir / "notes.txt").exists())
-        link = dc_dir / "Dockerfile"
-        self.assertTrue(link.is_symlink())
-        self.assertEqual(
-            link.readlink(), Path("../.project-sandbox/Dockerfile.devcontainer")
-        )
+        self.assertEqual((dc_dir / ".gitignore").read_text(encoding="utf-8"), "*\n")
 
 
 class ConvenienceTests(_ProjectTestCase):
@@ -199,30 +207,26 @@ class ConvenienceTests(_ProjectTestCase):
         spec = _render(self.project)
 
         self.assertIn(
-            f"source={HISTORY_SHELL},target=/home/agent/.bash_history.d,type=bind",
+            f"source={_history(self.project)},target=/home/agent/.bash_history.d,type=bind",
             spec["mounts"],
         )
         self.assertEqual(
             spec["containerEnv"]["HISTFILE"], "/home/agent/.bash_history.d/bash_history"
         )
-        self.assertTrue(
-            (self.project / ".project-sandbox" / "history" / "shell").is_dir()
-        )
+        # Nothing is kept in the project.
+        self.assertFalse((self.project / ".project-sandbox" / "history").exists())
 
     def test_build_uses_generated_devcontainer_dockerfile(self) -> None:
         spec = _render(self.project)
 
-        self.assertEqual(
-            spec["build"]["dockerfile"], "../.project-sandbox/Dockerfile.devcontainer"
-        )
-        self.assertEqual(spec["build"]["context"], "../.project-sandbox")
+        # The Dockerfile and its inputs are real files in .devcontainer/.
+        self.assertEqual(spec["build"]["dockerfile"], "Dockerfile")
+        self.assertEqual(spec["build"]["context"], ".")
 
     def test_render_can_use_project_root_build_context(self) -> None:
         spec = _render(self.project, build_context=self.project)
 
-        self.assertEqual(
-            spec["build"]["dockerfile"], "../.project-sandbox/Dockerfile.devcontainer"
-        )
+        self.assertEqual(spec["build"]["dockerfile"], "Dockerfile")
         self.assertEqual(spec["build"]["context"], "..")
 
     def test_render_overwrites_existing_devcontainer_json(self) -> None:
@@ -245,48 +249,85 @@ class MaskTests(_ProjectTestCase):
         spec = _render(self.project, extra_mounts=[custom])
 
         mounts = spec["mounts"]
+        mask = _mask(self.project)
         sandbox_mask = (
-            f"source={MASK_ROOT},target=/workspace/.project-sandbox,type=bind,readonly"
+            f"source={mask},target=/workspace/.project-sandbox,type=bind,readonly"
         )
         devcontainer_mask = (
-            f"source={MASK_ROOT},target=/workspace/.devcontainer,type=bind,readonly"
+            f"source={mask},target=/workspace/.devcontainer,type=bind,readonly"
         )
         self.assertEqual(mounts[-2:], [sandbox_mask, devcontainer_mask])
         self.assertLess(mounts.index(custom), mounts.index(sandbox_mask))
-        self.assertTrue((self.project / ".project-sandbox" / "workspace-mask").is_dir())
+        self.assertFalse(
+            (self.project / ".project-sandbox" / "workspace-mask").exists()
+        )
+
+    def test_absent_legacy_dir_is_not_masked(self) -> None:
+        # A bind onto a missing target would create it in the project.
+        (self.project / ".project-sandbox").rmdir()
+
+        spec = _render(self.project)
+
+        targets = [m for m in spec["mounts"] if "/workspace/.project-sandbox" in m]
+        self.assertEqual(targets, [])
+        self.assertIn(
+            f"source={_mask(self.project)},target=/workspace/.devcontainer,"
+            "type=bind,readonly",
+            spec["mounts"],
+        )
+        self.assertFalse((self.project / ".project-sandbox").exists())
 
     def test_refuses_a_symlinked_devcontainer_directory(self) -> None:
         elsewhere = self.project / "elsewhere"
         elsewhere.mkdir()
         (self.project / ".devcontainer").symlink_to(elsewhere)
 
-        with self.assertRaises(RuntimeError):
+        with self.assertRaises(paths.UnsafePathError) as raised:
             _render(self.project)
-        self.assertFalse((elsewhere / "devcontainer.json").exists())
+        self.assertIn(str(self.project / ".devcontainer"), str(raised.exception))
+        self.assertEqual(list(elsewhere.iterdir()), [])
+
+    def test_symlinked_config_file_is_replaced_and_target_untouched(self) -> None:
+        victim = self.project.parent / "victim.json"
+        victim.write_text("keep\n", encoding="utf-8")
+        dc_dir = self.project / ".devcontainer"
+        dc_dir.mkdir()
+        (dc_dir / "devcontainer.json").symlink_to(victim)
+
+        spec = _render(self.project)
+
+        self.assertEqual(spec["remoteUser"], "agent")
+        self.assertFalse((dc_dir / "devcontainer.json").is_symlink())
+        self.assertEqual(victim.read_text(encoding="utf-8"), "keep\n")
 
 
 class InitializeCommandTests(TestCase):
     def test_recreates_history_and_mask_sources_safely(self) -> None:
-        # The bind sources live in the gitignored .project-sandbox and can be
-        # missing at container-create time. initializeCommand runs on the host
-        # first; its argv form must survive an apostrophe in the path.
+        # The bind sources live in private state, which a user may clear before
+        # the container is created. initializeCommand runs on the host first;
+        # its argv form must survive an apostrophe in the path.
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp) / "ada's project"
-            (project / ".project-sandbox").mkdir(parents=True)
+            project.mkdir()
 
             spec = _render(project)
             command = spec["initializeCommand"]
 
-            self.assertEqual(command, ["mkdir", "-p", HISTORY_SHELL, MASK_ROOT])
+            self.assertEqual(
+                command,
+                [
+                    "mkdir",
+                    "-p",
+                    "-m",
+                    "700",
+                    str(_history(project)),
+                    str(_mask(project)),
+                ],
+            )
+            subprocess.run(command, check=True)
 
-            shutil.rmtree(project / ".project-sandbox")
-            resolved = [
-                arg.replace("${localWorkspaceFolder}", str(project)) for arg in command
-            ]
-            subprocess.run(resolved, check=True)
-
-            self.assertTrue((project / ".project-sandbox/history/shell").is_dir())
-            self.assertTrue((project / ".project-sandbox/workspace-mask").is_dir())
+            self.assertTrue(_history(project).is_dir())
+            self.assertTrue(_mask(project).is_dir())
 
 
 class InjectionTests(TestCase):
@@ -327,19 +368,19 @@ class InjectionTests(TestCase):
 
 
 class GitignoreTests(TestCase):
-    def test_history_dir_is_excluded_by_gitignore(self) -> None:
-        from project_sandbox import cli
-
+    def test_devcontainer_directory_ignores_itself(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            context_dir = Path(tmp)
-            cli._write_project_sandbox_gitignore(context_dir)
-            content = (context_dir / ".gitignore").read_text(encoding="utf-8")
+            project = Path(tmp) / "project"
+            project.mkdir()
+            (project / ".gitignore").write_text("node_modules/\n", encoding="utf-8")
 
-            self.assertIn("*\n", content)
-            self.assertNotIn("history/", content)
-            for removed in (
-                "init-firewall-devcontainer.sh",
-                "claude-devcontainer",
-                "codex-devcontainer",
-            ):
-                self.assertNotIn(removed, content)
+            _render(project)
+
+            self.assertEqual(
+                (project / ".devcontainer" / ".gitignore").read_text(encoding="utf-8"),
+                "*\n",
+            )
+            # The root .gitignore is never edited.
+            self.assertEqual(
+                (project / ".gitignore").read_text(encoding="utf-8"), "node_modules/\n"
+            )

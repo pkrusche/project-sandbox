@@ -5,8 +5,8 @@ import json
 import os
 import re
 import shlex
-import shutil
 import signal
+import stat
 import sys
 import threading
 import time
@@ -40,8 +40,11 @@ from . import (
     local_service_network,
     oauth_refresh,
     observability,
+    paths,
     session,
     sidecar_image,
+    staging,
+    state_migration,
     token_expiry,
     transcript,
     vcs_mode,
@@ -60,15 +63,15 @@ from .paths import (
     WORKSPACE_CARGO_TARGET,
     WORKSPACE_DEVCONTAINER_TARGET,
     WORKSPACE_SANDBOX_TARGET,
-    ensure_dir,
-    ensure_history_paths,
-    ensure_workspace_sandbox_mask,
     resolve_strict,
 )
 
 SUPPORTED_AGENTS = ("claude", "codex", "opencode", "pi", "copilot", "bash")
 FAST_MODE_AGENTS = ("claude", "codex")
 PROMPT_MOUNT_TARGET = "/project-sandbox-prompt"
+# Where whole-project flows find their generated build inputs inside the build
+# context (until private-build-context supplies them separately).
+IN_CONTEXT_DIR = ".project-sandbox"
 # Headless Chromium uses /dev/shm heavily; Docker's 64m default makes it crash.
 NODE_NPM_DEFAULT_SHM_SIZE = "2g"
 _SHM_SIZE_RE = re.compile(r"[1-9][0-9]*[bkmg]", re.IGNORECASE)
@@ -682,6 +685,7 @@ def _main(argv: list[str] | None = None) -> int:
             identity=identity,
             available_agents=available_agents,
             egress=egress,
+            session_id=session_id,
         )
 
     # Fail before model discovery, secret loading, filesystem rendering, image
@@ -723,575 +727,699 @@ def _main(argv: list[str] | None = None) -> int:
             args.agent_proxy, hostname=proxy_hostname
         )
 
-    # Validate fatal inputs BEFORE creating a worktree, so a bad build source,
-    # missing prompt, or unwritable log path fails without first orphaning a
-    # branch/worktree. _resolve_build_source also writes the synthesised
-    # python-uv/rust-cargo Dockerfile, but only into .project-sandbox
-    # (project-level, not the worktree).
-    context_dir = ensure_dir(project / ".project-sandbox")
-    if is_chroot:
-        base_image, base_dockerfile, build_context = None, None, context_dir
-    else:
-        base_image, base_dockerfile, build_context = _resolve_build_source(
-            args, project=project, context_dir=context_dir
-        )
-    if run_agent is not None:
-        _validate_session_inputs(args)
-    # Resolve the injected API key values once, before any worktree or image
-    # work: a missing env var or env file fails fast here, and the argv
-    # construction plus the subprocess environment below then agree on a
-    # single snapshot instead of re-reading the files.
-    api_key_values = _api_key_env_values(args)
-    if run_agent == "bash" and proxy_base_url and proxy_key:
-        api_key_values = {
-            "OPENAI_BASE_URL": proxy_base_url,
-            "OPENAI_API_KEY": proxy_key,
-            "OPENAI_MODEL": args.model,
-        }
-    # Resolve the Copilot token after every other input is validated but before
-    # any worktree, rendering, or image work, so a missing token fails cleanly.
-    copilot_token = _resolve_copilot_token(args, run_agent, copilot_host)
-    allow_github = _allow_github(args, run_agent)
-    _warn_byok_provider_allowlist(args, run_agent)
-    _warn_pi_ollama_no_firewall(args, pi_ollama_enabled)
-
-    # The VCS lease (isolated: the session directory; shared: the repository)
-    # is held from setup until finalization completes, so it closes last.
-    vcs_stack = contextlib.ExitStack()
+    # Every generated input of this session (build context, configs, staged
+    # secrets, prompt, mask source) lives in private per-session staging,
+    # deleted when the session ends; crashed sessions' staging is reaped first.
+    _reap_staging()
+    session_staging = staging.SessionStaging.create(session_id)
+    cleanup = contextlib.ExitStack()
+    cleanup.callback(session_staging.close)
     try:
-        wt = (
-            _setup_vcs(args, project, vcs_plan, runtime, vcs_stack)
-            if vcs_plan is not None
-            else None
-        )
-    except BaseException:
-        vcs_stack.close()
-        raise
-    workspace = wt.path if wt is not None else project
-    if wt is not None and vcs_plan is not None:
-        # Mount exactly what setup created (or found, for a kept session).
-        vcs_plan = dataclasses.replace(vcs_plan, ws=wt, workspace=wt.path)
-
-    # Once a session directory exists, every exit path must run teardown so a
-    # failed build or early return does not orphan it (and its bookmark).
-    # agent_ran distinguishes a genuine session (record the result on the
-    # bookmark) from a setup/build failure before the agent ran (drop what this
-    # session created).
-    agent_ran = False
-    forwarding_plans: list[local_service_network.ForwardingPlan] = []
-    internet_proxy_relay: build_proxy_forwarder.BuildProxyForwarder | None = None
-    exit_code = 1
-    container_name: str | None = None
-    session_started_at: datetime | None = None
-    # Doubles as the "record still open" marker: cleared once the session's
-    # outcome has been written, so the finally block can close out a record left
-    # behind by an interrupt or an exception. Stays None when the session could
-    # not be recorded at all, which never blocks the run.
-    record_path: Path | None = None
-    copilot_token_staged = False
-    # Owns this session's sidecar inputs (sessions/<sid>/) in sidecar mode; the
-    # global sidecar itself keeps running after the session.
-    egress_stack = contextlib.ExitStack()
-    egress_state: egress_sidecar.Sidecar | None = None
-    egress_started_at: float | None = None
-    try:
-        if (
-            run_agent is not None
-            and internet_proxy_config is not None
-            and sandbox_proxy_config is not internet_proxy_config
-        ):
-            # Bind before any image work: the firewall admits only this port,
-            # so a busy port must fail now rather than after a long build.
-            internet_proxy_relay = build_proxy_forwarder.BuildProxyForwarder(
-                internet_proxy_config.endpoint,
-                ca_certificates=ca_certificates,
-                port=internet_proxy.relay_port(internet_proxy_config),
-                fallback=False,
-                label="Internet proxy",
-                ca_option="--ca-cert",
-            )
-        if not is_chroot and (args.python_uv or args.node_npm) and wt is not None:
-            # The venv / npm workspace manifests must match the tree mounted at
-            # /workspace. Keep generated
-            # assets inside that build context so COPY paths remain valid.
-            context_dir = ensure_dir(workspace / ".project-sandbox")
+        project_state = cleanup.enter_context(paths.open_project_state(project))
+        layout = staging.SessionLayout.for_session(session_staging, project_state)
+        state_migration.run(project, project_state)
+        build_dir = session_staging.build
+        context_dir = build_dir.path
+        # Validate fatal inputs BEFORE creating a worktree, so a bad build source,
+        # missing prompt, or unwritable log path fails without first orphaning a
+        # branch/worktree. _resolve_build_source also writes the synthesised
+        # python-uv/rust-cargo Dockerfile into the private build directory.
+        if is_chroot:
+            base_image, base_dockerfile, build_context = None, None, context_dir
+        else:
             base_image, base_dockerfile, build_context = _resolve_build_source(
-                args, project=workspace, context_dir=context_dir
+                args, project=project, context_dir=build_dir
             )
-        if not is_chroot:
-            dockerfile.render(
-                context_dir,
-                base_image=base_image,
-                base_dockerfile=base_dockerfile,
-                build_context=build_context,
-                install_agents=available_agents,
-                ca_certificates=ca_certificates,
-                build_ca_certificates=build_ca_certificates,
-                warn=print,
-            )
-        # Trim the whole-project build context only for the generated
-        # python-uv/rust-cargo/node-npm flows, whose excluded paths we know are
-        # not build inputs. User-supplied --dockerfile builds are left
-        # untouched so an injected ignore file can't break a COPY they rely on.
-        if not is_chroot and _synthesises_dockerfile(args):
-            dockerfile.render_dockerignore(context_dir, build_context=build_context)
-        if not is_chroot:
-            dockerfile.render_entrypoint(context_dir, egress_sidecar=sidecar)
-            dockerfile.render_root_stage(context_dir)
-            dockerfile.render_devcontainer_entrypoint(context_dir)
-            firewall.render(
-                context_dir,
-                extra_domains=args.extra_domain,
-                allow_github=allow_github,
-                pi_ollama=pi_ollama_enabled,
-                ollama_hostname=ollama_hostname,
-                agent_proxy_port=proxy_port,
-                agent_proxy_hostname=proxy_hostname,
-                agent_proxy_url=proxy_base_url,
-                policy=(
-                    firewall.INTERNET_PROXY
-                    if internet_proxy_config is not None
-                    else firewall.NORMAL
-                ),
-                local_destinations=_local_firewall_destinations(
-                    sandbox_proxy_config,
-                    proxy_port=proxy_port,
-                    proxy_url=args.agent_proxy,
-                    pi_ollama_enabled=pi_ollama_enabled,
-                ),
-                copilot_tenant_hosts=_copilot_tenant_hosts(run_agent, copilot_host),
-                egress_sidecar=sidecar,
-            )
-        else:
-            chroot.render(context_dir)
-
-        # Render only secret-free agent configuration before the image build.
-        # The build context may be the whole project and synthesized Dockerfiles
-        # use ``COPY . .``, so a proxy provider file rendered here could leak the
-        # gateway key into the build context or an image layer.  This call also
-        # removes secret-bearing proxy files left by an interrupted prior run.
-        cfg = config_agents.render(
-            context_dir,
-            pi_ollama=pi_ollama_enabled,
-            ollama_models=args.ollama_model,
-            ollama_base_url=ollama_base_url,
-        )
-        forward_credentials = not args.no_forward_credentials and not args.agent_proxy
-        # Before staging, ask the agent's own CLI to refresh its host token so the
-        # container starts with a near-full window. bash may run claude, so it
-        # refreshes the claude token; opencode/pi have no delegated refresh (no-op).
-        if run_agent is not None and forward_credentials and not args.no_token_refresh:
-            oauth_refresh.refresh_host_token(
-                "claude" if run_agent == "bash" else run_agent,
-                home=Path.home(),
-                verbose=args.verbose,
-            )
-        if forward_credentials:
-            credential_dirs = config_agents.sync_credentials(
-                context_dir, unsupervised=bool(args.prompt or args.prompt_text)
-            )
-        else:
-            # Read/copy no host credentials, and remove any staged by a previous
-            # forwarding run so nothing lingers on disk or can be mounted.
-            config_agents.purge_staged_credentials(context_dir)
-            credential_dirs = {}
-
-        _write_project_sandbox_gitignore(context_dir)
-        _update_project_gitignore(context_dir.parent)
-
-        if run_agent is None and not args.build_only:
-            _print_next_steps(
-                context_dir=context_dir,
-                project=project,
-                available_agents=available_agents,
-            )
-            return 0
-
-        assert runtime is not None
-        rc = container_cli.ensure_system_started(runtime=runtime, verbose=args.verbose)
-        if rc != 0:
-            print(
-                "[W] Apple container system not running - if you're on a Mac, you may need to install or start it. Otherwise, you can still render a devcontainer with --devcontainer."
-            )
-
-        tracked_dockerfiles = _tracked_project_dockerfiles(base_dockerfile, context_dir)
-        if runtime.is_container and not args.no_verify_dockerfile:
-            warnings = dockerfile_checksum.changed_warnings(
-                context_dir, tracked_dockerfiles
-            )
-            if warnings:
-                for warning in warnings:
-                    print(warning)
-                unsupervised_check = bool(args.prompt or args.prompt_text)
-                if unsupervised_check or not sys.stdin.isatty():
-                    print(
-                        "[E] Dockerfile changed and run is non-interactive: aborting. "
-                        "Use --no-verify-dockerfile to skip this check."
-                    )
-                    return 1
-                try:
-                    answer = input("Rebuild from the changed Dockerfile anyway? [y/N] ")
-                except EOFError:
-                    raise SystemExit(
-                        "No input available to confirm rebuilding from the changed "
-                        "Dockerfile. Use --no-verify-dockerfile to skip this check."
-                    ) from None
-                if answer.strip().lower() not in ("y", "yes"):
-                    return 1
-
-        if runtime.is_container and not args.no_build:
-            # Reuse an existing image when its build inputs are unchanged. This
-            # auto-skip is limited to the default flow where the build context is
-            # the generated .project-sandbox dir, which fully determines the
-            # image; whole-project contexts (--python-uv / --rust-cargo /
-            # --dockerfile) keep building and rely on the runtime's layer
-            # cache + the generated .dockerignore instead of fingerprinting an
-            # arbitrary source tree.
-            # Hold the lock across the cache check and build. A concurrent first
-            # caller waits, then observes the state and image written by the
-            # winner instead of starting an identical build.
-            with build_cache.build_lock(context_dir):
-                host_identity = container_cli.host_build_identity(runtime)
-                fingerprint = build_cache.compute_fingerprint(
-                    context_dir,
-                    extra={
-                        "image_tag": args.image_tag,
-                        "base_image": base_image or "",
-                        "host_identity": (
-                            "default"
-                            if host_identity is None
-                            else f"{host_identity[0]}:{host_identity[1]}"
-                        ),
-                    },
-                )
-                context_is_sandbox = build_context.resolve(
-                    strict=False
-                ) == context_dir.resolve(strict=False)
-                cache_hit = (
-                    not args.force_build
-                    and context_is_sandbox
-                    and build_cache.is_cache_valid(
-                        context_dir,
-                        image_tag=args.image_tag,
-                        fingerprint=fingerprint,
-                    )
-                    and container_cli.image_exists(runtime, args.image_tag)
-                )
-                if cache_hit:
-                    print("Reusing cached image (inputs unchanged)")
-                else:
-                    if not args.verbose:
-                        print("Building container image…")
-                    start = time.monotonic()
-                    # Any forwarder starts only for an actual build, inside the
-                    # build lock, and stops before any sandbox starts.
-                    with _build_proxy_session(
-                        args,
-                        build_proxy,
-                        no_proxy=build_no_proxy,
-                        runtime=runtime,
-                        ca_certificates=build_ca_certificates,
-                    ) as build_proxy_environment:
-                        rc = container_cli.build_image(
-                            runtime=runtime,
-                            context_dir=context_dir,
-                            image_tag=args.image_tag,
-                            build_context=build_context,
-                            dockerfile_path=context_dir / "Dockerfile",
-                            build_args=build_network.build_args(
-                                build_proxy_environment or {}
-                            ),
-                            network=local_service_network.network_argument(
-                                [], pasta=podman_pasta
-                            ),
-                            verbose=args.verbose,
-                        )
-                    if rc != 0:
-                        return rc
-                    build_cache.write_state(
-                        context_dir,
-                        image_tag=args.image_tag,
-                        fingerprint=fingerprint,
-                    )
-                    # Record the trusted baseline after a real build into the masked
-                    # .project-sandbox dir the sandbox cannot reach.
-                    dockerfile_checksum.record(context_dir, tracked_dockerfiles)
-                    print(f"Built image in {time.monotonic() - start:.1f}s")
-        elif runtime.is_container:
-            if not container_cli.image_exists(runtime, args.image_tag):
-                # Fail early with a clear message instead of letting `container
-                # run` surface its own raw runtime error for a nonexistent image.
-                raise SystemExit(
-                    f"--no-build was given but image {args.image_tag!r} does not "
-                    "exist; drop --no-build so the image can be built."
-                )
-            _require_privilege_model(runtime, args.image_tag)
-
-        if args.build_only:
-            print(f"Image ready: {args.image_tag}")
-            return 0
-
-        assert run_agent is not None
-
-        # The image build is complete, so it is now safe to stage the selected
-        # agent's private proxy provider configuration in the project context.
-        if proxy_base_url and proxy_key and run_agent:
-            cfg = config_agents.render(
-                context_dir,
-                agent_proxy=(proxy_base_url, proxy_models, proxy_key, run_agent),
-                agent_proxy_model=(
-                    proxy_selected_model if run_agent == "bash" else None
-                ),
-            )
-
-        if copilot_token is not None:
-            # Staged outside the repo (0600 file, 0700 dir), rewritten every
-            # launch, and removed in the finally block below.
-            copilot_token_staged = True
-            credential_dirs = {
-                **credential_dirs,
-                "copilot": copilot_auth.stage_token(context_dir, copilot_token),
+    except BaseException:
+        cleanup.close()
+        raise
+    try:
+        if run_agent is not None:
+            _validate_session_inputs(args)
+        # Resolve the injected API key values once, before any worktree or image
+        # work: a missing env var or env file fails fast here, and the argv
+        # construction plus the subprocess environment below then agree on a
+        # single snapshot instead of re-reading the files.
+        api_key_values = _api_key_env_values(args)
+        if run_agent == "bash" and proxy_base_url and proxy_key:
+            api_key_values = {
+                "OPENAI_BASE_URL": proxy_base_url,
+                "OPENAI_API_KEY": proxy_key,
+                "OPENAI_MODEL": args.model,
             }
+        # Resolve the Copilot token after every other input is validated but before
+        # any worktree, rendering, or image work, so a missing token fails cleanly.
+        copilot_token = _resolve_copilot_token(args, run_agent, copilot_host)
+        allow_github = _allow_github(args, run_agent)
+        _warn_byok_provider_allowlist(args, run_agent)
+        _warn_pi_ollama_no_firewall(args, pi_ollama_enabled)
 
-        services = _local_services(
-            sandbox_proxy_config,
-            proxy_port=(
-                proxy_port
-                if not args.agent_proxy or agent_proxy.parse(args.agent_proxy).local
+        # The VCS lease (isolated: the session directory; shared: the repository)
+        # is held from setup until finalization completes, so it closes last.
+        vcs_stack = contextlib.ExitStack()
+        try:
+            wt = (
+                _setup_vcs(args, project, vcs_plan, runtime, vcs_stack)
+                if vcs_plan is not None
                 else None
-            ),
-            proxy_loopback_host=(
-                agent_proxy.loopback_host(args.agent_proxy)
-                if args.agent_proxy
-                else None
-            ),
-            pi_ollama_enabled=pi_ollama_enabled,
-        )
-        sidecar_plan = (
-            egress_sidecar.sandbox_plan(egress_strategy, sandbox_proxy_config.port)
-            if egress_strategy is not None and sandbox_proxy_config is not None
-            else None
-        )
-        if sidecar_plan is not None:
-            # Docker Engine: the sidecar is published on the bridge gateway
-            # itself, so its port needs no bridge forwarder; other local
-            # services use the shared linux-bridge-forwarder.
-            services = [s for s in services if s.label != "Internet proxy"]
-        if services or sidecar_plan is not None:
-            forwarding_plans = (
-                local_service_network.prepare_services(runtime, services)
-                if services
-                else []
             )
-            if sidecar_plan is not None:
-                forwarding_plans.insert(0, sidecar_plan)
-            if runtime == container_cli.APPLE_CONTAINER:
-                print(local_service_network.apple_setup_notice("Local service"))
-            if args.verbose:
-                for plan in forwarding_plans:
-                    print(local_service_network.describe(plan))
+        except BaseException:
+            vcs_stack.close()
+            raise
+        workspace = wt.path if wt is not None else project
+        if wt is not None and vcs_plan is not None:
+            # Mount exactly what setup created (or found, for a kept session).
+            vcs_plan = dataclasses.replace(vcs_plan, ws=wt, workspace=wt.path)
 
-        if sandbox_proxy_config is not None:
-            # Internet-proxy routing is part of the enforced sandbox policy,
-            # not a user-overridable credential value.
-            api_key_values = internet_proxy.merge_environment(
-                api_key_values,
-                sandbox_proxy_config,
-                bypass_local_services=pi_ollama_enabled,
-                bypass_hosts=(proxy_endpoint.sandbox_host,) if proxy_endpoint else (),
+        # Once a session directory exists, every exit path must run teardown so a
+        # failed build or early return does not orphan it (and its bookmark).
+        # agent_ran distinguishes a genuine session (record the result on the
+        # bookmark) from a setup/build failure before the agent ran (drop what this
+        # session created).
+        agent_ran = False
+        forwarding_plans: list[local_service_network.ForwardingPlan] = []
+        internet_proxy_relay: build_proxy_forwarder.BuildProxyForwarder | None = None
+        exit_code = 1
+        log_path: Path | None = None
+        container_name: str | None = None
+        session_started_at: datetime | None = None
+        # Doubles as the "record still open" marker: cleared once the session's
+        # outcome has been written, so the finally block can close out a record left
+        # behind by an interrupt or an exception. Stays None when the session could
+        # not be recorded at all, which never blocks the run.
+        record_path: Path | None = None
+        # Owns this session's sidecar inputs (sessions/<sid>/) in sidecar mode; the
+        # global sidecar itself keeps running after the session.
+        egress_stack = contextlib.ExitStack()
+        egress_state: egress_sidecar.Sidecar | None = None
+        egress_started_at: float | None = None
+        try:
+            if (
+                run_agent is not None
+                and internet_proxy_config is not None
+                and sandbox_proxy_config is not internet_proxy_config
+            ):
+                # Bind before any image work: the firewall admits only this port,
+                # so a busy port must fail now rather than after a long build.
+                internet_proxy_relay = build_proxy_forwarder.BuildProxyForwarder(
+                    internet_proxy_config.endpoint,
+                    ca_certificates=ca_certificates,
+                    port=internet_proxy.relay_port(internet_proxy_config),
+                    fallback=False,
+                    label="Internet proxy",
+                    ca_option="--ca-cert",
+                )
+            # Whole-project flows build from the project (or the session
+            # directory), which receives a copy of the generated inputs in
+            # .project-sandbox/ right before the build.
+            in_context_root = project
+            if not is_chroot and (args.python_uv or args.node_npm) and wt is not None:
+                # The venv / npm workspace manifests must match the tree mounted at
+                # /workspace, so build from the session directory.
+                in_context_root = workspace
+                base_image, base_dockerfile, build_context = _resolve_build_source(
+                    args, project=workspace, context_dir=build_dir
+                )
+            whole_project = build_context.resolve(strict=False) != context_dir.resolve(
+                strict=False
             )
-
-        session_container_name = (
-            observability.container_name(session_id) if runtime.is_container else None
-        )
-        egress_mount = None
-        if egress is not None:
-            assert internet_proxy_config is not None
-            egress_state = _ensure_egress_sidecar(
-                runtime,
-                egress,
-                run_agent=run_agent,
-                port=internet_proxy_config.port,
-                verbose=args.verbose,
-                strategy=egress_strategy,
-            )
-            egress_mount = _egress_session_inputs(
-                egress_stack, egress_state, session_id=session_id
-            )
-            egress_started_at = egress_sidecar.sidecar_clock(
-                runtime, egress_sidecar.default_runner
-            )
-        cmd, log_path, unsupervised, container_stop_argv = _build_session_command(
-            args,
-            project=project,
-            context_dir=context_dir,
-            workspace=workspace,
-            worktree=wt,
-            identity=identity,
-            run_agent=run_agent,
-            claude_cfg=cfg["claude"],
-            credential_dirs=credential_dirs,
-            codex_cfg=cfg["codex"],
-            pi_cfg=cfg.get("pi"),
-            copilot_cfg=cfg.get("copilot"),
-            copilot_host=copilot_host,
-            runtime=runtime,
-            create_prompt_files=True,
-            api_key_values=api_key_values,
-            ollama_add_hosts=list(
-                dict.fromkeys(p.add_host for p in forwarding_plans if p.add_host)
-            ),
-            network=local_service_network.network_argument(
-                forwarding_plans, pasta=podman_pasta
-            ),
-            session_id=session_id,
-            egress_mount=egress_mount,
-            vcs_plan=vcs_plan,
-        )
-        container_name = session_container_name
-
-        print(f"Session: {session_id}")
-        if session_container_name:
-            print(f"Container: {session_container_name}")
-        record_path = observability.start_record(
-            session_id=session_id,
-            container=session_container_name,
-            project=project,
-            workspace=workspace,
-            agent=run_agent,
-            runtime=runtime.name,
-        )
-
-        if not unsupervised:
-            if args.verbose:
-                _print_next_steps(
-                    context_dir=context_dir,
-                    project=project,
-                    available_agents=available_agents,
-                    launching=True,
+            if not is_chroot:
+                dockerfile.render(
+                    build_dir,
+                    copy_prefix=(
+                        _in_context_copy_prefix(in_context_root, build_context)
+                        if whole_project
+                        else ""
+                    ),
+                    base_image=base_image,
+                    base_dockerfile=base_dockerfile,
+                    build_context=build_context,
+                    install_agents=available_agents,
+                    ca_certificates=ca_certificates,
+                    build_ca_certificates=build_ca_certificates,
+                    warn=print,
+                )
+            # Trim the whole-project build context only for the generated
+            # python-uv/rust-cargo/node-npm flows, whose excluded paths we know are
+            # not build inputs. User-supplied --dockerfile builds are left
+            # untouched so an injected ignore file can't break a COPY they rely on.
+            if not is_chroot and _synthesises_dockerfile(args):
+                dockerfile.render_dockerignore(build_dir, build_context=build_context)
+            if not is_chroot:
+                dockerfile.render_entrypoint(build_dir, egress_sidecar=sidecar)
+                dockerfile.render_root_stage(build_dir)
+                dockerfile.render_devcontainer_entrypoint(build_dir)
+                firewall.render(
+                    build_dir,
+                    extra_domains=args.extra_domain,
+                    allow_github=allow_github,
+                    pi_ollama=pi_ollama_enabled,
+                    ollama_hostname=ollama_hostname,
+                    agent_proxy_port=proxy_port,
+                    agent_proxy_hostname=proxy_hostname,
+                    agent_proxy_url=proxy_base_url,
+                    policy=(
+                        firewall.INTERNET_PROXY
+                        if internet_proxy_config is not None
+                        else firewall.NORMAL
+                    ),
+                    local_destinations=_local_firewall_destinations(
+                        sandbox_proxy_config,
+                        proxy_port=proxy_port,
+                        proxy_url=args.agent_proxy,
+                        pi_ollama_enabled=pi_ollama_enabled,
+                    ),
+                    copilot_tenant_hosts=_copilot_tenant_hosts(run_agent, copilot_host),
+                    egress_sidecar=sidecar,
                 )
             else:
-                print("Starting container…")
+                chroot.render(build_dir)
 
-        waited = _wait_for_new_directories(wt, runtime)
-        if waited and args.verbose:
-            print(
-                f"Waited {waited:.1f}s for the new session directories to become "
-                f"visible to {runtime.name}"
+            # Agent configs go to the session's private config/ directory, which
+            # is never a build context. The agent-proxy key is still rendered
+            # only after the image build, so no build step can ever see it.
+            cfg = config_agents.render(
+                session_staging.config,
+                pi_ollama=pi_ollama_enabled,
+                ollama_models=args.ollama_model,
+                ollama_base_url=ollama_base_url,
             )
-
-        # Lease (or start) the shared bridge forwarders; released in finally.
-        for plan in forwarding_plans:
-            plan.start()
-        if internet_proxy_relay is not None:
-            internet_proxy_relay.start()
-            if args.verbose:
-                print(
-                    "Internet proxy forwarding: "
-                    f"{build_proxy_forwarder.LISTEN_HOST}:{internet_proxy_relay.port} "
-                    f"(sandbox URL http://{local_service_network.HOSTNAME}:"
-                    f"{internet_proxy_relay.port})"
-                )
-        agent_ran = True
-        session_started_at = datetime.now().astimezone()
-        # Injected API key values are never baked into cmd's argv (see
-        # _build_session_command); supply them through the subprocess
-        # environment instead so they don't show up via `ps`/process listings.
-        if unsupervised:
-            assert log_path is not None
-            if not args.verbose:
-                print(f"Running {run_agent} (headless); streaming to {log_path}")
-            exit_code = session.run(
-                cmd,
-                log_path=log_path,
-                timeout=args.timeout,
-                container_stop_argv=container_stop_argv,
-                verbose=args.verbose,
-                env=api_key_values or None,
-                markdown_agent=run_agent,
-                redact=(copilot_token,) if copilot_token else (),
+            forward_credentials = (
+                not args.no_forward_credentials and not args.agent_proxy
             )
-            if not args.verbose:
-                print(f"Wrote {session.count_lines(log_path)} lines to {log_path}")
-            if run_agent in ("claude", "codex", "opencode", "pi", "copilot"):
-                _write_transcript_markdown(log_path, run_agent)
+            # Before staging, ask the agent's own CLI to refresh its host token so the
+            # container starts with a near-full window. bash may run claude, so it
+            # refreshes the claude token; opencode/pi have no delegated refresh (no-op).
             if (
-                run_agent == "pi"
-                and exit_code == 0
-                and observability.pi_json_stream_failed(log_path)
+                run_agent is not None
+                and forward_credentials
+                and not args.no_token_refresh
             ):
-                # Pi's JSON output mode exits 0 even when the turn errored out.
-                exit_code = 1
-                print("[W] Pi reported a failed turn; reporting exit 1")
-            if run_agent == "copilot":
-                exit_code = _reclassify_copilot_exit(exit_code, log_path)
-        else:
-            exit_code = container_cli.run(cmd, env=api_key_values or None)
-
-        rate_limited = (
-            unsupervised
-            and run_agent == "copilot"
-            and exit_code == observability.RATE_LIMIT_EXIT_CODE
-        ) or observability.is_rate_limited_failure(exit_code, log_path)
-        if rate_limited:
-            exit_code = observability.RATE_LIMIT_EXIT_CODE
-            print(
-                "[W] Agent rate limited (HTTP 429); returning temporary-failure exit 75"
-            )
-        observability.finish_record(
-            record_path, exit_code=exit_code, rate_limited=rate_limited
-        )
-        record_path = None
-        return exit_code
-    finally:
-        # The sandbox container has exited (--rm) by now; remove this session's
-        # sidecar inputs and count what the shared sidecar denied meanwhile.
-        egress_stack.close()
-        if egress_state is not None and agent_ran:
-            assert runtime is not None
-            _print_egress_denials(runtime, egress_state, started_at=egress_started_at)
-        # An interrupted or crashed run never reaches finish_record above; close
-        # the record here so it doesn't stay "running" forever (orphan detection
-        # would otherwise rest on a PID that the OS is free to reuse).
-        if record_path is not None:
-            observability.finish_record(
-                record_path, exit_code=exit_code, status="interrupted"
-            )
-        for plan in reversed(forwarding_plans):
-            plan.close()
-        if internet_proxy_relay is not None:
-            internet_proxy_relay.close()
-        if copilot_token_staged:
-            copilot_auth.remove_staged_token(context_dir)
-        if args.agent_proxy:
-            for secret_file in (
-                context_dir / "pi" / "models.json",
-                context_dir / "opencode" / "opencode.json",
-                context_dir / "api-keys.env",
-            ):
-                secret_file.unlink(missing_ok=True)
-        try:
-            if wt is not None:
-                if agent_ran:
-                    _finalize_vcs(args, project=project, wt=wt, exit_code=exit_code)
-                else:
-                    jj_workspace_mod.remove(project, wt)
-            if agent_ran and args.json_summary:
-                assert run_agent is not None
-                _write_json_summary(
-                    args.json_summary,
-                    session_id=session_id,
-                    container_name=container_name,
-                    workspace=workspace,
-                    agent=run_agent,
-                    worktree=wt,
-                    project=project,
-                    exit_code=exit_code,
-                    started_at=session_started_at,
-                    ended_at=datetime.now().astimezone(),
+                oauth_refresh.refresh_host_token(
+                    "claude" if run_agent == "bash" else run_agent,
+                    home=Path.home(),
+                    verbose=args.verbose,
                 )
+            # Credentials are staged per session: --no-forward-credentials
+            # stages nothing, and leaves other sessions' staging alone.
+            credential_dirs = (
+                config_agents.sync_credentials(
+                    session_staging.secrets.path,
+                    unsupervised=bool(args.prompt or args.prompt_text),
+                )
+                if forward_credentials
+                else {}
+            )
+
+            if run_agent is None and not args.build_only:
+                _print_next_steps(
+                    state_dir=project_state.path,
+                    project=project,
+                    available_agents=available_agents,
+                )
+                return 0
+
+            assert runtime is not None
+            rc = container_cli.ensure_system_started(
+                runtime=runtime, verbose=args.verbose
+            )
+            if rc != 0:
+                print(
+                    "[W] Apple container system not running - if you're on a Mac, you may need to install or start it. Otherwise, you can still render a devcontainer with --devcontainer."
+                )
+
+            tracked_dockerfiles = _tracked_project_dockerfiles(
+                base_dockerfile, context_dir
+            )
+            if runtime.is_container and not args.no_verify_dockerfile:
+                warnings = dockerfile_checksum.changed_warnings(
+                    project_state, tracked_dockerfiles
+                )
+                if warnings:
+                    for warning in warnings:
+                        print(warning)
+                    unsupervised_check = bool(args.prompt or args.prompt_text)
+                    if unsupervised_check or not sys.stdin.isatty():
+                        print(
+                            "[E] Dockerfile changed and run is non-interactive: aborting. "
+                            "Use --no-verify-dockerfile to skip this check."
+                        )
+                        return 1
+                    try:
+                        answer = input(
+                            "Rebuild from the changed Dockerfile anyway? [y/N] "
+                        )
+                    except EOFError:
+                        raise SystemExit(
+                            "No input available to confirm rebuilding from the changed "
+                            "Dockerfile. Use --no-verify-dockerfile to skip this check."
+                        ) from None
+                    if answer.strip().lower() not in ("y", "yes"):
+                        return 1
+
+            if runtime.is_container and not args.no_build:
+                # Reuse an existing image when its build inputs are unchanged. This
+                # auto-skip is limited to the default flow where the build context is
+                # the session's generated build dir, which fully determines the
+                # image; whole-project contexts (--python-uv / --rust-cargo /
+                # --dockerfile) keep building and rely on the runtime's layer
+                # cache + the generated .dockerignore instead of fingerprinting an
+                # arbitrary source tree.
+                # Hold the project's lock across the cache check and build. A
+                # concurrent first caller waits, then observes the state and image
+                # written by the winner instead of starting an identical build.
+                with build_cache.build_lock(project):
+                    host_identity = container_cli.host_build_identity(runtime)
+                    fingerprint = build_cache.compute_fingerprint(
+                        context_dir,
+                        extra={
+                            "image_tag": args.image_tag,
+                            "base_image": base_image or "",
+                            "host_identity": (
+                                "default"
+                                if host_identity is None
+                                else f"{host_identity[0]}:{host_identity[1]}"
+                            ),
+                        },
+                    )
+                    cache_hit = (
+                        not args.force_build
+                        and not whole_project
+                        and build_cache.is_cache_valid(
+                            project_state,
+                            image_tag=args.image_tag,
+                            fingerprint=fingerprint,
+                        )
+                        and container_cli.image_exists(runtime, args.image_tag)
+                    )
+                    if cache_hit:
+                        print("Reusing cached image (inputs unchanged)")
+                    else:
+                        if not args.verbose:
+                            print("Building container image…")
+                        start = time.monotonic()
+                        dockerfile_path = context_dir / "Dockerfile"
+                        if whole_project:
+                            # Under the build lock, right before the build: the
+                            # in-context copy can't be swapped by another launch.
+                            dockerfile_path = _copy_build_inputs(
+                                build_dir, in_context_root
+                            )
+                        # Any forwarder starts only for an actual build, inside the
+                        # build lock, and stops before any sandbox starts.
+                        with _build_proxy_session(
+                            args,
+                            build_proxy,
+                            no_proxy=build_no_proxy,
+                            runtime=runtime,
+                            ca_certificates=build_ca_certificates,
+                        ) as build_proxy_environment:
+                            rc = container_cli.build_image(
+                                runtime=runtime,
+                                context_dir=context_dir,
+                                image_tag=args.image_tag,
+                                build_context=build_context,
+                                dockerfile_path=dockerfile_path,
+                                build_args=build_network.build_args(
+                                    build_proxy_environment or {}
+                                ),
+                                network=local_service_network.network_argument(
+                                    [], pasta=podman_pasta
+                                ),
+                                verbose=args.verbose,
+                            )
+                        if rc != 0:
+                            return rc
+                        build_cache.write_state(
+                            project_state,
+                            image_tag=args.image_tag,
+                            fingerprint=fingerprint,
+                        )
+                        # Record the trusted baseline after a real build, in private
+                        # state no sandbox can reach.
+                        dockerfile_checksum.record(project_state, tracked_dockerfiles)
+                        print(f"Built image in {time.monotonic() - start:.1f}s")
+            elif runtime.is_container:
+                if not container_cli.image_exists(runtime, args.image_tag):
+                    # Fail early with a clear message instead of letting `container
+                    # run` surface its own raw runtime error for a nonexistent image.
+                    raise SystemExit(
+                        f"--no-build was given but image {args.image_tag!r} does not "
+                        "exist; drop --no-build so the image can be built."
+                    )
+                _require_privilege_model(runtime, args.image_tag)
+
+            if args.build_only:
+                print(f"Image ready: {args.image_tag}")
+                return 0
+
+            assert run_agent is not None
+
+            # The image build is complete: stage the selected agent's private
+            # proxy provider configuration (0600) in the session's config/.
+            if proxy_base_url and proxy_key and run_agent:
+                cfg = config_agents.render(
+                    session_staging.config,
+                    agent_proxy=(proxy_base_url, proxy_models, proxy_key, run_agent),
+                    agent_proxy_model=(
+                        proxy_selected_model if run_agent == "bash" else None
+                    ),
+                )
+
+            if copilot_token is not None:
+                # Staged in this session's secrets/ (0600 file, 0700 dir), which
+                # is deleted with the rest of the session's staging.
+                credential_dirs = {
+                    **credential_dirs,
+                    "copilot": copilot_auth.stage_token(
+                        session_staging.secrets.path, copilot_token
+                    ),
+                }
+
+            services = _local_services(
+                sandbox_proxy_config,
+                proxy_port=(
+                    proxy_port
+                    if not args.agent_proxy or agent_proxy.parse(args.agent_proxy).local
+                    else None
+                ),
+                proxy_loopback_host=(
+                    agent_proxy.loopback_host(args.agent_proxy)
+                    if args.agent_proxy
+                    else None
+                ),
+                pi_ollama_enabled=pi_ollama_enabled,
+            )
+            sidecar_plan = (
+                egress_sidecar.sandbox_plan(egress_strategy, sandbox_proxy_config.port)
+                if egress_strategy is not None and sandbox_proxy_config is not None
+                else None
+            )
+            if sidecar_plan is not None:
+                # Docker Engine: the sidecar is published on the bridge gateway
+                # itself, so its port needs no bridge forwarder; other local
+                # services use the shared linux-bridge-forwarder.
+                services = [s for s in services if s.label != "Internet proxy"]
+            if services or sidecar_plan is not None:
+                forwarding_plans = (
+                    local_service_network.prepare_services(runtime, services)
+                    if services
+                    else []
+                )
+                if sidecar_plan is not None:
+                    forwarding_plans.insert(0, sidecar_plan)
+                if runtime == container_cli.APPLE_CONTAINER:
+                    print(local_service_network.apple_setup_notice("Local service"))
+                if args.verbose:
+                    for plan in forwarding_plans:
+                        print(local_service_network.describe(plan))
+
+            if sandbox_proxy_config is not None:
+                # Internet-proxy routing is part of the enforced sandbox policy,
+                # not a user-overridable credential value.
+                api_key_values = internet_proxy.merge_environment(
+                    api_key_values,
+                    sandbox_proxy_config,
+                    bypass_local_services=pi_ollama_enabled,
+                    bypass_hosts=(proxy_endpoint.sandbox_host,)
+                    if proxy_endpoint
+                    else (),
+                )
+
+            session_container_name = (
+                observability.container_name(session_id)
+                if runtime.is_container
+                else None
+            )
+            egress_mount = None
+            if egress is not None:
+                assert internet_proxy_config is not None
+                egress_state = _ensure_egress_sidecar(
+                    runtime,
+                    egress,
+                    run_agent=run_agent,
+                    port=internet_proxy_config.port,
+                    verbose=args.verbose,
+                    strategy=egress_strategy,
+                )
+                egress_mount = _egress_session_inputs(
+                    egress_stack, egress_state, session_id=session_id
+                )
+                egress_started_at = egress_sidecar.sidecar_clock(
+                    runtime, egress_sidecar.default_runner
+                )
+            cmd, log_path, unsupervised, container_stop_argv = _build_session_command(
+                args,
+                project=project,
+                layout=layout,
+                workspace=workspace,
+                worktree=wt,
+                identity=identity,
+                run_agent=run_agent,
+                claude_cfg=cfg["claude"],
+                credential_dirs=credential_dirs,
+                codex_cfg=cfg["codex"],
+                pi_cfg=cfg.get("pi"),
+                copilot_cfg=cfg.get("copilot"),
+                copilot_host=copilot_host,
+                runtime=runtime,
+                create_prompt_files=True,
+                api_key_values=api_key_values,
+                ollama_add_hosts=list(
+                    dict.fromkeys(p.add_host for p in forwarding_plans if p.add_host)
+                ),
+                network=local_service_network.network_argument(
+                    forwarding_plans, pasta=podman_pasta
+                ),
+                session_id=session_id,
+                egress_mount=egress_mount,
+                vcs_plan=vcs_plan,
+            )
+            container_name = session_container_name
+
+            print(f"Session: {session_id}")
+            if session_container_name:
+                print(f"Container: {session_container_name}")
+            record_path = observability.start_record(
+                session_id=session_id,
+                container=session_container_name,
+                project=project,
+                workspace=workspace,
+                agent=run_agent,
+                runtime=runtime.name,
+            )
+
+            if not unsupervised:
+                if args.verbose:
+                    _print_next_steps(
+                        state_dir=project_state.path,
+                        project=project,
+                        available_agents=available_agents,
+                        launching=True,
+                    )
+                else:
+                    print("Starting container…")
+
+            waited = _wait_for_new_directories(wt, runtime)
+            if waited and args.verbose:
+                print(
+                    f"Waited {waited:.1f}s for the new session directories to become "
+                    f"visible to {runtime.name}"
+                )
+
+            # Lease (or start) the shared bridge forwarders; released in finally.
+            for plan in forwarding_plans:
+                plan.start()
+            if internet_proxy_relay is not None:
+                internet_proxy_relay.start()
+                if args.verbose:
+                    print(
+                        "Internet proxy forwarding: "
+                        f"{build_proxy_forwarder.LISTEN_HOST}:{internet_proxy_relay.port} "
+                        f"(sandbox URL http://{local_service_network.HOSTNAME}:"
+                        f"{internet_proxy_relay.port})"
+                    )
+            agent_ran = True
+            session_started_at = datetime.now().astimezone()
+            # Injected API key values are never baked into cmd's argv (see
+            # _build_session_command); supply them through the subprocess
+            # environment instead so they don't show up via `ps`/process listings.
+            if unsupervised:
+                assert log_path is not None
+                if args.verbose:
+                    print(f"Log: {log_path}")
+                else:
+                    print(f"Running {run_agent} (headless); streaming to {log_path}")
+                exit_code = session.run(
+                    cmd,
+                    log_path=log_path,
+                    timeout=args.timeout,
+                    container_stop_argv=container_stop_argv,
+                    verbose=args.verbose,
+                    env=api_key_values or None,
+                    markdown_agent=run_agent,
+                    redact=(copilot_token,) if copilot_token else (),
+                )
+                if args.verbose:
+                    print(f"Log: {log_path}")
+                else:
+                    print(f"Wrote {session.count_lines(log_path)} lines to {log_path}")
+                if run_agent in ("claude", "codex", "opencode", "pi", "copilot"):
+                    _write_transcript_markdown(log_path, run_agent)
+                if (
+                    run_agent == "pi"
+                    and exit_code == 0
+                    and observability.pi_json_stream_failed(log_path)
+                ):
+                    # Pi's JSON output mode exits 0 even when the turn errored out.
+                    exit_code = 1
+                    print("[W] Pi reported a failed turn; reporting exit 1")
+                if run_agent == "copilot":
+                    exit_code = _reclassify_copilot_exit(exit_code, log_path)
+            else:
+                exit_code = container_cli.run(cmd, env=api_key_values or None)
+
+            rate_limited = (
+                unsupervised
+                and run_agent == "copilot"
+                and exit_code == observability.RATE_LIMIT_EXIT_CODE
+            ) or observability.is_rate_limited_failure(exit_code, log_path)
+            if rate_limited:
+                exit_code = observability.RATE_LIMIT_EXIT_CODE
+                print(
+                    "[W] Agent rate limited (HTTP 429); returning temporary-failure exit 75"
+                )
+            observability.finish_record(
+                record_path, exit_code=exit_code, rate_limited=rate_limited
+            )
+            record_path = None
+            return exit_code
         finally:
-            vcs_stack.close()
+            # The sandbox container has exited (--rm) by now; remove this session's
+            # sidecar inputs and count what the shared sidecar denied meanwhile.
+            egress_stack.close()
+            if egress_state is not None and agent_ran:
+                assert runtime is not None
+                _print_egress_denials(
+                    runtime, egress_state, started_at=egress_started_at
+                )
+            # An interrupted or crashed run never reaches finish_record above; close
+            # the record here so it doesn't stay "running" forever (orphan detection
+            # would otherwise rest on a PID that the OS is free to reuse).
+            if record_path is not None:
+                observability.finish_record(
+                    record_path, exit_code=exit_code, status="interrupted"
+                )
+            for plan in reversed(forwarding_plans):
+                plan.close()
+            if internet_proxy_relay is not None:
+                internet_proxy_relay.close()
+            try:
+                if wt is not None:
+                    if agent_ran:
+                        _finalize_vcs(args, project=project, wt=wt, exit_code=exit_code)
+                    else:
+                        jj_workspace_mod.remove(project, wt)
+                if agent_ran and args.json_summary:
+                    assert run_agent is not None
+                    _write_json_summary(
+                        args.json_summary,
+                        session_id=session_id,
+                        container_name=container_name,
+                        workspace=workspace,
+                        agent=run_agent,
+                        worktree=wt,
+                        project=project,
+                        exit_code=exit_code,
+                        started_at=session_started_at,
+                        ended_at=datetime.now().astimezone(),
+                        log_path=log_path,
+                    )
+            finally:
+                vcs_stack.close()
+    finally:
+        cleanup.close()
+
+
+def _reap_staging() -> None:
+    """Delete staging left by sessions whose process is gone."""
+    try:
+        staging.reap()
+    except (OSError, SystemExit) as exc:
+        print(f"[W] Could not reap stale session staging: {exc}")
+
+
+# Generated build inputs a whole-project flow copies into its build context.
+# All are secret-free; anything else in the build directory is never copied.
+_BUILD_INPUT_NAME_RE = re.compile(
+    r"(Dockerfile(\.[a-z-]+)?(\.dockerignore)?|entrypoint\.sh|init-firewall\.sh"
+    r"|project-sandbox-init|project-sandbox-devcontainer-init"
+    r"|project-sandbox-(build-)?ca-[0-9a-f]{64}\.crt)"
+)
+
+
+def _in_context_copy_prefix(root: Path, build_context: Path) -> str:
+    """COPY prefix of ``<root>/.project-sandbox`` within ``build_context``."""
+    target = root / IN_CONTEXT_DIR
+    if target.is_symlink():
+        raise SystemExit(
+            f"Refusing {target}: it is a symlink. Whole-project builds copy their "
+            "generated inputs there; replace it with a directory or remove it."
+        )
+    return dockerfile._sandbox_copy_prefix(
+        context_dir=target, build_context=build_context
+    )
+
+
+def _copy_build_inputs(build_dir: paths.PrivateDir, root: Path) -> Path:
+    """Copy the generated build inputs into ``<root>/.project-sandbox/``.
+
+    Whole-project flows (``--python-uv``, ``--rust-cargo``, ``--node-npm``,
+    ``--dockerfile``) COPY them by a context-relative path until
+    private-build-context supplies them separately. The copy runs under the
+    build lock right before the build, through a descriptor opened without
+    following links: a symlinked ``.project-sandbox`` is refused and a symlinked
+    file in it is replaced. Returns the copied Dockerfile's path.
+    """
+    with paths.open_in_project(root, IN_CONTEXT_DIR) as target:
+        for name in build_dir.listdir():
+            st = build_dir.lstat(name)
+            if (
+                st is None
+                or not stat.S_ISREG(st.st_mode)
+                or not _BUILD_INPUT_NAME_RE.fullmatch(name)
+            ):
+                continue
+            data = build_dir.read_bytes(name)
+            if data is not None:
+                target.write(name, data, mode=stat.S_IMODE(st.st_mode))
+        return target.path / "Dockerfile"
+
+
+def _ensure_devcontainer_mask_target(workspace: Path, *, create: bool) -> None:
+    """Make ``.devcontainer`` an existing real directory to mount the mask on."""
+    target = workspace / devcontainer.DIRECTORY
+    if target.is_symlink():
+        raise SystemExit(
+            f"{target} is a symlink; remove it so the sandbox can mask the "
+            "devcontainer configuration (a link's target would stay writable "
+            "from the sandbox)"
+        )
+    if target.is_dir():
+        return
+    if not create:
+        print(f"Would create empty directory to mask: {target}")
+        return
+    with devcontainer.open_directory(workspace) as directory:
+        devcontainer.ensure_ignored(directory)
+
+
+def _mount_option(spec: str, key: str) -> str:
+    for part in spec.split(","):
+        name, _, value = part.partition("=")
+        if name in (key, "src" if key == "source" else key):
+            return value
+    raise ValueError(f"mount has no {key}: {spec}")
 
 
 def _write_json_summary(
@@ -1306,6 +1434,7 @@ def _write_json_summary(
     exit_code: int,
     started_at: datetime | None,
     ended_at: datetime,
+    log_path: Path | None = None,
 ) -> None:
     """Best-effort: report the finished session as one JSON object.
 
@@ -1325,6 +1454,7 @@ def _write_json_summary(
             exit_code=exit_code,
             started_at=started_at,
             ended_at=ended_at,
+            log_path=log_path,
         )
     except Exception as exc:  # noqa: BLE001 - best-effort sidecar, never fatal
         print(f"[W] Could not write JSON session summary: {exc}")
@@ -1342,6 +1472,7 @@ def _write_json_summary_unguarded(
     exit_code: int,
     started_at: datetime | None,
     ended_at: datetime,
+    log_path: Path | None = None,
 ) -> None:
     bookmark = None
     change_id = None
@@ -1356,6 +1487,8 @@ def _write_json_summary_unguarded(
         "bookmark": bookmark,
         "jj_change_id": change_id,
         "exit_code": exit_code,
+        "pid": os.getpid(),
+        "log_path": str(log_path) if log_path is not None else None,
         "started_at": started_at.isoformat() if started_at else None,
         "ended_at": ended_at.isoformat(),
     }
@@ -1780,10 +1913,17 @@ def _render_devcontainer(
     internet_proxy_config: internet_proxy.InternetProxy | None,
     build_ca_certificates: tuple[bytes, ...],
 ) -> int:
-    """Render .devcontainer/ and its image inputs; build and start nothing."""
+    """Render .devcontainer/ (and its image inputs); build and start nothing.
+
+    Every generated file is a real file in ``.devcontainer/``, written without
+    following links; ``.devcontainer/.gitignore`` (``*``) keeps it out of git.
+    History and the mask directory live in the project's private state.
+    """
     network = args.devcontainer_network or devcontainer.NETWORK_NONE
-    context_dir = project / ".project-sandbox"
-    dc_dir = project / ".devcontainer"
+    dc_dir = project / devcontainer.DIRECTORY
+    state_path = paths.project_state_path(project)
+    history_shell = state_path / "history" / "shell"
+    mask_dir = state_path / "devcontainer-mask"
     if args.dry_run:
         print("DRY RUN: no files, images, or containers will be created.")
     if network == devcontainer.NETWORK_RUNTIME:
@@ -1800,62 +1940,91 @@ def _render_devcontainer(
         )
 
     if args.dry_run:
+        if dc_dir.is_symlink():
+            raise SystemExit(
+                f"Refusing {dc_dir}: it is a symlink. Replace it with a directory."
+            )
         _, base_dockerfile, build_context = _resolve_build_source(
-            args, project=project, context_dir=context_dir, write_generated=False
+            args,
+            project=project,
+            context_dir=dc_dir,
+            write_generated=False,
+            in_context_dir=dc_dir,
         )
         print(f"Devcontainer network: {network}")
         print("Would write:")
         if base_dockerfile is not None and _synthesises_dockerfile(args):
             print(f"  {base_dockerfile}")
-        print(f"  {context_dir / devcontainer.DOCKERFILE_NAME}")
-        print(f"  {context_dir / 'project-sandbox-devcontainer-init'}")
-        print(f"  {dc_dir / devcontainer.CONFIG_NAME}")
-        print(
-            f"  {dc_dir / 'Dockerfile'} -> ../.project-sandbox/{devcontainer.DOCKERFILE_NAME}"
-        )
+        for name in (
+            devcontainer.DOCKERFILE_NAME,
+            dockerfile.DEVCONTAINER_ENTRYPOINT_NAME,
+            devcontainer.CONFIG_NAME,
+            devcontainer.GITIGNORE,
+        ):
+            print(f"  {dc_dir / name}")
         print(f"Would use build context: {build_context}")
+        print(f"Would keep shell history in: {history_shell}")
+        print(f"Would mask with the empty directory: {mask_dir}")
         return 0
 
-    ensure_dir(context_dir)
-    base_image, base_dockerfile, build_context = _resolve_build_source(
-        args, project=project, context_dir=context_dir
-    )
-    dockerfile.render(
-        context_dir,
-        base_image=base_image,
-        base_dockerfile=base_dockerfile,
-        build_context=build_context,
-        build_ca_certificates=build_ca_certificates,
-        warn=print,
-        devcontainer=True,
-    )
-    if _synthesises_dockerfile(args):
-        dockerfile.render_dockerignore(
-            context_dir, build_context=build_context, devcontainer=True
+    with contextlib.ExitStack() as stack:
+        state = stack.enter_context(paths.open_project_state(project))
+        state_migration.run(project, state)
+        with state.subdir("history") as history:
+            history.subdir("shell").close()
+        state.subdir("devcontainer-mask").close()
+        dc = stack.enter_context(devcontainer.open_directory(project))
+        base_image, base_dockerfile, build_context = _resolve_build_source(
+            args, project=project, context_dir=dc, in_context_dir=dc_dir
         )
-    dockerfile.render_devcontainer_entrypoint(context_dir)
-    _write_project_sandbox_gitignore(context_dir)
-    _update_project_gitignore(project)
-    devcontainer.render(
-        project,
-        identity=read_identity(),
-        network=network,
-        memory=args.memory,
-        cpus=args.cpus,
-        extra_mounts=args.extra_mounts,
-        build_context=build_context,
-        proxy_environment=(
-            internet_proxy.environment(
-                internet_proxy_config, bypass_local_services=False
+        dockerfile.render(
+            dc,
+            base_image=base_image,
+            base_dockerfile=base_dockerfile,
+            build_context=build_context,
+            copy_prefix=_devcontainer_copy_prefix(project, build_context),
+            build_ca_certificates=build_ca_certificates,
+            warn=print,
+            devcontainer=True,
+            dockerfile_name=devcontainer.DOCKERFILE_NAME,
+        )
+        if _synthesises_dockerfile(args):
+            dockerfile.render_dockerignore(
+                dc,
+                build_context=build_context,
+                dockerfile_name=devcontainer.DOCKERFILE_NAME,
             )
-            if internet_proxy_config is not None
-            and network == devcontainer.NETWORK_RUNTIME
-            else None
-        ),
-    )
+        dockerfile.render_devcontainer_entrypoint(dc)
+        devcontainer.render(
+            project,
+            identity=read_identity(),
+            network=network,
+            memory=args.memory,
+            cpus=args.cpus,
+            extra_mounts=args.extra_mounts,
+            history_shell=state.path / "history" / "shell",
+            mask_dir=state.path / "devcontainer-mask",
+            build_context=build_context,
+            proxy_environment=(
+                internet_proxy.environment(
+                    internet_proxy_config, bypass_local_services=False
+                )
+                if internet_proxy_config is not None
+                and network == devcontainer.NETWORK_RUNTIME
+                else None
+            ),
+            directory=dc,
+        )
     print(f"[i] Wrote {dc_dir / devcontainer.CONFIG_NAME} (network: {network})")
     print("  → Open this project in VS Code and choose 'Reopen in Container'.")
     return 0
+
+
+def _devcontainer_copy_prefix(project: Path, build_context: Path) -> str:
+    """COPY prefix of ``.devcontainer/`` within the devcontainer's build context."""
+    return dockerfile._sandbox_copy_prefix(
+        context_dir=project / devcontainer.DIRECTORY, build_context=build_context
+    )
 
 
 def _validate_internet_proxy_args(args) -> internet_proxy.InternetProxy | None:
@@ -2009,6 +2178,7 @@ def _dry_run(
     identity,
     available_agents: tuple[str, ...],
     egress: egress_policy.PolicyFile | None = None,
+    session_id: str | None = None,
 ) -> int:
     worktree = vcs_plan.ws if vcs_plan is not None else None
     asset_project = (
@@ -2016,17 +2186,22 @@ def _dry_run(
         if (args.python_uv or args.node_npm) and worktree is not None
         else project
     )
-    context_dir = asset_project / ".project-sandbox"
-    claude_cfg = context_dir / "claude" / "settings.json"
-    codex_cfg = context_dir / "codex" / "config.toml"
-    pi_cfg = context_dir / "pi" / "settings.json"
+    layout = staging.SessionLayout.planned(
+        session_id or observability.new_session_id(), project
+    )
+    context_dir = layout.build
+    claude_cfg = layout.config / "claude" / "settings.json"
+    codex_cfg = layout.config / "codex" / "config.toml"
+    pi_cfg = layout.config / "pi" / "settings.json"
     # Only the keys _build_session_command consumes ("claude", and optionally
     # "codex"/"opencode"/"pi" when available).
     credential_dirs = {
-        "claude": config_agents.credentials_dir(context_dir, "claude"),
+        "claude": config_agents.credentials_dir(layout.secrets, "claude"),
         **{
             agent: config_agents.credentials_dir(
-                context_dir, agent, unsupervised=bool(args.prompt or args.prompt_text)
+                layout.secrets,
+                agent,
+                unsupervised=bool(args.prompt or args.prompt_text),
             )
             for agent in ("codex", "opencode", "pi")
             if agent in available_agents
@@ -2034,9 +2209,9 @@ def _dry_run(
     }
     run_agent = _requested_agent(args)
     copilot_host = getattr(args, "copilot_host", None)
-    copilot_cfg = context_dir / "copilot" / "config.json"
+    copilot_cfg = layout.config / "copilot" / "config.json"
     if _copilot_forwards_token(args, run_agent):
-        credential_dirs["copilot"] = copilot_auth.staged_token_dir(context_dir)
+        credential_dirs["copilot"] = copilot_auth.staged_token_dir(layout.secrets)
     pi_ollama_enabled = _pi_ollama_enabled(args, run_agent)
     _warn_byok_provider_allowlist(args, run_agent)
     _warn_pi_ollama_no_firewall(args, pi_ollama_enabled)
@@ -2048,7 +2223,7 @@ def _dry_run(
     )
     if run_agent == "copilot":
         assert copilot_host is not None
-        _print_copilot_dry_run(args, context_dir=context_dir, host=copilot_host)
+        _print_copilot_dry_run(args, secrets_dir=layout.secrets, host=copilot_host)
     if args.agent_proxy:
         endpoint = agent_proxy.parse(args.agent_proxy)
         print(
@@ -2083,7 +2258,11 @@ def _dry_run(
         )
     for certificate in args.ca_cert:
         print(f"Would bake CA certificate into the sandbox image: {certificate}")
+    print(f"Would use session staging: {layout.staging_dir}")
     print(f"Would render sandbox assets under: {context_dir}")
+    print(f"Would keep project state in: {layout.project_state}")
+    for line in state_migration.plan(project).describe():
+        print(f"Would migrate: {line}")
     preview_runtime = (
         container_cli.select_runtime(args.runtime, dry_run=True)
         if run_agent or args.build_only
@@ -2108,6 +2287,11 @@ def _dry_run(
         _, base_dockerfile, build_context = _resolve_build_source(
             args, project=asset_project, context_dir=context_dir, write_generated=False
         )
+        if build_context != context_dir:
+            print(
+                "Would copy the generated build inputs to: "
+                f"{asset_project / IN_CONTEXT_DIR}"
+            )
     if base_dockerfile is not None:
         if _synthesises_dockerfile(args):
             print(f"Would write synthesised Dockerfile: {base_dockerfile}")
@@ -2118,7 +2302,7 @@ def _dry_run(
         print(f"Would use build context: {build_context}")
 
     for warning in dockerfile_checksum.changed_warnings(
-        context_dir, _tracked_project_dockerfiles(base_dockerfile, context_dir)
+        layout.project_state, _tracked_project_dockerfiles(base_dockerfile, context_dir)
     ):
         print(warning)
 
@@ -2145,7 +2329,11 @@ def _dry_run(
             context_dir=context_dir,
             image_tag=args.image_tag,
             build_context=build_context,
-            dockerfile_path=context_dir / "Dockerfile",
+            dockerfile_path=(
+                context_dir / "Dockerfile"
+                if build_context == context_dir
+                else asset_project / IN_CONTEXT_DIR / "Dockerfile"
+            ),
             preview_build_args=(
                 build_network.redacted_build_args(build_network.environment(""))
                 if args.build_proxy
@@ -2243,7 +2431,7 @@ def _dry_run(
     cmd, log_path, unsupervised, container_stop_argv = _build_session_command(
         args,
         project=project,
-        context_dir=context_dir,
+        layout=layout,
         workspace=workspace,
         worktree=worktree,
         vcs_plan=vcs_plan,
@@ -2417,7 +2605,7 @@ def _print_egress_dry_run(
     return egress_sidecar.sandbox_mount(session_dir)
 
 
-def _print_copilot_dry_run(args, *, context_dir: Path, host: str) -> None:
+def _print_copilot_dry_run(args, *, secrets_dir: Path, host: str) -> None:
     """Describe the Copilot token plan without invoking pass or gh."""
     print(f"Would run GitHub Copilot CLI for host: {host}")
     if getattr(args, "no_forward_credentials", False):
@@ -2434,7 +2622,7 @@ def _print_copilot_dry_run(args, *, context_dir: Path, host: str) -> None:
                 f"Would resolve the Copilot token from: pass show {entry}, "
                 f"falling back to gh auth token --hostname {host}"
             )
-        token_dir = copilot_auth.staged_token_dir(context_dir)
+        token_dir = copilot_auth.staged_token_dir(secrets_dir)
         print(
             f"Would stage the Copilot token at {token_dir / copilot_auth.TOKEN_FILENAME} "
             f"(0600) and mount it read-only at {copilot_auth.SECRETS_TARGET}"
@@ -2558,7 +2746,9 @@ def _preview_api_key_env_values(args) -> dict[str, str]:
     return values
 
 
-def _write_staged_api_key_env_file(path: Path, values: dict[str, str]) -> None:
+def _write_staged_api_key_env_file(
+    secrets_dir: paths.PrivateDir, values: dict[str, str]
+) -> None:
     """Stage resolved --api-key-env values as a key=value env file, mode 0600.
 
     Used for runtimes (apple `container`) whose CLI is not documented to
@@ -2571,13 +2761,9 @@ def _write_staged_api_key_env_file(path: Path, values: dict[str, str]) -> None:
                 f"--api-key-env {name}: value contains a newline and cannot be "
                 "passed via an env file"
             )
-    path.unlink(missing_ok=True)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    fd = os.open(path, flags, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write("".join(f"{name}={value}\n" for name, value in values.items()))
+    secrets_dir.write_secret(
+        "api-keys.env", "".join(f"{name}={value}\n" for name, value in values.items())
+    )
 
 
 def _read_api_key_env_file(path: Path) -> dict[str, str]:
@@ -2632,9 +2818,22 @@ def _resolve_build_source(
     args,
     *,
     project: Path,
-    context_dir: Path,
+    context_dir: "paths.Target",
     write_generated: bool = True,
+    in_context_dir: Path | None = None,
 ) -> tuple[str | None, Path | None, Path]:
+    """Return ``(base_image, base_dockerfile, build_context)``.
+
+    ``context_dir`` is the private directory generated build inputs are
+    rendered into; it is the build context of the default flow. Whole-project
+    flows build from the project (or ``--docker-context``), which then receives
+    a copy of those inputs in ``in_context_dir`` (``.project-sandbox/``) right
+    before the build; the devcontainer renders into ``.devcontainer/`` itself.
+    """
+    in_context_dir = in_context_dir or project / IN_CONTEXT_DIR
+    context_path = (
+        context_dir.path if isinstance(context_dir, paths.PrivateDir) else context_dir
+    )
     if args.docker_context and not args.dockerfile:
         raise SystemExit("--docker-context requires --dockerfile")
 
@@ -2676,7 +2875,7 @@ def _resolve_build_source(
                 "cache-warming step will be skipped."
             )
 
-        generated = context_dir / "Dockerfile.python-uv"
+        generated = context_path / "Dockerfile.python-uv"
         if write_generated:
             generated = dockerfile.render_python_uv_dockerfile(
                 context_dir,
@@ -2710,7 +2909,7 @@ def _resolve_build_source(
             _detect_cargo_workspace(project) if has_cargo_toml else (False, [], False)
         )
 
-        generated = context_dir / "Dockerfile.rust-cargo"
+        generated = context_path / "Dockerfile.rust-cargo"
         if write_generated:
             generated = dockerfile.render_rust_cargo_dockerfile(
                 context_dir,
@@ -2745,7 +2944,7 @@ def _resolve_build_source(
             )
 
         workspace_members = _detect_npm_workspaces(project, project / lockfiles[0])
-        generated = context_dir / "Dockerfile.node-npm"
+        generated = context_path / "Dockerfile.node-npm"
         if write_generated:
             generated = dockerfile.render_node_npm_dockerfile(
                 context_dir,
@@ -2771,16 +2970,17 @@ def _resolve_build_source(
                 f"--docker-context must point to a directory: {build_context}"
             )
         try:
-            context_dir.resolve(strict=False).relative_to(build_context.resolve())
+            in_context_dir.resolve(strict=False).relative_to(build_context.resolve())
         except ValueError as exc:
             raise SystemExit(
-                "--docker-context must contain the generated .project-sandbox directory"
+                f"--docker-context must contain {in_context_dir}, where the "
+                "generated build inputs are placed"
             ) from exc
         return None, base_dockerfile, build_context
 
     if not args.base_image:
         raise SystemExit("base_image is required unless --dockerfile is used")
-    return args.base_image, None, context_dir
+    return args.base_image, None, context_path
 
 
 def _detect_cargo_workspace(project: Path) -> tuple[bool, list[str], bool]:
@@ -2920,11 +3120,10 @@ def _tracked_project_dockerfiles(
 ) -> list[Path]:
     """Return the project Dockerfiles whose checksum is worth tracking.
 
-    Only a user-supplied ``--dockerfile`` that lives outside ``.project-sandbox``
-    qualifies: it sits in the writable workspace where an agent could rewrite it.
-    Generated Dockerfiles under ``.project-sandbox`` are masked inside the sandbox
-    and so cannot be tampered with, and the bare ``base_image`` flow has no
-    project Dockerfile at all.
+    Only a user-supplied ``--dockerfile`` that lives outside the session's build
+    directory qualifies: it sits in the writable workspace where an agent could
+    rewrite it. Generated Dockerfiles are rendered fresh into private staging,
+    and the bare ``base_image`` flow has no project Dockerfile at all.
     """
     if base_dockerfile is None:
         return []
@@ -3314,7 +3513,7 @@ def _build_session_command(
     args,
     *,
     project: Path,
-    context_dir: Path,
+    layout: staging.SessionLayout,
     workspace: Path,
     worktree,
     identity,
@@ -3336,22 +3535,33 @@ def _build_session_command(
     vcs_plan: vcs_mode.VcsPlan | None = None,
 ) -> tuple[list[str], Path | None, bool, list[str] | None]:
     # Agent availability is validated up front in main() via _ensure_agent_available.
+    create_prompt_files = create_prompt_files and not layout.dry_run
     extra_mounts = list(args.extra_mounts)
+    # Every mount source added here (not by the user) is checked right before
+    # the argv is built: a private, symlink-free path under a state root.
+    implicit_sources: list[Path] = [
+        claude_cfg.parent,
+        codex_cfg.parent,
+        *(cfg.parent for cfg in (pi_cfg, copilot_cfg) if cfg is not None),
+    ]
     if egress_mount is not None:
         # --egress sidecar: this session's public CA certificates, read-only.
         extra_mounts.append(egress_mount)
+        implicit_sources.append(Path(_mount_option(egress_mount, "source")))
     if getattr(args, "agent_proxy", None) and run_agent in ("opencode", "bash"):
+        opencode_dir = layout.config / "opencode"
         extra_mounts.append(
-            f"type=bind,source={(context_dir / 'opencode').resolve(strict=False)},"
+            f"type=bind,source={opencode_dir},"
             "target=/project-sandbox-config/opencode,readonly"
         )
+        implicit_sources.append(opencode_dir)
     if vcs_plan is not None and vcs_plan.mode == vcs_mode.ISOLATED:
         _reject_vcs_mount_conflicts(extra_mounts, vcs_plan, project)
         extra_mounts.extend(vcs_mode.mounts(vcs_plan))
     extra_env: list[str] = []
     if api_key_values is None:
         api_key_values = _api_key_env_values(args)
-    staged_api_key_env_file = context_dir / "api-keys.env"
+    staged_api_key_env_file = layout.secrets / "api-keys.env"
     use_api_key_env_file = bool(api_key_values) and (
         runtime.name == container_cli.APPLE_CONTAINER.name
     )
@@ -3361,13 +3571,11 @@ def _build_session_command(
         # inherit the value from the client's environment. Stage the values in
         # a 0600 env file instead, so the secret still never appears in argv.
         if create_prompt_files:
-            _write_staged_api_key_env_file(staged_api_key_env_file, api_key_values)
+            assert layout.session is not None
+            _write_staged_api_key_env_file(layout.session.secrets, api_key_values)
         else:
             print(f"Would write API key env file: {staged_api_key_env_file}")
     else:
-        if create_prompt_files:
-            # Don't leave a previous apple-container run's staged keys behind.
-            staged_api_key_env_file.unlink(missing_ok=True)
         if runtime.is_container:
             # Pass bare names (no "=VALUE") so docker/podman look the value up
             # from *this process's* environment — set via env= on the
@@ -3426,91 +3634,73 @@ def _build_session_command(
             )
         )
         run_mode_agent = f"{run_agent}-headless"
-        if args.prompt:
-            source_prompt = _resolve_required_path(args.prompt, what="--prompt file")
-            # Copy the prompt into a private staging dir so we mount only the
-            # prompt file, not its source parent (which could be $HOME).
-            prompt_staging = context_dir / "prompt"
-            prompt_file = prompt_staging / source_prompt.name
+        if args.prompt or args.prompt_text:
+            # The prompt goes to the session's own prompt/ directory, which is
+            # mounted: apple/container can only bind-mount *directories* (see
+            # HISTORY_SHELL_TARGET in paths.py), and mounting the source's
+            # parent could expose $HOME. No other session's prompt is there.
+            if args.prompt:
+                source_prompt = _resolve_required_path(
+                    args.prompt, what="--prompt file"
+                )
+                prompt_name = source_prompt.name
+            else:
+                source_prompt = None
+                prompt_name = "prompt.txt"
+            prompt_file = layout.prompt / prompt_name
             if create_prompt_files:
-                # apple/container can only bind-mount *directories* (see
-                # HISTORY_SHELL_TARGET in paths.py), so the staging dir itself is
-                # mounted below rather than the prompt file. Clear it first so a
-                # stale prompt file left by an earlier unsupervised run in this
-                # project is never exposed alongside the current one.
-                if prompt_staging.exists():
-                    shutil.rmtree(prompt_staging)
-                ensure_dir(prompt_staging)
-                shutil.copyfile(source_prompt, prompt_file)
+                assert layout.session is not None
+                if source_prompt is not None:
+                    layout.session.prompt.copy_from(
+                        source_prompt, prompt_name, mode=0o644
+                    )
+                else:
+                    layout.session.prompt.write(prompt_name, args.prompt_text)
             else:
                 print(f"Would stage prompt to: {prompt_file}")
-            prompt_target = f"{PROMPT_MOUNT_TARGET}/{source_prompt.name}"
             extra_mounts.append(
-                f"type=bind,source={prompt_staging.resolve()},"
+                f"type=bind,source={layout.prompt},"
                 f"target={PROMPT_MOUNT_TARGET},readonly"
             )
-            extra_env.append(f"PROJECT_SANDBOX_PROMPT_FILE={prompt_target}")
-        elif args.prompt_text:
-            prompts_dir = context_dir / "prompts"
-            prompt_file = prompts_dir / "prompt.txt"
-            if create_prompt_files:
-                # Same apple/container constraint and stale-prompt concern as
-                # above: mount the directory, but clear it first.
-                if prompts_dir.exists():
-                    shutil.rmtree(prompts_dir)
-                ensure_dir(prompts_dir)
-                prompt_file.write_text(args.prompt_text, encoding="utf-8")
-            else:
-                print(f"Would write prompt to: {prompt_file}")
-            extra_mounts.append(
-                f"type=bind,source={prompts_dir.resolve()},"
-                f"target={PROMPT_MOUNT_TARGET},readonly"
-            )
+            implicit_sources.append(layout.prompt)
             extra_env.append(
-                f"PROJECT_SANDBOX_PROMPT_FILE={PROMPT_MOUNT_TARGET}/prompt.txt"
+                f"PROJECT_SANDBOX_PROMPT_FILE={PROMPT_MOUNT_TARGET}/{prompt_name}"
             )
 
     if not unsupervised:
-        shell_dir, claude_projects = ensure_history_paths(
-            project, create=create_prompt_files
+        # Interactive history lives in the project's private state.
+        if create_prompt_files:
+            shell_dir, claude_projects = layout.ensure_history()
+        else:
+            shell_dir, claude_projects = layout.history_shell, layout.history_claude
+        extra_mounts.append(
+            f"type=bind,source={shell_dir},target={HISTORY_SHELL_TARGET}"
         )
         extra_mounts.append(
-            f"type=bind,source={shell_dir.resolve()},target={HISTORY_SHELL_TARGET}"
+            f"type=bind,source={claude_projects},target={HISTORY_CLAUDE_PROJECTS_TARGET}"
         )
-        extra_mounts.append(
-            f"type=bind,source={claude_projects.resolve()},target={HISTORY_CLAUDE_PROJECTS_TARGET}"
-        )
+        implicit_sources.extend((shell_dir, claude_projects))
         extra_env.append(f"HISTFILE={HISTORY_HISTFILE}")
 
-    workspace_mask = ensure_workspace_sandbox_mask(
-        project,
-        create=create_prompt_files,
-    )
-    mask_source = workspace_mask.resolve(strict=False)
+    # Masks come from this session's own empty directory, mounted read-only.
+    mask_source = layout.empty
+    implicit_sources.append(mask_source)
     if not create_prompt_files:
-        print(f"Would mask workspace sandbox files with: {mask_source}")
-    # Keep this after user-supplied mounts so a writable --mount cannot expose
-    # the generated files at /workspace/.project-sandbox again.
-    extra_mounts.append(
-        f"type=bind,source={mask_source},target={WORKSPACE_SANDBOX_TARGET},readonly"
-    )
-    # Hide the .devcontainer directory from inside the sandbox by masking it with
-    # the same empty dir, read-only. devcontainer.json's initializeCommand runs
-    # on the host, so the agent must not be able to read, edit or create it.
-    # Launches no longer render it, so create an empty one when absent: the
-    # bind target must exist (apple/container rejects a bind onto a missing
-    # target), and an unmasked path would let the agent plant a config.
-    devcontainer_dir = workspace / ".devcontainer"
-    if devcontainer_dir.is_symlink():
-        raise SystemExit(
-            f"{devcontainer_dir} is a symlink; remove it so the sandbox can mask "
-            "the devcontainer configuration"
+        print(f"Would mask workspace paths with: {mask_source}")
+    # Keep these after user-supplied mounts so a writable --mount cannot expose
+    # the masked paths again. A legacy .project-sandbox (or a whole-project
+    # flow's copy of the build inputs) is hidden when it exists; a bind onto a
+    # missing target would create it (as root on some runtimes).
+    legacy = workspace / IN_CONTEXT_DIR
+    if legacy.is_dir() and not legacy.is_symlink():
+        extra_mounts.append(
+            f"type=bind,source={mask_source},target={WORKSPACE_SANDBOX_TARGET},readonly"
         )
-    if not devcontainer_dir.exists():
-        if create_prompt_files:
-            devcontainer_dir.mkdir(parents=True, exist_ok=True)
-        else:
-            print(f"Would create empty directory to mask: {devcontainer_dir}")
+    # Hide .devcontainer from the sandbox, always: devcontainer.json's
+    # initializeCommand runs on the host, so the agent must not read, edit or
+    # create it. The bind target must exist (apple/container rejects a bind
+    # onto a missing target), so an absent one is created, self-ignoring.
+    _ensure_devcontainer_mask_target(workspace, create=create_prompt_files)
     extra_mounts.append(
         f"type=bind,source={mask_source},target={WORKSPACE_DEVCONTAINER_TARGET},readonly"
     )
@@ -3537,6 +3727,11 @@ def _build_session_command(
 
     if args.verbose and run_agent != "bash":
         _print_agent_config(run_agent, args, unsupervised=unsupervised)
+
+    if not layout.dry_run:
+        layout.validate_mount_sources(
+            [*implicit_sources, *runtime_credential_dirs.values()]
+        )
 
     if runtime.is_container:
         # build_run_argv computes its own MountSpecs from these same inputs.
@@ -3588,8 +3783,8 @@ def _build_session_command(
         )
         try:
             command = container_cli.build_chroot_argv(
-                script=context_dir / "chroot-run.sh",
-                jail_root=context_dir / "chroot-root",
+                script=layout.build / chroot.SCRIPT_NAME,
+                jail_root=layout.build / chroot.JAIL_ROOT_NAME,
                 mounts=mounts,
                 identity=identity,
                 agent=run_mode_agent,
@@ -3625,14 +3820,14 @@ def _print_agent_config(run_agent: str, args, *, unsupervised: bool) -> None:
 
 def _print_next_steps(
     *,
-    context_dir: Path,
+    state_dir: Path,
     project: Path,
     available_agents: tuple[str, ...],
     launching: bool = False,
 ) -> None:
     print("\n=== project-sandbox ready ===")
     print(f"  Project:  {project}")
-    print(f"  Sandbox:  {context_dir}")
+    print(f"  State:    {state_dir}")
     print()
     print("  Devcontainer (tests and debugging, no agents):")
     print(f"    project-sandbox {project} --devcontainer ...")
@@ -3643,59 +3838,3 @@ def _print_next_steps(
         for agent in available_agents:
             print(f"    project-sandbox --agent {agent} ...")
         print()
-
-
-def _update_project_gitignore(project: Path) -> None:
-    """Idempotently append credential-secret ignore entries to project .gitignore."""
-    marker = "# project-sandbox — do not commit agent secrets"
-    lines_to_add = [
-        marker,
-        ".project-sandbox/",
-        ".devcontainer/",
-    ]
-    gi = project / ".gitignore"
-    existing = gi.read_text(encoding="utf-8") if gi.exists() else ""
-    existing_lines = set(existing.splitlines())
-    # Append only entries that are not already present anywhere in the file, so a
-    # project that already ignores .project-sandbox/ (without our marker) does not
-    # get a duplicate line. The marker is itself an entry, so it is added only once.
-    missing = [line for line in lines_to_add if line not in existing_lines]
-    if not missing:
-        return
-    sep = "\n" if existing and not existing.endswith("\n") else ""
-    gi.write_text(existing + sep + "\n".join(missing) + "\n", encoding="utf-8")
-
-
-def _write_project_sandbox_gitignore(context_dir: Path) -> None:
-    # _update_project_gitignore (see below) unconditionally adds
-    # ".project-sandbox/" to the *project's* root .gitignore on every run, and
-    # git never descends into an already-ignored directory. So while that root
-    # rule is in place, none of the "!"-negation patterns below can ever
-    # re-include anything from inside .project-sandbox/ — they are inert by
-    # construction. This is documented in the file itself (below) rather than
-    # only in this comment, since it's the nested file a user would actually
-    # open to understand why a file they expect to be tracked still isn't.
-    content = """\
-# These "!" patterns only have an effect if you have manually removed or
-# edited the ".project-sandbox/" line from this project's root .gitignore.
-# Git does not descend into an already-ignored directory, so as long as that
-# root-level rule is in place, nothing below can re-include a file — it is
-# inert. It only matters if you deliberately opt out of the root ignore rule
-# and want to track select, non-secret generated files (Dockerfile,
-# settings.json, etc.) instead of ignoring this whole directory.
-*
-!.gitignore
-!claude/
-!claude/settings.json
-!codex/
-!codex/config.toml
-!copilot/
-!copilot/config.json
-!init-firewall.sh
-!Dockerfile
-!Dockerfile.devcontainer
-!entrypoint.sh
-!project-sandbox-init
-!project-sandbox-devcontainer-init
-"""
-    (context_dir / ".gitignore").write_text(content, encoding="utf-8")

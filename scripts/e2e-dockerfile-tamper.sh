@@ -86,14 +86,17 @@ bad() { echo "  BAD   $*"; fail=1; }
 # Helpers
 # ---------------------------------------------------------------------------
 
-# Record the current checksum baseline via the project's own module so the
-# state file format stays in sync with the CLI.
+# Record the current checksum baseline via the project's own module, in the
+# project's private state, so the state file format and location stay in sync
+# with the CLI. $1 is the project, $2 the Dockerfile.
 record_baseline() {
   uv run python -c "
+import sys
 from pathlib import Path
-from project_sandbox import dockerfile_checksum
-dockerfile_checksum.record(Path('$1'), [Path('$2')])
-"
+from project_sandbox import dockerfile_checksum, paths
+with paths.open_project_state(Path(sys.argv[1])) as state:
+    dockerfile_checksum.record(state, [Path(sys.argv[2])])
+" "$1" "$2"
 }
 
 # Returns 0 when the given Dockerfile is flagged as changed.
@@ -101,17 +104,17 @@ tamper_detectable() {
   uv run python -c "
 import sys
 from pathlib import Path
-from project_sandbox import dockerfile_checksum
-warnings = dockerfile_checksum.changed_warnings(Path('$1'), [Path('$2')])
+from project_sandbox import dockerfile_checksum, paths
+state = paths.project_state_path(Path(sys.argv[1]))
+warnings = dockerfile_checksum.changed_warnings(state, [Path(sys.argv[2])])
 sys.exit(0 if warnings else 1)
-"
+" "$1" "$2"
 }
 
 # ---------------------------------------------------------------------------
 # Project setup
 # ---------------------------------------------------------------------------
 
-CONTEXT_DIR="$TMP_PROJECT/.project-sandbox"
 DOCKERFILE="$TMP_PROJECT/Dockerfile"
 
 echo "Test project: $TMP_PROJECT"
@@ -120,8 +123,7 @@ echo
 
 printf "FROM debian:bookworm-slim\nRUN echo original\n" > "$DOCKERFILE"
 
-mkdir -p "$CONTEXT_DIR"
-record_baseline "$CONTEXT_DIR" "$DOCKERFILE"
+record_baseline "$TMP_PROJECT" "$DOCKERFILE"
 ok "baseline recorded for: $DOCKERFILE"
 
 # Simulate an agent modifying the Dockerfile during a session.
@@ -160,7 +162,7 @@ fi
 echo
 echo "Check 2: baseline unchanged after aborted run"
 
-if tamper_detectable "$CONTEXT_DIR" "$DOCKERFILE"; then
+if tamper_detectable "$TMP_PROJECT" "$DOCKERFILE"; then
   ok "tamper is still detectable after aborted run"
 else
   bad "tamper cleared after abort — baseline must not be advanced on abort"
@@ -197,7 +199,7 @@ else
   bad "--dry-run did not print tamper warning"
 fi
 
-if tamper_detectable "$CONTEXT_DIR" "$DOCKERFILE"; then
+if tamper_detectable "$TMP_PROJECT" "$DOCKERFILE"; then
   ok "tamper still detectable after --dry-run (baseline not mutated)"
 else
   bad "--dry-run advanced the baseline — dry-run must never write state"
@@ -225,7 +227,7 @@ set +e
 # Any rc is acceptable here; we only care about the baseline.
 set -e
 
-if tamper_detectable "$CONTEXT_DIR" "$DOCKERFILE"; then
+if tamper_detectable "$TMP_PROJECT" "$DOCKERFILE"; then
   ok "tamper still detectable after --no-build --no-verify-dockerfile run"
 else
   bad "--no-build run advanced the baseline — record must only fire after a real build"

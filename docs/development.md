@@ -34,11 +34,15 @@ containers.
 
 ## Image build cache
 
-`build_cache.py` fingerprints the generated build inputs and records the
-fingerprint plus image tag in `.project-sandbox/.build-state.json`. `cli.py`
-skips the build when the fingerprint matches and `container_cli.image_exists()`
-confirms the image is present; auto-skip is limited to the default flow where the
-build context equals the generated `.project-sandbox` dir. `dockerfile.render_dockerignore()` writes a scoped `Dockerfile.dockerignore`
+`build_cache.py` fingerprints the generated build inputs (the session's
+private `build/` directory) and records the fingerprint plus image tag in the
+project's private state (`projects/<key>/build-state.json`), under a build lock
+keyed by the project. `cli.py` skips the build when the fingerprint matches and
+`container_cli.image_exists()` confirms the image is present; auto-skip is
+limited to the default flow, where the build context is the session's `build/`
+directory. Whole-project flows get the generated inputs copied into
+`<context>/.project-sandbox/` (`cli._copy_build_inputs`, through `PrivateDir`)
+right before the build. `dockerfile.render_dockerignore()` writes a scoped `Dockerfile.dockerignore`
 (BuildKit's per-Dockerfile ignore convention) for the `--python-uv` flow only —
 the one whole-project context whose Dockerfile we generate — so it doesn't tar
 virtualenvs/caches to the daemon. It is skipped for user-supplied `--dockerfile`
@@ -61,23 +65,60 @@ Checked on Apple `container` 1.7.1 on 2026-11-09, for `private-build-context`:
   `<Dockerfile>.dockerignore` is honored and takes precedence over the
   context's `.dockerignore`.
 
+## Host state
+
+All host writes go through `paths.PrivateDir`, a directory descriptor reached
+by a no-follow walk from a trusted anchor and verified with `fstat` (see
+[Host state](security.md#host-state)). `paths.py` also selects the state and
+runtime roots and validates implicit mount sources; `staging.py` creates the
+per-session staging directory, holds its lease and reaps dead sessions'
+staging; `state_migration.py` migrates a legacy `.project-sandbox/` once.
+Renderers take a `Path` (tests) or an open `PrivateDir` (the CLI) and write
+through `paths.target_dir`.
+
+Tests never touch your real state: `tests/conftest.py` points `XDG_STATE_HOME`
+and `PROJECT_SANDBOX_RUNTIME_DIR` at per-test temporary directories.
+
+### Runtime-root mounts
+
+Checked on 2026-11-10 on macOS with Docker Desktop 29.9, Podman 6.0 (machine)
+and Apple `container` 1.7.1, for `private-session-state`: a `0700` directory
+holding a `0600` file, bind-mounted read-only and read as uid 1000 (the agent),
+works on all three from every runtime-root candidate:
+
+| Candidate | Docker Desktop | Podman machine | Apple `container` |
+|---|---|---|---|
+| `$TMPDIR` (`/private/var/folders/.../T`) | ok | ok | ok |
+| `/tmp/project-sandbox-<uid>` (`/private/tmp`) | ok | ok | ok |
+| `PROJECT_SANDBOX_RUNTIME_DIR` under `$HOME` | ok | ok | ok |
+
+macOS's `dirhelper` (`com.apple.bsd.dirhelper`, daily at 03:35,
+`CLEAN_FILES_OLDER_THAN_DAYS=3`) deletes `$TMPDIR` files older than three days,
+so staging of a session running longer can be removed; such sessions should set
+`PROJECT_SANDBOX_RUNTIME_DIR`. Not tested: `$XDG_RUNTIME_DIR` (Linux only),
+rootless Podman on Linux, Colima and Lima (not installed here; they share only
+`$HOME` by default, hence the override).
+
 ## Tests
 
 Tests cover CLI surface, runtime selection, dry-run non-mutation, renderer
-output, container `argv` construction, devcontainer JSON contents and symlinks,
-gitignore helpers, image-build caching, and Python-native unsupervised-session
+output, container `argv` construction, devcontainer JSON contents, private host
+state (link safety, per-session staging, reaping, mount-source validation,
+migration), image-build caching, and Python-native unsupervised-session
 timeout handling.
 
 A self-contained end-to-end smoke test creates a throwaway hello-world project,
-runs the tool against it, and validates every generated artefact:
+runs the tool against it with throwaway state roots, and checks what each run
+leaves: nothing in the project and no session staging after a plain run, and
+real, self-ignoring files in `.devcontainer/` after `--devcontainer`:
 
 ```bash
 ./scripts/e2e-test.sh                  # portable: generated files and --devcontainer
 ./scripts/e2e-test.sh --with-container # also exercises direct CLI container runs
 ```
 
-The test prints the temp project path on success so the generated files can be
-inspected.
+The test prints the temp project and state paths on success so the generated
+files can be inspected.
 
 The environment-injection and isolated-VCS end-to-end tests exercise real
 headless bash-agent runs. The isolated-VCS test uses a throwaway jj repository
@@ -102,9 +143,11 @@ stage's endpoint helper runs, after planting `ipaddress.py`, `socket.py`,
 `shlex.py`, `ssl.py` and `pathlib.py` markers in the workspace. Inside the
 session it checks that `sudo -n` fails, `NoNewPrivs` is 1, `CapBnd` and
 `CapEff` are zero, the UID is not root, `iptables -F`/`ip6tables -F` fail and
-the session shell is PID 1. From the host it checks that
-`exec --user agent` lands as `agent`, and prints what a plain `exec` lands as.
-No marker may fire:
+the session shell is PID 1, and that writes into `/workspace/.devcontainer`
+fail. From the host it checks that `exec --user agent` lands as `agent`, and
+prints what a plain `exec` lands as. Afterwards no marker may have fired, the
+host `.devcontainer/` holds only its `.gitignore`, and the project has no
+`.project-sandbox/`:
 
 ```bash
 ./scripts/e2e-privileges.sh --runtime docker
@@ -113,7 +156,8 @@ No marker may fire:
 It accepts `--runtime auto|apple-container|docker|podman` (not `chroot`),
 `--base-image IMAGE`, `--no-build`, and `--keep`. Passed on 2026-11-10 on
 Docker Desktop 29.9, Podman 6.0 (machine, rootless) and Apple `container`
-1.7.1; a plain `exec` landed as `root` on all three.
+1.7.1; a plain `exec` landed as `root` on all three. The `.devcontainer` checks
+passed on all three on 2026-11-10 (`private-session-state`).
 `scripts/verify-timeout-teardown.sh` also passed on all three with the root
 stage in place.
 
@@ -179,9 +223,13 @@ started by the build-proxy suite (recognised by its config mount in a
 `project-sandbox-build-proxy.*` temp directory, so a real IPL proxy is never
 touched), shared local-service forwarders (`project_sandbox.egress_relay
 --lease` processes with a `local-forward` state directory) that no session
-leases any more, and images whose tags the suites generate. A forwarder that a
-session still leases, and images of real projects, are left alone. It refuses
-to run while an e2e script is active unless `--force` is given.
+leases any more, images whose tags the suites generate, the private project
+state of the suites' temporary projects
+(`$XDG_STATE_HOME/project-sandbox/projects/<temp-dir name>-<hash>`), and
+session staging whose session process is gone. A forwarder that a session
+still leases, images and state of real projects, and live sessions' staging are
+left alone. It refuses to run while an e2e script is active unless `--force` is
+given.
 
 The Node/npm smoke script creates a small Vite app, resolves and locks
 `@playwright/test`, Vite, and `lodash-es` on the host, and builds the sandbox.

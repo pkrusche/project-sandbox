@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from project_sandbox import session
+from project_sandbox import paths, session
 
 
 class SessionTests(TestCase):
@@ -38,8 +38,12 @@ class SessionTests(TestCase):
                 project, "agent/demo", "claude", create=False
             )
 
-            self.assertEqual(path.parent, project / ".project-sandbox" / "sessions")
+            # Logs live in the project's private state, not the project.
+            self.assertEqual(
+                path.parent, paths.project_state_path(project) / "sessions"
+            )
             self.assertFalse(path.parent.exists())
+            self.assertFalse((project / ".project-sandbox").exists())
 
     def test_non_verbose_run_writes_log_without_echoing_to_terminal(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

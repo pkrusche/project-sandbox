@@ -22,6 +22,7 @@ Many sandboxes exist - this is the one with a feature-set / configureable agency
 * **Network access restrictions**: restrict to allowed domains, (somewhat) hardened firewall script, or opt into the global [Squid egress sidecar](docs/egress-sidecar.md) for one hostname-based policy, managed with `project-sandbox-egress`.
 * **jj integration**: Isolated sessions by default: the agent works in its own jj workspace with a private repository, and the result arrives as one commit on a bookmark. No credentials to push inside containers.
 * **pinned dependencies**: pre-install agents & extra tools into the image, manual upversioning.
+* **No generated files in your project**: configs, staged secrets, history and logs live in private per-user state outside the repository ([where state lives](docs/usage.md#where-state-lives)).
 * **Simple workflow** (in my view).
 * **Minimal dependencies** (jinja2)
 

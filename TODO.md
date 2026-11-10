@@ -23,7 +23,7 @@ The plan was reviewed and every proposal revised on 2026-11-09.
 | 4 | `isolate-firewall-helpers` | **done** (archived 2026-11-10); covered #1 and sudo re-invocation | — |
 | 5 | `quote-generated-build-inputs` | #10; image/version strings in `FROM` | — |
 | 6 | `serialize-egress-policy-updates` | #7 | — |
-| 7 | `private-session-state` | #3, #4, #8: state roots, staging, masks, locks, migration | 3 |
+| 7 | `private-session-state` | **implemented** 2026-11-10 (not archived); covers #3, #4, #8 and the session-inputs part of #6: state roots, staging, masks, locks, migration | 3 |
 | 8 | `private-build-context` | build-input half of #6 | 7 |
 | 9 | `read-only-agent-history` | history read-only | 7 |
 | 10 | `validate-all-mount-sources` | #5; mount encoding | 1, 7 |
@@ -133,7 +133,9 @@ not implement them.
 The highest priorities are host-side Git execution against agent-writable
 metadata, unsafe generated-path handling, and races that can substitute a
 different session's network policy. Finding #1 (privileged Python imports from
-the workspace) was fixed by `isolate-firewall-helpers`.
+the workspace) was fixed by `isolate-firewall-helpers`. Findings #3 (generated
+writes follow symlinks), #4 (symlinked history and mask mounts) and #8 (shared
+session inputs) were fixed by `private-session-state`.
 Passing unit tests do not currently establish these boundaries.
 
 ### Findings and suggested fixes
@@ -153,52 +155,6 @@ protections (row 11). It must also cover a deleted `.jj/repo/config-id`: jj
 next command (tested in `harden-host-command-execution` task 1.1, which found
 no jj release that ignores the file). `project-sandbox doctor` warns about this
 state.
-
-#### 3. High — generated-file writes follow repository-controlled symlinks
-
-**Locations:** `dockerfile.py:174–262`, `:1134–1146`; `firewall.py:174`;
-`config_agents.py:146–154`, `:534–556`; `devcontainer.py:50–70`, `:268`;
-`cli.py:3378–3388`.
-
-Several renderers use `write_text()` on predictable repository paths without
-checking the final file or safely opening its parent. The agent-config guard
-checks directory components, but not leaf files such as `settings.json` and
-`config.toml`. Dockerfile/firewall generation happens before that guard runs.
-The root `.gitignore` is also agent-writable and is subsequently rewritten by
-the host. Symlink planting can redirect these writes outside the project.
-
-**Evidence:** temporary symlinks at `.project-sandbox/init-firewall.sh` and
-`.project-sandbox/claude/settings.json` both caused the corresponding renderer
-to overwrite a harmless file outside the temporary project.
-
-**Suggestion:** validate all managed directories before the first mutation;
-create/write files through verified directory descriptors with no-follow
-semantics. Reject symlinked leaves or replace them atomically without following
-their targets. Apply the same policy to `.devcontainer`, `.gitignore`, logs,
-certificates, and cleanup paths. A separate `is_symlink()` check is insufficient
-against concurrent replacement. Cover both pre-existing links and link swaps.
-
-#### 4. High — implicit history and mask mounts can expose arbitrary host directories
-
-**Locations:** `paths.py:30–63`; `cli.py:3205–3237`;
-`devcontainer.py:97–110`.
-
-`ensure_history_paths()` and `ensure_workspace_sandbox_mask()` accept existing
-symlinked directories. Launch code then resolves and mounts them. A repository
-with `.project-sandbox/history/shell` pointing outside the project can cause an
-unexpected writable host-directory mount in an interactive session. A
-`workspace-mask` symlink can expose host files even in a headless session: it
-becomes the supposedly empty read-only directory over `/workspace/.project-sandbox`.
-Read-only still permits disclosure.
-
-**Evidence:** temporary history and mask symlinks to an outside directory were
-accepted by both helpers and resolved to that directory. No container was
-started. This does not require an explicitly authorized extra `--mount`.
-
-**Suggestion:** use a fresh, private, verified empty directory outside the
-project for masks. Reject symlinked or unexpected history sources and validate
-every implicit mount source, including ownership and traversal. Test final
-constructed mounts, not just the helper return values.
 
 #### 5. High — valid extra mount options bypass sidecar policy/key isolation checks
 
@@ -227,17 +183,21 @@ forms that can expose host directories.
 **Locations:** `cli.py:744–840`, `:907–986`;
 `build_cache.py:35–44`.
 
-Dockerfiles, entrypoints, firewall scripts, and agent configs are rewritten
-before acquiring the build lock. Two launches for one context with different
-allowlists can overwrite each other's inputs while one build is reading them.
-The fingerprint and resulting image can consequently describe different input
-versions. After the build lock is released, another launch can also replace
-the shared image tag before the first launch starts its container. A run that
-requested a restrictive policy may launch a more permissive image.
+`private-session-state` renders every session's inputs into its own private
+build directory and stages secrets outside every build context, so concurrent
+default-flow launches no longer overwrite each other's inputs, and no secret
+reaches a build context. What remains:
 
-This follows from the lock boundaries; a timed runtime race was not executed.
-The same overlap can put a proxy secret written after one build into another
-build's shared context.
+- **Whole-project flows** (`--python-uv`, `--rust-cargo`, `--node-npm`,
+  `--dockerfile`) still copy their generated inputs into `.project-sandbox/` of
+  the build context right before the build (under the build lock). Another
+  process can replace them between the copy and the build, and
+  `--docker-context` must contain `.project-sandbox`. `private-build-context`
+  supplies them separately.
+- **Launch identity.** After the build lock is released, another launch can
+  replace the shared image tag before the first launch starts its container,
+  so a run that requested a restrictive policy may launch a more permissive
+  image. `pin-launch-image-identity` launches by image ID.
 
 **Suggestion:** render immutable, per-session build contexts; fingerprint the
 complete context and launch by the resulting immutable image ID/digest. If
@@ -269,25 +229,6 @@ with runtime locks in a fixed order. Reload current policy under that protocol
 instead of trusting an earlier snapshot; use generations/hashes to prevent
 older applications from winning. Test concurrent add/remove and a delayed
 launch following a revocation.
-
-#### 8. Medium — credentials, proxy configs, and prompts are shared across live sessions
-
-**Locations:** `config_agents.py:254–268`, `:573–581`;
-`copilot_auth.py:198–220`; `cli.py:817–824`, `:1219–1227`, `:3166–3195`.
-
-Credential staging is keyed by project and agent rather than session. Copilot
-launches replace the same token file, and either session's cleanup removes it.
-`--no-forward-credentials` purges another live session's staging tree. Prompt
-directories are deleted/recreated at fixed paths, and proxy configs share
-filenames that other launches rewrite or unlink. Read-only container mounts do
-not make their host sources immutable. Depending on timing, a session can see
-another prompt/configuration/token or fail before provisioning.
-
-**Suggestion:** use private per-session staging directories, mount only that
-session's inputs, and clean up only resources it owns. (The devcontainer no
-longer has staging.) Use session leases/reference counting for truly
-shared resources. Add tests where one session starts or exits while another is
-waiting to read its prompt and credentials.
 
 #### 10. Medium — Cargo workspace paths are interpolated into shell and Dockerfile syntax
 
@@ -337,18 +278,12 @@ implementation defects above. Some are already described in `docs/security.md`.
   grammar, or reject unsupported commas/control characters explicitly. Verify
   parse/render round trips for unusual project names. Docker documents the
   outer CSV parsing requirement in its [mount documentation](https://docs.docker.com/engine/storage/volumes/).
-- **Host lock files:** `host_locks.path_lock()` correctly uses `O_NOFOLLOW` and
-  avoids truncation, but does not verify the opened inode is a regular file
-  owned by the caller. Names are predictable in shared temporary storage. Use a
-  verified private per-user lock directory, `fstat()` checks, and bounded waits
-  with useful diagnostics. Existing OS protections may limit cross-user attacks;
-  do not depend on identical behavior across Linux and macOS. Never unlink a
-  live lock file to recover it, since that can create two independently locked
-  inodes.
-- **Secrets and logs:** create proxy configuration files with mode 0600 from
-  the initial open instead of writing and then chmodding. Keep them outside all
-  build contexts. Explicit API-key env files should have session-scoped cleanup
-  too. Squid's `%ru` logging includes URLs/query strings for visible HTTP and
+- **Host lock files:** done by `private-session-state` (private per-user lock
+  directory, `fstat` regular-file and owner checks, never unlinked). Still open:
+  bounded waits with useful diagnostics instead of blocking indefinitely.
+- **Secrets and logs:** proxy configs and API-key env files are now `0600` from
+  their first open, outside every build context, and deleted with the session's
+  staging (`private-session-state`). Squid's `%ru` logging includes URLs/query strings for visible HTTP and
   intercepted requests; redact sensitive fields and define retention/access
   rules. Token substitution in logs is useful but is not a general data-loss
   prevention boundary.

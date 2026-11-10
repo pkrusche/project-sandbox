@@ -479,9 +479,10 @@ class ShareTests(_CliHarness):
         self.assertLess(
             targets.index("/workspace/.git"), targets.index("/workspace/data")
         )
+        # The masks come after the shares, so a share cannot unmask them.
         self.assertLess(
             targets.index("/workspace/out"),
-            targets.index("/workspace/.project-sandbox"),
+            targets.index("/workspace/.devcontainer"),
         )
 
     def test_unsafe_paths_are_refused(self) -> None:
@@ -771,6 +772,7 @@ class LeaseTests(_CliHarness):
         project = self.root / "p"
         (project / ".jj").mkdir(parents=True)
         ws = jj_workspace_mod.plan(project, "feat")
+        ws.path.mkdir(parents=True)  # what the mocked setup would create
         outcomes = [
             {"exit_code": 0},
             {"exit_code": 1},
@@ -805,6 +807,7 @@ class SharedWarningTests(_CliHarness):
         project = self.root / "p"
         (project / ".jj").mkdir(parents=True)
         ws = jj_workspace_mod.plan(project, "feat")
+        ws.path.mkdir(parents=True)  # what the mocked setup would create
         with (
             patch.object(cli.jj_workspace_mod, "setup", return_value=ws),
             patch.object(cli.jj_workspace_mod, "finalize"),

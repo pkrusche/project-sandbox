@@ -3,7 +3,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import templating
+from . import paths, templating
 from .proxy_endpoint import ProxyEndpoint
 
 # Strict hostname: dot-separated labels of letters/digits/hyphens (no leading or
@@ -65,7 +65,7 @@ def _validate_domains(extra_domains: list[str]) -> None:
 
 
 def render(
-    context_dir: Path,
+    context_dir: "paths.Target",
     *,
     extra_domains: list[str],
     allow_github: bool = False,
@@ -108,8 +108,7 @@ def render(
     agent_proxy_url = (
         agent_proxy_url or f"http://{agent_proxy_hostname}:{agent_proxy_port}/"
     )
-    out = context_dir / "init-firewall.sh"
-    out.write_text(
+    text = (
         templating.get_template("init-firewall.sh.j2").render(
             extra_domains=extra_domains,
             allow_github=allow_github,
@@ -128,8 +127,8 @@ def render(
             egress_sidecar=egress_sidecar,
             egress_input_dir=SIDECAR_INPUT_DIR,
         )
-        + "\n",
-        encoding="utf-8",
+        + "\n"
     )
-    out.chmod(0o755)
-    return out
+    with paths.target_dir(context_dir) as directory:
+        directory.write("init-firewall.sh", text, mode=0o755)
+    return paths.target_path(context_dir, "init-firewall.sh")

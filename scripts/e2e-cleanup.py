@@ -10,7 +10,11 @@ Run after ``scripts/run-e2e-tests.sh`` (or an interrupted e2e script) to sweep:
 * shared local-service forwarders (``project_sandbox.egress_relay --lease``
   with a ``local-forward`` state directory) that no session leases any more;
 * images tagged by the e2e suites, either explicitly or derived from their
-  temporary project directories.
+  temporary project directories;
+* private project state (``$XDG_STATE_HOME/project-sandbox/projects/<key>``:
+  history, logs, build state) of those temporary projects;
+* per-session staging left by sessions whose process is gone (the same reaping
+  every launch does).
 
 Only names the e2e scripts generate are matched: images of real projects,
 other containers, and live sandbox sessions are left alone. Refuses to run
@@ -32,7 +36,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from project_sandbox import container_cli, local_forwarder, session_ca
+from project_sandbox import container_cli, local_forwarder, paths, session_ca, staging
 
 RUNTIMES = (container_cli.APPLE_CONTAINER, container_cli.DOCKER, container_cli.PODMAN)
 
@@ -71,6 +75,15 @@ E2E_IMAGE = re.compile(
     r"|proxy-endpoints-[a-z0-9_]{8}"
     r"|build-proxy"
     ")"
+)
+
+# Private state keys are ``<sanitised dir name>-<hash16>`` (paths.project_key).
+E2E_PROJECT_STATE = re.compile(
+    "(?:"
+    rf"(?:{'|'.join(map(re.escape, _MKTEMP_DIRS + _MKDTEMP_DIRS))})"
+    r"[._-]?[A-Za-z0-9._-]{6,24}"
+    r"|(?:managed|base)-python"
+    r")-[0-9a-f]{16}"
 )
 
 ACTIVE_E2E = re.compile(
@@ -237,6 +250,20 @@ def orphaned_forwarders(
     return sorted(orphans)
 
 
+def e2e_project_states() -> list[Path]:
+    """Private project-state directories that belong to e2e temp projects."""
+    root = paths.state_root_path() / "projects"
+    if not root.is_dir():
+        return []
+    return sorted(
+        entry
+        for entry in root.iterdir()
+        if entry.is_dir()
+        and not entry.is_symlink()
+        and E2E_PROJECT_STATE.fullmatch(entry.name)
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -274,6 +301,20 @@ def main(argv: list[str] | None = None) -> int:
             except PermissionError as exc:
                 print(f"[W] Could not stop pid {pid}: {exc}", file=sys.stderr)
                 failed = True
+
+    for state in e2e_project_states():
+        print(f"{prefix} e2e project state {state}")
+        if not args.dry_run:
+            shutil.rmtree(state, ignore_errors=True)
+    if args.dry_run:
+        print("Would reap the staging of sessions whose process is gone")
+    else:
+        try:
+            for session_id in staging.reap():
+                print(f"Removed stale session staging {session_id}")
+        except (OSError, SystemExit) as exc:
+            print(f"[W] Could not reap session staging: {exc}", file=sys.stderr)
+            failed = True
 
     selected = args.runtime or [
         runtime.name for runtime in RUNTIMES if shutil.which(runtime.binary)

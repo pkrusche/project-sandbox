@@ -2,7 +2,9 @@
 # End-to-end smoke test for project-sandbox.
 #
 # Creates a throwaway Python hello-world project, runs the tool against it,
-# and verifies that every expected artefact was written. By default this passes
+# and verifies what each run writes: nothing in the project for a plain run
+# (generated state lives in private host state), and real, self-ignoring files
+# in .devcontainer/ for --devcontainer. By default this passes
 # --no-build so the test is portable to hosts without apple/container installed;
 # pass --with-container to additionally exercise direct Apple container runs,
 # including the timeout path (requires the `container` CLI on PATH and a running
@@ -31,10 +33,15 @@ if [ "$WITH_CONTAINER" = 1 ] && ! command -v container >/dev/null 2>&1; then
 fi
 
 TMP_PROJECT="$(mktemp -d -t project-sandbox-e2e.XXXXXX)"
+# Private host state and per-session staging go to throwaway roots, so the
+# checks below can see exactly what a run leaves behind.
+TMP_STATE="$(mktemp -d -t project-sandbox-e2e-state.XXXXXX)"
+export XDG_STATE_HOME="$TMP_STATE/state"
+export PROJECT_SANDBOX_RUNTIME_DIR="$TMP_STATE/runtime"
 PROJECT_KEPT=0
 cleanup() {
   if [ "$PROJECT_KEPT" = 0 ]; then
-    rm -rf "$TMP_PROJECT"
+    rm -rf "$TMP_PROJECT" "$TMP_STATE"
   fi
 }
 trap cleanup EXIT
@@ -49,9 +56,12 @@ if __name__ == "__main__":
 PY
 
 echo "Test project: $TMP_PROJECT"
+echo "State roots:  $TMP_STATE"
 echo
 
 cd "$ROOT"
+
+fail=0
 if [ "$WITH_CONTAINER" = 1 ]; then
   echo "Running: uv run project-sandbox $TMP_PROJECT python:3.12-slim"
   uv run project-sandbox "$TMP_PROJECT" python:3.12-slim
@@ -60,53 +70,67 @@ else
   uv run project-sandbox --no-build "$TMP_PROJECT" python:3.12-slim
 fi
 echo
-# Ordinary runs write no devcontainer; it is rendered only on request.
-if [ -e "$TMP_PROJECT/.devcontainer/devcontainer.json" ]; then
-  echo "BAD   a plain run rendered .devcontainer/devcontainer.json" >&2
-  exit 1
+
+echo "Checking that a plain run leaves the project alone:"
+leftover="$(cd "$TMP_PROJECT" && ls -A | grep -v '^hello.py$' || true)"
+if [ -z "$leftover" ]; then
+  echo "  ok    the project holds only hello.py"
+else
+  echo "  BAD   a plain run wrote into the project: $leftover"
+  fail=1
 fi
+staging_left="$(ls -A "$PROJECT_SANDBOX_RUNTIME_DIR/staging" 2>/dev/null || true)"
+if [ -z "$staging_left" ]; then
+  echo "  ok    no session staging is left behind"
+else
+  echo "  BAD   session staging left behind: $staging_left"
+  fail=1
+fi
+STATE_DIR="$(find "$XDG_STATE_HOME/project-sandbox/projects" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+if [ -n "$STATE_DIR" ] && [ -f "$STATE_DIR/migrated" ]; then
+  echo "  ok    project state: $STATE_DIR"
+else
+  echo "  MISS  no private project state under $XDG_STATE_HOME/project-sandbox/projects"
+  fail=1
+fi
+mode="$(stat -f '%Lp' "$XDG_STATE_HOME/project-sandbox" 2>/dev/null || stat -c '%a' "$XDG_STATE_HOME/project-sandbox")"
+if [ "$mode" = 700 ]; then
+  echo "  ok    the state root is 0700"
+else
+  echo "  BAD   the state root is $mode, expected 700"
+  fail=1
+fi
+echo
+
 echo "Running: uv run project-sandbox --devcontainer $TMP_PROJECT python:3.12-slim"
 uv run project-sandbox --devcontainer "$TMP_PROJECT" python:3.12-slim
 echo
 
-PS="$TMP_PROJECT/.project-sandbox"
 DC="$TMP_PROJECT/.devcontainer"
 
+# The devcontainer's files are real files in .devcontainer/, nothing else.
 REQUIRED=(
-  "$PS/Dockerfile"
-  "$PS/Dockerfile.devcontainer"
-  "$PS/entrypoint.sh"
-  "$PS/project-sandbox-init"
-  "$PS/init-firewall.sh"
-  "$PS/project-sandbox-devcontainer-init"
-  "$PS/.gitignore"
-  "$PS/claude/settings.json"
-  "$PS/codex/config.toml"
   "$DC/devcontainer.json"
-  "$TMP_PROJECT/.gitignore"
+  "$DC/Dockerfile"
+  "$DC/project-sandbox-devcontainer-init"
+  "$DC/.gitignore"
 )
 
-# Removed with the agent-free devcontainer.
 ABSENT=(
-  "$PS/init-firewall-devcontainer.sh"
-  "$PS/claude-devcontainer"
-  "$PS/codex-devcontainer"
+  "$TMP_PROJECT/.project-sandbox"
+  "$TMP_PROJECT/.gitignore"
   "$DC/init-firewall.sh"
+  "$DC/entrypoint.sh"
   "$DC/claude"
   "$DC/codex"
 )
 
-SYMLINKS=(
-  "$DC/Dockerfile"
-)
-
-fail=0
 echo "Checking required files:"
 for f in "${REQUIRED[@]}"; do
-  if [ -e "$f" ]; then
+  if [ -f "$f" ] && [ ! -L "$f" ]; then
     echo "  ok    $f"
   else
-    echo "  MISS  $f"
+    echo "  MISS  $f (missing, or not a regular file)"
     fail=1
   fi
 done
@@ -117,31 +141,6 @@ for f in "${ABSENT[@]}"; do
     fail=1
   else
     echo "  ok    absent: $f"
-  fi
-done
-
-echo
-echo "Checking devcontainer symlinks:"
-for s in "${SYMLINKS[@]}"; do
-  if [ -L "$s" ]; then
-    target="$(readlink "$s")"
-    case "$target" in
-      ../.project-sandbox/*)
-        # -e follows the symlink: this fails for a dangling link whose target
-        # file does not exist, so a correct-looking prefix can't mask a missing
-        # artefact.
-        if [ -e "$s" ]; then
-          echo "  ok    $s -> $target"
-        else
-          echo "  DANG  $s -> $target (target does not exist)"
-          fail=1
-        fi
-        ;;
-      *) echo "  BAD   $s -> $target (expected ../.project-sandbox/...)" ; fail=1 ;;
-    esac
-  else
-    echo "  MISS  $s (not a symlink)"
-    fail=1
   fi
 done
 
@@ -158,21 +157,13 @@ check_contains() {
   fi
 }
 
-check_contains "$PS/Dockerfile" "FROM python:3.12-slim"
-check_contains "$PS/Dockerfile" "/usr/local/bin/jj"
-check_contains "$PS/Dockerfile" "npm install -g @fission-ai/openspec"
-check_contains "$PS/init-firewall.sh" "ipset create allowed-ipv4"
-check_contains "$PS/claude/settings.json" "bypassPermissions"
-check_contains "$PS/codex/config.toml" 'approval_policy = "never"'
-check_contains "$PS/project-sandbox-init" "project-sandbox-init-firewall"
-check_contains "$PS/project-sandbox-init" "--bounding-set=-all --no-new-privs"
-check_contains "$PS/Dockerfile" 'ENTRYPOINT ["/usr/local/bin/project-sandbox-init"]'
-check_contains "$PS/Dockerfile" 'org.project-sandbox.privilege-model="root-stage-v1"'
-check_contains "$PS/init-firewall.sh" "cd /"
-check_contains "$PS/entrypoint.sh" "bash-headless"
-check_contains "$TMP_PROJECT/.gitignore" "project-sandbox — do not commit agent secrets"
+check_contains "$DC/Dockerfile" "FROM python:3.12-slim"
+check_contains "$DC/Dockerfile" "COPY project-sandbox-devcontainer-init"
+check_contains "$DC/.gitignore" "*"
 check_contains "$DC/devcontainer.json" '"none"'
 check_contains "$DC/devcontainer.json" '"UV_OFFLINE": "1"'
+check_contains "$DC/devcontainer.json" "$STATE_DIR/history/shell"
+check_contains "$DC/devcontainer.json" "$STATE_DIR/devcontainer-mask"
 
 if command -v python3 >/dev/null 2>&1; then
   if python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$DC/devcontainer.json" 2>/dev/null; then
@@ -228,18 +219,18 @@ Test project kept for inspection:
   $TMP_PROJECT
 
 Useful next commands:
-  ls -la $TMP_PROJECT
-  cat $PS/Dockerfile
+  ls -la $TMP_PROJECT $DC
+  cat $DC/Dockerfile
   cat $DC/devcontainer.json
-  cat $PS/init-firewall.sh
+  ls -la $STATE_DIR
 
 Remove when done:
-  rm -rf $TMP_PROJECT
+  rm -rf $TMP_PROJECT $TMP_STATE
 EOF
   exit 0
 else
   echo "FAIL — see missing/invalid artefacts above."
-  echo "Test project (kept for debugging): $TMP_PROJECT"
+  echo "Test project (kept for debugging): $TMP_PROJECT (state: $TMP_STATE)"
   PROJECT_KEPT=1
   exit 1
 fi

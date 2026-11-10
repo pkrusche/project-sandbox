@@ -22,6 +22,71 @@ from project_sandbox.dockerfile import PRIVILEGE_MODEL
 from project_sandbox.git_identity import GitIdentity
 
 
+def _mount_source_for(cmd: list[str], target: str) -> str:
+    """The source of the ``--mount`` in ``cmd`` whose target is ``target``."""
+    for value in cmd:
+        parts = dict(part.split("=", 1) for part in value.split(",") if "=" in part)
+        if parts.get("target") == target and "source" in parts:
+            return parts["source"]
+    raise AssertionError(f"no mount targets {target}: {cmd}")
+
+
+def _record_dockerfile_baseline(project: Path, dockerfiles: list[Path]) -> None:
+    """Record a trusted Dockerfile baseline in the project's private state."""
+    with cli.paths.open_project_state(project) as state:
+        cli.dockerfile_checksum.record(state, dockerfiles)
+
+
+def _session_layout(test: TestCase, project: Path):
+    """A live session layout with rendered configs, cleaned up after ``test``.
+
+    Returns ``(layout, claude_cfg, codex_cfg, credential_dirs)``.
+    """
+    session = cli.staging.SessionStaging.create(cli.observability.new_session_id())
+    test.addCleanup(session.close)
+    state = cli.paths.open_project_state(project)
+    test.addCleanup(state.close)
+    cfg = cli.config_agents.render(session.config)
+    claude_secrets = session.secrets.path / "claude"
+    claude_secrets.mkdir(mode=0o700)
+    layout = cli.staging.SessionLayout.for_session(session, state)
+    return layout, cfg["claude"], cfg["codex"], {"claude": claude_secrets}
+
+
+def _session_dirs(root: Path) -> list[Path]:
+    staging_dir = root / "staging"
+    return sorted(staging_dir.iterdir()) if staging_dir.exists() else []
+
+
+@contextlib.contextmanager
+def _kept_staging():
+    """Keep each session's staging after it ends, so a test can inspect it.
+
+    Yields the list of kept staging directories (``<runtime>/staging/<id>``).
+    """
+    kept: list[Path] = []
+    real_close = cli.staging.SessionStaging.close
+
+    def close(self):
+        if self._lease_fd < 0:
+            return
+        kept.append(self.path)
+        for directory in self.dirs.values():
+            directory.close()
+        self.root.close()
+        self._staging.close()
+        os.close(self._lease_fd)
+        self._lease_fd = -1
+
+    # A later launch would reap the kept (no longer leased) directories.
+    with (
+        patch.object(cli.staging.SessionStaging, "close", close),
+        patch.object(cli, "_reap_staging"),
+    ):
+        yield kept
+    del real_close
+
+
 def _agent_paths(home: Path) -> dict[str, Path]:
     return {
         "claude": home / ".claude",
@@ -309,19 +374,19 @@ class CliTests(TestCase):
                 rc = cli.main([str(project), "python:3.12-slim"])
 
             self.assertEqual(rc, 0)
-            self.assertTrue((project / ".project-sandbox" / "Dockerfile").exists())
+            # Generated state lives outside the project; the session's staging
+            # is gone once the run ends.
+            self.assertFalse((project / ".project-sandbox").exists())
             # The devcontainer is rendered only on request (--devcontainer).
             self.assertFalse((project / ".devcontainer").exists())
-            self.assertFalse(
-                (project / ".project-sandbox" / "Dockerfile.devcontainer").exists()
-            )
+            self.assertEqual(_session_dirs(cli.paths.runtime_root_path()), [])
             self.assertIn("project-sandbox ready", out.getvalue())
             self.assertIn("--devcontainer", out.getvalue())
             ensure_system_started.assert_not_called()
             build_image.assert_not_called()
             run.assert_not_called()
 
-    def test_default_run_overwrites_existing_generated_files(self) -> None:
+    def test_default_run_renders_fresh_inputs_and_migrates_legacy_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
             (project / "README.md").write_text("# demo\n", encoding="utf-8")
@@ -357,6 +422,7 @@ class CliTests(TestCase):
             paths["claude"].mkdir(parents=True)
 
             with (
+                _kept_staging() as kept,
                 patch.object(
                     cli,
                     "read_identity",
@@ -366,32 +432,38 @@ class CliTests(TestCase):
                     cli.config_agents, "_agent_host_paths", return_value=paths
                 ),
                 patch.object(cli.config_agents, "sync_credentials"),
+                contextlib.redirect_stdout(io.StringIO()),
             ):
                 rc = cli.main([str(project), "python:3.12-slim"])
 
             self.assertEqual(rc, 0)
+            build = kept[0] / "build"
+            config = kept[0] / "config"
             self.assertIn(
                 "FROM python:3.12-slim",
-                (sandbox / "Dockerfile").read_text(encoding="utf-8"),
+                (build / "Dockerfile").read_text(encoding="utf-8"),
             )
             self.assertIn(
                 "project-sandbox-run",
-                (sandbox / "entrypoint.sh").read_text(encoding="utf-8"),
+                (build / "entrypoint.sh").read_text(encoding="utf-8"),
             )
             self.assertIn(
                 "devcontainer init complete",
-                (sandbox / "project-sandbox-devcontainer-init").read_text(
+                (build / "project-sandbox-devcontainer-init").read_text(
                     encoding="utf-8"
                 ),
             )
             self.assertIn(
                 '"theme": "auto"',
-                (sandbox / "claude" / "settings.json").read_text(encoding="utf-8"),
+                (config / "claude" / "settings.json").read_text(encoding="utf-8"),
             )
             self.assertIn(
                 'approval_policy = "never"',
-                (sandbox / "codex" / "config.toml").read_text(encoding="utf-8"),
+                (config / "codex" / "config.toml").read_text(encoding="utf-8"),
             )
+            # The legacy generated files were migrated away, and nothing new
+            # was written into the project.
+            self.assertFalse(sandbox.exists())
             # A devcontainer.json from an earlier render is left as it was.
             self.assertEqual(
                 (dc_dir / "devcontainer.json").read_text(encoding="utf-8"),
@@ -743,9 +815,8 @@ class CliTests(TestCase):
                     context_dir=project / ".project-sandbox",
                 )
 
-        self.assertIn(
-            "must contain the generated .project-sandbox", str(raised.exception)
-        )
+        self.assertIn("--docker-context must contain", str(raised.exception))
+        self.assertIn(".project-sandbox", str(raised.exception))
 
     def test_base_image_is_required_without_dockerfile(self) -> None:
         import argparse
@@ -977,13 +1048,10 @@ class CliTests(TestCase):
         self.assertEqual(rc, 0)
         output = out.getvalue()
         self.assertIn("opencode-headless", output)
-        staged = cli.config_agents.credentials_dir(
-            project.resolve() / ".project-sandbox", "opencode", unsupervised=True
-        )
-        self.assertIn(
-            f"source={staged.resolve(strict=False)},"
-            "target=/project-sandbox-secrets/opencode,readonly",
+        self.assertRegex(
             output,
+            r"source=\S+/staging/[^/,]+/secrets/opencode-headless,"
+            r"target=/project-sandbox-secrets/opencode,readonly",
         )
         self.assertIn("OpenCode provider network access depends", output)
         self.assertIn("--allow-github", output)
@@ -1178,10 +1246,12 @@ class CliTests(TestCase):
         self.assertFalse(cli._allow_github(inferred, "bash"))
         self.assertTrue(cli._allow_github(explicit, "bash"))
 
-    def _headless_dry_run(self, *extra_args: str) -> str:
+    def _headless_dry_run(self, *extra_args: str, legacy_dir: bool = False) -> str:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
             (project / "README.md").write_text("# demo\n", encoding="utf-8")
+            if legacy_dir:
+                (project / ".project-sandbox").mkdir()
             out = io.StringIO()
             with (
                 patch.object(
@@ -1226,7 +1296,7 @@ class CliTests(TestCase):
 
     def test_prompt_text_dry_run_uses_prompt_file_not_environment(self) -> None:
         out = self._headless_dry_run()
-        self.assertIn("Would write prompt to:", out)
+        self.assertIn("Would stage prompt to:", out)
         self.assertIn(
             "PROJECT_SANDBOX_PROMPT_FILE=/project-sandbox-prompt/prompt.txt",
             out,
@@ -1238,11 +1308,12 @@ class CliTests(TestCase):
         out = self._headless_dry_run(
             "--mount",
             "type=bind,source=/tmp/custom,target=/workspace/.project-sandbox",
+            legacy_dir=True,
         )
 
         custom = f"type=bind,source={Path('/tmp/custom').resolve()},target=/workspace/.project-sandbox"
         mask = "target=/workspace/.project-sandbox,readonly"
-        self.assertIn("Would mask workspace sandbox files with:", out)
+        self.assertIn("Would mask workspace paths with:", out)
         self.assertIn(custom, out)
         self.assertIn(mask, out)
         self.assertLess(out.index(custom), out.index(mask))
@@ -1290,9 +1361,7 @@ class CliTests(TestCase):
             dockerfile.write_text("FROM debian:bookworm\n", encoding="utf-8")
             # Record a trusted baseline, then mutate the Dockerfile as an agent
             # with workspace write access could.
-            context_dir = project / ".project-sandbox"
-            context_dir.mkdir()
-            cli.dockerfile_checksum.record(context_dir, [dockerfile])
+            _record_dockerfile_baseline(project, [dockerfile])
             dockerfile.write_text(
                 "FROM debian:bookworm\nRUN echo pwned\n", encoding="utf-8"
             )
@@ -1333,9 +1402,7 @@ class CliTests(TestCase):
             (project / "README.md").write_text("# demo\n", encoding="utf-8")
             dockerfile = project / "Dockerfile"
             dockerfile.write_text("FROM debian:bookworm\n", encoding="utf-8")
-            context_dir = project / ".project-sandbox"
-            context_dir.mkdir()
-            cli.dockerfile_checksum.record(context_dir, [dockerfile])
+            _record_dockerfile_baseline(project, [dockerfile])
 
             # Mutate the Dockerfile (simulates agent tamper).
             dockerfile.write_text(
@@ -1374,7 +1441,7 @@ class CliTests(TestCase):
             # The baseline must still reflect the original content so a subsequent
             # run without --no-verify-dockerfile still detects the tamper.
             warnings = cli.dockerfile_checksum.changed_warnings(
-                context_dir, [dockerfile]
+                cli.paths.project_state_path(project), [dockerfile]
             )
             self.assertEqual(
                 len(warnings), 1, "tamper must still be detectable after --no-build run"
@@ -1386,9 +1453,7 @@ class CliTests(TestCase):
             (project / "README.md").write_text("# demo\n", encoding="utf-8")
             dockerfile = project / "Dockerfile"
             dockerfile.write_text("FROM debian:bookworm\n", encoding="utf-8")
-            context_dir = project / ".project-sandbox"
-            context_dir.mkdir()
-            cli.dockerfile_checksum.record(context_dir, [dockerfile])
+            _record_dockerfile_baseline(project, [dockerfile])
             dockerfile.write_text(
                 "FROM debian:bookworm\nRUN echo pwned\n", encoding="utf-8"
             )
@@ -1439,9 +1504,7 @@ class CliTests(TestCase):
             (project / "README.md").write_text("# demo\n", encoding="utf-8")
             dockerfile = project / "Dockerfile"
             dockerfile.write_text("FROM debian:bookworm\n", encoding="utf-8")
-            context_dir = project / ".project-sandbox"
-            context_dir.mkdir()
-            cli.dockerfile_checksum.record(context_dir, [dockerfile])
+            _record_dockerfile_baseline(project, [dockerfile])
             dockerfile.write_text(
                 "FROM debian:bookworm\nRUN echo pwned\n", encoding="utf-8"
             )
@@ -1486,9 +1549,7 @@ class CliTests(TestCase):
             (project / "README.md").write_text("# demo\n", encoding="utf-8")
             dockerfile = project / "Dockerfile"
             dockerfile.write_text("FROM debian:bookworm\n", encoding="utf-8")
-            context_dir = project / ".project-sandbox"
-            context_dir.mkdir()
-            cli.dockerfile_checksum.record(context_dir, [dockerfile])
+            _record_dockerfile_baseline(project, [dockerfile])
             dockerfile.write_text(
                 "FROM debian:bookworm\nRUN echo pwned\n", encoding="utf-8"
             )
@@ -1535,9 +1596,7 @@ class CliTests(TestCase):
             (project / "README.md").write_text("# demo\n", encoding="utf-8")
             dockerfile = project / "Dockerfile"
             dockerfile.write_text("FROM debian:bookworm\n", encoding="utf-8")
-            context_dir = project / ".project-sandbox"
-            context_dir.mkdir()
-            cli.dockerfile_checksum.record(context_dir, [dockerfile])
+            _record_dockerfile_baseline(project, [dockerfile])
             dockerfile.write_text(
                 "FROM debian:bookworm\nRUN echo pwned\n", encoding="utf-8"
             )
@@ -1592,9 +1651,7 @@ class CliTests(TestCase):
             (project / "README.md").write_text("# demo\n", encoding="utf-8")
             dockerfile = project / "Dockerfile"
             dockerfile.write_text("FROM debian:bookworm\n", encoding="utf-8")
-            context_dir = project / ".project-sandbox"
-            context_dir.mkdir()
-            cli.dockerfile_checksum.record(context_dir, [dockerfile])
+            _record_dockerfile_baseline(project, [dockerfile])
             dockerfile.write_text(
                 "FROM debian:bookworm\nRUN echo pwned\n", encoding="utf-8"
             )
@@ -1636,7 +1693,7 @@ class CliTests(TestCase):
             self.assertEqual(called_input, [], "dry-run must never call input()")
             # State file must not have been mutated.
             warnings = cli.dockerfile_checksum.changed_warnings(
-                context_dir, [dockerfile]
+                cli.paths.project_state_path(project), [dockerfile]
             )
             self.assertEqual(len(warnings), 1, "dry-run must not update baseline")
 
@@ -1645,10 +1702,9 @@ class CliTests(TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
-            context_dir = project / ".project-sandbox"
-            claude_cfg = context_dir / "claude" / "settings.json"
-            codex_cfg = context_dir / "codex" / "config.toml"
-            credential_dirs = {"claude": context_dir / "claude-secrets"}
+            layout, claude_cfg, codex_cfg, credential_dirs = _session_layout(
+                self, project
+            )
             args = argparse.Namespace(
                 branch=None,
                 cpus=4,
@@ -1665,7 +1721,7 @@ class CliTests(TestCase):
             cmd, log_path, unsupervised, _stop_argv = cli._build_session_command(
                 args,
                 project=project,
-                context_dir=context_dir,
+                layout=layout,
                 workspace=project,
                 worktree=None,
                 identity=GitIdentity(None, None),
@@ -1677,7 +1733,7 @@ class CliTests(TestCase):
                 create_prompt_files=True,
             )
 
-            prompts_dir = context_dir / "prompts"
+            prompts_dir = layout.prompt
             prompt_file = prompts_dir / "prompt.txt"
             self.assertTrue(unsupervised)
             self.assertIsNotNone(log_path)
@@ -1705,6 +1761,9 @@ class CliTests(TestCase):
         ):
             project = Path(tmp)
             context_dir = project / ".project-sandbox"
+            layout = cli.staging.SessionLayout.planned(
+                "20260101T000000-000000000000", project
+            )
             # Staged credentials must never live beneath .project-sandbox (the
             # image build context and workspace-mask target), so this fixture
             # mirrors real staging under an unrelated host tmp directory.
@@ -1736,7 +1795,7 @@ class CliTests(TestCase):
                         cmd, _, unsupervised, _ = cli._build_session_command(
                             args,
                             project=project,
-                            context_dir=context_dir,
+                            layout=layout,
                             workspace=project,
                             worktree=None,
                             identity=GitIdentity(None, None),
@@ -1766,15 +1825,11 @@ class CliTests(TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
-            context_dir = project / ".project-sandbox"
             prompt_file = project / "prompt.txt"
             prompt_file.write_text("echo ok", encoding="utf-8")
-            old_prompt = context_dir / "prompt" / "previous-task.txt"
-            old_prompt.parent.mkdir(parents=True)
-            old_prompt.write_text("private historical task", encoding="utf-8")
-            claude_cfg = context_dir / "claude" / "settings.json"
-            codex_cfg = context_dir / "codex" / "config.toml"
-            credential_dirs = {"claude": context_dir / "claude-secrets"}
+            layout, claude_cfg, codex_cfg, credential_dirs = _session_layout(
+                self, project
+            )
             args = argparse.Namespace(
                 branch=None,
                 cpus=4,
@@ -1791,7 +1846,7 @@ class CliTests(TestCase):
             cmd, _, unsupervised, _stop_argv = cli._build_session_command(
                 args,
                 project=project,
-                context_dir=context_dir,
+                layout=layout,
                 workspace=project,
                 worktree=None,
                 identity=GitIdentity(None, None),
@@ -1805,13 +1860,13 @@ class CliTests(TestCase):
 
             self.assertTrue(unsupervised)
             # The whole staging dir is mounted (apple/container cannot bind-mount
-            # a single file), but it is cleared before staging so only the
-            # current prompt is exposed, excluding older prompts.
-            staging_dir = context_dir / "prompt"
+            # a single file); it is this session's own, so it holds only the
+            # current prompt.
+            staging_dir = layout.prompt
             staged_file = staging_dir / "prompt.txt"
             self.assertTrue(staged_file.is_file())
             self.assertEqual(staged_file.read_text(encoding="utf-8"), "echo ok")
-            self.assertFalse(old_prompt.exists())
+            self.assertEqual([p.name for p in staging_dir.iterdir()], ["prompt.txt"])
             self.assertIn(
                 f"type=bind,source={staging_dir.resolve()},"
                 "target=/project-sandbox-prompt,readonly",
@@ -1832,10 +1887,9 @@ class CliTests(TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
-            context_dir = project / ".project-sandbox"
-            claude_cfg = context_dir / "claude" / "settings.json"
-            codex_cfg = context_dir / "codex" / "config.toml"
-            credential_dirs = {"claude": context_dir / "claude-secrets"}
+            layout, claude_cfg, codex_cfg, credential_dirs = _session_layout(
+                self, project
+            )
             args = argparse.Namespace(
                 branch=None,
                 cpus=4,
@@ -1852,7 +1906,7 @@ class CliTests(TestCase):
             cmd, log_path, unsupervised, _stop_argv = cli._build_session_command(
                 args,
                 project=project,
-                context_dir=context_dir,
+                layout=layout,
                 workspace=project,
                 worktree=None,
                 identity=GitIdentity(None, None),
@@ -1864,9 +1918,10 @@ class CliTests(TestCase):
                 create_prompt_files=True,
             )
 
-            history_dir = project / ".project-sandbox" / "history"
-            shell_dir = history_dir / "shell"
-            claude_projects = history_dir / "claude_projects"
+            # History lives in the project's private state, not the project.
+            shell_dir = layout.history_shell
+            claude_projects = layout.history_claude
+            self.assertFalse((project / ".project-sandbox").exists())
 
             self.assertFalse(unsupervised)
             self.assertIsNone(log_path)
@@ -1892,10 +1947,9 @@ class CliTests(TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
-            context_dir = project / ".project-sandbox"
-            claude_cfg = context_dir / "claude" / "settings.json"
-            codex_cfg = context_dir / "codex" / "config.toml"
-            credential_dirs = {"claude": context_dir / "claude-secrets"}
+            layout, claude_cfg, codex_cfg, credential_dirs = _session_layout(
+                self, project
+            )
             args = argparse.Namespace(
                 branch=None,
                 cpus=4,
@@ -1912,7 +1966,7 @@ class CliTests(TestCase):
             cmd, _log_path, unsupervised, _stop_argv = cli._build_session_command(
                 args,
                 project=project,
-                context_dir=context_dir,
+                layout=layout,
                 workspace=project,
                 worktree=None,
                 identity=GitIdentity(None, None),
@@ -1927,17 +1981,6 @@ class CliTests(TestCase):
             self.assertTrue(unsupervised)
             self.assertNotIn("/home/agent/.bash_history", " ".join(cmd))
             self.assertNotIn("/home/agent/.claude/projects", " ".join(cmd))
-
-    def test_project_sandbox_gitignore_excludes_history_dir(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            context_dir = Path(tmp)
-            cli._write_project_sandbox_gitignore(context_dir)
-            content = (context_dir / ".gitignore").read_text(encoding="utf-8")
-            # history/ is already excluded by the leading "*" glob (nothing
-            # negates it back in), so an explicit "history/" entry would be
-            # redundant and is no longer written.
-            self.assertIn("*\n", content)
-            self.assertNotIn("history/", content)
 
     def test_unavailable_agent_raises_with_available_list(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1981,10 +2024,9 @@ class CliTests(TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
-            context_dir = project / ".project-sandbox"
-            claude_cfg = context_dir / "claude" / "settings.json"
-            codex_cfg = context_dir / "codex" / "config.toml"
-            credential_dirs = {"claude": context_dir / "claude-secrets"}
+            layout, claude_cfg, codex_cfg, credential_dirs = _session_layout(
+                self, project
+            )
             args = argparse.Namespace(
                 branch=None,
                 cpus=4,
@@ -2002,7 +2044,7 @@ class CliTests(TestCase):
                 _cmd, log_path, unsupervised, _stop_argv = cli._build_session_command(
                     args,
                     project=project,
-                    context_dir=context_dir,
+                    layout=layout,
                     workspace=project,
                     worktree=None,
                     identity=GitIdentity(None, None),
@@ -2373,9 +2415,7 @@ class CliTests(TestCase):
             (project / "README.md").write_text("# demo\n", encoding="utf-8")
             dockerfile = project / "Dockerfile"
             dockerfile.write_text("FROM debian:bookworm\n", encoding="utf-8")
-            context_dir = project / ".project-sandbox"
-            context_dir.mkdir()
-            cli.dockerfile_checksum.record(context_dir, [dockerfile])
+            _record_dockerfile_baseline(project, [dockerfile])
             dockerfile.write_text(
                 "FROM debian:bookworm\nRUN echo pwned\n", encoding="utf-8"
             )
@@ -2719,6 +2759,7 @@ class PiOllamaTests(TestCase):
                     ],
                 ),
                 contextlib.redirect_stdout(out),
+                _kept_staging() as kept,
             ):
                 rc = cli.main(
                     [
@@ -2730,16 +2771,14 @@ class PiOllamaTests(TestCase):
                     ]
                 )
             self.assertEqual(rc, 0)
-            rendered = (project / ".project-sandbox" / "init-firewall.sh").read_text(
+            rendered = (kept[0] / "build" / "init-firewall.sh").read_text(
                 encoding="utf-8"
             )
             self.assertIn("--dport 11434", rendered)
             self.assertIn("host.docker.internal", rendered)
             self.assertNotIn("ollama.project-sandbox.internal", rendered)
             models = json.loads(
-                (project / ".project-sandbox" / "pi" / "models.json").read_text(
-                    encoding="utf-8"
-                )
+                (kept[0] / "config" / "pi" / "models.json").read_text(encoding="utf-8")
             )
             self.assertEqual(
                 models["providers"]["ollama"]["baseUrl"],
@@ -3417,6 +3456,8 @@ class JsonSessionSummaryTests(TestCase):
                     "ended_at": "2026-08-13T10:01:00+00:00",
                     "exit_code": 7,
                     "jj_change_id": None,
+                    "log_path": None,
+                    "pid": os.getpid(),
                     "session_id": "abcdef0123456789",
                     "started_at": "2026-08-13T10:00:00+00:00",
                     "workspace_path": str(workspace.resolve()),
@@ -3746,14 +3787,21 @@ class BuildCacheReuseTests(TestCase):
                 self.assertEqual(rc, 0)
                 build.assert_called_once()
                 self.assertEqual(build.call_args.kwargs["build_context"], workspace)
+                # The generated inputs are copied into the build context.
                 context = workspace / ".project-sandbox"
-                self.assertEqual(build.call_args.kwargs["context_dir"], context)
+                self.assertEqual(
+                    build.call_args.kwargs["dockerfile_path"],
+                    (context / "Dockerfile").resolve(),
+                )
                 generated = (context / "Dockerfile.python-uv").read_text()
                 self.assertEqual("RUN uv sync --frozen" in generated, has_lock)
                 self.assertTrue((context / "Dockerfile.dockerignore").is_file())
                 self.assertFalse((context / "Dockerfile.devcontainer").exists())
-                # Created empty, only so the session can mask it.
-                self.assertEqual(list((workspace / ".devcontainer").iterdir()), [])
+                # Created empty (self-ignoring), only so the session can mask it.
+                self.assertEqual(
+                    [p.name for p in (workspace / ".devcontainer").iterdir()],
+                    [".gitignore"],
+                )
 
     def test_first_run_builds_and_records_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -3763,8 +3811,9 @@ class BuildCacheReuseTests(TestCase):
             build_image.assert_called_once()
             self.assertIn("Built image in", out)
             self.assertTrue(
-                (project / ".project-sandbox" / ".build-state.json").exists()
+                (cli.paths.project_state_path(project) / "build-state.json").exists()
             )
+            self.assertFalse((project / ".project-sandbox").exists())
 
     def test_build_and_state_write_are_inside_cache_lock(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -3830,7 +3879,7 @@ class BuildCacheReuseTests(TestCase):
             project = self._make_project(tmp)
             self._run(project, image_exists=False)  # seed state
             # Corrupt the recorded fingerprint so it no longer matches.
-            state = project / ".project-sandbox" / ".build-state.json"
+            state = cli.paths.project_state_path(project) / "build-state.json"
             state.write_text(
                 '{"image_tag": "x", "fingerprint": "stale"}\n', encoding="utf-8"
             )
@@ -3951,7 +4000,8 @@ class PythonUvFlagTests(TestCase):
             self.assertEqual(rc, 0)
             self.assertIn(f"Would use build context: {workspace}", output)
             self.assertIn(
-                f"Would render sandbox assets under: {workspace / '.project-sandbox'}",
+                "Would copy the generated build inputs to: "
+                f"{workspace / '.project-sandbox'}",
                 output,
             )
             self.assertFalse(workspace.exists())
@@ -4804,10 +4854,7 @@ class RustCargoFlagTests(TestCase):
     ) -> list[str]:
         import argparse
 
-        context_dir = project / ".project-sandbox"
-        context_dir.mkdir(exist_ok=True)
-        claude_cfg = context_dir / "claude" / "settings.json"
-        codex_cfg = context_dir / "codex" / "config.toml"
+        layout, claude_cfg, codex_cfg, _credential_dirs = _session_layout(self, project)
         credential_dirs: dict = {}
         args = argparse.Namespace(
             branch=None,
@@ -4826,7 +4873,7 @@ class RustCargoFlagTests(TestCase):
         cmd, _, _, _ = cli._build_session_command(
             args,
             project=project,
-            context_dir=context_dir,
+            layout=layout,
             workspace=project,
             worktree=None,
             identity=GitIdentity(None, None),
@@ -5029,18 +5076,27 @@ class NoForwardCredentialsTests(TestCase):
                             "python:3.12-slim",
                         ]
                     )
-                sync.assert_called_once_with(
-                    project.resolve() / ".project-sandbox",
-                    unsupervised=mode != "interactive",
+                sync.assert_called_once()
+                (secrets_dir,) = sync.call_args.args
+                # Staged into this session's own private secrets/ directory.
+                self.assertEqual(secrets_dir.name, "secrets")
+                self.assertEqual(secrets_dir.parent.parent.name, "staging")
+                self.assertEqual(
+                    sync.call_args.kwargs, {"unsupervised": mode != "interactive"}
                 )
 
-    def test_skips_staging_and_purges_instead(self) -> None:
+    def test_skips_staging_and_leaves_other_sessions_alone(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
             (project / "README.md").write_text("# demo\n", encoding="utf-8")
             host_home = project / "home"
             paths = _agent_paths(host_home)
             paths["claude"].mkdir(parents=True)
+            # Another, forwarding session of the same project is running.
+            other = cli.staging.SessionStaging.create("20260101T000000-0123456789ab")
+            self.addCleanup(other.close)
+            with other.secrets.subdir("claude") as claude:
+                claude.write_secret(".credentials.json", "{}")
             with (
                 patch.object(
                     cli,
@@ -5051,7 +5107,6 @@ class NoForwardCredentialsTests(TestCase):
                     cli.config_agents, "_agent_host_paths", return_value=paths
                 ),
                 patch.object(cli.config_agents, "sync_credentials") as sync,
-                patch.object(cli.config_agents, "purge_staged_credentials") as purge,
                 patch.object(
                     cli.container_cli,
                     "select_runtime",
@@ -5061,7 +5116,7 @@ class NoForwardCredentialsTests(TestCase):
                     cli.container_cli, "ensure_system_started", return_value=0
                 ),
                 patch.object(cli.container_cli, "build_image", return_value=0),
-                patch.object(cli.container_cli, "run", return_value=0),
+                patch.object(cli.container_cli, "run", return_value=0) as run,
                 contextlib.redirect_stdout(io.StringIO()),
             ):
                 cli.main(
@@ -5074,7 +5129,13 @@ class NoForwardCredentialsTests(TestCase):
                     ]
                 )
             sync.assert_not_called()
-            purge.assert_called_once()
+            self.assertNotIn(
+                "/project-sandbox-secrets/", " ".join(run.call_args.args[0])
+            )
+            # The other session's staged credentials are untouched.
+            self.assertTrue(
+                (other.secrets.path / "claude" / ".credentials.json").is_file()
+            )
 
     def test_allows_missing_host_agent_config(self) -> None:
         """--no-forward-credentials promises to start unauthenticated and log
@@ -5324,9 +5385,9 @@ class ApiKeyInjectionTests(TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
-            context_dir = project / ".project-sandbox"
-            claude_cfg = context_dir / "claude" / "settings.json"
-            codex_cfg = context_dir / "codex" / "config.toml"
+            layout, claude_cfg, codex_cfg, _credential_dirs = _session_layout(
+                self, project
+            )
             args = argparse.Namespace(
                 branch=None,
                 cpus=4,
@@ -5349,7 +5410,7 @@ class ApiKeyInjectionTests(TestCase):
                 cmd, _log_path, unsupervised, _stop_argv = cli._build_session_command(
                     args,
                     project=project,
-                    context_dir=context_dir,
+                    layout=layout,
                     workspace=project,
                     worktree=None,
                     identity=GitIdentity(None, None),
@@ -5381,10 +5442,9 @@ class ApiKeyInjectionTests(TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
-            context_dir = project / ".project-sandbox"
-            context_dir.mkdir()
-            claude_cfg = context_dir / "claude" / "settings.json"
-            codex_cfg = context_dir / "codex" / "config.toml"
+            layout, claude_cfg, codex_cfg, _credential_dirs = _session_layout(
+                self, project
+            )
             args = argparse.Namespace(
                 branch=None,
                 cpus=4,
@@ -5407,7 +5467,7 @@ class ApiKeyInjectionTests(TestCase):
                 cmd, _log_path, _unsupervised, _stop_argv = cli._build_session_command(
                     args,
                     project=project,
-                    context_dir=context_dir,
+                    layout=layout,
                     workspace=project,
                     worktree=None,
                     identity=GitIdentity(None, None),
@@ -5435,12 +5495,15 @@ class ApiKeyInjectionTests(TestCase):
             tmp_path = Path(tmp)
             target = tmp_path / "target.env"
             target.write_text("SHOULD_NOT_CHANGE=1\n", encoding="utf-8")
-            env_file = tmp_path / "api-keys.env"
+            secrets = tmp_path / "secrets"
+            secrets.mkdir(mode=0o700)
+            env_file = secrets / "api-keys.env"
             env_file.symlink_to(target)
 
-            cli._write_staged_api_key_env_file(
-                env_file, {"ANTHROPIC_API_KEY": "super-secret-value"}
-            )
+            with cli.paths.PrivateDir.open(secrets, anchor=tmp_path) as directory:
+                cli._write_staged_api_key_env_file(
+                    directory, {"ANTHROPIC_API_KEY": "super-secret-value"}
+                )
 
             self.assertFalse(env_file.is_symlink())
             self.assertEqual(
@@ -5458,9 +5521,10 @@ class ApiKeyInjectionTests(TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
-            context_dir = project / ".project-sandbox"
-            claude_cfg = context_dir / "claude" / "settings.json"
-            codex_cfg = context_dir / "codex" / "config.toml"
+            layout, claude_cfg, codex_cfg, _credential_dirs = _session_layout(
+                self, project
+            )
+            context_dir = layout.secrets
             args = argparse.Namespace(
                 branch=None,
                 cpus=4,
@@ -5487,7 +5551,7 @@ class ApiKeyInjectionTests(TestCase):
                 cmd, _log_path, _unsupervised, _stop_argv = cli._build_session_command(
                     args,
                     project=project,
-                    context_dir=context_dir,
+                    layout=layout,
                     workspace=project,
                     worktree=None,
                     identity=GitIdentity(None, None),
@@ -5504,19 +5568,20 @@ class ApiKeyInjectionTests(TestCase):
             self.assertIn("Would write API key env file", out.getvalue())
             self.assertNotIn("super-secret-value", out.getvalue())
 
-    def test_stale_api_key_env_file_is_removed_when_unused(self) -> None:
-        """A previous apple-container run's staged keys must not linger once a
-        later run stops using the env-file path."""
+    def test_unused_api_key_env_file_is_not_staged(self) -> None:
+        """Without injected keys no env file is staged, and a legacy in-project
+        one from an earlier version is never mounted or reused."""
         import argparse
 
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
-            context_dir = project / ".project-sandbox"
-            context_dir.mkdir()
-            stale = context_dir / "api-keys.env"
-            stale.write_text("OLD_KEY=old-secret\n", encoding="utf-8")
-            claude_cfg = context_dir / "claude" / "settings.json"
-            codex_cfg = context_dir / "codex" / "config.toml"
+            legacy = project / ".project-sandbox" / "api-keys.env"
+            legacy.parent.mkdir()
+            legacy.write_text("OLD_KEY=old-secret\n", encoding="utf-8")
+            layout, claude_cfg, codex_cfg, _credential_dirs = _session_layout(
+                self, project
+            )
+            context_dir = layout.secrets
             args = argparse.Namespace(
                 branch=None,
                 cpus=4,
@@ -5533,10 +5598,10 @@ class ApiKeyInjectionTests(TestCase):
                 verbose=False,
             )
 
-            cli._build_session_command(
+            cmd, _, _, _ = cli._build_session_command(
                 args,
                 project=project,
-                context_dir=context_dir,
+                layout=layout,
                 workspace=project,
                 worktree=None,
                 identity=GitIdentity(None, None),
@@ -5548,7 +5613,9 @@ class ApiKeyInjectionTests(TestCase):
                 create_prompt_files=True,
             )
 
-            self.assertFalse(stale.exists())
+            self.assertFalse((context_dir / "api-keys.env").exists())
+            self.assertNotIn("--env-file", cmd)
+            self.assertNotIn(str(legacy), " ".join(cmd))
 
     def test_api_key_env_value_supplied_via_subprocess_env_not_argv(self) -> None:
         """main() must hand the secret to the docker/podman CLI through the
@@ -5667,8 +5734,11 @@ class NodeNpmFlagTests(TestCase):
                 return_value=_agent_paths(project / "home"),
             ),
             contextlib.redirect_stdout(out),
+            _kept_staging() as kept,
         ):
             rc = cli.main(argv)
+        # The session's rendered build directory, kept for inspection.
+        self.build_dir = kept[0] / "build" if kept else None
         return rc, out.getvalue()
 
     def _assert_rejected(self, argv: list[str], project: Path, *fragments: str) -> None:
@@ -5777,9 +5847,9 @@ class NodeNpmFlagTests(TestCase):
             project = _make_npm_project(Path(tmp), lockfile="npm-shrinkwrap.json")
             rc, _ = self._main(["--node-npm", str(project)], project)
             self.assertEqual(rc, 0)
-            generated = (
-                project / ".project-sandbox" / "Dockerfile.node-npm"
-            ).read_text(encoding="utf-8")
+            generated = (self.build_dir / "Dockerfile.node-npm").read_text(
+                encoding="utf-8"
+            )
         self.assertIn("COPY package.json npm-shrinkwrap.json ./", generated)
         self.assertNotIn("package-lock.json", generated)
 
@@ -5923,7 +5993,7 @@ class NodeNpmFlagTests(TestCase):
             (project / "package-lock.json").write_text("{}")
             rc, _ = self._main(["--node-npm", str(project)], project)
             self.assertEqual(rc, 0)
-            text = (project / ".project-sandbox/Dockerfile.node-npm").read_text()
+            text = (self.build_dir / "Dockerfile.node-npm").read_text()
             for member in ("packages/a", "packages/b"):
                 self.assertIn(
                     json.dumps([f"{member}/package.json", f"{member}/"]), text
@@ -6070,7 +6140,7 @@ class NodeNpmFlagTests(TestCase):
             )
             rc, _ = self._main(["--node-npm", str(project)], project)
             self.assertEqual(rc, 0)
-            context = project / ".project-sandbox"
+            context = self.build_dir
             generated = (context / "Dockerfile.node-npm").read_text()
             final = (context / "Dockerfile").read_text()
             self.assertTrue((context / "Dockerfile.dockerignore").is_file())
@@ -6163,9 +6233,13 @@ class NodeNpmFlagTests(TestCase):
                 )
             self.assertEqual(rc, 0)
         self.assertIn(
-            f"Would write synthesised Dockerfile: "
-            f"{workspace / '.project-sandbox' / 'Dockerfile.node-npm'}",
+            "Would copy the generated build inputs to: "
+            f"{workspace / '.project-sandbox'}",
             output,
+        )
+        self.assertRegex(
+            output,
+            r"Would write synthesised Dockerfile: \S+/build/Dockerfile\.node-npm",
         )
 
 
@@ -6244,10 +6318,20 @@ class CopilotAgentTests(TestCase):
         self.project = self.root / "project"
         self.project.mkdir()
         (self.project / "README.md").write_text("# demo\n", encoding="utf-8")
-        self.cred_root = self.root / "creds"
-        patcher = patch.object(cli.config_agents, "CREDENTIALS_ROOT", self.cred_root)
+        # Per-session staging (and so the staged token) lives under the
+        # runtime root.
+        self.cred_root = self.root / "runtime"
+        patcher = patch.dict(
+            os.environ, {"PROJECT_SANDBOX_RUNTIME_DIR": str(self.cred_root)}
+        )
         patcher.start()
         self.addCleanup(patcher.stop)
+
+    def _no_staging_left(self) -> None:
+        staging_dir = self.cred_root / "staging"
+        self.assertEqual(
+            list(staging_dir.iterdir()) if staging_dir.exists() else [], []
+        )
 
     def _patches(self, out, runner=None):
         real_resolve = cli.copilot_auth.resolve_token
@@ -6301,9 +6385,18 @@ class CopilotAgentTests(TestCase):
         def fake_run(cmd, *, log_path, **kwargs):
             captured["cmd"] = cmd
             captured["kwargs"] = kwargs
-            token_dir = cli.copilot_auth.staged_token_dir(
-                self.project.resolve() / ".project-sandbox"
-            )
+            token_dir = Path(_mount_source_for(cmd, "/project-sandbox-secrets/copilot"))
+            captured["token_dir"] = token_dir
+            # The session's staging is alive while the agent runs.
+            staging_dir = token_dir.parent.parent
+            captured["files"] = {
+                rel: (staging_dir / rel).read_text(encoding="utf-8")
+                for rel in (
+                    "build/Dockerfile",
+                    "build/init-firewall.sh",
+                    "config/copilot/config.json",
+                )
+            }
             token_file = token_dir / "token"
             captured["token_mode"] = token_file.stat().st_mode & 0o777
             captured["dir_mode"] = token_dir.stat().st_mode & 0o777
@@ -6499,25 +6592,23 @@ class CopilotAgentTests(TestCase):
         cmd = run["cmd"]
         self.assertNotIn(COPILOT_PAT, " ".join(cmd))
         self.assertIn("copilot-headless", cmd)
-        token_dir = cli.copilot_auth.staged_token_dir(
-            self.project.resolve() / ".project-sandbox"
-        )
+        token_dir = run["token_dir"]
         self.assertIn(
-            f"type=bind,source={token_dir.resolve()},"
+            f"type=bind,source={token_dir},"
             "target=/project-sandbox-secrets/copilot,readonly",
             cmd,
         )
-        # Removed best-effort at session end.
-        self.assertFalse((token_dir / "token").exists())
+        # The session's staging, token included, is deleted at session end.
+        self.assertTrue(token_dir.is_relative_to(self.cred_root.resolve()))
+        self.assertFalse(token_dir.exists())
+        self._no_staging_left()
         # Nothing under the project holds the token.
         for path in self.project.rglob("*"):
             if path.is_file():
                 self.assertNotIn(
                     COPILOT_PAT, path.read_text(encoding="utf-8", errors="replace")
                 )
-        config = json.loads(
-            (self.project / ".project-sandbox" / "copilot" / "config.json").read_text()
-        )
+        config = json.loads(run["files"]["config/copilot/config.json"])
         self.assertEqual(config, {"trusted_folders": ["/workspace"]})
 
     def test_gh_fallback_prints_scope_warning(self) -> None:
@@ -6546,8 +6637,8 @@ class CopilotAgentTests(TestCase):
         self.assertIn("pass insert copilot-github-token", str(ctx.exception))
         self.assertIn("gh auth login --hostname github.com", str(ctx.exception))
         run_container.assert_not_called()
-        self.assertFalse(self.cred_root.exists())
-        self.assertFalse((self.project / ".project-sandbox" / "Dockerfile").exists())
+        self._no_staging_left()
+        self.assertFalse((self.project / ".project-sandbox").exists())
 
     def test_explicit_entry_failure_does_not_invoke_gh(self) -> None:
         runner = _copilot_runner(pass_result=(1, ""), gh_result=(0, "gho_x"))
@@ -6572,16 +6663,14 @@ class CopilotAgentTests(TestCase):
             runner.calls, [["pass", "show", "copilot-github-token/acme.ghe.com"]]
         )
         self.assertIn("COPILOT_GH_HOST=acme.ghe.com", run["cmd"])
-        context = self.project / ".project-sandbox"
-        sandbox = (context / "init-firewall.sh").read_text(encoding="utf-8")
+        sandbox = run["files"]["build/init-firewall.sh"]
         self.assertIn("copilot-api.acme.ghe.com", sandbox)
         self.assertIn('"api.individual.githubcopilot.com"', sandbox)
-        self.assertFalse((context / "init-firewall-devcontainer.sh").exists())
 
     def test_launch_installs_copilot_in_image(self) -> None:
         runner = _copilot_runner(pass_result=(0, COPILOT_PAT))
-        self._launch(runner=runner)
-        dockerfile_text = (self.project / ".project-sandbox" / "Dockerfile").read_text()
+        _rc, run = self._launch(runner=runner)
+        dockerfile_text = run["files"]["build/Dockerfile"]
         self.assertIn("npm install -g @github/copilot@", dockerfile_text)
 
     def test_no_forward_credentials_launch_skips_lookup_and_mount(self) -> None:
@@ -6714,7 +6803,9 @@ class CopilotBashIsolationTests(TestCase):
                             cmd, *_ = cli._build_session_command(
                                 args,
                                 project=Path(tmp),
-                                context_dir=context,
+                                layout=cli.staging.SessionLayout.planned(
+                                    "20260101T000000-000000000000", Path(tmp)
+                                ),
                                 workspace=Path(tmp),
                                 worktree=None,
                                 identity=GitIdentity(None, None),
@@ -6752,8 +6843,10 @@ class EgressModeCliTests(TestCase):
             patch.object(cli.container_cli, "build_image"),
             patch.object(cli.container_cli, "run", return_value=0) as run,
             contextlib.redirect_stdout(out),
+            _kept_staging() as kept,
         ):
             rc = cli.main([*argv, str(project), "python:3.12-slim"])
+        self.last_staging = kept[0] if kept else None
         return rc, out.getvalue(), run
 
     @staticmethod
@@ -6770,6 +6863,15 @@ class EgressModeCliTests(TestCase):
             for path in sorted(base.rglob("*")) if base.exists() else ():
                 if path.is_file() and not path.is_symlink():
                     files[str(path.relative_to(project))] = path.read_bytes()
+        return files
+
+    @staticmethod
+    def _snapshot_dirs(base: Path, roots: tuple[str, ...]) -> dict[str, bytes]:
+        files: dict[str, bytes] = {}
+        for root in roots:
+            for path in sorted((base / root).rglob("*")):
+                if path.is_file() and not path.is_symlink():
+                    files[str(path.relative_to(base))] = path.read_bytes()
         return files
 
     @staticmethod
@@ -6897,7 +6999,16 @@ class EgressModeCliTests(TestCase):
                 rc, _, run = self._main(project, extra)
                 self.assertEqual(rc, 0)
                 run.assert_not_called()
-                snapshots.append(self._snapshot(project))
+                # Everything is rendered into the session's private staging.
+                self.assertEqual(self._snapshot(project), {})
+                snapshots.append(
+                    {
+                        name: data
+                        for name, data in self._snapshot_dirs(
+                            self.last_staging, ("build", "config")
+                        ).items()
+                    }
+                )
         self.assertTrue(snapshots[0])
         self.assertEqual(snapshots[0], snapshots[1])
 
@@ -6925,6 +7036,10 @@ class EgressModeCliTests(TestCase):
                 argv = re.sub(
                     r"project-sandbox-\d{8}t\d{6}-[0-9a-f]+", "<session>", argv
                 )
+                # Each session stages into its own directory.
+                session_dir = r"staging/\d{8}T\d{6}-[0-9a-f]+"
+                argv = re.sub(session_dir, "staging/<id>", argv)
+                out = re.sub(session_dir, "staging/<id>", out)
                 outputs.append((out, argv))
         self.assertTrue(outputs[0][1].startswith("docker run"))
         self.assertEqual(outputs[0], outputs[1])
@@ -7370,6 +7485,8 @@ class EgressSidecarLaunchTests(TestCase):
             return 0
 
         with contextlib.ExitStack() as stack:
+            kept = stack.enter_context(_kept_staging())
+            self.kept_staging = kept
             for p in self._patches():
                 stack.enter_context(p)
             stack.enter_context(
@@ -7487,7 +7604,7 @@ class EgressSidecarLaunchTests(TestCase):
             "Egress sidecar: reusing project-sandbox-egress at 127.0.0.1:3129", out
         )
         self.assertIn("denied 1 request during this session", out)
-        context = self.project / ".project-sandbox"
+        context = self.kept_staging[-1] / "build"
         script = (context / "init-firewall.sh").read_text()
         self.assertIn("Policy: egress sidecar only", script)
         # Only the sidecar endpoint is admitted; no DNS, no IP pinning of hosts.
@@ -7503,8 +7620,11 @@ class EgressSidecarLaunchTests(TestCase):
         )
         self.assertFalse((context / "init-firewall-devcontainer.sh").exists())
         self.assertFalse((context / "Dockerfile.devcontainer").exists())
-        # Only the empty mask target, never a devcontainer configuration.
-        self.assertEqual(list((self.project / ".devcontainer").iterdir()), [])
+        # Only the self-ignoring mask target, never a devcontainer configuration.
+        self.assertEqual(
+            [p.name for p in (self.project / ".devcontainer").iterdir()],
+            [".gitignore"],
+        )
 
     ENGINE: ClassVar[dict] = {
         "OperatingSystem": "Debian GNU/Linux 13 (trixie)",
@@ -7548,7 +7668,7 @@ class EgressSidecarLaunchTests(TestCase):
             self.ensure_kwargs["strategy"],
             cli.egress_sidecar.Strategy("docker-gateway", "172.17.0.1"),
         )
-        script = (self.project / ".project-sandbox" / "init-firewall.sh").read_text()
+        script = (self.kept_staging[-1] / "build" / "init-firewall.sh").read_text()
         # host.docker.internal resolves to the gateway: <gateway>:3129 only.
         self.assertIn("-p tcp --dport 3129 -j ACCEPT", script)
         self.assertIn('endpoints = ["host.docker.internal"]', script)
@@ -7646,7 +7766,7 @@ class EgressSidecarLaunchTests(TestCase):
                 cli.container_cli.DOCKER, copilot=copilot, upstream_ca=pem
             )
             self._launch(sidecar=sidecar)
-            context = self.project / ".project-sandbox"
+            context = self.kept_staging[-1] / "build"
             snapshots.append(
                 {
                     name: (context / name).read_bytes()
@@ -7751,7 +7871,6 @@ class DevcontainerCommandTests(TestCase):
             )
             for owner, name in (
                 (cli.config_agents, "sync_credentials"),
-                (cli.config_agents, "purge_staged_credentials"),
                 (cli.container_cli, "select_runtime"),
                 (cli.container_cli, "ensure_system_started"),
                 (cli.container_cli, "build_image"),
@@ -7798,21 +7917,27 @@ class DevcontainerCommandTests(TestCase):
 
         self.assertEqual(rc, 0)
         self._assert_nothing_started(mocks)
-        context = self.project / ".project-sandbox"
+        # Every generated file is a real file in .devcontainer/.
+        context = self.project / ".devcontainer"
         spec = self._spec()
         self.assertEqual(spec["runArgs"][:2], ["--network", "none"])
         self.assertEqual(spec["containerEnv"]["UV_OFFLINE"], "1")
         self.assertEqual(spec["build"]["context"], "..")
-        dockerfile_text = (context / "Dockerfile.devcontainer").read_text()
+        self.assertEqual(spec["build"]["dockerfile"], "Dockerfile")
+        dockerfile_text = (context / "Dockerfile").read_text()
+        self.assertFalse((context / "Dockerfile").is_symlink())
         self.assertIn("uv sync", dockerfile_text)
+        self.assertIn(
+            "COPY .devcontainer/project-sandbox-devcontainer-init", dockerfile_text
+        )
         self.assertNotIn("@anthropic-ai/claude-code", dockerfile_text)
         self.assertNotIn("sudoers", dockerfile_text)
-        self.assertTrue((context / "Dockerfile.devcontainer.dockerignore").exists())
+        self.assertTrue((context / "Dockerfile.dockerignore").exists())
         self.assertTrue((context / "project-sandbox-devcontainer-init").exists())
+        self.assertEqual((context / ".gitignore").read_text(), "*\n")
         # The session image's inputs and agent configs are not rendered.
         for name in (
-            "Dockerfile",
-            "Dockerfile.dockerignore",
+            "Dockerfile.devcontainer",
             "entrypoint.sh",
             "init-firewall.sh",
             "init-firewall-devcontainer.sh",
@@ -7822,7 +7947,8 @@ class DevcontainerCommandTests(TestCase):
             "codex-devcontainer",
         ):
             self.assertFalse((context / name).exists(), name)
-        self.assertIn(".devcontainer/", (self.project / ".gitignore").read_text())
+        self.assertFalse((self.project / ".gitignore").exists())
+        self.assertFalse((self.project / ".project-sandbox").exists())
         self.assertIn("devcontainer.json (network: none)", out)
         self.assertNotIn("unfiltered", out)
 
@@ -7853,8 +7979,10 @@ class DevcontainerCommandTests(TestCase):
                         ).exists()
                     )
                     if agent_args:
-                        # Created empty only so the session can mask it.
-                        self.assertEqual(list(dc_dir.iterdir()), [])
+                        # Created (self-ignoring) only so the session can mask it.
+                        self.assertEqual(
+                            [p.name for p in dc_dir.iterdir()], [".gitignore"]
+                        )
 
     def test_launch_masks_devcontainer_and_leaves_an_existing_render_alone(
         self,
@@ -7905,9 +8033,7 @@ class DevcontainerCommandTests(TestCase):
         self._assert_nothing_started(mocks)
         self.assertIn("Devcontainer network: none", out)
         self.assertIn(str(self.project / ".devcontainer" / "devcontainer.json"), out)
-        self.assertIn(
-            str(self.project / ".project-sandbox" / "Dockerfile.devcontainer"), out
-        )
+        self.assertIn(str(self.project / ".devcontainer" / "Dockerfile"), out)
         self.assertFalse((self.project / ".devcontainer").exists())
         self.assertFalse((self.project / ".project-sandbox").exists())
         self.assertFalse((self.project / ".gitignore").exists())

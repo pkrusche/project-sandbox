@@ -1,12 +1,16 @@
 from pathlib import Path
 
-from . import templating
+from . import paths, templating
+
+SCRIPT_NAME = "chroot-run.sh"
+JAIL_ROOT_NAME = "chroot-root"
 
 
-def render(context_dir: Path) -> Path:
-    out = context_dir / "chroot-run.sh"
-    out.write_text(
-        templating.get_template("chroot-run.sh.j2").render() + "\n", encoding="utf-8"
-    )
-    out.chmod(0o700)
-    return out
+def script_text() -> str:
+    return templating.get_template("chroot-run.sh.j2").render() + "\n"
+
+
+def render(context_dir: "paths.Target") -> Path:
+    with paths.target_dir(context_dir) as directory:
+        directory.write(SCRIPT_NAME, script_text(), mode=0o700)
+    return paths.target_path(context_dir, SCRIPT_NAME)

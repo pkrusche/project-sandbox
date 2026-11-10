@@ -211,7 +211,7 @@ class InternetProxyTests(TestCase):
             def preflight(_config, **_kwargs) -> None:
                 events.append("preflight")
 
-            def begin_filesystem_work(_path: Path) -> Path:
+            def begin_filesystem_work(*_args, **_kwargs):
                 events.append("filesystem")
                 raise SystemExit("stop after ordering check")
 
@@ -227,7 +227,11 @@ class InternetProxyTests(TestCase):
                     return_value=cli.container_cli.DOCKER,
                 ),
                 patch.object(internet_proxy, "preflight", side_effect=preflight),
-                patch.object(cli, "ensure_dir", side_effect=begin_filesystem_work),
+                patch.object(
+                    cli.staging.SessionStaging,
+                    "create",
+                    side_effect=begin_filesystem_work,
+                ),
                 self.assertRaisesRegex(SystemExit, "stop after ordering check"),
             ):
                 cli.main(

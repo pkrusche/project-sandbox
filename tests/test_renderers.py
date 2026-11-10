@@ -1,3 +1,4 @@
+import contextlib
 import json
 import os
 import subprocess
@@ -15,7 +16,9 @@ from project_sandbox import chroot, config_agents, dockerfile, firewall
 
 
 def _credentials_root(root: Path):
-    return patch("project_sandbox.config_agents.CREDENTIALS_ROOT", root / "tmp")
+    # Credentials are staged in the session's secrets directory that the caller
+    # passes; there is no shared root to redirect any more.
+    return contextlib.nullcontext()
 
 
 class RendererTests(TestCase):
@@ -383,15 +386,18 @@ class RendererTests(TestCase):
             )
 
             config = config_agents.render(context)["claude"]
-            with _credentials_root(root):
-                staged_dir = config_agents.sync_credentials(context, home=home)[
-                    "claude"
-                ]
+            secrets = root / "secrets"
+            secrets.mkdir(mode=0o700)
+            staged_dir = config_agents.sync_credentials(secrets, home=home)["claude"]
 
             staged_credentials = staged_dir / ".credentials.json"
             staged_home_credentials = staged_dir / ".claude.json"
-            self.assertFalse((context / "claude" / ".credentials.json").exists())
-            self.assertFalse((context / "claude" / ".claude.json").exists())
+            self.assertEqual(staged_dir, secrets / "claude")
+            # Legacy in-project copies are the migration's job, not staging's.
+            self.assertEqual(
+                (context / "claude" / ".credentials.json").read_text(encoding="utf-8"),
+                "stale\n",
+            )
             self.assertEqual(
                 json.loads(config.read_text(encoding="utf-8"))["theme"],
                 "auto",
@@ -509,15 +515,17 @@ class RendererTests(TestCase):
             (codex_home / "config.toml").write_text("secret = true\n", encoding="utf-8")
             (pi_home / "auth.json").write_text('{"token":"pi"}\n', encoding="utf-8")
 
-            with _credentials_root(root):
-                result = config_agents.sync_credentials(context, home=home)
-                codex_staged = result["codex"]
-                opencode_staged = result["opencode"]
-                pi_staged = result["pi"]
+            secrets = root / "secrets"
+            secrets.mkdir(mode=0o700)
+            result = config_agents.sync_credentials(secrets, home=home)
+            codex_staged = result["codex"]
+            opencode_staged = result["opencode"]
+            pi_staged = result["pi"]
 
-            self.assertFalse((context / "codex" / "auth.json").exists())
+            for staged in (codex_staged, opencode_staged, pi_staged):
+                self.assertFalse(staged.is_relative_to(context))
+            # Staging leaves the legacy in-project directory to the migration.
             self.assertTrue((context / "codex" / "config.toml").exists())
-            self.assertFalse((context / "opencode").exists())
             self.assertEqual(
                 (codex_staged / "auth.json").read_text(encoding="utf-8"),
                 '{"token":"codex"}\n',
@@ -668,8 +676,9 @@ class RendererTests(TestCase):
                 '{"token":"codex-secret-token"}\n', encoding="utf-8"
             )
 
-            with _credentials_root(root):
-                staged = config_agents.sync_credentials(context, home=home)
+            secrets = root / "secrets"
+            secrets.mkdir(mode=0o700)
+            staged = config_agents.sync_credentials(secrets, home=home)
 
             dockerfile.render(context, base_image="python:3.12-slim")
             docker_text = (context / "Dockerfile").read_text(encoding="utf-8")
@@ -954,25 +963,25 @@ class RendererTests(TestCase):
 
         self.assertIn("Invalid credential agent name", str(raised.exception))
 
-    def test_purge_staged_credentials_removes_digest_dir(self) -> None:
+    def test_sessions_stage_credentials_independently(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            context = root / ".project-sandbox"
-            context.mkdir()
             home = root / "home"
             (home / ".claude").mkdir(parents=True)
             (home / ".claude" / ".credentials.json").write_text(
                 "{}\n", encoding="utf-8"
             )
-            with _credentials_root(root):
-                staged = config_agents.sync_credentials(context, home=home)["claude"]
-                digest_dir = staged.parent
-                self.assertTrue(digest_dir.exists())
+            one, two = root / "one", root / "two"
+            one.mkdir(mode=0o700)
+            two.mkdir(mode=0o700)
+            first = config_agents.sync_credentials(one, home=home)["claude"]
+            second = config_agents.sync_credentials(two, home=home)["claude"]
+            self.assertNotEqual(first, second)
+            # No staging is shared: removing one session's leaves the other's.
+            import shutil
 
-                config_agents.purge_staged_credentials(context)
-                self.assertFalse(digest_dir.exists())
-                # Idempotent: a second purge (nothing staged) does not raise.
-                config_agents.purge_staged_credentials(context)
+            shutil.rmtree(one)
+            self.assertTrue((second / ".credentials.json").is_file())
 
     def test_staging_refuses_symlinked_credential_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -981,7 +990,7 @@ class RendererTests(TestCase):
             symlink.symlink_to(root)
 
             with self.assertRaises(RuntimeError) as raised:
-                config_agents._ensure_private_dir(symlink / "agent")
+                config_agents._ensure_private_dir(symlink)
 
         self.assertIn("symlinked credential directory", str(raised.exception))
 
@@ -994,35 +1003,13 @@ class RendererTests(TestCase):
             external.mkdir()
             (context / "claude").symlink_to(external, target_is_directory=True)
 
-            with self.assertRaises(RuntimeError) as raised:
+            with self.assertRaises(SystemExit) as raised:
                 config_agents.render(context)
 
-            self.assertIn("symlinked project config path", str(raised.exception))
+            self.assertIn(str(context.resolve() / "claude"), str(raised.exception))
+            self.assertEqual(list(external.iterdir()), [])
             # Nothing was written through the link.
             self.assertEqual(list(external.iterdir()), [])
-
-    def test_stale_cleanup_refuses_symlinked_project_config_dir(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            context = root / ".project-sandbox"
-            context.mkdir()
-            external = root / "external"
-            external.mkdir()
-            victim = external / ".credentials.json"
-            victim.write_text("host-secret\n", encoding="utf-8")
-            (context / "claude").symlink_to(external, target_is_directory=True)
-
-            with self.assertRaises(RuntimeError) as raised:
-                config_agents._remove_stale_project_credentials(context)
-
-            with self.assertRaises(RuntimeError):
-                config_agents._remove_stale_project_agent_credentials(
-                    context, "claude", None
-                )
-
-            self.assertIn("symlinked project config path", str(raised.exception))
-            # The host credential file behind the link was not deleted.
-            self.assertTrue(victim.exists())
 
     def test_invalid_claude_json_is_replaced_with_sanitized_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2887,17 +2874,11 @@ class RendererTests(TestCase):
             home = root / "home"
             context = root / ".project-sandbox"
             (home / ".claude").mkdir(parents=True)
-            with _credentials_root(root):
-                stale = config_agents.credentials_dir(context, "claude-devcontainer")
-                stale.mkdir(parents=True)
-                (stale / ".credentials.json").write_text("{}", encoding="utf-8")
+            staged = config_agents.sync_credentials(context, home=home)
 
-                staged = config_agents.sync_credentials(context, home=home)
-
-                self.assertNotIn("claude-devcontainer", staged)
-                # A copy staged by an older version is removed.
-                self.assertFalse(stale.exists())
-                self.assertTrue(staged["claude"].is_dir())
+            self.assertNotIn("claude-devcontainer", staged)
+            self.assertFalse((context / "claude-devcontainer").exists())
+            self.assertTrue(staged["claude"].is_dir())
 
     def test_session_render_writes_no_devcontainer_dockerfile(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

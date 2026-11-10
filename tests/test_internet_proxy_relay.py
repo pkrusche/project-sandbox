@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest import TestCase
 from unittest.mock import patch
 
-from proxy_test_support import FakeProxy, exchange, mock_container_runtime
+from proxy_test_support import FakeProxy, exchange, kept_staging, mock_container_runtime
 
 from project_sandbox import (
     build_proxy_forwarder,
@@ -161,6 +161,7 @@ class CliRelayTests(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             out = io.StringIO()
             with (
+                kept_staging() as kept,
                 mock_container_runtime(runtime),
                 patch.object(cli.container_cli, "run", side_effect=run),
                 patch.object(cli.internet_proxy, "preflight"),
@@ -192,15 +193,11 @@ class CliRelayTests(TestCase):
                         ]
                     )
             root = Path(tmp)
-            observed["firewall"] = (
-                root / ".project-sandbox/init-firewall.sh"
-            ).read_text()
+            observed["firewall"] = (kept[0] / "build" / "init-firewall.sh").read_text()
             # Launches render no devcontainer files.
             observed["devcontainer_written"] = (
                 root / ".devcontainer/devcontainer.json"
-            ).exists() or (
-                root / ".project-sandbox/init-firewall-devcontainer.sh"
-            ).exists()
+            ).exists() or (root / ".project-sandbox").exists()
         if failure is None:
             self.assertEqual(rc, 0)
         observed["output"] = out.getvalue()

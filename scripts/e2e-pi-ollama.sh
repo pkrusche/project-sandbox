@@ -187,12 +187,16 @@ else
   echo "  ..   no 'Ollama forwarding strategy:' line found in output (unexpected with --verbose)"
 fi
 
+# The rendered Pi config (models.json, settings.json) lives in the session's
+# private staging, deleted at exit; the agent reaching Ollama below is what
+# proves it. It must never land in the project.
 echo
-echo "Verifying rendered Pi config"
-assert_file_contains "$TMP_PROJECT/.project-sandbox/pi/models.json" "\"$OLLAMA_MODEL\""
-assert_file_contains "$TMP_PROJECT/.project-sandbox/pi/models.json" \
-  "http://${OLLAMA_HOSTNAME}:11434/v1"
-assert_file_contains "$TMP_PROJECT/.project-sandbox/pi/settings.json" "\"defaultProvider\": \"ollama\""
+echo "Verifying the project holds no generated state"
+if [ -e "$TMP_PROJECT/.project-sandbox" ]; then
+  bad "the run wrote $TMP_PROJECT/.project-sandbox"
+else
+  ok "no .project-sandbox in the project"
+fi
 
 echo
 echo "Verifying agent output"

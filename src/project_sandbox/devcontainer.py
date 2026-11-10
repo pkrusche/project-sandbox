@@ -11,16 +11,16 @@ network, unfiltered.
 import json
 import os
 import re
+import stat
 from pathlib import Path
 
+from . import paths
 from .git_identity import GitIdentity
 from .paths import (
     HISTORY_HISTFILE,
     HISTORY_SHELL_TARGET,
     WORKSPACE_DEVCONTAINER_TARGET,
     WORKSPACE_SANDBOX_TARGET,
-    ensure_history_paths,
-    ensure_workspace_sandbox_mask,
 )
 
 NETWORK_NONE = "none"
@@ -35,8 +35,12 @@ OFFLINE_ENVIRONMENT = {
     "npm_config_offline": "true",
 }
 
-DOCKERFILE_NAME = "Dockerfile.devcontainer"
+DIRECTORY = ".devcontainer"
+DOCKERFILE_NAME = "Dockerfile"
 CONFIG_NAME = "devcontainer.json"
+GITIGNORE = ".gitignore"
+# The directory ignores itself, so nothing is added to the root .gitignore.
+GITIGNORE_TEXT = "*\n"
 
 # Links an older project-sandbox wrote into .devcontainer/ for the removed
 # firewall variant and agent profiles. Only symlinks are removed.
@@ -47,6 +51,27 @@ _STALE_LINKS = (
     "codex",
     "codex-devcontainer",
 )
+
+
+def open_directory(project: Path) -> "paths.PrivateDir":
+    """Open (creating) ``<project>/.devcontainer``; a symlink is refused.
+
+    Masking the link's path inside a sandbox would leave the link's target
+    writable, and rendering through it would write wherever it points.
+    """
+    if (project / DIRECTORY).is_symlink():
+        raise paths.UnsafePathError(
+            f"Refusing {project / DIRECTORY}: it is a symlink, whose target would "
+            "stay writable from a sandbox. Replace it with a directory."
+        )
+    return paths.open_in_project(project, DIRECTORY)
+
+
+def ensure_ignored(directory: "paths.PrivateDir") -> None:
+    """Write ``.gitignore`` (``*``) unless the directory already has one."""
+    if directory.lstat(GITIGNORE) is None:
+        directory.write(GITIGNORE, GITIGNORE_TEXT)
+
 
 _MEMORY_RE = re.compile(r"(\d+)\s*([gm])b?", re.IGNORECASE)
 
@@ -71,42 +96,74 @@ def render(
     memory: str | None,
     cpus: int | None,
     extra_mounts: list[str],
+    history_shell: Path,
+    mask_dir: Path,
     network: str = NETWORK_NONE,
     build_context: Path | None = None,
     proxy_environment: dict[str, str] | None = None,
+    directory: "paths.PrivateDir | None" = None,
 ) -> Path:
     """Write ``.devcontainer/devcontainer.json`` and return ``.devcontainer``.
+
+    ``history_shell`` and ``mask_dir`` are private host directories in the
+    project's state (persisted bash history; an empty directory masking
+    ``.devcontainer`` and a legacy ``.project-sandbox``). The Dockerfile and
+    its inputs are rendered into ``.devcontainer/`` by the caller.
 
     ``proxy_environment`` (the ``--internet-proxy`` variables) applies only to
     ``network=runtime``: an offline devcontainer has nothing to proxy.
     """
     if network not in NETWORK_MODES:
         raise ValueError(f"Unknown devcontainer network mode: {network}")
-    dc_dir = project / ".devcontainer"
-    if dc_dir.is_symlink():
-        # devcontainer.json's initializeCommand runs on the host; never write
-        # it through a link that something else may have planted.
-        raise RuntimeError(f"Refusing to render through a symlink: {dc_dir}")
-    dc_dir.mkdir(exist_ok=True)
+    dc_dir = project / DIRECTORY
+    owned = directory is None
+    dc = open_directory(project) if directory is None else directory
+    try:
+        _write_config(
+            dc,
+            project=project,
+            dc_dir=dc_dir,
+            identity=identity,
+            memory=memory,
+            cpus=cpus,
+            extra_mounts=extra_mounts,
+            history_shell=history_shell,
+            mask_dir=mask_dir,
+            network=network,
+            build_context=build_context or dc_dir,
+            proxy_environment=proxy_environment,
+        )
+    finally:
+        if owned:
+            dc.close()
+    return dc_dir
 
-    _symlink(dc_dir / "Dockerfile", Path("../.project-sandbox") / DOCKERFILE_NAME)
+
+def _write_config(
+    dc: "paths.PrivateDir",
+    *,
+    project: Path,
+    dc_dir: Path,
+    identity: GitIdentity,
+    memory: str | None,
+    cpus: int | None,
+    extra_mounts: list[str],
+    history_shell: Path,
+    mask_dir: Path,
+    network: str,
+    build_context: Path,
+    proxy_environment: dict[str, str] | None,
+) -> None:
+    ensure_ignored(dc)
     for name in _STALE_LINKS:
-        if (dc_dir / name).is_symlink():
-            (dc_dir / name).unlink()
-
-    out = dc_dir / CONFIG_NAME
-    generated_dockerfile = project / ".project-sandbox" / DOCKERFILE_NAME
-    build_context = build_context or project / ".project-sandbox"
-
-    # Persist bash history across devcontainer rebuilds. Create the host
-    # directory so the bind mount has something to bind to, and reference it
-    # relative to the workspace folder so the config stays portable. The
-    # source is a directory: apple/container rejects single-file bind mounts,
-    # so bash history is persisted via a directory mount + HISTFILE.
-    ensure_history_paths(project, create=True)
-    history_shell = "${localWorkspaceFolder}/.project-sandbox/history/shell"
-    ensure_workspace_sandbox_mask(project, create=True)
-    workspace_mask_root = "${localWorkspaceFolder}/.project-sandbox/workspace-mask"
+        st = dc.lstat(name)
+        if st is not None and stat.S_ISLNK(st.st_mode):
+            dc.unlink(name)
+    # The masks need an existing bind target inside the workspace: a missing
+    # one would be created (as root on some runtimes) in the project.
+    mask_project_sandbox = (project / ".project-sandbox").is_dir() and not (
+        project / ".project-sandbox"
+    ).is_symlink()
 
     run_args: list[str] = []
     if network == NETWORK_NONE:
@@ -139,14 +196,18 @@ def render(
         # cannot expose generated files inside the workspace. Test code may
         # come from an agent session and must not rewrite devcontainer.json,
         # whose initializeCommand runs on the host.
-        f"source={workspace_mask_root},target={WORKSPACE_SANDBOX_TARGET},type=bind,readonly",
-        f"source={workspace_mask_root},target={WORKSPACE_DEVCONTAINER_TARGET},type=bind,readonly",
+        *(
+            [f"source={mask_dir},target={WORKSPACE_SANDBOX_TARGET},type=bind,readonly"]
+            if mask_project_sandbox
+            else []
+        ),
+        f"source={mask_dir},target={WORKSPACE_DEVCONTAINER_TARGET},type=bind,readonly",
     ]
 
     config: dict = {
         "name": f"{project.name} (project-sandbox)",
         "build": {
-            "dockerfile": _devcontainer_ref(dc_dir, generated_dockerfile),
+            "dockerfile": DOCKERFILE_NAME,
             "context": _devcontainer_ref(dc_dir, build_context),
             # No build proxy args: this file sits inside whole-project build
             # contexts, so values here would be copied into image layers.
@@ -154,13 +215,20 @@ def render(
         "runArgs": run_args,
         "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=delegated",
         "workspaceFolder": "/workspace",
-        # The history and mask directories live in the gitignored
-        # .project-sandbox and can vanish before "Reopen in Container" (fresh
-        # clone, cleaned directory); a missing bind source makes the runtime
-        # fail to start. initializeCommand runs on the host before the
-        # container is created and recreates them. The argv (array) form
-        # passes each path as one literal argument, with no shell parsing.
-        "initializeCommand": ["mkdir", "-p", history_shell, workspace_mask_root],
+        # The history and mask directories live in private host state, which
+        # a user may clear before "Reopen in Container"; a missing bind source
+        # makes the runtime fail to start. initializeCommand runs on the host
+        # before the container is created and recreates them, private. The
+        # argv (array) form passes each path as one literal argument, with no
+        # shell parsing.
+        "initializeCommand": [
+            "mkdir",
+            "-p",
+            "-m",
+            "700",
+            str(history_shell),
+            str(mask_dir),
+        ],
         "remoteUser": "agent",
         "containerEnv": container_env,
         "remoteEnv": {
@@ -189,18 +257,7 @@ def render(
             host_requirements["memory"] = memory_hostreq
         config["hostRequirements"] = host_requirements
 
-    out.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
-    return dc_dir
-
-
-def _symlink(link: Path, target: Path) -> None:
-    if link.exists() or link.is_symlink():
-        if link.resolve() == (link.parent / target).resolve():
-            return
-        if link.is_dir() and not link.is_symlink():
-            raise RuntimeError(f"Cannot replace directory with symlink: {link}")
-        link.unlink()
-    link.symlink_to(target)
+    dc.write(CONFIG_NAME, json.dumps(config, indent=2) + "\n")
 
 
 def _devcontainer_ref(dc_dir: Path, path: Path) -> str:

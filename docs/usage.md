@@ -43,7 +43,7 @@ To build on top of a repo's existing Dockerfile instead of a base image tag:
 uv run project-sandbox /absolute/path/to/repo --dockerfile /absolute/path/to/repo/Dockerfile
 ```
 
-In this mode, `.project-sandbox/Dockerfile` creates a dependency stage for the
+In this mode, the generated `Dockerfile` creates a dependency stage for the
 sandbox's apt tooling, Node.js, jj, OpenSpec, and coding agents. The source
 Dockerfile's final stage inherits that dependency stage before its original
 instructions are appended. This keeps the expensive, source-independent layers
@@ -219,10 +219,11 @@ Only the first line of the entry is used. Classic `ghp_` tokens are rejected
 because Copilot does not accept them. To use the GitHub CLI fallback instead,
 run `gh auth login --hostname <host>` once.
 
-The token is written to a mode-0600 file in a private directory under
-`/tmp/project-sandbox-<uid>/` (never into the project), mounted read-only at
-`/project-sandbox-secrets/copilot` for Copilot sessions only, and removed when
-the session ends. The entrypoint exports it as `COPILOT_GITHUB_TOKEN` just for
+The token is written to a mode-0600 file in the session's private staging
+(`secrets/copilot/` under the runtime root, never into the project; see
+[Where state lives](#where-state-lives)), mounted read-only at
+`/project-sandbox-secrets/copilot` for Copilot sessions only, and deleted with
+the session's staging when it ends. The entrypoint exports it as `COPILOT_GITHUB_TOKEN` just for
 the Copilot process. `--no-forward-credentials` skips the lookup entirely;
 Copilot then starts unauthenticated and you can log in inside the sandbox.
 
@@ -340,7 +341,8 @@ uv run project-sandbox /absolute/path/to/repo --dockerfile /absolute/path/to/rep
 ## Node.js + npm Projects
 
 For npm-based web projects, `--node-npm` synthesises the base Dockerfile
-(`.project-sandbox/Dockerfile.node-npm`) instead of you writing one:
+(`Dockerfile.node-npm`, rendered into private staging) instead of you writing
+one:
 
 ```bash
 uv run project-sandbox --node-npm --agent claude /absolute/path/to/repo
@@ -476,17 +478,21 @@ uv run project-sandbox /absolute/path/to/repo --devcontainer --python-uv
 uv run project-sandbox /absolute/path/to/repo --devcontainer python:3.12-slim
 ```
 
-`--devcontainer` writes `.devcontainer/devcontainer.json` (plus a `Dockerfile`
-link) and `.project-sandbox/Dockerfile.devcontainer`, prints where it wrote and
-the network mode, and exits. It builds no image, stages no credentials and
+`--devcontainer` writes `.devcontainer/devcontainer.json`, its `Dockerfile` and
+the identity init script as real files in `.devcontainer/`, with a
+`.devcontainer/.gitignore` of `*` so the directory ignores itself (the
+project's root `.gitignore` is not touched). A symlinked `.devcontainer` is
+refused, and a symlinked file in it is replaced, never followed. It prints
+where it wrote and the network mode, and exits. It builds no image, stages no credentials and
 starts no container. `--devcontainer --dry-run` lists the files it would write
 and the network mode, and writes nothing. Then open the project in VS Code (or
 another devcontainer-aware IDE) and choose **Reopen in Container**. Re-run
 `--devcontainer` after changing build options, and rebuild the container in
 the IDE.
 
-Ordinary launches never write or change devcontainer files. They only create an
-empty `.devcontainer/` when it is missing, so the session can mask it.
+Ordinary launches never write or change devcontainer files. They only create
+`.devcontainer/` (holding just its `.gitignore`) when it is missing, so the
+session can mask it.
 `--devcontainer` can't be combined with `--agent`, a prompt, `--branch`,
 `--build-only` or `--runtime chroot`. It ignores `--egress`.
 
@@ -518,11 +524,12 @@ are not set. With `--internet-proxy URL`, its proxy environment is applied.
 
 The devcontainer runs as `agent` with no added capabilities and no sudoers
 rule. Its `postStartCommand` applies your git/jj identity and runs nothing as
-root. `/workspace/.devcontainer` and `/workspace/.project-sandbox` are masked
-with an empty read-only mount, so test code (which may come from an agent
-session) cannot change `devcontainer.json`, whose `initializeCommand` runs on
-the host. Bash history persists across rebuilds, and `--mount`, `--memory` and
-`--cpus` apply.
+root. `/workspace/.devcontainer` (and a legacy `/workspace/.project-sandbox`,
+when present) is masked with an empty read-only directory from the project's
+private state, so test code (which may come from an agent session) cannot
+change `devcontainer.json`, whose `initializeCommand` runs on the host. Bash
+history persists across rebuilds in the project's private state, and
+`--mount`, `--memory` and `--cpus` apply.
 
 ### IDE compatibility
 
@@ -540,15 +547,82 @@ the host. Bash history persists across rebuilds, and `--mount`, `--memory` and
   `--devcontainer-network=runtime`.
 
 Remote devcontainer services such as Codespaces are not supported: the
-generated spec uses local `.project-sandbox/` files.
+generated spec mounts history and mask directories from host state.
 
 ### Upgrading from older versions
 
 Earlier versions rendered `.devcontainer/` on every launch, with agents,
 staged credentials and a firewall. Those files stay until you run
-`--devcontainer` once, which rewrites `devcontainer.json` and removes the stale
-`claude*`, `codex*` and `init-firewall.sh` links. Rebuild the container in the
-IDE afterwards.
+`--devcontainer` once, which rewrites `devcontainer.json`, replaces the old
+`Dockerfile` link with a real file, and removes the stale `claude*`, `codex*`
+and `init-firewall.sh` links. Rebuild the container in the IDE afterwards.
+
+## Where state lives
+
+project-sandbox keeps everything it generates outside your project, in two
+private per-user roots (directories `0700`, secret files `0600`, every path
+checked to be yours and not a symbolic link before use):
+
+- **Project state**, persistent, in
+  `$XDG_STATE_HOME/project-sandbox/projects/<name>-<hash>/` (default
+  `~/.local/state/...`): the image-cache fingerprint, Dockerfile checksums,
+  interactive shell and Claude history, and default headless logs under
+  `sessions/`. Session records stay in `$XDG_STATE_HOME/project-sandbox/sessions/`
+  and host locks in `.../locks/`.
+- **Session staging**, ephemeral, in `<runtime root>/staging/<session-id>/`:
+  the rendered build context, agent configs, staged credentials, the Copilot
+  token, `api-keys.env` and the prompt. Each session mounts only its own and
+  deletes it when it exits; a later launch deletes staging left by a session
+  whose process died.
+
+The runtime root is `$PROJECT_SANDBOX_RUNTIME_DIR` when set, else
+`$XDG_RUNTIME_DIR/project-sandbox` (Linux) or `$TMPDIR/project-sandbox`
+(macOS) when that directory is private to you, else
+`/tmp/project-sandbox-<uid>`. The container runtime must be able to bind-mount
+it. Docker Desktop, Podman machine and Apple `container` mount the macOS
+defaults; on Colima or Lima, which share only `$HOME` by default, point it at a
+private directory under your home:
+
+```bash
+mkdir -m 700 -p ~/.cache/project-sandbox-runtime
+export PROJECT_SANDBOX_RUNTIME_DIR=~/.cache/project-sandbox-runtime
+```
+
+The value must be absolute, and the directory is checked like any state
+directory. macOS deletes files in `$TMPDIR` that are older than three days
+(`dirhelper`, daily): for sessions that run longer, set
+`PROJECT_SANDBOX_RUNTIME_DIR` as well.
+
+`--dry-run` prints the staging and state directories it would use and creates
+neither. See [Generated files](runtime.md#where-state-lives) for the full
+layout.
+
+Inside the project a launch writes only `.devcontainer/` (an empty,
+self-ignoring mask target, or the files `--devcontainer` renders) and, for
+whole-project builds, the secret-free build-input copy in `.project-sandbox/`.
+It never edits the project's `.gitignore`; marker lines older versions added
+there are left in place.
+
+### Upgrading: migration of `.project-sandbox/`
+
+Older versions kept all of this in `<project>/.project-sandbox/`. The first
+launch of this version migrates it once, under the project's build lock:
+
+- shell and Claude history and session logs move into the project's private
+  state (regular files only; links are never followed);
+- every file and directory older versions generated is deleted, including stale
+  secrets (`api-keys.env`, agent-proxy configs, staged credentials), which the
+  launch names;
+- anything else is left in place and named;
+- the project's old credential staging tree,
+  `/tmp/project-sandbox-<uid>/<digest>/`, is deleted;
+- a `migrated` marker stops it from running again.
+
+While a session of the project started by an older version is still running,
+the migration is postponed with a notice, because that session has those files
+mounted. `--dry-run` prints the planned migration (`Would migrate: ...`) and
+changes nothing. Tools that read `.project-sandbox/sessions/*.log` directly
+should use the path the CLI prints, or `--log`.
 
 ## Image Builds
 
@@ -557,8 +631,10 @@ repeated local runs fast, the build is **skipped when nothing changed**:
 project-sandbox fingerprints the generated build inputs (the rendered
 `Dockerfile`, `entrypoint.sh`, `project-sandbox-init`, `init-firewall.sh`, the
 devcontainer init script, the base image, and the image tag) and records that
-fingerprint in
-`.project-sandbox/.build-state.json`. On the next run, if the fingerprint still
+fingerprint in the project's private state (`build-state.json`; see
+[Where state lives](#where-state-lives)). Every session renders its own build
+directory, so concurrent launches never rewrite each other's build context; a
+per-project lock serializes the cache check and the build. On the next run, if the fingerprint still
 matches and the runtime confirms the image exists, the build is skipped and
 `Reusing cached image (inputs unchanged)` is printed; otherwise the image is
 rebuilt and the build duration is reported (`Built image in 12.3s`).
@@ -566,9 +642,12 @@ rebuilt and the build duration is reported (`Built image in 12.3s`).
 - Auto-skip applies to the default base-image flow. `--python-uv`,
   `--rust-cargo`, `--node-npm`, and `--dockerfile` builds use the whole project
   as the build context, so they always invoke the build and rely on the
-  runtime's layer cache instead.
+  runtime's layer cache instead. Their generated, secret-free build inputs are
+  copied into `.project-sandbox/` of the build context right before the build
+  (a symlinked `.project-sandbox` is refused), so `--docker-context` must
+  contain the project's `.project-sandbox` path.
 - For the generated `--python-uv`, `--rust-cargo`, and `--node-npm` flows only,
-  a generated `.project-sandbox/Dockerfile.dockerignore`
+  a generated `Dockerfile.dockerignore` (copied with the build inputs)
   trims virtualenvs, `node_modules`, and tool caches from the context (it does
   not exclude `.git` — git version backends read it during the in-image install
   — nor `.project-sandbox/`, whose scripts are copied into the image). It is not
@@ -726,11 +805,12 @@ uv run project-sandbox \
   python:3.12-slim
 ```
 
-- `--prompt FILE` copies the file into a private generated staging directory,
+- `--prompt FILE` copies the file into the session's private `prompt/` staging
+  directory (each session has its own),
   bind-mounts only that directory read-only, and reads the prompt from
   `/project-sandbox-prompt/<name>`.
-- `--prompt-text "..."` writes the prompt under `.project-sandbox/prompts/`,
-  bind-mounts that directory read-only, and reads it from
+- `--prompt-text "..."` writes the prompt to the session's private `prompt/`
+  staging directory, bind-mounts that directory read-only, and reads it from
   `/project-sandbox-prompt/prompt.txt`.
 - `--agent {claude,codex,opencode,pi,copilot,bash}` selects which agent to run.
   If omitted, the CLI only initializes generated config files unless a prompt
@@ -799,12 +879,15 @@ uv run project-sandbox \
   baked into Pi's `models.json`. Repeatable; only meaningful with
   `--pi-ollama`. The first model (default or first `--ollama-model` given)
   becomes Pi's default model.
-- `--log FILE` overrides the default log path under
-  `.project-sandbox/sessions/<agent>-main-<timestamp>.log`.
+- `--log FILE` overrides the default log path,
+  `projects/<key>/sessions/<agent>-<branch>-<timestamp>.log` in the project's
+  private state. The CLI prints the log path when the run starts and ends, and
+  writes a Markdown transcript beside it (`<log stem>.md`).
 - `--json-summary PATH` writes one compact JSON object after the session and
   its cleanup complete. Use `-` to print the JSON line on stdout. The
   object contains `session_id`, `container_name`, `workspace_path`, `agent`,
-  `bookmark`, `jj_change_id`, `exit_code`, `started_at`, and `ended_at`.
+  `bookmark`, `jj_change_id`, `exit_code`, `pid` (of the CLI), `log_path`,
+  `started_at`, and `ended_at`.
   `workspace_path` is the session directory in an isolated session and the
   project otherwise. `bookmark` and `jj_change_id` (the result commit) are null
   unless the session is isolated.

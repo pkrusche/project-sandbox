@@ -7,7 +7,7 @@ import threading
 from collections.abc import Sequence
 from pathlib import Path
 
-from project_sandbox import transcript
+from project_sandbox import paths, transcript
 
 REDACTED = "[REDACTED]"
 
@@ -34,10 +34,15 @@ def default_log_path(
     # second do not resolve to the same log file (which run() opens with "w").
     ts = now.strftime("%Y%m%d-%H%M%S-%f")
     stem = f"{agent}-{branch.replace('/', '-') if branch else 'main'}-{ts}"
-    log_dir = project / ".project-sandbox" / "sessions"
+    # Logs live in the project's private state, outside the project and every
+    # sandbox mount: projects/<key>/sessions/ under the state root.
     if create:
-        log_dir.mkdir(parents=True, exist_ok=True)
-    return log_dir / f"{stem}.log"
+        with (
+            paths.open_project_state(project) as state,
+            state.subdir("sessions") as log_dir,
+        ):
+            return log_dir.path / f"{stem}.log"
+    return paths.project_state_path(project) / "sessions" / f"{stem}.log"
 
 
 def run(

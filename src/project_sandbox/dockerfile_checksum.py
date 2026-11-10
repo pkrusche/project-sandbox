@@ -1,10 +1,10 @@
 """Tamper-evidence for the project Dockerfile.
 
-project-sandbox records a SHA256 of the project Dockerfile(s) it builds from in a
-sidecar JSON file under the generated ``.project-sandbox`` directory. That
-directory is masked (mounted empty and read-only) inside every sandbox, so an
-agent running in the container can neither read nor rewrite the recorded
-checksums to cover its tracks.
+project-sandbox records a SHA256 of the project Dockerfile(s) it builds from in
+the project's private host state (``projects/<key>/dockerfile-checksums.json``
+under the state root). No sandbox mounts that directory, so an agent running in
+the container can neither read nor rewrite the recorded checksums to cover its
+tracks.
 
 On a later run the CLI recomputes the checksum of the current project Dockerfile
 and warns when it differs from the recorded one. This surfaces an edit made to a
@@ -12,9 +12,9 @@ Dockerfile that lives in the writable workspace — for example a ``--dockerfile
 the agent modified during a previous session — before that Dockerfile is built
 again.
 
-Only Dockerfiles that live *outside* ``.project-sandbox`` are tracked: the
-generated Dockerfiles inside the masked directory cannot be reached by the agent,
-so there is nothing to detect there. Any read/parse problem degrades to "no
+Only Dockerfiles that live *outside* the generated build directory are tracked:
+the generated Dockerfiles are rendered fresh into private staging for every
+session, so there is nothing to detect there. Any read/parse problem degrades to "no
 recorded checksum", so an inconclusive check never raises a false alarm.
 """
 
@@ -22,11 +22,13 @@ import hashlib
 import json
 from pathlib import Path
 
-_STATE_FILENAME = ".dockerfile-checksums.json"
+from . import paths
+
+_STATE_FILENAME = "dockerfile-checksums.json"
 
 
-def state_path(context_dir: Path) -> Path:
-    return context_dir / _STATE_FILENAME
+def state_path(state_dir: "paths.Target") -> Path:
+    return paths.target_path(state_dir, _STATE_FILENAME)
 
 
 def checksum(path: Path) -> str:
@@ -37,9 +39,9 @@ def _key(path: Path) -> str:
     return path.resolve(strict=False).as_posix()
 
 
-def _read(context_dir: Path) -> dict[str, str]:
+def _read(state_dir: "paths.Target") -> dict[str, str]:
     try:
-        data = json.loads(state_path(context_dir).read_text(encoding="utf-8"))
+        data = json.loads(state_path(state_dir).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
     if not isinstance(data, dict):
@@ -47,7 +49,7 @@ def _read(context_dir: Path) -> dict[str, str]:
     return {str(k): str(v) for k, v in data.items()}
 
 
-def changed_warnings(context_dir: Path, dockerfiles: list[Path]) -> list[str]:
+def changed_warnings(state_dir: "paths.Target", dockerfiles: list[Path]) -> list[str]:
     """Return a warning for each Dockerfile whose content differs from the
     checksum recorded by a previous build.
 
@@ -55,7 +57,7 @@ def changed_warnings(context_dir: Path, dockerfiles: list[Path]) -> list[str]:
     produces no warning — only an actual change relative to a recorded baseline
     is reported.
     """
-    recorded = _read(context_dir)
+    recorded = _read(state_dir)
     warnings: list[str] = []
     for path in dockerfiles:
         try:
@@ -72,19 +74,18 @@ def changed_warnings(context_dir: Path, dockerfiles: list[Path]) -> list[str]:
     return warnings
 
 
-def record(context_dir: Path, dockerfiles: list[Path]) -> None:
+def record(state_dir: "paths.Target", dockerfiles: list[Path]) -> None:
     """Persist the current checksum of each tracked Dockerfile as the trusted
     baseline. Unreadable files are skipped rather than recorded.
 
     Merges into any existing state file rather than overwriting it, so that
     baselines previously recorded for other Dockerfiles (for example a
     different ``--dockerfile`` used in an earlier run) are preserved."""
-    data = _read(context_dir)
+    data = _read(state_dir)
     for path in dockerfiles:
         try:
             data[_key(path)] = checksum(path)
         except OSError:
             continue
-    state_path(context_dir).write_text(
-        json.dumps(data, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    with paths.target_dir(state_dir) as directory:
+        directory.write(_STATE_FILENAME, json.dumps(data, sort_keys=True) + "\n")

@@ -12,6 +12,8 @@ from tempfile import TemporaryDirectory
 from typing import cast
 from unittest.mock import Mock, patch
 
+from proxy_test_support import live_staging
+
 from project_sandbox import agent_proxy, cli, config_agents
 from project_sandbox.dockerfile import PRIVILEGE_MODEL
 from project_sandbox.git_identity import GitIdentity
@@ -335,15 +337,17 @@ class AgentProxyTests(unittest.TestCase):
     def test_proxy_key_is_staged_only_after_image_build(self) -> None:
         with TemporaryDirectory() as tmp:
             project = Path(tmp)
-            context = project / ".project-sandbox"
-            secret_file = context / "pi" / "models.json"
+
+            def secret_file() -> Path:
+                return live_staging() / "config" / "pi" / "models.json"
 
             def build_image(**_kwargs) -> int:
-                self.assertFalse(secret_file.exists())
+                self.assertFalse(secret_file().exists())
                 return 0
 
             def run(_command, **_kwargs) -> int:
-                self.assertIn("gateway-key", secret_file.read_text(encoding="utf-8"))
+                self.assertIn("gateway-key", secret_file().read_text(encoding="utf-8"))
+                self.assertEqual(secret_file().stat().st_mode & 0o777, 0o600)
                 self.assertIn("PROJECT_SANDBOX_MODEL=agent-proxy/model", _command)
                 return 0
 
@@ -396,7 +400,8 @@ class AgentProxyTests(unittest.TestCase):
                     ),
                     0,
                 )
-            self.assertFalse(secret_file.exists())
+            staging_dir = cli.paths.runtime_root_path() / "staging"
+            self.assertEqual(list(staging_dir.iterdir()), [])
 
     def test_bash_proxy_environment_is_available_interactively_and_headless(
         self,
@@ -410,18 +415,14 @@ class AgentProxyTests(unittest.TestCase):
                     _captured["command"] = command
                     _captured["env"] = kwargs.get("env")
                     pi_models = json.loads(
-                        (
-                            _project / ".project-sandbox" / "pi" / "models.json"
-                        ).read_text()
+                        (live_staging() / "config" / "pi" / "models.json").read_text()
                     )
                     pi_settings = json.loads(
-                        (
-                            _project / ".project-sandbox" / "pi" / "settings.json"
-                        ).read_text()
+                        (live_staging() / "config" / "pi" / "settings.json").read_text()
                     )
                     opencode = json.loads(
                         (
-                            _project / ".project-sandbox" / "opencode" / "opencode.json"
+                            live_staging() / "config" / "opencode" / "opencode.json"
                         ).read_text()
                     )
                     self.assertEqual(
@@ -513,14 +514,10 @@ class AgentProxyTests(unittest.TestCase):
                 self.assertIn(
                     "target=/project-sandbox-config/opencode", " ".join(command)
                 )
-                self.assertFalse(
-                    (project / ".project-sandbox" / "pi" / "models.json").exists()
-                )
-                self.assertFalse(
-                    (
-                        project / ".project-sandbox" / "opencode" / "opencode.json"
-                    ).exists()
-                )
+                # The session's staging, proxy keys included, is gone.
+                staging_dir = cli.paths.runtime_root_path() / "staging"
+                self.assertEqual(list(staging_dir.iterdir()), [])
+                self.assertFalse((project / ".project-sandbox").exists())
 
     def test_bash_proxy_renderer_preconfigures_pi_and_opencode(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -600,10 +597,12 @@ class AgentProxyTests(unittest.TestCase):
     def test_bash_proxy_apple_env_file_is_private_and_removed(self) -> None:
         with TemporaryDirectory() as tmp:
             project = Path(tmp)
-            env_file = project / ".project-sandbox" / "api-keys.env"
+            seen: list[Path] = []
 
             def run(command, **_kwargs) -> int:
                 self.assertIn("--env-file", command)
+                env_file = live_staging() / "secrets" / "api-keys.env"
+                seen.append(env_file)
                 self.assertEqual(
                     Path(command[command.index("--env-file") + 1]).resolve(),
                     env_file.resolve(),
@@ -666,7 +665,8 @@ class AgentProxyTests(unittest.TestCase):
                     ),
                     0,
                 )
-            self.assertFalse(env_file.exists())
+            self.assertEqual(len(seen), 1)
+            self.assertFalse(seen[0].exists())
 
     def test_checker_runs_both_agents_and_requires_both_to_pass(self) -> None:
         checker = _load_checker()

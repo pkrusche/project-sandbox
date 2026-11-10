@@ -10,9 +10,11 @@
 #     non-root UID;
 #   - iptables -F and ip6tables -F fail;
 #   - the session shell is PID 1 (every stage execs);
+#   - writes into /workspace/.devcontainer fail (always masked read-only);
 # then, while the session waits, the host checks that `exec --user agent`
 # lands as agent and records what a plain `exec` lands as. Afterwards no
-# marker may have fired.
+# marker may have fired, the host .devcontainer holds only its .gitignore, and
+# the project has no .project-sandbox.
 #
 # Usage:
 #   scripts/e2e-privileges.sh [--runtime auto|apple-container|docker|podman]
@@ -121,6 +123,10 @@ check_fails(){ n="$1"; shift; if "$@" >/dev/null 2>&1; then echo "$n=FAIL"; else
   check workspace_cwd test "$(cd /workspace && pwd)" = /workspace
   # root stage -> setpriv -> entrypoint -> bash all exec, so this shell is PID 1.
   check pid1 test "$$" = 1
+  # .devcontainer is always masked read-only (private-session-state): an
+  # agent cannot plant a devcontainer.json whose initializeCommand the host runs.
+  check_fails devcontainer_write sh -c 'echo "{}" > /workspace/.devcontainer/devcontainer.json'
+  check_fails devcontainer_mkdir mkdir /workspace/.devcontainer/sub
   grep -E '^(Uid|Gid|Groups|NoNewPrivs|Cap(Inh|Prm|Eff|Bnd|Amb)):' /proc/self/status | sed 's/^/status /'
 } > "$out" 2>&1
 hostname > /workspace/ready
@@ -171,7 +177,7 @@ touch "$TMP_PROJECT/exec-done"
 if wait "$SESSION_PID"; then ok "sandbox session completed"; else bad "sandbox session failed"; fi
 
 if [ -f "$TMP_PROJECT/privileges.out" ]; then
-  for name in sudo_true sudo_firewall no_new_privs cap_bnd_zero cap_eff_zero non_root iptables_flush ip6tables_flush workspace_cwd pid1; do
+  for name in sudo_true sudo_firewall no_new_privs cap_bnd_zero cap_eff_zero non_root iptables_flush ip6tables_flush workspace_cwd pid1 devcontainer_write devcontainer_mkdir; do
     if grep -qx "$name=ok" "$TMP_PROJECT/privileges.out"; then ok "$name"; else bad "$name"; fi
   done
   grep -q '=FAIL' "$TMP_PROJECT/privileges.out" && bad "$(grep '=FAIL' "$TMP_PROJECT/privileges.out" | tr '\n' ' ')"
@@ -182,6 +188,12 @@ fi
 if grep -q 'Firewall initialized' "$TMP_PROJECT/session.log" || grep -q 'Policy: Internet proxy only' "$TMP_PROJECT/session.log"; then
   ok "firewall initialized before the session"
 fi
+# The host side of the mask: .devcontainer holds only its .gitignore, and the
+# launch wrote no generated state into the project.
+dc_entries="$(ls -A "$TMP_PROJECT/.devcontainer" 2>/dev/null | tr '\n' ' ')"
+if [ "$dc_entries" = ".gitignore " ]; then ok "host .devcontainer holds only .gitignore"; else bad "host .devcontainer holds: $dc_entries"; fi
+if [ -e "$TMP_PROJECT/.project-sandbox" ]; then bad "the launch wrote $TMP_PROJECT/.project-sandbox"; else ok "no .project-sandbox in the project"; fi
+
 markers=("$TMP_PROJECT"/MARKER-*)
 if [ -e "${markers[0]}" ]; then
   bad "workspace modules were imported: $(cat "$TMP_PROJECT"/MARKER-* | tr '\n' ' ')"

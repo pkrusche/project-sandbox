@@ -1,6 +1,7 @@
 """Small shared fixtures for proxy transport and CLI tests."""
 
 import contextlib
+import os
 import socket
 import ssl
 import subprocess
@@ -12,6 +13,37 @@ from unittest.mock import patch
 from project_sandbox import cli
 from project_sandbox.dockerfile import PRIVILEGE_MODEL
 from project_sandbox.git_identity import GitIdentity
+
+
+def live_staging() -> Path:
+    """The running session's private staging directory (one session at a time)."""
+    staging_dir = cli.paths.runtime_root_path() / "staging"
+    (session,) = list(staging_dir.iterdir())
+    return session
+
+
+@contextlib.contextmanager
+def kept_staging():
+    """Keep each session's staging after it ends; yields the kept directories."""
+    kept: list[Path] = []
+
+    def close(self):
+        if self._lease_fd < 0:
+            return
+        kept.append(self.path)
+        for directory in self.dirs.values():
+            directory.close()
+        self.root.close()
+        self._staging.close()
+        os.close(self._lease_fd)
+        self._lease_fd = -1
+
+    # A later launch would reap the kept (no longer leased) directories.
+    with (
+        patch.object(cli.staging.SessionStaging, "close", close),
+        patch.object(cli, "_reap_staging"),
+    ):
+        yield kept
 
 
 @contextlib.contextmanager

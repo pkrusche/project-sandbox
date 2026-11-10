@@ -83,3 +83,53 @@ class BuildCacheTests(TestCase):
             context = Path(tmp)
             build_cache.state_path(context).write_text("{not json", encoding="utf-8")
             self.assertIsNone(build_cache.read_state(context))
+
+
+class PerSessionContextTests(TestCase):
+    """Every session renders its own build/; the cache state is per project."""
+
+    def test_two_sessions_with_identical_inputs_hit_the_cache(self) -> None:
+        from project_sandbox import paths
+
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "project"
+            project.mkdir()
+            one, two = Path(tmp) / "one" / "build", Path(tmp) / "two" / "build"
+            for build in (one, two):
+                build.mkdir(parents=True)
+                _seed_context(build)
+            extra = {"image_tag": "img:latest", "base_image": "python:3.12-slim"}
+            first = build_cache.compute_fingerprint(one, extra=extra)
+            with paths.open_project_state(project) as state:
+                build_cache.write_state(
+                    state, image_tag="img:latest", fingerprint=first
+                )
+
+                second = build_cache.compute_fingerprint(two, extra=extra)
+                self.assertTrue(
+                    build_cache.is_cache_valid(
+                        state, image_tag="img:latest", fingerprint=second
+                    )
+                )
+                (two / "init-firewall.sh").write_text("#!/bin/sh\nchanged\n")
+                changed = build_cache.compute_fingerprint(two, extra=extra)
+                self.assertFalse(
+                    build_cache.is_cache_valid(
+                        state, image_tag="img:latest", fingerprint=changed
+                    )
+                )
+            # The state lives in private project state, not any build context.
+            self.assertTrue(
+                (paths.project_state_path(project) / "build-state.json").is_file()
+            )
+            self.assertFalse((one / "build-state.json").exists())
+
+    def test_build_lock_is_keyed_by_project(self) -> None:
+        from project_sandbox import host_locks
+
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            with build_cache.build_lock(project):
+                with self.assertRaises(host_locks.LockBusy):
+                    with host_locks.path_lock("build", project, blocking=False):
+                        pass

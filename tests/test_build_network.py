@@ -10,6 +10,8 @@ import tempfile
 from pathlib import Path
 from unittest import TestCase
 
+from proxy_test_support import kept_staging
+
 from project_sandbox import build_cache, build_network, cli, dockerfile, templating
 
 CERTIFICATE = Path(__file__).parent / "fixtures/test-ca.pem"
@@ -195,7 +197,7 @@ class BuildEnvironmentTests(TestCase):
             corporate = root / "corporate"
             plain.mkdir()
             corporate.mkdir()
-            with contextlib.redirect_stdout(io.StringIO()):
+            with contextlib.redirect_stdout(io.StringIO()), kept_staging() as kept:
                 self.assertEqual(
                     cli.main(
                         ["--no-forward-credentials", str(plain), "debian:bookworm"]
@@ -230,15 +232,16 @@ class BuildEnvironmentTests(TestCase):
                     ),
                     0,
                 )
+            plain_build, corporate_build = (path / "build" for path in kept)
             self.assertEqual(
-                (plain / ".project-sandbox" / "init-firewall.sh").read_bytes(),
-                (corporate / ".project-sandbox" / "init-firewall.sh").read_bytes(),
+                (plain_build / "init-firewall.sh").read_bytes(),
+                (corporate_build / "init-firewall.sh").read_bytes(),
             )
-            for name in ("Dockerfile", "Dockerfile.devcontainer"):
-                self.assertNotIn(
-                    "proxy.example",
-                    (corporate / ".project-sandbox" / name).read_text(),
-                )
+            for path in (
+                corporate_build / "Dockerfile",
+                corporate / ".devcontainer" / "Dockerfile",
+            ):
+                self.assertNotIn("proxy.example", path.read_text())
             # Regression: devcontainer.json sits inside whole-project build
             # contexts (COPY . .), so the proxy must never be written to it.
             devcontainer_text = (
@@ -255,7 +258,7 @@ class BuildEnvironmentTests(TestCase):
             for proxy in ("http://proxy.example:3128", "http://other.example:8080"):
                 project = root / proxy.split("//")[1].replace(":", "-")
                 project.mkdir()
-                with contextlib.redirect_stdout(io.StringIO()):
+                with contextlib.redirect_stdout(io.StringIO()), kept_staging() as kept:
                     self.assertEqual(
                         cli.main(
                             [
@@ -269,9 +272,7 @@ class BuildEnvironmentTests(TestCase):
                         0,
                     )
                 rendered.append(
-                    build_cache.compute_fingerprint(
-                        project / ".project-sandbox", extra={}
-                    )
+                    build_cache.compute_fingerprint(kept[0] / "build", extra={})
                 )
             self.assertEqual(rendered[0], rendered[1])
 

@@ -219,12 +219,10 @@ class StageTokenTests(TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name)
-        patcher = patch.object(config_agents, "CREDENTIALS_ROOT", self.root / "tmp")
-        patcher.start()
-        self.addCleanup(patcher.stop)
         self.addCleanup(self._tmp.cleanup)
-        self.context = self.root / "project" / ".project-sandbox"
-        self.context.mkdir(parents=True)
+        # A session's private secrets/ staging directory.
+        self.context = self.root / "staging" / "session" / "secrets"
+        self.context.mkdir(parents=True, mode=0o700)
 
     def test_stage_writes_private_file_and_rewrites_each_launch(self) -> None:
         directory = copilot_auth.stage_token(self.context, PAT)
@@ -235,7 +233,7 @@ class StageTokenTests(TestCase):
         self.assertEqual(
             directory, config_agents.credentials_dir(self.context, "copilot")
         )
-        self.assertFalse(directory.is_relative_to(self.context.parent))
+        self.assertEqual(directory, self.context / "copilot")
 
         copilot_auth.stage_token(self.context, OAUTH)
         self.assertEqual(token_file.read_text(encoding="utf-8"), OAUTH + "\n")

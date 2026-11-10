@@ -8,6 +8,7 @@ dedicated ``test_oauth_refresh`` module exercises the real implementation (with
 against fake executables on a PATH that holds nothing else.
 """
 
+import os
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -27,4 +28,21 @@ def _no_live_host_token_refresh(request):
         yield
         return
     with patch.object(oauth_refresh, "refresh_host_token"):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _private_state_roots(tmp_path_factory):
+    """Keep host state (locks, history, staging, logs) out of the real home.
+
+    Every test gets its own state and runtime roots unless it sets them itself.
+    """
+    base = tmp_path_factory.mktemp("roots")
+    with patch.dict(
+        os.environ,
+        {
+            "XDG_STATE_HOME": str(base / "state"),
+            "PROJECT_SANDBOX_RUNTIME_DIR": str(base / "runtime"),
+        },
+    ):
         yield
