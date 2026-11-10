@@ -95,6 +95,19 @@ It runs by default for container runtimes when builds are enabled, and in Docker
 CI. It accepts `--base-image`, retains logs/workdirs on failure (or `--keep`),
 and skips chroot and aggregate `--no-build` runs.
 
+The `firewall` suite also runs by default on container runtimes with builds and
+in Docker CI. Two fresh `--agent bash` containers reuse the same image with the
+firewall enabled. Each checks that initialization created the root-owned guard,
+removed the sudoers entry, and left the script root-only. Both `sudo -n -l` for
+the script and an actual `sudo -n` execution must fail. A rejection from the
+script's reinitialization guard does **not** count as revoked sudo permission.
+No AI credentials are needed; failures retain the workdir and sudo diagnostics.
+
+```bash
+./scripts/run-e2e-tests.sh --only firewall --runtime docker
+uv run python scripts/e2e-firewall.py --runtime apple-container --keep
+```
+
 A separate suite covers `--python-uv`, checking inside the sandbox that the
 agent user can actually run `uv` against the baked `/opt/venv`. It builds one
 project with `python-preference = "only-managed"`, so uv downloads

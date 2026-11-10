@@ -25,6 +25,7 @@
 #                                 chaining and a loopback-only local service (explicit opt-in; needs
 #                                 network and builds)
 #  19. vcs-access               — full/read-only/hidden metadata mounts with a Bash agent
+#  20. firewall                 — firewall sudo revocation in fresh Bash-agent containers
 #
 # The console shows one progress line per suite. Each suite's output is captured
 # in its own temp log file; a failing suite's log is kept and its path reported,
@@ -124,6 +125,7 @@ SUITES=(
   git-workflow
   jj-workflow
   vcs-access
+  firewall
   dockerfile-tamper
   timeout-teardown
   python-uv
@@ -386,6 +388,17 @@ if selected vcs-access; then
     run_suite "vcs-access" uv run python "$ROOT/scripts/e2e-vcs-access.py" "${VCS_ARGS[@]}"
   else
     skip_suite "vcs-access" "select a container runtime without --no-build"
+  fi
+fi
+
+# Firewall initialization must run in fresh real containers, with builds enabled.
+if selected firewall; then
+  if [ -n "$CONTAINER_RUNTIME" ] && [ "$NO_BUILD" = 0 ]; then
+    FIREWALL_ARGS=(--runtime "$CONTAINER_RUNTIME" --base-image "$BASE_IMAGE")
+    [ "$KEEP" = 1 ] && FIREWALL_ARGS+=(--keep)
+    run_suite "firewall" uv run python "$ROOT/scripts/e2e-firewall.py" "${FIREWALL_ARGS[@]}"
+  else
+    skip_suite "firewall" "select a container runtime without --no-build"
   fi
 fi
 

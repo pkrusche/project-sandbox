@@ -53,3 +53,6 @@ jobs:
 
       - name: Run VCS access e2e test
         run: scripts/run-e2e-tests.sh --only vcs-access --runtime docker
+
+      - name: Run firewall sudo revocation e2e test
+        run: scripts/run-e2e-tests.sh --only firewall --runtime docker
