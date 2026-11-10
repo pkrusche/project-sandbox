@@ -472,6 +472,13 @@ Then open the project in VS Code, Cursor, or any devcontainer-aware IDE and
 choose **Reopen in Container**. The generated `devcontainer.json` builds the same
 image, mounts the same sanitized configs and staged credentials, runs the same
 firewall via `postStartCommand`, and waits for it before opening a terminal.
+
+Firewall initialization revokes its sudo permission after success and cannot
+run twice in one container. After stopping a devcontainer, use **Rebuild
+Container** to create a fresh container; restarting the old one is unsupported.
+Failed initialization also requires recreation. Direct CLI runs already create
+fresh containers with `--rm`.
+
 Re-run the same `project-sandbox` command before starting or rebuilding the
 devcontainer again whenever credentials may have changed, `/tmp` may have been
 cleaned, or you are on a different host.

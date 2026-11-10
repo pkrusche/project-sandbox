@@ -28,6 +28,15 @@ Passing unit tests do not currently establish these boundaries.
 
 #### 1. High — firewall Python helpers import code from the writable workspace
 
+**Addressed:** privileged Python helpers now use `python3 -I`, and the script
+changes to `/` with a fixed system `PATH` before initialization. A root-owned
+atomic guard rejects repeated/concurrent attempts, including retries after
+failure. Successful initialization removes the dedicated sudoers entry; the
+installed script is root-only. Containers must be recreated from the image.
+Regression tests exercise workspace module shadowing and the one-time lifecycle.
+Live runtime verification of sudo revocation remains outstanding. The original
+finding below describes the reviewed revision, before these changes.
+
 **Locations:** `src/project_sandbox/templates/init-firewall.sh.j2:65` and
 `:346`; `templates/_resolve_endpoints.py.j2:1`;
 `templates/Dockerfile.j2:135`; `container_cli.py:403–404`.
@@ -277,7 +286,7 @@ implementation defects above. Some are already described in `docs/security.md`.
 | Wildcards and GitHub exclusions | `*.example.com` also matches the apex after Squid conversion. Two-label validation still admits broad public-suffix patterns such as `*.co.uk`. Reject public-suffix wildcards or require explicit acknowledgement. The finite repository-host denylist is not a complete GitHub-content classifier: `lfs.github.com` is in the firewall list but absent from `GITHUB_REPOSITORY_HOSTS`, and user content can live on other domains. Clarify the guarantee and test every officially supported repository transport/host before claiming all repository access is blocked. |
 | Copilot interception | `/copilot_internal/` permits any matching path and method. Narrow to observed entitlement endpoints/methods where practical. Add live fixture tests for dot segments, percent encoding, conflicting Host/CONNECT/SNI, and redirects. These are validation tasks, not confirmed path bypasses. |
 | Private destinations and upstream parents | Direct Squid mode has a useful private-address denylist; upstream mode deliberately omits it and trusts the parent for destination resolution. Require the parent to enforce equivalent internal/metadata restrictions when those are part of the threat model. Test mixed public/private DNS answers, rebinding, IPv4-mapped IPv6, and deployment-specific NAT64 paths. |
-| Startup, reinitialization, and revocation | The firewall flushes rules before installing final DROP policies and allows ESTABLISHED/RELATED traffic. The script is callable again through sudo; sidecar reloads also need explicit semantics for existing tunnels. Install policy atomically where possible, test failures and concurrent reinitialization, and distinguish blocking new connections from terminating existing ones after revocation. Audit broadly allowed outbound ICMPv6 error types alongside the actual capabilities of the agent process. No packet-level bypass was tested here. |
+| Startup, reinitialization, and revocation | Reinitialization is now rejected by an atomic one-attempt guard, and successful initialization revokes sudo access. The initial installation still flushes rules before installing final DROP policies and allows ESTABLISHED/RELATED traffic; sidecar reloads also need explicit semantics for existing tunnels. Install policy atomically where possible and distinguish blocking new connections from terminating existing ones after revocation. Audit broadly allowed outbound ICMPv6 error types alongside the actual capabilities of the agent process. No packet-level bypass was tested here. |
 
 ### Additional hardening
 

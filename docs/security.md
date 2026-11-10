@@ -134,6 +134,20 @@ container" guidance.
 
 ## Network Firewall
 
+Firewall initialization is a one-time operation per container. The root-owned
+script runs from `/` with a fixed system `PATH` and isolated Python helpers
+(`python3 -I`). An atomic guard in `/run` rejects concurrent or repeated
+attempts, including after a failed initialization. After installing and checking
+the policy, the script removes its dedicated passwordless sudo entry before
+reporting success. The script remains executable only by root.
+
+Direct CLI sessions already use fresh containers with `--rm`. Do not restart a
+previously initialized container: create a fresh one from the image. For
+devcontainers, rebuild/recreate the container instead of restarting it. A failed
+initialization also requires a fresh container. This prevents agent-triggered
+reinitialization; it does not make the initial rule installation atomic or change
+the treatment of established connections.
+
 When the firewall is enabled by default, `init-firewall.sh` runs as root inside
 the container and:
 
@@ -208,8 +222,8 @@ the container and:
 
 Domain allowlists are resolved once when the container starts, then pinned as IP
 addresses in `ipset`. CDN-backed services can rotate IPs during long sessions; if
-an allowlisted service starts failing after it initially worked, restart the
-container or devcontainer so the firewall resolves fresh addresses.
+an allowlisted service starts failing after it initially worked, create a fresh
+container (rebuild/recreate a devcontainer) so the firewall resolves fresh addresses.
 
 Customize:
 

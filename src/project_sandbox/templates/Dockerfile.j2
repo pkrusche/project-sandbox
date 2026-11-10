@@ -129,8 +129,8 @@ COPY {{ sandbox_copy_prefix }}{{ firewall_src_filename }} /usr/local/bin/project
 COPY {{ sandbox_copy_prefix }}entrypoint.sh /usr/local/bin/project-sandbox-entrypoint
 COPY {{ sandbox_copy_prefix }}project-sandbox-devcontainer-init /usr/local/bin/project-sandbox-devcontainer-init
 
-RUN chmod 0755 /usr/local/bin/project-sandbox-init-firewall \
-    /usr/local/bin/project-sandbox-entrypoint \
+RUN chmod 0700 /usr/local/bin/project-sandbox-init-firewall && \
+    chmod 0755 /usr/local/bin/project-sandbox-entrypoint \
     /usr/local/bin/project-sandbox-devcontainer-init && \
     echo 'agent ALL=(root) NOPASSWD: /usr/local/bin/project-sandbox-init-firewall' > /etc/sudoers.d/agent-firewall && \
     chmod 0440 /etc/sudoers.d/agent-firewall

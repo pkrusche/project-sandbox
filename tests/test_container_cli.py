@@ -46,6 +46,26 @@ class _CredentialMountArgs(TypedDict):
 
 
 class ContainerCliTests(TestCase):
+    def test_sessions_always_use_fresh_auto_removed_containers(self) -> None:
+        for runtime in (APPLE_CONTAINER, DOCKER, PODMAN):
+            with self.subTest(runtime=runtime.name):
+                cmd = build_run_argv(
+                    runtime=runtime,
+                    image="project-sandbox:test",
+                    project_abs=Path("/workspace"),
+                    claude_cfg=Path("/config/claude/settings.json"),
+                    codex_cfg=Path("/config/codex/config.toml"),
+                    codex_credentials_dir=None,
+                    identity=GitIdentity(None, None),
+                    memory="8g",
+                    cpus=4,
+                    extra_mounts=[],
+                    agent="bash",
+                    firewall_enabled=True,
+                    interactive=False,
+                )
+                self.assertEqual(cmd[:3], [runtime.binary, "run", "--rm"])
+
     def test_mount_builder_requires_explicit_agent_policy(self) -> None:
         parameter = inspect.signature(build_mount_specs).parameters["agent"]
         self.assertIs(parameter.default, inspect.Parameter.empty)

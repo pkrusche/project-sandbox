@@ -1,5 +1,19 @@
 #!/bin/bash
 set -euo pipefail
+
+# Never run privileged helpers from the agent's writable workspace or PATH.
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+cd /
+umask 077
+
+# Claim this container's only initialization attempt before doing any work.
+# /run is root-owned; atomic mkdir also rejects concurrent sudo invocations
+# authorized before the sudoers entry is removed. Keep the guard on failure:
+# a partially initialized container must be discarded, never retried.
+if ! mkdir -m 0700 /run/project-sandbox-firewall-init; then
+  echo "ERROR: Firewall initialization already attempted; create a fresh container from the image (rebuild/recreate devcontainers)." >&2
+  exit 1
+fi
 {%- if egress_sidecar %}
 
 # --egress sidecar: trust the sidecar's CA only while it intercepts TLS
@@ -62,7 +76,7 @@ fi
 # Resolve every endpoint with sandbox-visible NSS before DNS or NAT is closed.
 # A bounded helper validates addresses and atomically prepares shell arrays;
 # failures propagate instead of disappearing inside process substitution.
-ENDPOINT_ADDRESSES=$(timeout 15 python3 - "$IPV6_FW" <<'PY_ENDPOINTS'
+ENDPOINT_ADDRESSES=$(timeout 15 python3 -I - "$IPV6_FW" <<'PY_ENDPOINTS'
 {% include '_resolve_endpoints.py.j2' %}
 PY_ENDPOINTS
 ) || {
@@ -343,7 +357,7 @@ fi
 {% for destination in local_destinations %}
 {% if destination.label == "Internet proxy" %}
 # Verify TCP or TLS without a public destination through the final firewall.
-if ! timeout 5 python3 - <<'PY_PREFLIGHT'
+if ! timeout 5 python3 -I - <<'PY_PREFLIGHT'
 import socket
 import ssl
 try:
@@ -385,6 +399,11 @@ if ! curl --noproxy '*' --fail --silent --show-error --connect-timeout 3 --max-t
   exit 1
 fi
 {% endif %}
+
+# All rules and connectivity checks succeeded. Revoke the agent's privileged
+# entry point before reporting readiness; failure to revoke aborts startup.
+# Keep the root-only script for inspection, but never reinitialize a container.
+rm /etc/sudoers.d/agent-firewall
 
 echo "Firewall initialized."
 {% if policy == "normal" %}

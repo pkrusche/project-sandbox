@@ -2959,6 +2959,10 @@ class RendererTests(TestCase):
             # Both Dockerfiles have the same binary name — only one sudoers entry each
             self.assertEqual(container_text.count("NOPASSWD"), 1)
             self.assertEqual(devcontainer_text.count("NOPASSWD"), 1)
+            for text in (container_text, devcontainer_text):
+                self.assertIn(
+                    "chmod 0700 /usr/local/bin/project-sandbox-init-firewall", text
+                )
             self.assertIn(
                 "NOPASSWD: /usr/local/bin/project-sandbox-init-firewall", container_text
             )

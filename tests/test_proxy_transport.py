@@ -513,7 +513,7 @@ class ProxyTransportTests(unittest.TestCase):
                 "# "
                 + text.split("# Verify TCP or TLS without a public destination", 1)[
                     1
-                ].split('echo "Firewall initialized."', 1)[0]
+                ].split("# All rules and connectivity checks succeeded.", 1)[0]
             )
             for trusted in (False, True):
                 with self.subTest(trusted=trusted):
@@ -585,7 +585,7 @@ class ProxyTransportTests(unittest.TestCase):
             probe = (
                 "# "
                 + text.split("# Exercise the real sandbox-to-host path", 1)[1].split(
-                    'echo "Firewall initialized."', 1
+                    "# All rules and connectivity checks succeeded.", 1
                 )[0]
             )
             env = {
