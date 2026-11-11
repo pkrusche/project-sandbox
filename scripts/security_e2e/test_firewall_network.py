@@ -8,8 +8,14 @@ import threading
 import pytest
 from conftest import run
 
+from project_sandbox import local_service_network
+
 
 class Listener(http.server.BaseHTTPRequestHandler):
+    # Keep-alive lets the startup probe prove a connection works before the
+    # firewall initializes and then reuse it afterwards.
+    protocol_version = "HTTP/1.1"
+
     def do_GET(self):
         body = b"SECURITY_E2E_ORIGIN"
         self.send_response(200)
@@ -34,19 +40,41 @@ def listener():
         thread.join(timeout=5)
 
 
+def fixture_ip(runtime: str) -> str:
+    """Host IPv4 address a plain ``RUNTIME run`` container uses to reach a listener.
+
+    Apple containers reach host loopback through the localhost address of the
+    configured ``host.docker.internal`` DNS domain (the same alias pi-ollama
+    uses), which avoids host-side filters on LAN traffic. Other runtimes reach
+    the host through its outbound IPv4 source address.
+    """
+    if runtime == "apple-container":
+        return local_service_network.APPLE_LOCALHOST_ADDRESS
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        sock.connect(("192.0.2.1", 9))  # routing lookup only; sends no packet
+        return sock.getsockname()[0]
+
+
 def default_fixture_host(runtime: str) -> str:
-    """Host address a plain ``RUNTIME run`` container uses to reach a host listener.
+    """Host name or address a plain ``RUNTIME run`` container uses for a listener.
 
     Rootless Podman's pasta network copies the host's addresses into the
     container namespace, so the host's own LAN address points back at the
     container and refuses the connection; Podman's host alias reaches the host.
-    Other runtimes reach the host through its outbound IPv4 source address.
     """
     if runtime == "podman":
         return "host.containers.internal"
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-        sock.connect(("192.0.2.1", 9))  # routing lookup only; sends no packet
-        return sock.getsockname()[0]
+    return fixture_ip(runtime)
+
+
+def unreachable_message(runtime: str) -> str:
+    message = "fixture host unreachable without firewall; supply --fixture-host with a container-reachable address"
+    if runtime == "apple-container":
+        message += (
+            "; Apple containers need the host alias: "
+            + local_service_network.APPLE_SETUP_COMMAND
+        )
+    return message
 
 
 PROBE = """import json, socket, urllib.request
@@ -71,11 +99,9 @@ Path('network-result.json').write_text(json.dumps(out))
 
 
 def test_private_domain_pin_opens_unexpected_tcp_port(sandbox, listener, request):
-    host = request.config.getoption("--fixture-host")
-    if not host:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-            sock.connect(("192.0.2.1", 9))  # routing lookup only; sends no packet
-            host = sock.getsockname()[0]
+    # The pin below is "<ip>.nip.io", so this needs an address, not a host alias.
+    runtime = request.config.getoption("--security-runtime")
+    host = request.config.getoption("--fixture-host") or fixture_ip(runtime)
     project = sandbox.project()
     (project / "probe.py").write_text(PROBE)
     (project / "destination.json").write_text(
@@ -83,7 +109,7 @@ def test_private_domain_pin_opens_unexpected_tcp_port(sandbox, listener, request
     )
     sandbox.session(project, "python3 -I probe.py", build=True)
     assert json.loads((project / "network-result.json").read_text())["reached"], (
-        "fixture host unreachable without firewall; supply --fixture-host with a container-reachable address"
+        unreachable_message(runtime)
     )
     for pinned in (False, True):
         argv = sandbox.argv(
@@ -184,22 +210,37 @@ def test_startup_connection_and_agent_icmp_capabilities(sandbox, listener, reque
     """
     from project_sandbox import container_cli
 
-    host = request.config.getoption("--fixture-host") or default_fixture_host(
-        request.config.getoption("--security-runtime")
-    )
+    runtime = request.config.getoption("--security-runtime")
+    host = request.config.getoption("--fixture-host") or default_fixture_host(runtime)
     project = sandbox.project()
     (project / "startup.py").write_text(f"""import json, os, pwd, socket, subprocess
 from pathlib import Path
+REQUEST = b'GET / HTTP/1.1\\r\\nHost: fixture\\r\\n\\r\\n'
+def exchange(s):
+    s.sendall(REQUEST)
+    data = b''
+    while b'SECURITY_E2E_ORIGIN' not in data:
+        part = s.recv(4096)
+        if not part:
+            raise ConnectionError('fixture closed the connection')
+        data += part
 s = socket.create_connection(({host!r}, {listener.server_port}), timeout=10)
+# Prove the connection carries data before initialization; otherwise a reset
+# afterwards would say nothing about the firewall.
+try:
+    exchange(s)
+except OSError as error:
+    raise SystemExit(f'fixture unreachable before firewall initialization: {{error}}')
 # Capture real kernel policies before/after running the generated initializer.
 before = subprocess.check_output(['iptables-save'], text=True)
 subprocess.run(['/usr/local/bin/project-sandbox-init-firewall'], check=True)
 after = subprocess.check_output(['iptables-save'], text=True)
 os.setgid(pwd.getpwnam('agent').pw_gid)
 os.setuid(pwd.getpwnam('agent').pw_uid)
-s.sendall(b'GET / HTTP/1.1\\r\\nHost: fixture\\r\\nConnection: close\\r\\n\\r\\n')
+# A reset can surface on send (EPIPE) as well as on receive.
 try:
-    survived = b'200' in s.recv(4096)
+    exchange(s)
+    survived = True
 except OSError:
     survived = False
 caps = {{}}
@@ -236,7 +277,12 @@ Path('/workspace/startup.json').write_text(json.dumps(dict(before=before, after=
         and container_cli.host_build_identity(sandbox.runtime) is not None
     ):
         argv[2:2] = ["--userns=keep-id"]
-    run(argv, timeout=180)
+    proc = run(argv, timeout=180, check=False)
+    assert proc.returncode == 0, (
+        unreachable_message(runtime)
+        if "fixture unreachable before firewall initialization" in proc.stdout
+        else proc.stdout[-8000:]
+    )
     result = json.loads((project / "startup.json").read_text())
     assert ":OUTPUT DROP" in result["after"]
     if result["survived"]:

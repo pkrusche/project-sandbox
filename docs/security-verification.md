@@ -88,7 +88,7 @@ Names below are pytest function names; parametrization covers the listed cases.
 | Workspace lifetime ownership and host capture | `test_workspace_lease_and_capture`: Git/jj × full/read-only/hidden, overlapping same-ref launch rejected while owner remains live, subsequent reuse succeeds, and a source edit is captured into the host branch/bookmark. |
 | Live external Git lock | `test_live_external_git_lock_is_preserved`: a separate real `git update-index --index-info` process holds the worktree's actual index lock while CLI reuse is refused; its inode/content remain intact. |
 | VCS metadata writes, unlink/rename and hiding | `test_existing_mount_and_firewall_audits[vcs-access]`: real Git/jj metadata mounts, direct write/unlink/rename attempts, full metadata hashes before/after, persisted full-access commit, read-only history, and hidden contents. |
-| Private mount storage and devcontainer reopen | `test_private_mounts_and_devcontainer_reopen`: run the generated standalone `initializeCommand`, apply generated mounts on the selected runtime, delete empty private workspace masks, and repeat initialization/launch, including comma/quote-bearing project names. Malformed mount rejection is recorded as an encoding limitation. This tests the reopen helper and mounts, not VS Code's UI. |
+| Private mount storage and devcontainer reopen | `test_private_mounts_and_devcontainer_reopen`: run the generated standalone `initializeCommand`, apply generated mounts on the selected runtime, delete empty private workspace masks, and repeat initialization/launch, including a project name with a space and `$`. On Apple `container` the replay drops the Docker-only `consistency=` mount hint. This tests the reopen helper and mounts, not VS Code's UI. |
 | Sole Ollama owner SIGKILL | `test_only_pi_ollama_owner_sigkill_and_reattach`: build with `--build-only --pi-ollama`, prove container reachability, kill the sole host CLI, require bridge listener release within one poll interval plus scheduling allowance, stop its orphan container, and verify a fresh owner/forwarder works. |
 | Private DNS pins and unexpected ports | `test_private_domain_pin_opens_unexpected_tcp_port`: controlled host listener works without a firewall, is denied without a pin, and is probed with a private-address DNS pin. Reports current unrestricted-port behavior as a known limitation. |
 | Devcontainer gateway DNS/host ports | `test_devcontainer_gateway_unexpected_port_and_dns`: generated devcontainer firewall image, controlled gateway TCP listener and UDP/53 responder. Reports broad gateway access as a known limitation. |
@@ -121,7 +121,12 @@ Names below are pytest function names; parametrization covers the listed cases.
 - Sole-owner bridge-forwarder cleanup applies to Linux Docker Engine. Desktop,
   Apple and pasta/native strategies do not create that forwarder and skip that
   case. Port 11434 must be free for the deterministic fixture.
-- Firewall host-port probes discover the host IPv4 address by a routing lookup.
+- Firewall host-port probes discover the host IPv4 address by a routing lookup;
+  Podman uses `host.containers.internal` where a name works. Apple `container`
+  uses `203.0.113.113`, the host-loopback address of the `host.docker.internal`
+  DNS domain (see [Apple container DNS](apple-container-dns.md)), so those probes
+  need that domain configured. The startup probe first proves its connection
+  carries data, so an unreachable host fails instead of passing as "reset".
   Override with `--fixture-host IP` (aggregate: `--security-fixture-host IP`). The
   devcontainer gateway DNS test additionally needs the gateway to be a local
   host address and UDP/53 free and bindable; otherwise it reports a skip.

@@ -311,9 +311,19 @@ def test_private_mounts_and_devcontainer_reopen(sandbox, project_name):
         part.replace("${localWorkspaceFolder}", str(project))
         for part in config["initializeCommand"]
     ]
-    mounts = [
-        m.replace("${localWorkspaceFolder}", str(project)) for m in config["mounts"]
-    ]
+
+    def runtime_mount(value):
+        value = value.replace("${localWorkspaceFolder}", str(project))
+        if sandbox.runtime.name == "apple-container":
+            # Dev Containers IDEs drive Docker or Podman. Apple's --mount has no
+            # "consistency" directive (a Docker Desktop performance hint), so the
+            # replay drops it; every source, target and access mode stays.
+            value = ",".join(
+                part for part in value.split(",") if not part.startswith("consistency=")
+            )
+        return value
+
+    mounts = [runtime_mount(m) for m in config["mounts"]]
     # A reopen executes the generated standalone helper, not the package's API.
     for attempt in (1, 2):
         run(initialize, cwd=project, env=sandbox.env)
@@ -324,7 +334,7 @@ def test_private_mounts_and_devcontainer_reopen(sandbox, project_name):
             "--entrypoint",
             "/bin/bash",
             "--mount",
-            config["workspaceMount"].replace("${localWorkspaceFolder}", str(project)),
+            runtime_mount(config["workspaceMount"]),
         ]
         if sandbox.runtime.name == "podman":
             argv += ["--userns=keep-id"]
