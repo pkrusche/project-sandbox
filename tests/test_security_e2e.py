@@ -34,6 +34,23 @@ origin_module = load("security_e2e_origin", "origin.py")
 dns = load("security_e2e_dns", "dns_fixture.py")
 
 
+def load_network():
+    # test_network.py imports its siblings by their pytest rootdir names.
+    saved = {name: sys.modules.get(name) for name in ("conftest", "origin")}
+    sys.modules.update(conftest=harness, origin=origin_module)
+    try:
+        return load("security_e2e_network", "test_network.py")
+    finally:
+        for name, module in saved.items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
+
+
+network = load_network()
+
+
 class SecurityHarnessTests(unittest.TestCase):
     def test_explicit_cli_arguments_parse_for_each_runtime_and_build_mode(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -171,6 +188,109 @@ class SecurityHarnessTests(unittest.TestCase):
         docker_host = firewall.default_fixture_host("docker")
         self.assertNotEqual(docker_host, "host.containers.internal")
         socket.inet_aton(docker_host)
+
+
+class FakeProbeSandbox:
+    """Scripted CLI launches: each outcome is (exit code, session log text)."""
+
+    def __init__(self, directory, outcomes):
+        self.directory, self.outcomes = directory, list(outcomes)
+        self.launches = []
+
+    def project(self):
+        path = self.directory / "project"
+        path.mkdir()
+        return path
+
+    def argv(self, project, prompt, *, build=False, extra=()):
+        return ["--no-firewall", *(["--build"] if build else [])]
+
+    def start(self, argv):
+        self.launches.append(argv)
+        code, text = self.outcomes.pop(0)
+        project = self.directory / "project"
+        sessions = project / ".project-sandbox/sessions"
+        sessions.mkdir(parents=True, exist_ok=True)
+        (sessions / f"bash-{len(self.launches)}.log").write_text(text)
+        if code == 0:
+            (project / "probes.json").write_text('[{"status": 200}]')
+        audit = self.directory / f"session-{len(self.launches)}.log"
+        audit.write_text(f"launch {len(self.launches)} exited {code}\n")
+        return SimpleNamespace(code=code, audit_log=audit)
+
+    def finish(self, proc, *, ok=True, timeout=600):
+        return proc.code
+
+
+class SidecarProbeRetryTests(unittest.TestCase):
+    UNREACHABLE = (
+        1,
+        (
+            "Internet proxy connection failed\nERROR: Internet proxy is unreachable "
+            "from inside the sandbox at host.docker.internal:3129.\n"
+        ),
+    )
+
+    def probe(self, outcomes, *, clock_step=1.0):
+        now = [0.0]
+        sleeps = []
+
+        def sleep(seconds):
+            sleeps.append(seconds)
+            now[0] += seconds
+
+        def monotonic():
+            now[0] += clock_step
+            return now[0]
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        sandbox = FakeProbeSandbox(Path(tmp.name), outcomes)
+        sidecar = network.Sidecar(sandbox, origin=None)
+        clock = SimpleNamespace(monotonic=monotonic, sleep=sleep)
+        original, network.time = network.time, clock
+        self.addCleanup(setattr, network, "time", original)
+        return sidecar, sandbox, sleeps
+
+    def test_relaunches_until_the_sandbox_reaches_the_sidecar(self):
+        sidecar, sandbox, sleeps = self.probe(
+            [self.UNREACHABLE, self.UNREACHABLE, (0, "ok\n")]
+        )
+        self.assertEqual(sidecar.probe([{}]), [{"status": 200}])
+        self.assertEqual(len(sandbox.launches), 3)
+        # Only the first launch builds; the image exists before the preflight.
+        self.assertEqual(
+            ["--build" in argv for argv in sandbox.launches], [True, False, False]
+        )
+        self.assertTrue(all("--no-firewall" not in a for a in sandbox.launches))
+        self.assertEqual(sleeps, [network.PROXY_RETRY_INTERVAL] * 2)
+        self.assertTrue(sidecar.built)
+
+    def test_other_failures_are_not_retried(self):
+        sidecar, sandbox, sleeps = self.probe(
+            [(1, "ERROR: Agent proxy is unreachable from inside the sandbox\n")]
+        )
+        with self.assertRaisesRegex(AssertionError, "launch 1 exited 1"):
+            sidecar.probe([{}])
+        self.assertEqual((len(sandbox.launches), sleeps), (1, []))
+
+    def test_a_persistently_unreachable_sidecar_fails_after_the_deadline(self):
+        outcomes = [self.UNREACHABLE] * 100
+        sidecar, sandbox, sleeps = self.probe(outcomes, clock_step=10.0)
+        with self.assertRaises(AssertionError):
+            sidecar.probe([{}])
+        launches = len(sandbox.launches)
+        self.assertGreater(launches, 1)
+        self.assertLess(launches, 100)
+        self.assertEqual(len(sleeps), launches - 1)
+
+    def test_an_earlier_unreachable_log_does_not_excuse_a_new_failure(self):
+        sidecar, sandbox, _ = self.probe(
+            [self.UNREACHABLE, (1, "Traceback: probe.py crashed\n")]
+        )
+        with self.assertRaisesRegex(AssertionError, "launch 2 exited 1"):
+            sidecar.probe([{}])
+        self.assertEqual(len(sandbox.launches), 2)
 
 
 class ControlledOriginTests(unittest.TestCase):

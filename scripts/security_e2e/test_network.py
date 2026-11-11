@@ -56,6 +56,13 @@ Path('/workspace/probes.json').write_text(json.dumps(out))
 """
 
 
+# Printed by the sandbox firewall preflight (init-firewall.sh.j2) when the
+# egress proxy does not accept a connection from inside the container.
+PROXY_UNREACHABLE = "Internet proxy is unreachable from inside the sandbox"
+PROXY_REACHABLE_TIMEOUT = 60.0
+PROXY_RETRY_INTERVAL = 3.0
+
+
 class Sidecar:
     def __init__(self, sandbox, origin):
         self.sandbox, self.origin = sandbox, origin
@@ -104,16 +111,39 @@ class Sidecar:
     def probe(self, items):
         (self.project / "probe-config.json").write_text(json.dumps(items))
         (self.project / "probes.json").unlink(missing_ok=True)
-        argv = self.sandbox.argv(
-            self.project,
-            "python3 -I probe.py",
-            build=not self.built,
-            extra=["--egress", "sidecar"],
-        )
-        argv.remove("--no-firewall")
-        self.sandbox.finish(self.sandbox.start(argv), timeout=1800)
+        # `restart` waits until the sidecar answers on the host's loopback
+        # endpoint, but the sandbox reaches it through host.docker.internal,
+        # a separate forwarding path (Podman's gvproxy on macOS) that can lag
+        # behind. The firewall preflight connects once and aborts the session,
+        # so relaunch until that path answers; any other failure is real.
+        deadline = time.monotonic() + PROXY_REACHABLE_TIMEOUT
+        while True:
+            argv = self.sandbox.argv(
+                self.project,
+                "python3 -I probe.py",
+                build=not self.built,
+                extra=["--egress", "sidecar"],
+            )
+            argv.remove("--no-firewall")
+            before = set(self.session_logs())
+            proc = self.sandbox.start(argv)
+            code = self.sandbox.finish(proc, ok=False, timeout=1800)
+            if code == 0:
+                break
+            unreachable = any(
+                PROXY_UNREACHABLE in path.read_text(errors="replace")
+                for path in set(self.session_logs()) - before
+            )
+            if not unreachable or time.monotonic() >= deadline:
+                assert code == 0, proc.audit_log.read_text()[-8000:]
+            # The image was built before the preflight ran; do not rebuild.
+            self.built = True
+            time.sleep(PROXY_RETRY_INTERVAL)
         self.built = True
         return json.loads((self.project / "probes.json").read_text())
+
+    def session_logs(self):
+        return (self.project / ".project-sandbox/sessions").glob("*.log")
 
     def logs(self):
         text = run(egress_sidecar.logs_argv(self.sandbox.runtime), check=False).stdout

@@ -80,6 +80,8 @@ DRY_RUN=0
 COMMON_ARGS=()
 EXTRA_ARGS=()
 
+CLEANUP=1
+
 usage() { sed -n '2,${/^#/!q;p;}' "$0"; }
 
 while [ $# -gt 0 ]; do
@@ -95,6 +97,7 @@ while [ $# -gt 0 ]; do
     --strict-security-coverage) COMMON_ARGS+=(--strict-security-coverage); shift ;;
     --base-image) COMMON_ARGS+=(--base-image "${2:?--base-image needs a value}"); shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
+    --no-cleanup) CLEANUP=0; shift ;;
     --) shift; EXTRA_ARGS+=("$@"); break ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage >&2; exit 64 ;;
@@ -338,12 +341,18 @@ PY
 # Sweep e2e leftovers on every detected container runtime (chroot leaves none).
 CLEANUP_CMD=(uv run python "$ROOT/scripts/e2e-cleanup.py")
 CLEANUP_RUNTIMES=0
+
 for rt in "${RUNTIMES[@]}"; do
   if [ "$rt" != chroot ]; then
     CLEANUP_CMD+=(--runtime "$rt")
     CLEANUP_RUNTIMES=1
   fi
 done
+
+if [ "$CLEANUP" = 0 ]; then
+  note "e2e-cleanup.py skipped by --no-cleanup"
+  CLEANUP_RUNTIMES=0
+fi
 
 # --- Test plan ---------------------------------------------------------------
 echo "Runtimes to test: ${RUNTIMES[*]}"
