@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from . import generated_files, transcript
+from . import generated_files, mount_storage, transcript
 
 RATE_LIMIT_EXIT_CODE = 75  # EX_TEMPFAIL: callers should retry after a backoff.
 TIMEOUT_EXIT_CODE = 124  # Matches session.run()'s timeout exit code.
@@ -300,6 +300,7 @@ def _now() -> str:
 
 
 def _write(path: Path, value: dict[str, Any]) -> None:
+    mount_storage.ensure_private_dirs(path.parent)
     generated_files.ensure_dir(path.parent)
     generated_files.write_text(
         path,

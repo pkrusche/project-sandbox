@@ -36,6 +36,32 @@ def canonical_path(path: Path) -> Path:
     return path
 
 
+def ensure_private_dirs(path: Path) -> Path:
+    """``mkdir -p`` that creates every missing component ``0700``.
+
+    ``Path.mkdir(parents=True, mode=0o700)`` applies ``mode`` to the leaf
+    only; missing parents get the umask default, which is group-writable
+    under the common ``umask 002``. Such an ancestor of private mount
+    storage is then (rightly) refused by :func:`directory`. Existing
+    directories are left untouched.
+    """
+    missing: list[Path] = []
+    current = path.absolute()
+    while not current.is_dir():
+        missing.append(current)
+        if current.parent == current:
+            break
+        current = current.parent
+    for component in reversed(missing):
+        try:
+            component.mkdir(mode=0o700)
+        except FileExistsError:
+            continue
+        # A restrictive umask must not remove the owner's own access.
+        os.chmod(component, 0o700)
+    return path
+
+
 def project_dir(project: Path, *, root: Path | None = None) -> Path:
     digest = hashlib.sha256(os.fsencode(project.resolve())).hexdigest()
     return (root if root is not None else storage_root()) / "projects" / digest

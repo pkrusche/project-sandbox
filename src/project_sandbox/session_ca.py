@@ -41,7 +41,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
-from . import egress_policy, observability
+from . import egress_policy, mount_storage, observability
 
 CERT_NAME = "ca.pem"
 KEY_NAME = "ca-key.pem"
@@ -263,7 +263,7 @@ def session_directory(
     if not session_id or "/" in session_id or session_id in (".", ".."):
         raise SessionCAError(f"invalid session id: {session_id!r}")
     root = root or egress_root()
-    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    mount_storage.ensure_private_dirs(root)
     directory = root / session_id
     try:
         directory.mkdir(mode=0o700)

@@ -1,5 +1,6 @@
 import contextlib
 import json
+import os
 import tempfile
 import threading
 from pathlib import Path
@@ -12,7 +13,10 @@ from project_sandbox import (
     cli,
     config_agents,
     container_cli,
+    egress_sidecar,
     implicit_mounts,
+    mount_storage,
+    observability,
     session_inputs,
 )
 from project_sandbox.git_identity import GitIdentity
@@ -331,3 +335,54 @@ class SessionInputLifecycleTests(TestCase):
                 0,
             )
         self.assertFalse(roots[0].exists())
+
+
+class UmaskGroupWritableStateTests(TestCase):
+    """Regression: under ``umask 002`` the first state write created
+    ``$XDG_STATE_HOME`` and ``$XDG_STATE_HOME/project-sandbox`` group-writable
+    (``Path.mkdir(parents=True, mode=0o700)`` only applies ``mode`` to the
+    leaf), so every later session failed with "Unsafe ancestor of private
+    mount storage"."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = Path(self._tmp.name)
+        old = os.umask(0o002)
+        self.addCleanup(os.umask, old)
+
+    def test_ensure_private_dirs_creates_every_missing_component_0700(self):
+        existing = self.tmp / "existing"
+        existing.mkdir(mode=0o755)
+        os.chmod(existing, 0o755)
+        leaf = existing / "a" / "b" / "c"
+        self.assertEqual(mount_storage.ensure_private_dirs(leaf), leaf)
+        for path in (existing / "a", existing / "a" / "b", leaf):
+            self.assertEqual(path.stat().st_mode & 0o777, 0o700, path)
+        # Existing directories are never repaired or tightened.
+        self.assertEqual(existing.stat().st_mode & 0o777, 0o755)
+        mount_storage.ensure_private_dirs(leaf)  # idempotent
+
+    def test_sidecar_state_then_session_inputs_on_fresh_state_home(self):
+        state = self.tmp / "state"
+        with patch.object(
+            mount_storage,
+            "storage_root",
+            return_value=state / "project-sandbox" / "mounts",
+        ):
+            lay = egress_sidecar.layout(
+                container_cli.DOCKER, root=state / "project-sandbox" / "egress"
+            )
+            egress_sidecar.write_state(lay, {"version": 1})
+            for path in (state, state / "project-sandbox"):
+                self.assertEqual(path.stat().st_mode & 0o022, 0, path)
+            with session_inputs.allocate() as inputs:
+                self.assertTrue(inputs.is_dir())
+
+    def test_session_record_on_fresh_state_home_is_private(self):
+        state = self.tmp / "state"
+        with patch.dict(os.environ, {"XDG_STATE_HOME": str(state)}):
+            path = observability.state_dir() / "record.json"
+            observability._write(path, {"ok": True})
+        for directory in (state, state / "project-sandbox", path.parent):
+            self.assertEqual(directory.stat().st_mode & 0o777, 0o700, directory)

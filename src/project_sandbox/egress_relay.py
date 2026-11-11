@@ -49,7 +49,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, Self
 
-from . import build_proxy_forwarder, proxy_endpoint, session_ca
+from . import build_proxy_forwarder, mount_storage, proxy_endpoint, session_ca
 
 LOCK_NAME = "relay.lock"
 PID_NAME = "relay.pid"
@@ -153,7 +153,7 @@ def _run_locked(
     ``idle``, the server also stops when ``idle()`` returns true; it is called
     every ``idle_poll`` seconds.
     """
-    state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    mount_storage.ensure_private_dirs(state_dir)
     lock_fd = _open_private(state_dir / files.lock, os.O_RDWR | os.O_CREAT)
     try:
         # Not a single LOCK_NB attempt: RelayControl's liveness probes (spawn

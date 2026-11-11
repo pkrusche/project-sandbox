@@ -58,6 +58,7 @@ from . import (
     egress_policy,
     egress_relay,
     local_service_network,
+    mount_storage,
     session_ca,
     sidecar_image,
     squid_config,
@@ -227,7 +228,7 @@ def read_state(lay: Layout) -> dict | None:
 
 
 def write_state(lay: Layout, data: dict) -> None:
-    lay.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    mount_storage.ensure_private_dirs(lay.root)
     _write_file(lay.state_file, json.dumps(data, indent=2, sort_keys=True) + "\n")
 
 
@@ -888,7 +889,7 @@ class Collaborators:
 
 @contextlib.contextmanager
 def _locked(lay: Layout):
-    lay.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    mount_storage.ensure_private_dirs(lay.root)
     os.chmod(lay.root, 0o700)
     with path_lock(LOCK_KIND, lay.root):
         yield
@@ -1056,7 +1057,7 @@ def _cold_start(
     ):
         raise SidecarError(port_taken_message(policy, address))
 
-    lay.sidecar.mkdir(parents=True, exist_ok=True, mode=0o700)
+    mount_storage.ensure_private_dirs(lay.sidecar)
     os.chmod(lay.sidecar, 0o700)
     bump_set = egress_policy.derive_bump_set(copilot=policy.copilot)
     now = deps.now()

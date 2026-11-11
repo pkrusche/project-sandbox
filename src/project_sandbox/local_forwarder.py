@@ -38,7 +38,7 @@ import time
 from pathlib import Path
 from typing import Self
 
-from . import __version__, egress_relay, observability
+from . import __version__, egress_relay, mount_storage, observability
 
 FILES = egress_relay.StateFiles(
     lock="fwd.lock", pid="fwd.pid", port="fwd.port", log="fwd.log"
@@ -112,7 +112,7 @@ def ensure_state_dir(directory: Path) -> Path:
     """
     for path in (directory.parent, directory):
         if not _refuse_symlink(path):
-            path.mkdir(parents=True, exist_ok=True, mode=0o700)
+            mount_storage.ensure_private_dirs(path)
             _refuse_symlink(path)  # lost a race with a planted link
         if not path.is_dir():
             raise ForwarderError(f"Local-forward state path {path} is not a directory.")

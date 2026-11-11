@@ -15,7 +15,7 @@ from uuid import uuid4
 
 import pytest
 
-from project_sandbox import container_cli
+from project_sandbox import container_cli, mount_storage
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -87,7 +87,7 @@ def artifacts(request):
     supplied = request.config.getoption("--security-artifacts")
     if supplied:
         path = Path(supplied).resolve()
-        path.mkdir(parents=True, exist_ok=True)
+        mount_storage.ensure_private_dirs(path)
         assert not list(path.iterdir()), "artifact directory must be empty"
     else:
         base = (
@@ -95,7 +95,9 @@ def artifacts(request):
             if request.config.getoption("--security-runtime") == "host"
             else ROOT / ".project-sandbox/e2e"
         )
-        base.mkdir(parents=True, exist_ok=True)
+        # XDG_STATE_HOME lives below here; group-writable ancestors (umask
+        # 002) are refused as unsafe parents of private mount storage.
+        mount_storage.ensure_private_dirs(base)
         path = Path(tempfile.mkdtemp(prefix="security.", dir=base))
     print(f"\nSecurity artifacts retained: {path}")
     return path
@@ -104,7 +106,7 @@ def artifacts(request):
 @pytest.fixture
 def case_dir(artifacts, request):
     path = artifacts / re.sub(r"[^A-Za-z0-9_.-]", "_", request.node.name)
-    path.mkdir()
+    path.mkdir(mode=0o700)
     return path
 
 

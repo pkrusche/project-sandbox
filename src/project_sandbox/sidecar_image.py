@@ -12,7 +12,7 @@ import hashlib
 import os
 from pathlib import Path
 
-from . import observability, squid_config
+from . import mount_storage, observability, squid_config
 from .templating import get_template
 
 # Pinned by digest; updated by scripts/update-pins.py (Alpine release + digest).
@@ -79,7 +79,8 @@ def render(root: Path | None = None) -> tuple[Path, str]:
     files = render_files()
     tag = image_tag(files)
     context = (root or default_context_root()) / tag.rsplit(":", 1)[1]
-    context.mkdir(parents=True, exist_ok=True)
+    mount_storage.ensure_private_dirs(context.parent)
+    context.mkdir(exist_ok=True)
     for name, text in files.items():
         path = context / name
         path.parent.mkdir(exist_ok=True)

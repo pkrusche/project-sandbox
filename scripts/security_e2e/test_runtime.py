@@ -232,7 +232,8 @@ def test_workspace_lease_and_capture(sandbox, backend, mode):
                     "show",
                     "-r",
                     "security-owner",
-                    "captured.txt",
+                    # Relative filesets resolve against the cwd, not -R.
+                    'root:"captured.txt"',
                 ],
                 env=sandbox.env,
             ).stdout
