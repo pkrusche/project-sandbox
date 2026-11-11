@@ -114,9 +114,10 @@ Names below are pytest function names; parametrization covers the listed cases.
   `--security-runtime host` intentionally skips container cases.
 - Apple Git pointer-file restricted mounts are an unimplemented feature and
   those cases skip. jj and plain-directory metadata cases remain available.
-- Cross-runtime tests need a second operational runtime whose published sidecar
-  endpoint can coexist with the first. Both global sidecars must initially be
-  absent. The test uses one isolated XDG policy and separate runtime state.
+- Cross-runtime tests need a second operational runtime. Both global sidecars
+  must initially be absent. `[egress.sidecar] port` is one host port per policy,
+  so the peer runtime gets its own isolated XDG policy on a free loopback port;
+  runtime state is shared.
 - Sole-owner bridge-forwarder cleanup applies to Linux Docker Engine. Desktop,
   Apple and pasta/native strategies do not create that forwarder and skip that
   case. Port 11434 must be free for the deterministic fixture.

@@ -2,6 +2,7 @@
 
 import concurrent.futures
 import json
+import socket
 import sys
 import time
 from pathlib import Path
@@ -62,7 +63,7 @@ class Sidecar:
         (self.project / "probe.py").write_text(PROBE)
         self.built = False
 
-    def cli(self, *args, runtime=None, check=True):
+    def cli(self, *args, runtime=None, env=None, check=True):
         return run(
             [
                 sys.executable,
@@ -72,12 +73,14 @@ class Sidecar:
                 "--runtime",
                 runtime or self.sandbox.runtime.name,
             ],
-            env=self.sandbox.env,
+            env=env or self.sandbox.env,
             check=check,
             timeout=1800,
         )
 
-    def policy(self, hosts=("allowed.example.test",), *, copilot=False, parent=True):
+    def policy_text(
+        self, hosts=("allowed.example.test",), *, copilot=False, parent=True
+    ):
         text = "[egress]\nallow = " + json.dumps(list(hosts)) + "\n"
         if parent:
             text += (
@@ -89,6 +92,10 @@ class Sidecar:
             )
         if copilot:
             text += "[egress.copilot]\nenabled = true\n"
+        return text
+
+    def policy(self, hosts=("allowed.example.test",), *, copilot=False, parent=True):
+        text = self.policy_text(hosts, copilot=copilot, parent=parent)
         file = Path(self.sandbox.env["XDG_CONFIG_HOME"]) / "project-sandbox/egress.toml"
         file.parent.mkdir(exist_ok=True)
         file.write_text(text)
@@ -270,6 +277,12 @@ def test_repository_host_exclusions(sidecar, host):
     assert "host-not-allowed" in logs and "port-not-allowed" in logs
 
 
+def free_loopback_port():
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
 def test_concurrent_cross_runtime_edits_and_delayed_launch(sidecar, request):
     peer = request.config.getoption("--peer-runtime")
     if not peer or peer == sidecar.sandbox.runtime.name:
@@ -283,32 +296,51 @@ def test_concurrent_cross_runtime_edits_and_delayed_launch(sidecar, request):
         egress_sidecar.inspect(peer_runtime, egress_sidecar.default_runner) is None
     ), "peer runtime has an existing sidecar"
     sidecar.policy()
-    sidecar.cli("up", runtime=peer)
-    request.addfinalizer(lambda: sidecar.cli("down", runtime=peer, check=False))
-    # Each command performs the real read/edit/reload transaction with one shared
-    # XDG policy, but separate runtime locks. Both updates must survive.
+    # [egress.sidecar] port is one host port per policy file, and every runtime
+    # publishes its sidecar on the host, so two live sidecars need two policies.
+    # The peer gets its own XDG config with a free port, sharing the state home.
+    sandbox_config = Path(sidecar.sandbox.env["XDG_CONFIG_HOME"])
+    peer_config = sidecar.sandbox.directory / "peer-xdg-config"
+    (peer_config / "project-sandbox").mkdir(parents=True)
+    if (sandbox_config / "containers").is_symlink():
+        (peer_config / "containers").symlink_to(
+            (sandbox_config / "containers").readlink()
+        )
+    peer_policy = peer_config / "project-sandbox/egress.toml"
+    peer_policy.write_text(
+        sidecar.policy_text() + f"[egress.sidecar]\nport = {free_loopback_port()}\n"
+    )
+    peer_env = {**sidecar.sandbox.env, "XDG_CONFIG_HOME": str(peer_config)}
+    sidecar.cli("up", runtime=peer, env=peer_env)
+    request.addfinalizer(
+        lambda: sidecar.cli("down", runtime=peer, env=peer_env, check=False)
+    )
+    # Each command performs the real read/edit/reload transaction against its
+    # runtime's live sidecar, concurrently and under separate runtime locks.
+    # Both updates must land, each only in its own runtime's policy.
     with concurrent.futures.ThreadPoolExecutor() as pool:
         futures = [
-            pool.submit(sidecar.cli, "allow", "add", host, runtime=runtime)
-            for host, runtime in [
-                ("one.example.test", sidecar.sandbox.runtime.name),
-                ("two.example.test", peer),
+            pool.submit(sidecar.cli, "allow", "add", host, runtime=runtime, env=env)
+            for host, runtime, env in [
+                ("one.example.test", sidecar.sandbox.runtime.name, None),
+                ("two.example.test", peer, peer_env),
             ]
         ]
         for future in futures:
             future.result()
-    policy = (
-        Path(sidecar.sandbox.env["XDG_CONFIG_HOME"]) / "project-sandbox/egress.toml"
-    )
-    assert all(
-        host in policy.read_text() for host in ("one.example.test", "two.example.test")
-    )
+    policy = sandbox_config / "project-sandbox/egress.toml"
+    assert "one.example.test" in policy.read_text()
+    assert "two.example.test" not in policy.read_text()
+    assert "two.example.test" in peer_policy.read_text()
+    assert "one.example.test" not in peer_policy.read_text()
     control = sidecar.probe([{}])[0]
     assert reached(control), control
     sidecar.cli("allow", "remove", "allowed.example.test")
     # A fresh launch after removal must not resurrect cached policy state.
     assert not reached(sidecar.probe([{}])[0])
     assert "allowed.example.test" not in policy.read_text()
+    # Revoking on one runtime leaves the other runtime's policy untouched.
+    assert "allowed.example.test" in peer_policy.read_text()
 
 
 @pytest.mark.parametrize(
