@@ -17,12 +17,3 @@ Source paths below are relative to `src/project_sandbox/`.
 | Copilot interception | `/copilot_internal/` permits any matching path and method. Narrow to observed entitlement endpoints/methods where practical. Dot segments, backslashes and encoded separators are refused (`squid_config.AMBIGUOUS_PATH_REGEXES`, live-tested by `test_copilot_paths`). |
 | Private destinations and upstream parents | Direct Squid mode has a useful private-address denylist; upstream mode deliberately omits it and trusts the parent for destination resolution. Require the parent to enforce equivalent internal/metadata restrictions when those are part of the threat model. Test mixed public/private DNS answers, rebinding, IPv4-mapped IPv6, and deployment-specific NAT64 paths. |
 | Startup and revocation | The initial installation still flushes rules before installing final DROP policies and allows ESTABLISHED/RELATED traffic; sidecar reloads also need explicit semantics for existing tunnels. Install policy atomically where possible and distinguish blocking new connections from terminating existing ones after revocation. Audit broadly allowed outbound ICMPv6 error types alongside the actual capabilities of the agent process. No packet-level bypass was tested here. |
-
-
-## Open security e2e failures
-
-Observed on 2026-11-11 (`run-e2e-tests.sh --only security`, Docker with peer runtime Podman, and Podman). Each failure is still open.
-
-| Test | Current behavior and recommendation |
-| --- | --- |
-| `test_runtime.py::test_private_mounts_and_devcontainer_reopen[quote" $HOME[*]]` (Podman only) | Podman's build fails at `COPY init-firewall.sh`: buildah expands the build-context path as a glob, so a project directory named `quote" $HOME[*]` matches nothing (`copier: get: globs [...[[]\*]...] matched nothing`). Docker builds the same project. Fails closed (no image), but such projects cannot be used on Podman. Stage the build context under a generated path without glob metacharacters, or refuse these names on Podman with a clear message. |

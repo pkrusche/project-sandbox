@@ -68,7 +68,7 @@ def test_cargo_literal_paths(sandbox):
 
 @pytest.mark.parametrize(
     "name",
-    ["space here", "quote'and\"double", "dollar$HOME", "bracket[1]*", "comma,name"],
+    ["space here", "quote'and\"double", "dollar$HOME", "bracket]", "comma,name"],
 )
 def test_mount_roundtrip(sandbox, name):
     project = sandbox.project(name)
@@ -77,7 +77,9 @@ def test_mount_roundtrip(sandbox, name):
     assert (project / "roundtrip").read_text() == name
 
 
-@pytest.mark.parametrize("name", ["line\nbreak"])
+# Control characters, and glob characters (Podman expands the build-context
+# path as a glob), are refused on every runtime.
+@pytest.mark.parametrize("name", ["line\nbreak", "bracket[1]*", 'quote" $HOME[*]'])
 def test_unsupported_mount_grammar_fails_closed(sandbox, name):
     project = sandbox.project(name)
     proc = sandbox.start(sandbox.argv(project, "touch unsafe-launch", build=True))
@@ -285,7 +287,7 @@ def test_live_external_git_lock_is_preserved(sandbox):
         owner.communicate(timeout=5)
 
 
-@pytest.mark.parametrize("project_name", ["project", "comma,name", 'quote" $HOME[*]'])
+@pytest.mark.parametrize("project_name", ["project", "comma,name", 'quote" $HOME'])
 def test_private_mounts_and_devcontainer_reopen(sandbox, project_name):
     project = sandbox.project(project_name)
     init_git(project)

@@ -2509,6 +2509,17 @@ class CliTests(TestCase):
                 cli.main(["--dry-run", str(link), "python:3.12-slim"])
             self.assertIn("control characters", str(raised.exception))
 
+    def test_project_path_with_glob_characters_is_refused(self) -> None:
+        # Podman expands the build-context path as a glob; refused everywhere.
+        for name in ("star*name", "what?", "bracket[1]", 'quote" $HOME[*]'):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                project = Path(tmp) / name
+                project.mkdir()
+                with self.assertRaises(SystemExit) as raised:
+                    cli.main(["--dry-run", str(project), "python:3.12-slim"])
+                self.assertIn("glob character", str(raised.exception))
+                self.assertEqual(list(project.iterdir()), [], "must not write files")
+
     def test_missing_prompt_file_raises_clean_system_exit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)

@@ -567,7 +567,7 @@ def _main_scoped(argv: list[str] | None, resources: contextlib.ExitStack) -> int
         raise SystemExit("--json-summary requires --agent, --prompt, or --prompt-text")
 
     project = _resolve_required_path(args.project, what="project path")
-    _refuse_control_characters(project, what="project path")
+    _refuse_unsupported_path(project, what="project path")
     if args.image_tag is None:
         args.image_tag = _default_image_tag(project)
     if args.image_tag.rsplit("/", 1)[-1].split(":", 1)[0] == "project-sandbox-session":
@@ -2953,14 +2953,26 @@ def _resolve_required_path(path_str: str, *, what: str) -> Path:
         raise SystemExit(f"{what} does not exist: {path_str}") from None
 
 
-def _refuse_control_characters(path: Path, *, what: str) -> None:
-    """Fail closed on paths the mount, devcontainer and shell encodings were
-    never proven to round-trip. Checked on the resolved path, so a symlink
-    cannot hide such a component."""
-    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in str(path)):
+# Podman's builder expands the build-context path as a glob, so COPY from a
+# context under e.g. "x[*]" matches nothing. Refused on every runtime so a
+# project behaves the same everywhere.
+_GLOB_METACHARACTERS = "*?["
+
+
+def _refuse_unsupported_path(path: Path, *, what: str) -> None:
+    """Fail closed on paths the mount, devcontainer, shell and build-context
+    encodings were never proven to round-trip. Checked on the resolved path,
+    so a symlink cannot hide such a component."""
+    text = str(path)
+    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in text):
         raise SystemExit(
             f"The {what} contains control characters, which cannot be mounted "
-            f"safely; rename it: {str(path)!r}"
+            f"safely; rename it: {text!r}"
+        )
+    if any(c in text for c in _GLOB_METACHARACTERS):
+        raise SystemExit(
+            f"The {what} contains a glob character ({' '.join(_GLOB_METACHARACTERS)}), "
+            f"which container builds cannot use as a context path; rename it: {text!r}"
         )
 
 
