@@ -600,11 +600,16 @@ with Squid and TLS interception. Supply its checkout:
   --internet-proxy-dir ../internet-proxy-locally
 ```
 
-The fixture IP defaults to the host’s outbound IPv4 source address on macOS
-and Linux. Detection sends no packets. The selected address is printed; it must
-be reachable from both the builder and runtime. On VPN or multi-interface hosts,
-override it with `--proxy-fixture-host IP` (`--fixture-host IP` for the standalone
-harness). Detection failures require an explicit override. Docker and Apple `container`
+With Docker or Podman on macOS the fixture address defaults to the runtime's
+host-loopback alias address, as for [proxy endpoint verification](#proxy-endpoint-verification):
+Squid is published on `127.0.0.1`, the builds and sandbox connect to the alias
+address, and the allowed-phase session passes `--no-internet-proxy-preflight`
+because the host cannot reach that address. Otherwise it defaults to the host’s
+outbound IPv4 source address, which Squid is published on. Detection sends no
+packets. The selected address is printed; it must be reachable from both the
+builder and runtime. On VPN or multi-interface hosts, override it with
+`--proxy-fixture-host IP` (`--fixture-host IP` for the standalone harness).
+Detection failures require an explicit override. Docker and Apple `container`
 are supported; with Apple `container`, the builds exercise the host-loopback forwarder.
 Apple `container` forwards published ports for loopback traffic only, so there the
 Squid fixture is published on `127.0.0.1` for its health check and the builds and

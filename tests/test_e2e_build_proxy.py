@@ -305,6 +305,132 @@ class BuildProxyHarnessTests(TestCase):
                     (source / "state/ca/ca-key.pem").read_text(), "original private key"
                 )
 
+    def test_alias_fixture_publishes_on_loopback_and_skips_only_host_check(self):
+        for runtime in (container_cli.DOCKER, container_cli.PODMAN):
+            with (
+                self.subTest(runtime=runtime.name),
+                tempfile.TemporaryDirectory() as tmp,
+            ):
+                module = checker()
+                root = Path(tmp)
+                source = fixture_source(root)
+                artifacts = root / "artifacts"
+                artifacts.mkdir()
+                ipl, builds, sessions = [], [], []
+
+                def run(
+                    command,
+                    log,
+                    *,
+                    ipl=ipl,
+                    builds=builds,
+                    sessions=sessions,
+                    module=module,
+                    **kwargs,
+                ):
+                    code, output = 0, ""
+                    if "--engine" in command:
+                        ipl.append(command)
+                        if "--out" in command:
+                            Path(command[command.index("--out") + 1]).write_bytes(
+                                CERTIFICATE.read_bytes()
+                            )
+                        if command[-1] == "logs":
+                            output = "\n".join(
+                                "https://" + host + "/probe"
+                                for host in module.BUILD_HOSTS
+                            )
+                    elif "--build-only" in command:
+                        builds.append(command)
+                        if "--internet-proxy" not in command:
+                            code, output = {
+                                2: (100, "Certificate verification failed"),
+                                3: (7, "Failed to connect"),
+                            }.get(len(builds), (0, ""))
+                    else:
+                        sessions.append(command)
+                        phase = shlex.split(
+                            command[command.index("--prompt-text") + 1]
+                        )[2]
+                        Path(
+                            command[-2], f"build-proxy-runtime-{phase}.json"
+                        ).write_text('{"ok": true}')
+                    with log.open("a") as handle:
+                        handle.write(output + "\n")
+                    return subprocess.CompletedProcess(command, code)
+
+                reservation = MagicMock()
+                reservation.__enter__.return_value.getsockname.return_value = (
+                    "127.0.0.1",
+                    3128,
+                )
+                with (
+                    patch.object(
+                        module.container_cli, "select_runtime", return_value=runtime
+                    ),
+                    patch.object(
+                        module.fixture_network,
+                        "runtime_host",
+                        return_value=module.fixture_network.FixtureHost(
+                            "192.168.65.254", "127.0.0.1"
+                        ),
+                    ),
+                    patch.object(module.shutil, "which", return_value="/bin/uv"),
+                    patch.object(
+                        module.tempfile, "mkdtemp", return_value=str(artifacts)
+                    ),
+                    patch.object(
+                        module, "reserved_port", return_value=reservation
+                    ) as reserved,
+                    patch.object(module, "run_logged", side_effect=run),
+                    patch.object(module, "direct_address", return_value="198.51.100.7"),
+                    contextlib.redirect_stdout(io.StringIO()),
+                    contextlib.redirect_stderr(io.StringIO()),
+                ):
+                    result = module.main(
+                        [
+                            "--runtime",
+                            runtime.name,
+                            "--internet-proxy-dir",
+                            str(source),
+                            "--keep",
+                        ]
+                    )
+                self.assertEqual(result, 0)
+                # Squid and every reserved port stay on host loopback.
+                self.assertEqual(
+                    {command[command.index("--ip") + 1] for command in ipl},
+                    {"127.0.0.1"},
+                )
+                self.assertEqual(
+                    [call.args[0] for call in reserved.call_args_list],
+                    ["127.0.0.1"] * 4,
+                )
+                # Builders and sessions use the alias address.
+                urls = [
+                    command[command.index("--build-proxy") + 1] for command in builds
+                ]
+                self.assertEqual(
+                    urls,
+                    [
+                        "http://192.168.65.254:3128",
+                        "http://192.168.65.254:3128",
+                        "http://192.168.65.254:3128",
+                        "http://192.168.65.254:3128",
+                    ],
+                )
+                # Only the session that uses the proxy skips the host check;
+                # builds never had one.
+                blocked, allowed = sessions
+                self.assertNotIn("--no-internet-proxy-preflight", blocked)
+                self.assertIn("--no-internet-proxy-preflight", allowed)
+                self.assertEqual(
+                    allowed[allowed.index("--internet-proxy") + 1],
+                    "http://192.168.65.254:3128",
+                )
+                for command in builds:
+                    self.assertNotIn("--no-internet-proxy-preflight", command)
+
     def test_squid_address_asks_ipl_for_the_published_instance(self):
         module = checker()
         with tempfile.TemporaryDirectory() as tmp:

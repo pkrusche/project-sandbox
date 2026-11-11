@@ -2,11 +2,14 @@
 """Opt-in build proxy/CA acceptance test using an isolated IPL Squid workspace.
 
 Requires internet-proxy-locally sources, uv, Docker, Apple container, or
-rootless Podman (with Docker for the fixture), and a local non-loopback IP
-reachable from both the image builder and the sandbox. On Apple container the
-Squid fixture is reached through its container address instead, because
-published ports there forward loopback traffic only. IPL has no Podman backend,
-so a Podman run hosts the fixture on Docker.
+rootless Podman (with Docker for the fixture), and an address reachable from
+both the image builder and the sandbox. With Docker or Podman on macOS that is
+the runtime's host-loopback alias address, with Squid published on 127.0.0.1;
+otherwise, and with an explicit --fixture-host, a local non-loopback IP that
+Squid is published on. On Apple container the Squid fixture is reached through
+its container address instead, because published ports there forward loopback
+traffic only. IPL has no Podman backend, so a Podman run hosts the fixture on
+Docker.
 Never controls the caller's existing proxy, configuration, or signing CA.
 """
 
@@ -72,7 +75,12 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--fixture-host",
         type=fixture_host,
-        help="Local fixture IP (default: outbound IPv4 source address).",
+        help=(
+            "Local fixture IP Squid is published on and builds connect to "
+            "(default: with Docker or Podman on macOS, the runtime's "
+            "host-loopback alias address with Squid on 127.0.0.1; otherwise the "
+            "outbound IPv4 source address)."
+        ),
     )
     p.add_argument("--base-image", default="python:3.12-slim")
     p.add_argument("--timeout", type=int, default=1800)
@@ -227,10 +235,30 @@ def main(argv: list[str] | None = None) -> int:
     args = argument_parser.parse_args(argv)
     if args.fixture_host is None:
         try:
-            args.fixture_host = fixture_network.default_host()
+            fixture_address = fixture_network.runtime_host(
+                args.runtime, args.base_image
+            )
         except ValueError as exc:
             argument_parser.error(str(exc))
-        print(f"Using proxy fixture host: {args.fixture_host}", flush=True)
+        args.fixture_host, args.fixture_bind = (
+            fixture_address.address,
+            fixture_address.bind,
+        )
+        listening = (
+            f" (Squid published on {args.fixture_bind})"
+            if fixture_address.via_alias
+            else ""
+        )
+        print(f"Using proxy fixture host: {args.fixture_host}{listening}", flush=True)
+    else:
+        args.fixture_bind = args.fixture_host
+    # The host cannot reach a runtime alias address, so it must not check the
+    # proxy itself; the sandbox firewall still checks it from inside.
+    alias_only = (
+        ["--no-internet-proxy-preflight"]
+        if args.fixture_bind != args.fixture_host
+        else []
+    )
     runtime = container_cli.select_runtime(args.runtime)
     if shutil.which("uv") is None:
         raise SystemExit("uv is required")
@@ -263,7 +291,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         prepare_fixture(source, fixture)
         apple = runtime == container_cli.APPLE_CONTAINER
-        publish_host = "127.0.0.1" if apple else args.fixture_host
+        publish_host = "127.0.0.1" if apple else args.fixture_bind
         with reserved_port(publish_host) as reservation:
             port = reservation.getsockname()[1]
         authority = (
@@ -344,7 +372,8 @@ def main(argv: list[str] | None = None) -> int:
             if scenario != "ca":
                 command += ["--build-ca-cert", str(certificate)]
             # Reserve a closed port throughout the negative run to avoid collisions.
-            with reserved_port(args.fixture_host) as closed:
+            # Behind an alias the builder reaches it on host loopback.
+            with reserved_port(args.fixture_bind) as closed:
                 url = (
                     f"http://{authority}:{closed.getsockname()[1]}"
                     if scenario == "proxy"
@@ -424,7 +453,7 @@ def main(argv: list[str] | None = None) -> int:
                 ),
             ]
             if phase == "allowed":
-                command += ["--internet-proxy", proxy_url]
+                command += ["--internet-proxy", proxy_url, *alias_only]
             command += [str(project), args.base_image]
             result = run_logged(
                 command,
