@@ -567,6 +567,7 @@ def _main_scoped(argv: list[str] | None, resources: contextlib.ExitStack) -> int
         raise SystemExit("--json-summary requires --agent, --prompt, or --prompt-text")
 
     project = _resolve_required_path(args.project, what="project path")
+    _refuse_control_characters(project, what="project path")
     if args.image_tag is None:
         args.image_tag = _default_image_tag(project)
     if args.image_tag.rsplit("/", 1)[-1].split(":", 1)[0] == "project-sandbox-session":
@@ -2950,6 +2951,17 @@ def _resolve_required_path(path_str: str, *, what: str) -> Path:
         return resolve_strict(path_str)
     except FileNotFoundError:
         raise SystemExit(f"{what} does not exist: {path_str}") from None
+
+
+def _refuse_control_characters(path: Path, *, what: str) -> None:
+    """Fail closed on paths the mount, devcontainer and shell encodings were
+    never proven to round-trip. Checked on the resolved path, so a symlink
+    cannot hide such a component."""
+    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in str(path)):
+        raise SystemExit(
+            f"The {what} contains control characters, which cannot be mounted "
+            f"safely; rename it: {str(path)!r}"
+        )
 
 
 def _validate_session_inputs(args) -> None:

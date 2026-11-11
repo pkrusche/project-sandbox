@@ -2487,6 +2487,28 @@ class CliTests(TestCase):
         self.assertNotIsInstance(raised.exception, FileNotFoundError)
         self.assertIn("project path does not exist", str(raised.exception))
 
+    def test_project_path_with_control_characters_is_refused(self) -> None:
+        # Regression: a project named "line\nbreak" launched instead of
+        # failing closed (security e2e test_unsupported_mount_grammar_fails_closed).
+        for name in ("line\nbreak", "cr\rhere", "tab\there", "del\x7fhere"):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                project = Path(tmp) / name
+                project.mkdir()
+                with self.assertRaises(SystemExit) as raised:
+                    cli.main(["--dry-run", str(project), "python:3.12-slim"])
+                self.assertIn("control characters", str(raised.exception))
+                self.assertEqual(
+                    [p.name for p in project.iterdir()], [], "must not write files"
+                )
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "line\nbreak"
+            target.mkdir()
+            link = Path(tmp) / "plain"
+            link.symlink_to(target)
+            with self.assertRaises(SystemExit) as raised:
+                cli.main(["--dry-run", str(link), "python:3.12-slim"])
+            self.assertIn("control characters", str(raised.exception))
+
     def test_missing_prompt_file_raises_clean_system_exit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
