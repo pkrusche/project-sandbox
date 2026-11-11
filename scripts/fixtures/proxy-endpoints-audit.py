@@ -22,7 +22,9 @@ def assert_port_denied(host, port):
 
 def main():
     config = json.loads(Path("audit.json").read_text())
-    gateway = config["gateway_url"] + "/models"
+    # A forwarded loopback gateway is only known by the URL the CLI hands the
+    # agent; a remote gateway URL is passed through unchanged.
+    gateway = (config.get("gateway_url") or os.environ["OPENAI_BASE_URL"]) + "/models"
     key = os.environ["OPENAI_API_KEY"]
     headers = {"Authorization": "Bearer " + key, "X-Proxy-E2E": "urllib"}
     with urllib.request.urlopen(

@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """Opt-in remote proxy test using temporary, non-billable HTTP/TLS fixtures.
 
-Requires a real container runtime, host openssl, and a non-loopback host address
-reachable from that runtime. No existing proxy or gateway is used or stopped.
+Requires a real container runtime, host openssl, and a non-loopback address the
+runtime's containers reach the fixtures at. With Docker or Podman on macOS that
+is the runtime's host-loopback alias address (the fixtures listen on 127.0.0.1);
+otherwise, and with an explicit --fixture-host, the fixtures listen on that
+address itself.
+No existing proxy or gateway is used or stopped.
 """
 
 from __future__ import annotations
@@ -173,13 +177,19 @@ def check_round_trip(host: str, port: int) -> None:
     except (OSError, http.client.HTTPException) as exc:
         raise SystemExit(
             f"Local network traffic to fixture host {host} is blocked: TCP connects "
-            f"but an HTTP request fails ({exc.__class__.__name__}: {exc}). On macOS, "
-            "allow your terminal or IDE under System Settings > Privacy & Security > "
-            "Local Network and restart it; otherwise check firewall or VPN filtering "
-            "of LAN traffic, or pass a different --fixture-host."
+            f"but an HTTP request fails ({exc.__class__.__name__}: {exc}). macOS "
+            "Local Network privacy, security software, a firewall or a VPN may be "
+            "filtering traffic to this machine's own LAN address. On macOS, omit "
+            "--fixture-host to reach the fixtures through the runtime's "
+            "host-loopback alias; otherwise pass a different --fixture-host."
         ) from None
     finally:
         connection.close()
+
+
+def via_alias(args) -> bool:
+    """Whether containers reach the fixtures through a runtime host alias."""
+    return args.fixture_bind != args.fixture_host
 
 
 def san_type(host: str) -> str:
@@ -301,7 +311,23 @@ def resolves_to(hostname: str, address: str) -> bool:
 
 
 def run_scenario(args, root, context, scheme, gateway_host, name, url_host=None):
-    """Bind fixtures to IPs; ``url_host`` names them in URLs (HTTPS needs DNS)."""
+    """Bind fixtures to IPs; ``url_host`` names them in URLs (HTTPS needs DNS).
+
+    Proxy URLs name ``args.fixture_host``; the proxy and canary listen on
+    ``args.fixture_bind``, which is loopback when a runtime alias reaches them.
+    The host then cannot reach the alias address, so the CLI skips its
+    host-side proxy check, and the gateway, whose models the host discovers
+    before launch, is a loopback gateway forwarded into the sandbox.
+    """
+    alias = via_alias(args) and gateway_host in (
+        args.fixture_host,
+        f"::ffff:{args.fixture_host}",
+    )
+    gateway_scheme = "http" if alias else scheme
+    if alias:
+        gateway_host, url_host_for_gateway = "127.0.0.1", None
+    else:
+        url_host_for_gateway = url_host
     project = root / name
     project.mkdir()
     shutil.copyfile(
@@ -311,32 +337,43 @@ def run_scenario(args, root, context, scheme, gateway_host, name, url_host=None)
     with (
         FixtureServer("127.0.0.1", "origin", context) as origin,
         FixtureServer(
-            args.fixture_host,
+            args.fixture_bind,
             "proxy",
             context if scheme == "https" else None,
             ("127.0.0.1", origin.server_port),
         ) as proxy,
         FixtureServer(
-            gateway_host, "gateway", context if scheme == "https" else None
+            gateway_host,
+            "gateway",
+            context if gateway_scheme == "https" else None,
         ) as gateway,
-        FixtureServer(args.fixture_host, "canary") as canary,
+        FixtureServer(args.fixture_bind, "canary") as canary,
     ):
 
-        def url(host, port):
+        def url(host, port, scheme=scheme):
             authority = f"[{host}]" if ":" in host else host
             return f"{scheme}://{authority}:{port}"
 
         proxy_url = url(url_host or args.fixture_host, proxy.server_port)
-        gateway_url = url(url_host or gateway_host, gateway.server_port) + API_PATH
+        gateway_url = (
+            url(
+                url_host_for_gateway or gateway_host,
+                gateway.server_port,
+                gateway_scheme,
+            )
+            + API_PATH
+        )
         # Prove the denied port really has a live listener before testing
         # denial, and that the host can exchange data with its own address.
-        check_round_trip(args.fixture_host, canary.server_port)
+        check_round_trip(args.fixture_bind, canary.server_port)
         (project / "audit.json").write_text(
             json.dumps(
                 {
                     "canary_host": args.fixture_host,
                     "canary_port": canary.server_port,
-                    "gateway_url": gateway_url,
+                    # A forwarded loopback gateway has a different address in
+                    # the sandbox; the audit then uses OPENAI_BASE_URL.
+                    "gateway_url": None if alias else gateway_url,
                 }
             )
         )
@@ -351,6 +388,7 @@ def run_scenario(args, root, context, scheme, gateway_host, name, url_host=None)
             "--no-forward-credentials",
             "--internet-proxy",
             proxy_url,
+            *(["--no-internet-proxy-preflight"] if via_alias(args) else []),
             "--agent-proxy",
             gateway_url,
             "--agent-proxy-key-env",
@@ -374,7 +412,8 @@ def run_scenario(args, root, context, scheme, gateway_host, name, url_host=None)
             "PASSWORD_STORE_DIR": str(root / "empty-password-store"),
         }
         print(
-            f"RUN: {name}: {gateway_url} via direct routing, proxy {proxy_url}",
+            f"RUN: {name}: {gateway_url} via "
+            f"{'local forwarding' if alias else 'direct routing'}, proxy {proxy_url}",
             flush=True,
         )
         subprocess.run(command, env=env, check=True)
@@ -395,7 +434,12 @@ def main(argv=None):
     parser.add_argument(
         "--fixture-host",
         type=fixture_address,
-        help="Local fixture IP (default: outbound IPv4 source address).",
+        help=(
+            "Local fixture IP the fixtures listen on and containers connect to "
+            "(default: with Docker or Podman on macOS, the runtime's host-loopback "
+            "alias address with fixtures on 127.0.0.1; otherwise the outbound IPv4 "
+            "source address)."
+        ),
     )
     parser.add_argument(
         "--ipv6-host",
@@ -416,10 +460,14 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.fixture_host is None:
         try:
-            args.fixture_host = fixture_network.default_host()
+            fixture = fixture_network.runtime_host(args.runtime, args.base_image)
         except ValueError as exc:
             parser.error(str(exc))
-        print(f"Using proxy fixture host: {args.fixture_host}", flush=True)
+        args.fixture_host, args.fixture_bind = fixture.address, fixture.bind
+        listening = f" (listening on {fixture.bind})" if fixture.via_alias else ""
+        print(f"Using proxy fixture host: {args.fixture_host}{listening}", flush=True)
+    else:
+        args.fixture_bind = args.fixture_host
     if args.ipv6_host and ipaddress.ip_address(args.ipv6_host).version != 6:
         parser.error("--ipv6-host requires an IPv6 address")
     if args.fixture_hostname and not resolves_to(
@@ -453,7 +501,14 @@ def main(argv=None):
                 "use a DNS name",
                 flush=True,
             )
-        if ipaddress.ip_address(args.fixture_host).version == 4:
+        if via_alias(args):
+            print(
+                "SKIP: mapped-ipv4: the gateway is a forwarded loopback gateway "
+                "behind a runtime host alias; pass --fixture-host for remote "
+                "gateway routing",
+                flush=True,
+            )
+        elif ipaddress.ip_address(args.fixture_host).version == 4:
             mapped = f"::ffff:{args.fixture_host}"
             hosts.append(mapped)
             scenarios.append(("http", mapped, "mapped-ipv4", None))

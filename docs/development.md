@@ -462,23 +462,39 @@ It uses a dummy gateway key and makes no billable requests. Existing services
 are left running. Enable it explicitly:
 
 ```bash
-# Replace this with a local non-loopback address reachable from the sandbox.
-./scripts/run-e2e-tests.sh --only proxy-endpoints --runtime docker \
-  --proxy-fixture-host 192.168.1.10 --proxy-fixture-hostname 192-168-1-10.sslip.io
-# Add to the full matrix with --with-proxy-endpoints --proxy-fixture-host IP.
+./scripts/run-e2e-tests.sh --only proxy-endpoints --runtime docker
+# Add to the full matrix with --with-proxy-endpoints.
 ```
+
+The fixtures need a non-loopback address that the sandbox treats as a remote
+endpoint. With Docker Desktop or Podman on macOS the default is the runtime's
+host-loopback alias address (`host.docker.internal` or
+`host.containers.internal`, resolved in a throwaway container from the base
+image): the proxy fixtures listen on `127.0.0.1` and the runtime forwards the
+alias to it, so the host itself only carries loopback traffic. This avoids
+security software that intercepts traffic to the Mac's own LAN address, where
+a connection opens but no data arrives. The host cannot reach the alias
+address, so these runs pass `--no-internet-proxy-preflight` and serve the
+gateway on loopback, where the CLI forwards it as a local service and can
+discover its models; the mapped-IPv4 gateway scenario, which needs a remote
+gateway, is skipped. Apple container and Linux use the outbound IPv4 source
+address for everything. `--proxy-fixture-host IP` overrides the default: all
+fixtures then listen on that address, and the sandbox connects to it.
 
 HTTPS endpoints must be named by DNS, so the HTTPS scenario runs only with
 `--proxy-fixture-hostname` (`--fixture-hostname` for the standalone script): a
-name that resolves to the fixture IP both on the host and inside the sandbox.
+name that resolves to the fixture IP (the alias address with Docker Desktop or
+Podman on macOS, for example `192-168-65-254.sslip.io`) both on the host and
+inside the sandbox.
 A wildcard-DNS service such as sslip.io works if your resolver allows public
 names to answer with private addresses; a local DNS or `/etc/hosts` entry that
 the runtime also sees works too. Without it the HTTPS scenario is skipped.
 
 Docker, Podman, and Apple container are accepted. The host needs OpenSSL and an
 address the selected runtime can reach, including access to temporary listener
-ports. The test binds only that address; the proxy accepts only its own fixture
-origin and cannot relay arbitrary destinations. Images are built normally, so
+ports. The test binds only the listen address (loopback behind an alias, or the
+override); the proxy accepts only its own fixture origin and cannot relay
+arbitrary destinations. Images are built normally, so
 build-time Internet access is required; `--no-build` is unsupported because each
 run selects fresh ports and generates a temporary CA.
 

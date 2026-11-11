@@ -88,7 +88,122 @@ class ProxyEndpointHarnessTests(unittest.TestCase):
                 checker.check_round_trip("127.0.0.1", port)
             thread.join(timeout=2)
         self.assertIn("Local Network", str(raised.exception))
+        self.assertIn("host-loopback alias", str(raised.exception))
         self.assertIn("127.0.0.1", str(raised.exception))
+
+    def scenario(self, fixture_host, fixture_bind, gateway_host, name="http"):
+        """Run one scenario up to the CLI launch; return binds, argv, audit."""
+        checker = load_script(ROOT / "scripts/e2e-proxy-endpoints.py")
+        bound, launched, checked = [], [], []
+
+        class Recorder(checker.FixtureServer):
+            def __init__(self, host, role, context=None, origin=None):
+                bound.append((role, host))
+                super().__init__("127.0.0.1", role, context, origin)
+
+        def run(command, **kwargs):
+            launched.append(command)
+            raise subprocess.CalledProcessError(1, command)
+
+        args = argparse.Namespace(
+            fixture_host=fixture_host,
+            fixture_bind=fixture_bind,
+            runtime="docker",
+            image_tag="fixture:latest",
+            timeout=5,
+            base_image="python:3.12-slim",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch.object(checker, "FixtureServer", Recorder),
+                patch.object(checker.subprocess, "run", run),
+                patch.object(
+                    checker,
+                    "check_round_trip",
+                    lambda host, _port: checked.append(host),
+                ),
+                self.assertRaises(subprocess.CalledProcessError),
+            ):
+                checker.run_scenario(args, Path(tmp), None, "http", gateway_host, name)
+            audit = json.loads((Path(tmp) / name / "audit.json").read_text())
+        # The host's own round trip uses the address the canary listens on.
+        self.assertEqual(checked, [fixture_bind])
+        command = launched[0]
+
+        def option(name):
+            return command[command.index(name) + 1]
+
+        return dict(bound), command, option, audit
+
+    def test_alias_scenario_hides_the_host_from_alias_only_endpoints(self):
+        bound, command, option, audit = self.scenario(
+            "192.168.65.254", "127.0.0.1", "192.168.65.254"
+        )
+        # Nothing listens on the LAN: proxy and canary sit behind the alias.
+        self.assertEqual(set(bound.values()), {"127.0.0.1"})
+        self.assertTrue(option("--internet-proxy").startswith("http://192.168.65.254:"))
+        self.assertEqual(audit["canary_host"], "192.168.65.254")
+        # The host cannot reach the alias: it skips only its proxy check, and
+        # the gateway (whose models it discovers) is a forwarded loopback one.
+        self.assertIn("--no-internet-proxy-preflight", command)
+        self.assertTrue(option("--agent-proxy").startswith("http://127.0.0.1:"))
+        self.assertIsNone(audit["gateway_url"])
+
+    def test_explicit_host_scenario_keeps_remote_gateway_and_host_checks(self):
+        for gateway_host in ("192.168.1.10", "::ffff:192.168.1.10"):
+            with self.subTest(gateway_host=gateway_host):
+                bound, command, option, audit = self.scenario(
+                    "192.168.1.10", "192.168.1.10", gateway_host
+                )
+                self.assertEqual(bound["proxy"], "192.168.1.10")
+                self.assertEqual(bound["canary"], "192.168.1.10")
+                self.assertEqual(bound["gateway"], gateway_host)
+                self.assertNotIn("--no-internet-proxy-preflight", command)
+                authority = f"[{gateway_host}]" if ":" in gateway_host else gateway_host
+                self.assertTrue(
+                    option("--agent-proxy").startswith(f"http://{authority}:")
+                )
+                self.assertEqual(audit["gateway_url"], option("--agent-proxy"))
+
+    def test_audit_uses_the_forwarded_gateway_url_when_none_is_given(self):
+        audit = load_script(ROOT / "scripts/fixtures/proxy-endpoints-audit.py")
+        for configured, expected in (
+            (None, "http://host.docker.internal:4000/api/{tenant,other}/[v1]"),
+            ("http://192.0.2.10:4000/v1", "http://192.0.2.10:4000/v1"),
+        ):
+            requested = []
+
+            def urlopen(request, requested=requested, **_kwargs):
+                requested.append(request.full_url)
+                raise RuntimeError("stop after the first gateway request")
+
+            with (
+                self.subTest(configured=configured),
+                tempfile.TemporaryDirectory() as tmp,
+                chdir(tmp),
+                patch.dict(
+                    os.environ,
+                    {
+                        "OPENAI_API_KEY": "key",
+                        "OPENAI_BASE_URL": (
+                            "http://host.docker.internal:4000/api/{tenant,other}/[v1]"
+                        ),
+                    },
+                ),
+                patch.object(audit.urllib.request, "urlopen", urlopen),
+                self.assertRaisesRegex(RuntimeError, "stop after"),
+            ):
+                Path("audit.json").write_text(
+                    json.dumps(
+                        {
+                            "canary_host": "192.0.2.10",
+                            "canary_port": 1,
+                            "gateway_url": configured,
+                        }
+                    )
+                )
+                audit.main()
+            self.assertEqual(requested, [expected + "/models"])
 
     def test_gateway_unavailable_error_includes_cause(self):
         with socket.create_server(("127.0.0.1", 0)) as listener:

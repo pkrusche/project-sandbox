@@ -134,7 +134,9 @@
 #                    intercepting fixture, and a loopback-only local service. Not
 #                    billable; needs network access and image builds
 #   --proxy-fixture-host IP
-#                    override local fixture IP (default: outbound IPv4 source address)
+#                    override local fixture IP (default: with Docker or Podman on
+#                    macOS the runtime's host-loopback alias address, fixtures on
+#                    127.0.0.1; otherwise the outbound IPv4 source address)
 #   --proxy-fixture-ipv6-host IP
 #                    optional local IPv6 IP for an additional HTTP gateway check
 #   --proxy-fixture-hostname NAME
