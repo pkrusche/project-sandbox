@@ -1,5 +1,6 @@
 """Controlled host-port probes; captures known firewall-mode limitations."""
 
+import functools
 import http.server
 import json
 import socket
@@ -8,7 +9,11 @@ import threading
 import pytest
 from conftest import run
 
-from project_sandbox import local_service_network
+from project_sandbox import fixture_network, local_service_network
+
+# The image Sandbox.argv launches by default; resolving the host alias in it
+# needs no extra pull.
+BASE_IMAGE = "python:3.12-slim"
 
 
 class Listener(http.server.BaseHTTPRequestHandler):
@@ -40,19 +45,21 @@ def listener():
         thread.join(timeout=5)
 
 
+@functools.cache
 def fixture_ip(runtime: str) -> str:
     """Host IPv4 address a plain ``RUNTIME run`` container uses to reach a listener.
 
     Apple containers reach host loopback through the localhost address of the
     configured ``host.docker.internal`` DNS domain (the same alias pi-ollama
-    uses), which avoids host-side filters on LAN traffic. Other runtimes reach
+    uses), and Docker Desktop and Podman on macOS through the address of their
+    own host alias (resolved once, in a throwaway container). The listener
+    binds every address, so loopback reaches it, and host-side filters of
+    traffic to the Mac's own LAN address do not apply. Other platforms reach
     the host through its outbound IPv4 source address.
     """
     if runtime == "apple-container":
         return local_service_network.APPLE_LOCALHOST_ADDRESS
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-        sock.connect(("192.0.2.1", 9))  # routing lookup only; sends no packet
-        return sock.getsockname()[0]
+    return fixture_network.runtime_host(runtime, BASE_IMAGE).address
 
 
 def default_fixture_host(runtime: str) -> str:

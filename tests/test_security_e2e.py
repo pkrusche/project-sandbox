@@ -182,12 +182,30 @@ class SecurityHarnessTests(unittest.TestCase):
         # The audit modules import the audit conftest, not tests/conftest.py.
         with patch.dict(sys.modules, {"conftest": harness}):
             firewall = load("security_e2e_firewall", "test_firewall_network.py")
-        self.assertEqual(
-            firewall.default_fixture_host("podman"), "host.containers.internal"
-        )
-        docker_host = firewall.default_fixture_host("docker")
-        self.assertNotEqual(docker_host, "host.containers.internal")
+        lookups = []
+
+        def runtime_host(runtime, image):
+            lookups.append((runtime, image))
+            return firewall.fixture_network.FixtureHost("192.168.65.254", "127.0.0.1")
+
+        with patch.object(firewall.fixture_network, "runtime_host", runtime_host):
+            self.assertEqual(
+                firewall.default_fixture_host("podman"), "host.containers.internal"
+            )
+            docker_host = firewall.default_fixture_host("docker")
+            self.assertEqual(firewall.fixture_ip("docker"), docker_host)
+            apple_host = firewall.fixture_ip("apple-container")
         socket.inet_aton(docker_host)
+        # The pin test needs an address: the alias address, never the LAN one,
+        # looked up once per session in the image sessions already use.
+        self.assertEqual(docker_host, "192.168.65.254")
+        self.assertEqual(lookups, [("docker", "python:3.12-slim")])
+        self.assertEqual(
+            apple_host, firewall.local_service_network.APPLE_LOCALHOST_ADDRESS
+        )
+        self.assertEqual(
+            firewall.BASE_IMAGE, harness.Sandbox.argv.__kwdefaults__["base"]
+        )
 
 
 class FakeProbeSandbox:

@@ -122,7 +122,12 @@ Names below are pytest function names; parametrization covers the listed cases.
   Apple and pasta/native strategies do not create that forwarder and skip that
   case. Port 11434 must be free for the deterministic fixture.
 - Firewall host-port probes discover the host IPv4 address by a routing lookup;
-  Podman uses `host.containers.internal` where a name works. Apple `container`
+  with Docker Desktop or Podman on macOS they instead use the address of the
+  runtime's host alias (`host.docker.internal` / `host.containers.internal`,
+  resolved once in a throwaway container), which the runtime forwards to the
+  Mac's loopback, so security software filtering traffic to the Mac's own LAN
+  address does not interfere. Podman uses `host.containers.internal` where a
+  name works. Apple `container`
   uses `203.0.113.113`, the host-loopback address of the `host.docker.internal`
   DNS domain (see [Apple container DNS](apple-container-dns.md)), so those probes
   need that domain configured. The startup probe first proves its connection
