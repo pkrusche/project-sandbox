@@ -22,6 +22,12 @@ class BuildConcurrencyTests(TestCase):
         self.root = Path(self.resources.enter_context(tempfile.TemporaryDirectory()))
         self.project = self.root / "project"
         self.project.mkdir()
+        # Host lock files live in the system temp dir and the image lock is keyed
+        # by runtime, so parallel test workers would contend for (and probe) the
+        # same "/docker" image lock. Keep this test's locks private.
+        locks = self.root / "locks"
+        locks.mkdir()
+        self.resources.enter_context(patch.object(tempfile, "tempdir", str(locks)))
         self.store = {}
         self.built = []
         self.launched = []

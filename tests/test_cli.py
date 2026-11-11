@@ -7544,7 +7544,7 @@ class EgressSidecarLaunchTests(TestCase):
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self._tmp.name)
+        self.root = Path(self._tmp.name).resolve()
         self.project = self.root / "project"
         self.project.mkdir()
         (self.project / "README.md").write_text("# demo\n", encoding="utf-8")

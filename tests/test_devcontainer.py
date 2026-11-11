@@ -563,7 +563,9 @@ class DevcontainerTests(TestCase):
             project = Path(tmp) / 'pro"ject\n{"injected": true}'
             (project / ".project-sandbox").mkdir(parents=True)
 
-            malicious_mount = 'type=bind,source=/tmp/x,"target=/x""injected"":true"'
+            # The renderer canonicalizes the source (macOS /tmp -> /private/tmp).
+            source = Path("/tmp/x").resolve()
+            malicious_mount = f'type=bind,source={source},"target=/x""injected"":true"'
             devcontainer.render(
                 project,
                 identity=GitIdentity(

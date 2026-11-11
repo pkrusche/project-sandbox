@@ -82,7 +82,7 @@ class ParserTests(TestCase):
 class CommandTests(TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
-        self.tmp = Path(self._tmp.name)
+        self.tmp = Path(self._tmp.name).resolve()
         self.config = self.tmp / "config"
         self.policy_path = self.config / "project-sandbox" / "egress.toml"
         self.policy_path.parent.mkdir(parents=True)

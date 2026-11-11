@@ -19,7 +19,7 @@ def _write(directory: Path, text: str, name: str = "egress.toml") -> Path:
 class LoaderTests(TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
-        self.tmp = Path(self._tmp.name)
+        self.tmp = Path(self._tmp.name).resolve()
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
@@ -376,7 +376,7 @@ class NewTablesTests(TestCase):
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
-        self.tmp = Path(self._tmp.name)
+        self.tmp = Path(self._tmp.name).resolve()
 
     def tearDown(self) -> None:
         self._tmp.cleanup()

@@ -10,7 +10,9 @@ class MountOptionsTests(TestCase):
     def test_csv_paths_round_trip_through_runtime_arguments(self) -> None:
         value = 'type=bind,"src=/tmp/path,with ""quotes""",destination=/data,ro=false'
         mount = container_cli.parse_mount(value)
-        self.assertEqual(mount.source, Path('/tmp/path,with "quotes"'))
+        # Sources are canonicalized (macOS /tmp -> /private/tmp).
+        source = Path('/tmp/path,with "quotes"').resolve()
+        self.assertEqual(mount.source, source)
         self.assertEqual(mount.target, "/data")
         self.assertFalse(mount.readonly)
         rendered = container_cli._mount_arg(mount)
@@ -18,11 +20,14 @@ class MountOptionsTests(TestCase):
             next(csv.reader(io.StringIO(rendered))),
             [
                 "type=bind",
-                'source=/tmp/path,with "quotes"',
+                f"source={source}",
                 "target=/data",
             ],
         )
-        self.assertEqual(mount_options.bind_source(value), mount.source)
+        # bind_source keeps the lexical path; callers resolve before checks.
+        self.assertEqual(
+            mount_options.bind_source(value), Path('/tmp/path,with "quotes"')
+        )
 
     def test_safe_bind_options_preserve_raw_runtime_arguments_and_expose_source(
         self,
@@ -37,7 +42,7 @@ class MountOptionsTests(TestCase):
                 value = f'type=bind,"source=/tmp/a,b",target=/data,readonly,{option}'
                 mount = container_cli.parse_mount(value)
                 self.assertEqual(container_cli._mount_arg(mount), value)
-                self.assertEqual(mount.source, Path("/tmp/a,b"))
+                self.assertEqual(mount.source, Path("/tmp/a,b").resolve())
                 self.assertEqual(mount_options.bind_source(value), Path("/tmp/a,b"))
                 self.assertTrue(mount.readonly)
 

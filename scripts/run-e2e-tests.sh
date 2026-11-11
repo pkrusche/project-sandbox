@@ -500,7 +500,8 @@ if selected dockerfile-tamper; then
   if [ -n "$CONTAINER_RUNTIME" ] && [ "$NO_BUILD" = 0 ]; then
     TAMPER_ARGS+=(--with-container --runtime "$CONTAINER_RUNTIME" --base-image "$BASE_IMAGE")
   fi
-  run_suite "dockerfile-tamper" "$ROOT/scripts/e2e-dockerfile-tamper.sh" "${TAMPER_ARGS[@]}"
+  # Bash 3.2 (macOS /bin/bash) treats an empty "${a[@]}" as unbound under set -u.
+  run_suite "dockerfile-tamper" "$ROOT/scripts/e2e-dockerfile-tamper.sh" ${TAMPER_ARGS[@]+"${TAMPER_ARGS[@]}"}
 fi
 
 # 6. Timeout teardown necessarily builds and kills a real container. Skip it
