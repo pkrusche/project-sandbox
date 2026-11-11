@@ -34,6 +34,7 @@
 #   scripts/run_all_supported_e2e_tests.sh [--runtimes LIST]
 #       [--internet-proxy-dir DIR] [--agentgateway-dir DIR]
 #       [--no-copilot] [--no-internet-proxy-isolation] [--no-build] [--keep]
+#       [--incremental]
 #       [--base-image IMAGE] [--dry-run] [-- RUN-E2E-TESTS-OPTIONS...]
 #
 #   --runtimes LIST   comma-separated subset of detected runtimes to run
@@ -47,6 +48,8 @@
 #                     never run the destructive two-service isolation audit
 #   --no-build        forwarded; also drops opt-in suites that require builds
 #   --keep            forwarded to run-e2e-tests.sh
+#   --incremental     forwarded: skip suites that already passed on the current
+#                     source and configuration, per runtime (state in .e2e-state/)
 #   --base-image IMG  forwarded to run-e2e-tests.sh
 #   --dry-run         print the detected plan and commands without running them
 #   -- ...            pass the remaining options to every run-e2e-tests.sh run
@@ -85,6 +88,7 @@ while [ $# -gt 0 ]; do
     --no-internet-proxy-isolation) NO_INTERNET_ISOLATION=1; shift ;;
     --no-build) NO_BUILD=1; COMMON_ARGS+=(--no-build); shift ;;
     --keep) COMMON_ARGS+=(--keep); shift ;;
+    --incremental) COMMON_ARGS+=(--incremental); shift ;;
     --base-image) COMMON_ARGS+=(--base-image "${2:?--base-image needs a value}"); shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     --) shift; EXTRA_ARGS+=("$@"); break ;;

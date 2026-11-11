@@ -209,6 +209,33 @@ single one, pass `--only SUITE`; `--list` prints the accepted suite names:
 ./scripts/run-e2e-tests.sh --only git-workflow
 ```
 
+To resume a long run after fixing a failure, pass `--incremental` (to either
+`run-e2e-tests.sh` or `run_all_supported_e2e_tests.sh`). Every suite that
+passes is recorded in the gitignored `.e2e-state/` directory, keyed by the
+checkout's current file contents and the run's configuration. Later
+`--incremental` runs then report those suites as `PASS (cached)` instead of
+running them again:
+
+```bash
+./scripts/run_all_supported_e2e_tests.sh --incremental
+```
+
+- **Source:** the source is the jj working copy (or, without jj, the git
+  working tree), uncommitted edits included. Any edit to a tracked file
+  invalidates every earlier result. Describing or rebasing a jj change without
+  changing its files does not.
+- **Configuration:** the configuration is the runtime plus the options that
+  change how a suite behaves, such as `--base-image`, `--no-build`, fixture
+  hosts, `--ca-cert` paths and the proxy checkout paths. Options that only
+  select suites (`--only`, `--with-*`, `--all-tests`) and `--keep` are not part
+  of it, so `--only SUITE --incremental` reuses results from a full run.
+- **What always runs:** failed and skipped suites always run again.
+- **Not covered:** the contents of the external checkouts and the state of host
+  services (gateway, Internet proxy, credentials) are not part of the key.
+  Delete `.e2e-state/` to force a full run.
+- **Overrides:** set `PROJECT_SANDBOX_E2E_STATE_DIR` to keep the state
+  elsewhere.
+
 `--all-tests` runs every suite, including all opt-in ones. It implies
 `--with-agent-proxy`, `--with-internet-proxy`, `--with-proxy-endpoints`,
 `--with-build-proxy`, `--with-copilot`, `--with-copilot-egress`, and

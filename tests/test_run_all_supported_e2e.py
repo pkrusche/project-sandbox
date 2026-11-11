@@ -88,6 +88,24 @@ class RunAllSupportedE2ETests(unittest.TestCase):
                 check=False,
             )
 
+    def test_incremental_is_forwarded_to_every_runtime(self) -> None:
+        result = self._run(
+            "--incremental",
+            "--internet-proxy-dir",
+            "/nonexistent/ipl",
+            "--agentgateway-dir",
+            "/nonexistent/agw",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        runs = [
+            line
+            for line in result.stdout.splitlines()
+            if line.startswith("+ ") and "run-e2e-tests.sh" in line
+        ]
+        self.assertEqual(len(runs), 2)
+        for line in runs:
+            self.assertIn("--incremental", line)
+
     def test_plans_only_ok_runtimes_and_notes_missing_proxies(self) -> None:
         result = self._run(
             "--internet-proxy-dir",

@@ -36,6 +36,7 @@
 #   scripts/run-e2e-tests.sh [--runtime chroot|auto|apple-container|docker|podman]
 #                            [--base-image IMAGE] [--no-build] [--keep]
 #                            [--only SUITE] [--list] [--plan] [--all-tests]
+#                            [--incremental]
 #                            [--with-agent-proxy] [--with-internet-proxy]
 #                            [--with-proxy-endpoints --proxy-fixture-host IP]
 #                            [--with-build-proxy --internet-proxy-dir DIR]
@@ -59,6 +60,16 @@
 #                    --only copilot-egress, and --only egress-sidecar need no additional
 #                    --with-* flag.
 #   --list           print the suite names accepted by --only and exit
+#   --incremental    skip suites that already passed for the current source and
+#                    configuration, and record each suite that passes now. The
+#                    source is the checkout's current file contents (jj working
+#                    copy, or git working tree incl. uncommitted edits); the
+#                    configuration is the runtime plus every option that changes
+#                    how a suite runs (not --only/--with-*/--keep). State lives in
+#                    .e2e-state/ (gitignored; PROJECT_SANDBOX_E2E_STATE_DIR
+#                    overrides it). Failed and skipped suites always run again.
+#                    External checkouts (--internet-proxy-dir, --agentgateway-dir)
+#                    and host services are not part of the key
 #   --plan           decide every suite as a real run would, print RUN/SKIP/FAIL
 #                    per suite and the summary, but execute nothing (no orphan
 #                    reaping either); exits 0
@@ -159,6 +170,7 @@ NO_BUILD=0
 KEEP=0
 ONLY=""
 PLAN=0
+INCREMENTAL=0
 WITH_AGENT_PROXY=0
 WITH_INTERNET_PROXY=0
 WITH_PROXY_ENDPOINTS=0
@@ -198,6 +210,7 @@ while [ $# -gt 0 ]; do
     --only)       ONLY="${2:?--only needs a value}"; shift 2 ;;
     --list)       printf '%s\n' "${SUITES[@]}"; exit 0 ;;
     --plan)       PLAN=1; shift ;;
+    --incremental) INCREMENTAL=1; shift ;;
     --all-tests)  ALL_TESTS=1; shift ;;
     --with-agent-proxy) WITH_AGENT_PROXY=1; shift ;;
     --with-internet-proxy) WITH_INTERNET_PROXY=1; shift ;;
@@ -267,6 +280,48 @@ if [ -n "$ONLY" ]; then
   esac
 fi
 
+# --incremental: results are kept per source fingerprint and configuration in
+# $STATE_DIR, one marker file per suite that passed. Only settings that change
+# how a suite behaves belong in the key; suite-selection flags do not.
+STATE_DIR=""
+CACHED=0
+if [ "$INCREMENTAL" = 1 ]; then
+  STATE_ROOT="${PROJECT_SANDBOX_E2E_STATE_DIR:-$ROOT/.e2e-state}"
+  STATE_SETTINGS=(
+    "BASE_IMAGE=$BASE_IMAGE"
+    "NO_BUILD=$NO_BUILD"
+    "BLOCKED_URL=$BLOCKED_URL"
+    "INTERNET_PROXY_DIR=$INTERNET_PROXY_DIR"
+    "AGENTGATEWAY_DIR=$AGENTGATEWAY_DIR"
+    "PROXY_FIXTURE_HOST=$PROXY_FIXTURE_HOST"
+    "PROXY_FIXTURE_IPV6_HOST=$PROXY_FIXTURE_IPV6_HOST"
+    "PROXY_FIXTURE_HOSTNAME=$PROXY_FIXTURE_HOSTNAME"
+    "COPILOT_HOST=$COPILOT_HOST"
+    "SECURITY_PEER_RUNTIME=$SECURITY_PEER_RUNTIME"
+    "SECURITY_FIXTURE_HOST=$SECURITY_FIXTURE_HOST"
+    "SECURITY_NAT64_ORIGIN=$SECURITY_NAT64_ORIGIN"
+  )
+  for cert in ${CA_CERTS[@]+"${CA_CERTS[@]}"}; do
+    STATE_SETTINGS+=("CA_CERT=$cert")
+  done
+  if ! STATE_KEY="$(uv run --no-project python -I "$ROOT/scripts/e2e-state.py" \
+      --root "$ROOT" --runtime "$RUNTIME" "${STATE_SETTINGS[@]}")"; then
+    echo "ERROR: --incremental could not fingerprint the source in $ROOT." >&2
+    exit 64
+  fi
+  STATE_DIR="$STATE_ROOT/$STATE_KEY"
+  echo "Incremental: results for this source and configuration in $STATE_DIR"
+fi
+
+# True when the suite already passed for this source and configuration.
+passed_before() { [ -n "$STATE_DIR" ] && [ -f "$STATE_DIR/$1.pass" ]; }
+
+record_pass() {
+  [ -n "$STATE_DIR" ] || return 0
+  mkdir -p "$STATE_DIR"
+  printf 'passed %s in %ss\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$2" >"$STATE_DIR/$1.pass"
+}
+
 # True when the suite should run in this invocation: either no --only filter was
 # given, or this is the selected suite.
 selected() { [ -z "$ONLY" ] || [ "$ONLY" = "$1" ]; }
@@ -310,6 +365,12 @@ run_suite() {
   local log="$LOG_DIR/$name.log"
   local start=$SECONDS
   suite_progress "$name"
+  if passed_before "$name"; then
+    printf 'PASS (cached)\n'
+    record_result PASS "$name" "incremental: passed earlier on this source"
+    CACHED=$((CACHED + 1))
+    return 0
+  fi
   if [ "$PLAN" = 1 ]; then
     printf 'RUN\n'
     record_result RUN "$name"
@@ -317,6 +378,7 @@ run_suite() {
   fi
   if "$@" >"$log" 2>&1; then
     printf 'PASS (%ds)\n' "$((SECONDS - start))"
+    record_pass "$name" "$((SECONDS - start))"
     if [ "$KEEP" = 1 ]; then
       record_result PASS "$name" "log: $log"
       LOGS_KEPT=1
@@ -685,10 +747,12 @@ done
 echo
 if [ "$PLAN" = 1 ]; then
   echo "Plan: $planned suite(s) would run, $failed cannot start, $skipped skipped."
+  [ "$CACHED" = 0 ] || echo "Incremental: $CACHED suite(s) already passed on this source."
   rmdir "$LOG_DIR" 2>/dev/null || true
   exit 0
 fi
-echo "Ran $((passed + failed)) suite(s): $passed passed, $failed failed, $skipped skipped."
+echo "Ran $((passed + failed - CACHED)) suite(s): $((passed - CACHED)) passed, $failed failed, $skipped skipped."
+[ "$CACHED" = 0 ] || echo "Incremental: $CACHED suite(s) not rerun; they passed earlier on this source."
 if [ "$LOGS_KEPT" = 1 ]; then
   echo "Suite logs kept in: $LOG_DIR"
 else

@@ -20,6 +20,8 @@ dist/
 .devcontainer/
 # release state tracking
 .release-status/
+# run-e2e-tests.sh --incremental results
+/.e2e-state/
 .DS_Store
 
 # sbx-tui — local configuration skill
