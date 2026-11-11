@@ -1315,6 +1315,15 @@ def _reconcile(
     if fp != state["reload_fingerprint"]:
         _write_file(lay.sidecar / CONF_NAME, conf)
         _checked(runner, reload_argv(runtime), "reloading the egress sidecar")
+        # `squid -k reconfigure` returns before Squid has reopened its
+        # listening port; a launch probing right away saw "does not answer".
+        wait_ready(
+            runtime,
+            runner,
+            timeout=deps.readiness_timeout,
+            clock=deps.clock,
+            sleep=deps.sleep,
+        )
         state["reload_fingerprint"] = fp
         messages.append(
             f"Applied the egress allowlist from {policy.path or 'built-in defaults'} "

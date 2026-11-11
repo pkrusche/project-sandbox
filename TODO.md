@@ -21,9 +21,8 @@ Source paths below are relative to `src/project_sandbox/`.
 
 ## Open security e2e failures
 
-Observed on Docker (2026-11-11, `run-e2e-tests.sh --only security`, peer runtime Podman). Each failure is still open; causes marked unconfirmed have not been investigated.
+Observed on 2026-11-11 (`run-e2e-tests.sh --only security`, Docker with peer runtime Podman, and Podman). Each failure is still open.
 
 | Test | Current behavior and recommendation |
 | --- | --- |
-| `test_network.py::test_concurrent_cross_runtime_edits_and_delayed_launch` | After `project-sandbox-egress up` on the peer runtime and concurrent `allow add` from both runtimes, the next launch reports "reusing project-sandbox-egress at 172.17.0.1:3129" and then "does not answer on 172.17.0.1:3129". Unconfirmed cause: both runtimes' sidecars publishing the same port, or the concurrent reload leaving the Docker sidecar unresponsive. Reproduce with only Docker plus Podman, check which process owns the port, and either give each runtime's sidecar a distinct endpoint or make the shared-port conflict an explicit error. |
 | `test_runtime.py::test_private_mounts_and_devcontainer_reopen[quote" $HOME[*]]` (Podman only) | Podman's build fails at `COPY init-firewall.sh`: buildah expands the build-context path as a glob, so a project directory named `quote" $HOME[*]` matches nothing (`copier: get: globs [...[[]\*]...] matched nothing`). Docker builds the same project. Fails closed (no image), but such projects cannot be used on Podman. Stage the build context under a generated path without glob metacharacters, or refuse these names on Podman with a clear message. |

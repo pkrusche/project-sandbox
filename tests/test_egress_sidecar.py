@@ -794,6 +794,41 @@ class DriftTests(Base):
         self.assertEqual([k for k in self.fake.kinds() if k in MUTATING], ["reload"])
         self.assertTrue(any("reloaded" in m for m in messages))
 
+    def test_reload_waits_until_squid_answers_again(self) -> None:
+        # Regression: `squid -k reconfigure` returns before Squid reopens its
+        # port, so a launch right after a reload reported "does not answer"
+        # (security e2e test_concurrent_cross_runtime_edits_and_delayed_launch).
+        self.ensure()
+        self.fake.calls.clear()
+        self.fake.ready = False
+        real = self.fake.__call__
+        probes_after_reload = []
+
+        def runner(argv):
+            result = real(argv)
+            kind = self.fake.kind(argv)
+            if kind == "reload":
+                probes_after_reload.append(0)
+            elif kind == "probe" and probes_after_reload:
+                probes_after_reload[0] += 1
+                if probes_after_reload[0] >= 3:
+                    self.fake.ready = True
+            return result
+
+        deps = self.deps(runner=runner, readiness_timeout=10.0)
+        egress_sidecar.reload(
+            self.runtime,
+            _policy(self.tmp, '[egress]\nallow = ["pypi.org"]\n'),
+            image=IMAGE,
+            root=self.root,
+            deps=deps,
+        )
+        kinds = self.fake.kinds()
+        self.assertIn("reload", kinds)
+        self.assertEqual(kinds[-1], "probe")
+        # Three failed-then-ready probes ran before reload() returned.
+        self.assertGreaterEqual(probes_after_reload[0], 3)
+
 
 FIXTURES = Path(__file__).parent / "fixtures" / "runtime-info"
 GATEWAY = egress_sidecar.Strategy(egress_sidecar.DOCKER_GATEWAY, "172.17.0.1")
