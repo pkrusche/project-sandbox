@@ -2509,6 +2509,33 @@ class CliTests(TestCase):
                 cli.main(["--dry-run", str(link), "python:3.12-slim"])
             self.assertIn("control characters", str(raised.exception))
 
+    def test_project_path_with_mount_option_characters_is_refused(self) -> None:
+        # Podman's builder writes the context path unescaped into overlay
+        # mount options; quotes are not needed either. Refused everywhere.
+        for name in (
+            "quote'single",
+            'quote"double',
+            "comma,name",
+            "colon:name",
+            "back\\slash",
+        ):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                project = Path(tmp) / name
+                project.mkdir()
+                with self.assertRaises(SystemExit) as raised:
+                    cli.main(["--dry-run", str(project), "python:3.12-slim"])
+                self.assertIn("quote, comma, colon or backslash", str(raised.exception))
+                self.assertEqual(list(project.iterdir()), [], "must not write files")
+        # A symlink with a plain name cannot hide such a component.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "comma,name"
+            target.mkdir()
+            link = Path(tmp) / "plain"
+            link.symlink_to(target)
+            with self.assertRaises(SystemExit) as raised:
+                cli.main(["--dry-run", str(link), "python:3.12-slim"])
+            self.assertIn("quote, comma, colon or backslash", str(raised.exception))
+
     def test_project_path_with_glob_characters_is_refused(self) -> None:
         # Podman expands the build-context path as a glob; refused everywhere.
         for name in ("star*name", "what?", "bracket[1]", 'quote" $HOME[*]'):

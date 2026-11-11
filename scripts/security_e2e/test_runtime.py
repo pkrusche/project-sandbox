@@ -68,7 +68,7 @@ def test_cargo_literal_paths(sandbox):
 
 @pytest.mark.parametrize(
     "name",
-    ["space here", "quote'and\"double", "dollar$HOME", "bracket]", "comma,name"],
+    ["space here", "dollar$HOME", "bracket]"],
 )
 def test_mount_roundtrip(sandbox, name):
     project = sandbox.project(name)
@@ -77,9 +77,20 @@ def test_mount_roundtrip(sandbox, name):
     assert (project / "roundtrip").read_text() == name
 
 
-# Control characters, and glob characters (Podman expands the build-context
-# path as a glob), are refused on every runtime.
-@pytest.mark.parametrize("name", ["line\nbreak", "bracket[1]*", 'quote" $HOME[*]'])
+# Control characters, glob characters (Podman expands the build-context path as
+# a glob), and quotes, commas, colons and backslashes (Podman writes the context
+# path unescaped into overlay mount options) are refused on every runtime.
+@pytest.mark.parametrize(
+    "name",
+    [
+        "line\nbreak",
+        "bracket[1]*",
+        'quote" $HOME[*]',
+        "quote'and\"double",
+        "comma,name",
+        "colon:name",
+    ],
+)
 def test_unsupported_mount_grammar_fails_closed(sandbox, name):
     project = sandbox.project(name)
     proc = sandbox.start(sandbox.argv(project, "touch unsafe-launch", build=True))
@@ -287,7 +298,7 @@ def test_live_external_git_lock_is_preserved(sandbox):
         owner.communicate(timeout=5)
 
 
-@pytest.mark.parametrize("project_name", ["project", "comma,name", 'quote" $HOME'])
+@pytest.mark.parametrize("project_name", ["project", "space $HOME"])
 def test_private_mounts_and_devcontainer_reopen(sandbox, project_name):
     project = sandbox.project(project_name)
     init_git(project)
@@ -333,24 +344,6 @@ def test_private_mounts_and_devcontainer_reopen(sandbox, project_name):
         (sandbox.directory / f"devcontainer-reopen-{attempt}.log").write_text(
             result.stdout
         )
-        if (
-            result.returncode
-            and project_name != "project"
-            and any(
-                text in result.stdout.lower()
-                for text in (
-                    "invalid field",
-                    "invalid mount",
-                    "invalid csv",
-                    'bare "',
-                    "field count",
-                )
-            )
-        ):
-            assert not (project / "reopened").exists()
-            pytest.xfail(
-                "TODO: devcontainer mount strings do not encode this unusual project path"
-            )
         assert result.returncode == 0, result.stdout
         assert (project / "reopened").read_text() == f"reopened-{attempt}"
         # Remove only empty generated masks; helper must recreate them on reopen.

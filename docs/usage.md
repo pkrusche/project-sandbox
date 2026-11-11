@@ -38,8 +38,9 @@ uv run project-sandbox /absolute/path/to/repo python:3.12-slim
 ```
 
 The resolved project path must not contain control characters (such as a
-newline) or the glob characters `*`, `?` and `[`; such projects are refused
-before anything is written. Rename the directory to use them.
+newline), the glob characters `*`, `?` and `[`, quotes (`'`, `"`), commas,
+colons or backslashes; such projects are refused before anything is written.
+Rename the directory to use them.
 
 To build on top of a repo's existing Dockerfile instead of a base image tag:
 

@@ -2958,6 +2958,14 @@ def _resolve_required_path(path_str: str, *, what: str) -> Path:
 # project behaves the same everywhere.
 _GLOB_METACHARACTERS = "*?["
 
+# Podman's builder overlay-mounts the build context and writes its path
+# unescaped into the comma-separated overlay options, where ',' splits the
+# option, ':' separates lower directories, '\' is the escape character and an
+# unbalanced '"' is invalid. Quotes also make mount, devcontainer and shell
+# encodings needlessly fragile. Such names are not needed; refuse them on every
+# runtime.
+_MOUNT_OPTION_CHARACTERS = "'\",:\\"
+
 
 def _refuse_unsupported_path(path: Path, *, what: str) -> None:
     """Fail closed on paths the mount, devcontainer, shell and build-context
@@ -2973,6 +2981,12 @@ def _refuse_unsupported_path(path: Path, *, what: str) -> None:
         raise SystemExit(
             f"The {what} contains a glob character ({' '.join(_GLOB_METACHARACTERS)}), "
             f"which container builds cannot use as a context path; rename it: {text!r}"
+        )
+    if any(c in text for c in _MOUNT_OPTION_CHARACTERS):
+        raise SystemExit(
+            f"The {what} contains a quote, comma, colon or backslash "
+            f"({' '.join(_MOUNT_OPTION_CHARACTERS)}), which container builds and "
+            f"mounts cannot encode reliably; rename it: {text!r}"
         )
 
 
