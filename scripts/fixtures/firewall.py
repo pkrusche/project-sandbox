@@ -4,6 +4,7 @@ import os
 import re
 import stat
 import subprocess
+import sys
 from pathlib import Path
 
 SCRIPT = "/usr/local/bin/project-sandbox-init-firewall"
@@ -54,9 +55,13 @@ def check_sudo(workspace: Path) -> None:
 
 def main() -> None:
     workspace = Path("/workspace")
+    # The runner names a fresh marker per session (see scripts/e2e-firewall.py).
+    marker = sys.argv[1] if len(sys.argv) > 1 else "firewall.ok"
+    if Path(marker).name != marker:
+        raise RuntimeError(f"marker must be a plain file name: {marker!r}")
     check_initialization()
     check_sudo(workspace)
-    (workspace / "firewall.ok").write_text("initialized; sudo revoked\n")
+    (workspace / marker).write_text("initialized; sudo revoked\n")
 
 
 if __name__ == "__main__":

@@ -19,7 +19,10 @@ def run_session(
     project: Path, workdir: Path, args: argparse.Namespace, image: str, attempt: int
 ) -> None:
     # The second run reuses the image, but must get a fresh container with its
-    # own successful initialization and revoked sudo grant.
+    # own successful initialization and revoked sudo grant. Each session writes
+    # its own marker: on Podman machine, re-creating a file the host just
+    # deleted can fail with ENOENT through the VM's shared-folder cache.
+    marker = project / f"firewall-{attempt}.ok"
     argv = [
         "uv",
         "run",
@@ -33,7 +36,7 @@ def run_session(
         "--egress",
         "firewall",
         "--prompt-text",
-        "python3 -I /workspace/firewall-audit.py",
+        f"python3 -I /workspace/firewall-audit.py {marker.name}",
         "--no-forward-credentials",
         "--no-token-refresh",
         "--timeout",
@@ -42,7 +45,6 @@ def run_session(
     if attempt > 1:
         argv.append("--no-build")
     argv.extend((str(project), args.base_image))
-    marker = project / "firewall.ok"
     marker.unlink(missing_ok=True)
     log = workdir / f"session-{attempt}.log"
     print(f"Running fresh container {attempt}: {log}", flush=True)

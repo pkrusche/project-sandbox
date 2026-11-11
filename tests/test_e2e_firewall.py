@@ -100,7 +100,9 @@ class FirewallRunnerTests(unittest.TestCase):
         for attempt in (1, 2):
             with self.subTest(attempt=attempt), tempfile.TemporaryDirectory() as tmp:
                 project = Path(tmp)
-                (project / "firewall.ok").write_text("initialized; sudo revoked\n")
+                # A leftover marker from any session must not count as success.
+                for name in ("firewall.ok", "firewall-1.ok", "firewall-2.ok"):
+                    (project / name).write_text("initialized; sudo revoked\n")
                 with patch.object(runner.subprocess, "run") as run:
                     with self.assertRaises(FileNotFoundError):
                         runner.run_session(
@@ -114,6 +116,12 @@ class FirewallRunnerTests(unittest.TestCase):
                     self.assertEqual(argv[argv.index("--egress") + 1], "firewall")
                     self.assertNotIn("--no-firewall", argv)
                     self.assertEqual("--no-build" in argv, attempt == 2)
+                    # Each session writes its own marker, so no file the host
+                    # deleted is re-created (Podman machine shared-folder cache).
+                    self.assertEqual(
+                        argv[argv.index("--prompt-text") + 1],
+                        f"python3 -I /workspace/firewall-audit.py firewall-{attempt}.ok",
+                    )
 
     def test_session_error_includes_underlying_log(self) -> None:
         args = argparse.Namespace(runtime="docker", base_image="python:3.12-slim")
