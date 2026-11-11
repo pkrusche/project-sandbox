@@ -56,8 +56,9 @@ hints; the read-only mounts enforce the restriction.
   through hardlinks need an independent copy before using restricted modes.
 - Extra mounts cannot overlap the workspace, expose workspace/metadata aliases,
   or override protected mount targets. Mount forms the parser cannot fully
-  inspect are rejected. Commas/control characters in metadata mount paths are
-  unsupported.
+  inspect are rejected. Control characters in metadata mount paths are
+  unsupported; commas are supported on Docker and Podman but not on Apple
+  `container`.
 
 Hidden mask sources are private directories outside the repository. CLI sources
 are removed after the session; generated devcontainer sources remain for that

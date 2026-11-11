@@ -10,7 +10,13 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from .container_cli import APPLE_CONTAINER, MountSpec, Runtime, parse_mount
+from .container_cli import (
+    APPLE_CONTAINER,
+    MountSpec,
+    Runtime,
+    _mount_arg,
+    parse_mount,
+)
 
 MODES = ("full", "read-only", "hidden")
 NAMES = (".git", ".jj")
@@ -237,10 +243,29 @@ def validate(
                 f"Extra mount overlaps protected VCS target: {mount.target}"
             )
     for mount in layout.mounts:
-        if any(c in str(mount.source) + mount.target for c in ",\n\r\0"):
+        text = str(mount.source) + mount.target
+        if any(ord(c) < 0x20 or ord(c) == 0x7F for c in text):
+            raise ValueError("Restricted VCS mounts cannot encode control characters")
+        # Docker and Podman parse --mount as CSV, so a quoted comma round-trips
+        # (security e2e test_mount_roundtrip). Apple container is unverified.
+        if "," in text and runtime == APPLE_CONTAINER:
             raise ValueError(
-                "Restricted VCS mounts cannot encode commas or control characters"
+                "Restricted VCS mounts cannot encode commas on Apple container"
             )
+        # Fail closed unless the rendered argument parses back to this mount.
+        for spec in (mount, MountSpec(mount.source, mount.target, readonly=True)):
+            try:
+                parsed = parse_mount(_mount_arg(spec))
+            except SystemExit as exc:
+                raise ValueError(str(exc)) from None
+            if (parsed.raw, parsed.source, parsed.target) != (
+                None,
+                spec.source.resolve(strict=False),
+                spec.target,
+            ):
+                raise ValueError(
+                    f"Restricted VCS mount does not round-trip: {mount.source}"
+                )
 
 
 def new_mask_dir() -> Path:

@@ -277,6 +277,36 @@ class VcsAccessTests(TestCase):
                     "0" if mode == "read-only" else None,
                 )
 
+    def test_comma_paths_round_trip_on_docker_and_podman_only(self):
+        # Regression: security e2e test_private_mounts_and_devcontainer_reopen
+        # [comma,name] refused --vcs-access hidden although CSV encoding
+        # round-trips the path on Docker and Podman.
+        project = self.root / "comma,name"
+        self.project.rename(project)
+        layout = vcs_access.inspect(project)
+        for runtime in (container_cli.DOCKER, container_cli.PODMAN):
+            for mode in ("read-only", "hidden"):
+                with self.subTest(runtime=runtime.name, mode=mode):
+                    vcs_access.validate(layout, mode, runtime, [])
+        mounts = vcs_access.mounts(layout, "read-only")
+        for mount in mounts:
+            parsed = container_cli.parse_mount(container_cli._mount_arg(mount))
+            self.assertEqual(
+                (parsed.source, parsed.target, parsed.readonly),
+                (mount.source, mount.target, True),
+            )
+        self.assertIn(project / ".git", [m.source for m in mounts])
+        with self.assertRaisesRegex(ValueError, "Apple container"):
+            vcs_access.validate(layout, "hidden", container_cli.APPLE_CONTAINER, [])
+
+    def test_control_characters_in_metadata_paths_are_rejected(self):
+        project = self.root / "line\nbreak"
+        self.project.rename(project)
+        with self.assertRaisesRegex(ValueError, "control characters"):
+            vcs_access.validate(
+                vcs_access.inspect(project), "hidden", container_cli.DOCKER, []
+            )
+
     def test_restricted_chroot_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "chroot"):
             vcs_access.validate(
