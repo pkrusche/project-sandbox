@@ -203,6 +203,80 @@ class InternetProxyTests(TestCase):
         preflight.assert_called_once()
         self.assertFalse((project / ".project-sandbox").exists())
 
+    def test_skipped_preflight_never_contacts_the_proxy_from_the_host(self) -> None:
+        # A proxy only containers can reach (a runtime's host-alias address);
+        # the sandbox firewall still checks it from inside the sandbox.
+        with TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            with (
+                patch.object(
+                    cli,
+                    "read_identity",
+                    return_value=GitIdentity("Ada", "ada@example.com"),
+                ),
+                patch.object(
+                    cli.container_cli,
+                    "select_runtime",
+                    return_value=cli.container_cli.DOCKER,
+                ),
+                patch.object(
+                    internet_proxy,
+                    "preflight",
+                    side_effect=AssertionError("host contacted the proxy"),
+                ),
+                patch.object(
+                    cli,
+                    "_api_key_env_values",
+                    side_effect=SystemExit("reached session preparation"),
+                ),
+                self.assertRaisesRegex(SystemExit, "reached session preparation"),
+            ):
+                cli.main(
+                    [
+                        "--runtime",
+                        "docker",
+                        "--agent",
+                        "bash",
+                        "--internet-proxy",
+                        "http://192.168.65.254:18080",
+                        "--no-internet-proxy-preflight",
+                        str(project),
+                        "python:3.12-slim",
+                    ]
+                )
+
+    def test_skipped_preflight_requires_a_proxy_and_a_non_relay_runtime(self) -> None:
+        for extra, runtime, message in (
+            ([], "docker", "requires --internet-proxy"),
+            (
+                ["--internet-proxy", "http://192.0.2.10:3128"],
+                "apple-container",
+                "not supported with --runtime apple-container",
+            ),
+        ):
+            with (
+                self.subTest(runtime=runtime, extra=extra),
+                TemporaryDirectory() as tmp,
+                patch.object(
+                    internet_proxy,
+                    "preflight",
+                    side_effect=AssertionError("host contacted the proxy"),
+                ),
+                self.assertRaisesRegex(SystemExit, message),
+            ):
+                cli.main(
+                    [
+                        "--runtime",
+                        runtime,
+                        "--agent",
+                        "bash",
+                        *extra,
+                        "--no-internet-proxy-preflight",
+                        tmp,
+                        "python:3.12-slim",
+                    ]
+                )
+
     def test_successful_preflight_continues_to_sandbox_preparation(self) -> None:
         events: list[str] = []
         with TemporaryDirectory() as tmp:

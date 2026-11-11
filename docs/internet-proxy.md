@@ -189,6 +189,15 @@ coexist with a remote Internet proxy using `--agent pi --pi-ollama`.
 Endpoints are resolved and pinned **inside the sandbox** for the session
 (on Apple `container`, a remote Internet proxy is resolved on the host by
 [its relay](#remote-proxies-with-apple-container)); restart after DNS changes. Reachability from the host alone is insufficient.
+
+Before image work the host also connects to the proxy once (TCP, plus TLS
+verification for HTTPS) so a stopped proxy fails fast. A proxy that only
+containers can reach, such as one at a runtime's internal host-alias address,
+fails that check; `--no-internet-proxy-preflight` skips it. The sandbox
+firewall still checks the proxy from inside the sandbox after its final rules
+are installed, so an unreachable proxy then fails at session startup instead.
+The option is rejected on Apple `container`, whose relay reaches remote
+proxies from the host.
 Permissions cover IP/port pairs, including other virtual hosts sharing that pair.
 No provider, GitHub, broad gateway, or general DNS exceptions are added. See the
 [accepted URL matrix, TLS scope, and client limitations](proxy-endpoints.md).

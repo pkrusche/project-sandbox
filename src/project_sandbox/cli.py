@@ -244,6 +244,15 @@ def build_parser() -> ArgumentParser:
         help="Route Internet traffic through a credential-free HTTP loopback or remote HTTP/HTTPS proxy (default ports 80/443).",
     )
     p.add_argument(
+        "--no-internet-proxy-preflight",
+        action="store_true",
+        help=(
+            "Skip the host-side reachability check of --internet-proxy, for a "
+            "proxy that only containers can reach. The sandbox firewall still "
+            "checks the proxy from inside the sandbox before the session starts."
+        ),
+    )
+    p.add_argument(
         "--egress",
         choices=EGRESS_MODES,
         default=EGRESS_FIREWALL,
@@ -671,8 +680,14 @@ def _main_scoped(argv: list[str] | None, resources: contextlib.ExitStack) -> int
     # work, or owned forwarding resources when the external listener is down.
     # Build-only runs never start a sandbox and therefore need no listener.
     # The egress sidecar is started (or reused) and probed right before the
-    # sandbox runs instead.
-    if internet_proxy_config is not None and run_agent is not None and not sidecar:
+    # sandbox runs instead. --no-internet-proxy-preflight leaves the check to
+    # the sandbox firewall, for a proxy only containers can reach.
+    if (
+        internet_proxy_config is not None
+        and run_agent is not None
+        and not sidecar
+        and not getattr(args, "no_internet_proxy_preflight", False)
+    ):
         internet_proxy.preflight(internet_proxy_config, ca_certificates=ca_certificates)
 
     proxy_key: str | None = None
@@ -1825,8 +1840,16 @@ def _validate_internet_proxy_args(args) -> internet_proxy.InternetProxy | None:
     value = getattr(args, "internet_proxy", None)
     if getattr(args, "ca_cert", []) and not value and not args.agent_proxy:
         raise SystemExit("--ca-cert requires --internet-proxy or --agent-proxy")
+    skip_preflight = getattr(args, "no_internet_proxy_preflight", False)
+    if skip_preflight and not value:
+        raise SystemExit("--no-internet-proxy-preflight requires --internet-proxy")
     if not value:
         return None
+    if skip_preflight and args.runtime == container_cli.APPLE_CONTAINER.name:
+        raise SystemExit(
+            "--no-internet-proxy-preflight is not supported with --runtime "
+            "apple-container: its sessions reach the proxy from the host"
+        )
     config = internet_proxy.parse(value)
     if args.runtime == container_cli.CHROOT.name:
         raise SystemExit(
