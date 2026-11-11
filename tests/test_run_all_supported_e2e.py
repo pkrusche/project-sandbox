@@ -106,6 +106,22 @@ class RunAllSupportedE2ETests(unittest.TestCase):
         for line in runs:
             self.assertIn("--incremental", line)
 
+    def test_strict_security_coverage_is_opt_in_and_forwarded(self) -> None:
+        args = ("--internet-proxy-dir", "/nonexistent/ipl")
+        args += ("--agentgateway-dir", "/nonexistent/agw")
+        default = self._run(*args)
+        strict = self._run("--strict-security-coverage", *args)
+        self.assertEqual(strict.returncode, 0, strict.stderr)
+        self.assertNotIn("--strict-security-coverage", default.stdout)
+        runs = [
+            line
+            for line in strict.stdout.splitlines()
+            if line.startswith("+ ") and "run-e2e-tests.sh" in line
+        ]
+        self.assertEqual(len(runs), 2)
+        for line in runs:
+            self.assertIn("--strict-security-coverage", line)
+
     def test_plans_only_ok_runtimes_and_notes_missing_proxies(self) -> None:
         result = self._run(
             "--internet-proxy-dir",

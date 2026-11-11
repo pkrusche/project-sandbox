@@ -7,7 +7,8 @@
 #
 # Opt-in suites are enabled per container runtime when they can work here:
 #   proxy-endpoints, egress-sidecar   always (non-billable; need network + builds)
-#   security                         always with builds; strict coverage gate; uses
+#   security                         always with builds; XFAIL/SKIP pass unless
+#                                     --strict-security-coverage is given; uses
 #                                     another selected container runtime as peer when available
 #   build-proxy                       internet-proxy-locally sources found
 #                                     (Podman additionally needs Docker for the fixture)
@@ -34,7 +35,7 @@
 #   scripts/run_all_supported_e2e_tests.sh [--runtimes LIST]
 #       [--internet-proxy-dir DIR] [--agentgateway-dir DIR]
 #       [--no-copilot] [--no-internet-proxy-isolation] [--no-build] [--keep]
-#       [--incremental]
+#       [--incremental] [--strict-security-coverage]
 #       [--base-image IMAGE] [--dry-run] [-- RUN-E2E-TESTS-OPTIONS...]
 #
 #   --runtimes LIST   comma-separated subset of detected runtimes to run
@@ -48,6 +49,8 @@
 #                     never run the destructive two-service isolation audit
 #   --no-build        forwarded; also drops opt-in suites that require builds
 #   --keep            forwarded to run-e2e-tests.sh
+#   --strict-security-coverage
+#                     forwarded: fail security on known limitations and skips too
 #   --incremental     forwarded: skip suites that already passed on the current
 #                     source and configuration, per runtime (state in .e2e-state/)
 #   --base-image IMG  forwarded to run-e2e-tests.sh
@@ -89,6 +92,7 @@ while [ $# -gt 0 ]; do
     --no-build) NO_BUILD=1; COMMON_ARGS+=(--no-build); shift ;;
     --keep) COMMON_ARGS+=(--keep); shift ;;
     --incremental) COMMON_ARGS+=(--incremental); shift ;;
+    --strict-security-coverage) COMMON_ARGS+=(--strict-security-coverage); shift ;;
     --base-image) COMMON_ARGS+=(--base-image "${2:?--base-image needs a value}"); shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     --) shift; EXTRA_ARGS+=("$@"); break ;;

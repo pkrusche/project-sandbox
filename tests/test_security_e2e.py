@@ -4,9 +4,12 @@ import ast
 import http.client
 import importlib.util
 import json
+import os
+import socket
 import ssl
 import struct
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -128,6 +131,46 @@ class SecurityHarnessTests(unittest.TestCase):
                 text=True,
             )
             self.assertRegex(result.stdout, rf"security\s+{status}")
+
+    def _security_pytest_argv(self, *extra):
+        """argv the runner hands to `uv run pytest` for the security suite."""
+        with tempfile.TemporaryDirectory() as tmp:
+            bindir = Path(tmp)
+            calls = bindir / "calls"
+            uv = bindir / "uv"
+            uv.write_text(f"#!/bin/sh\nprintf '%s\\n' \"$*\" >>{calls}\nexit 0\n")
+            uv.chmod(0o755)
+            env = {**os.environ, "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}"}
+            subprocess.run(
+                [ROOT / "scripts/run-e2e-tests.sh", "--only", "security"]
+                + ["--runtime", "docker", *extra],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            lines = calls.read_text().splitlines()
+        return next(line for line in lines if "security_e2e" in line)
+
+    def test_known_limitations_and_skips_pass_unless_strict_is_requested(self):
+        self.assertNotIn("--strict-coverage", self._security_pytest_argv())
+        self.assertIn(
+            "--strict-coverage",
+            self._security_pytest_argv("--strict-security-coverage"),
+        )
+
+    def test_podman_fixture_host_uses_the_host_alias(self):
+        from unittest.mock import patch
+
+        # The audit modules import the audit conftest, not tests/conftest.py.
+        with patch.dict(sys.modules, {"conftest": harness}):
+            firewall = load("security_e2e_firewall", "test_firewall_network.py")
+        self.assertEqual(
+            firewall.default_fixture_host("podman"), "host.containers.internal"
+        )
+        docker_host = firewall.default_fixture_host("docker")
+        self.assertNotEqual(docker_host, "host.containers.internal")
+        socket.inet_aton(docker_host)
 
 
 class ControlledOriginTests(unittest.TestCase):

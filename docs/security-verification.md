@@ -25,8 +25,8 @@ For a release gate, fail on missing prerequisites and known limitations too:
 uv run pytest -ra -q scripts/security_e2e --security-runtime docker \
   --peer-runtime podman --strict-coverage --junitxml=security-docker.xml
 
-# Normal all-runtime run includes security with strict coverage:
-scripts/run_all_supported_e2e_tests.sh
+# Same gate through the e2e runners:
+scripts/run_all_supported_e2e_tests.sh --strict-security-coverage
 
 # Select just security on one runtime:
 scripts/run-e2e-tests.sh --only security --runtime docker \
@@ -34,7 +34,7 @@ scripts/run-e2e-tests.sh --only security --runtime docker \
 scripts/run-e2e-tests.sh --only security --runtime apple-container --plan
 ```
 
-`scripts/run_all_supported_e2e_tests.sh` includes this gate by default on each
+`scripts/run_all_supported_e2e_tests.sh` includes the security suite by default on each
 selected container runtime when builds are enabled. It automatically chooses
 another selected container runtime as the policy-edit peer; chroot and runtimes
 excluded by `--runtimes` are never chosen. With only one container runtime,
@@ -43,12 +43,16 @@ Use `-- --security-peer-runtime NAME` to override the automatic choice (the
 same override applies to every selected runtime), or forward fixture settings
 such as `-- --security-fixture-host IP --security-nat64-origin HOST`.
 
-The single-runtime `run-e2e-tests.sh` enables the gate with `--with-security`,
+The single-runtime `run-e2e-tests.sh` enables the suite with `--with-security`,
 `--only security`, or `--all-tests`. The all-runtime runner skips it with
 `--no-build` and on chroot; explicitly requesting security with `--no-build`
-is an error. Exploratory pytest runs can exit zero with XFAIL/SKIP entries;
-those entries are **not verified protections**. The strict gate is expected to fail while the recorded hardening
-items remain open. Read the `-ra` summary or JUnit report, not only the exit code.
+is an error. In these runners, recorded known limitations (XFAIL) and missing
+prerequisites (SKIP) do not fail the suite, so a green e2e run means no
+*unexpected* security failure. Those entries are **not verified protections**:
+read the `-ra` summary in the suite log (kept with `--keep`) or a JUnit report,
+not only the exit code. Pass `--strict-security-coverage` to either runner for
+the release gate, which fails on every XFAIL and SKIP and is expected to fail
+while the recorded hardening items remain open.
 
 Logs, fixtures, origin requests, DNS results, dependency inventories, and
 inspection evidence are retained under `.project-sandbox/e2e/security.*`.

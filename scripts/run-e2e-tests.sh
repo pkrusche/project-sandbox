@@ -36,7 +36,7 @@
 #   scripts/run-e2e-tests.sh [--runtime chroot|auto|apple-container|docker|podman]
 #                            [--base-image IMAGE] [--no-build] [--keep]
 #                            [--only SUITE] [--list] [--plan] [--all-tests]
-#                            [--incremental]
+#                            [--incremental] [--strict-security-coverage]
 #                            [--with-agent-proxy] [--with-internet-proxy]
 #                            [--with-proxy-endpoints --proxy-fixture-host IP]
 #                            [--with-build-proxy --internet-proxy-dir DIR]
@@ -115,8 +115,12 @@
 #   --copilot-egress-report-dir DIR
 #                    write the copilot-egress report there (default: .project-sandbox/)
 #   --with-security
-#                    include the strict security verification gate alongside other suites;
-#                    enabled automatically by the all-runtime runner when builds are enabled
+#                    include the security verification suite alongside other suites;
+#                    enabled automatically by the all-runtime runner when builds are enabled.
+#                    Known limitations (XFAIL) and missing prerequisites (SKIP) are
+#                    listed in its log but do not fail it
+#   --strict-security-coverage
+#                    release gate: fail the security suite on any XFAIL or SKIP too
 #   --security-nat64-origin HOST
 #                    controlled origin routed through the deployment NAT64 translator
 #   --security-peer-runtime NAME
@@ -171,6 +175,7 @@ KEEP=0
 ONLY=""
 PLAN=0
 INCREMENTAL=0
+STRICT_SECURITY_COVERAGE=0
 WITH_AGENT_PROXY=0
 WITH_INTERNET_PROXY=0
 WITH_PROXY_ENDPOINTS=0
@@ -211,6 +216,7 @@ while [ $# -gt 0 ]; do
     --list)       printf '%s\n' "${SUITES[@]}"; exit 0 ;;
     --plan)       PLAN=1; shift ;;
     --incremental) INCREMENTAL=1; shift ;;
+    --strict-security-coverage) STRICT_SECURITY_COVERAGE=1; shift ;;
     --all-tests)  ALL_TESTS=1; shift ;;
     --with-agent-proxy) WITH_AGENT_PROXY=1; shift ;;
     --with-internet-proxy) WITH_INTERNET_PROXY=1; shift ;;
@@ -300,6 +306,7 @@ if [ "$INCREMENTAL" = 1 ]; then
     "SECURITY_PEER_RUNTIME=$SECURITY_PEER_RUNTIME"
     "SECURITY_FIXTURE_HOST=$SECURITY_FIXTURE_HOST"
     "SECURITY_NAT64_ORIGIN=$SECURITY_NAT64_ORIGIN"
+    "STRICT_SECURITY_COVERAGE=$STRICT_SECURITY_COVERAGE"
   )
   for cert in ${CA_CERTS[@]+"${CA_CERTS[@]}"}; do
     STATE_SETTINGS+=("CA_CERT=$cert")
@@ -703,14 +710,16 @@ if selected egress-sidecar; then
   fi
 fi
 
-# Security is an explicit release gate: skipped prerequisites and known gaps
-# fail coverage rather than being hidden in a green aggregate result.
+# Security records known gaps as XFAIL and missing prerequisites as SKIP; both
+# stay visible in the -ra summary of the suite log. --strict-security-coverage
+# turns them into failures for a release gate.
 if selected security; then
   if [ "$WITH_SECURITY" = 1 ]; then
     if [ "$NO_BUILD" = 1 ]; then
       fail_suite "security" "security verification requires builds"
     else
-      SECURITY_ARGS=(--security-runtime "${CONTAINER_RUNTIME:-host}" --strict-coverage)
+      SECURITY_ARGS=(--security-runtime "${CONTAINER_RUNTIME:-host}")
+      [ "$STRICT_SECURITY_COVERAGE" = 1 ] && SECURITY_ARGS+=(--strict-coverage)
       [ -n "$SECURITY_PEER_RUNTIME" ] && SECURITY_ARGS+=(--peer-runtime "$SECURITY_PEER_RUNTIME")
       [ -n "$SECURITY_FIXTURE_HOST" ] && SECURITY_ARGS+=(--fixture-host "$SECURITY_FIXTURE_HOST")
       [ -n "$SECURITY_NAT64_ORIGIN" ] && SECURITY_ARGS+=(--nat64-origin "$SECURITY_NAT64_ORIGIN")

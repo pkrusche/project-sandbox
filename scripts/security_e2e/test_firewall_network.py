@@ -34,6 +34,21 @@ def listener():
         thread.join(timeout=5)
 
 
+def default_fixture_host(runtime: str) -> str:
+    """Host address a plain ``RUNTIME run`` container uses to reach a host listener.
+
+    Rootless Podman's pasta network copies the host's addresses into the
+    container namespace, so the host's own LAN address points back at the
+    container and refuses the connection; Podman's host alias reaches the host.
+    Other runtimes reach the host through its outbound IPv4 source address.
+    """
+    if runtime == "podman":
+        return "host.containers.internal"
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        sock.connect(("192.0.2.1", 9))  # routing lookup only; sends no packet
+        return sock.getsockname()[0]
+
+
 PROBE = """import json, socket, urllib.request
 from pathlib import Path
 cfg = json.loads(Path('destination.json').read_text())
@@ -169,11 +184,9 @@ def test_startup_connection_and_agent_icmp_capabilities(sandbox, listener, reque
     """
     from project_sandbox import container_cli
 
-    host = request.config.getoption("--fixture-host")
-    if not host:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-            sock.connect(("192.0.2.1", 9))
-            host = sock.getsockname()[0]
+    host = request.config.getoption("--fixture-host") or default_fixture_host(
+        request.config.getoption("--security-runtime")
+    )
     project = sandbox.project()
     (project / "startup.py").write_text(f"""import json, os, pwd, socket, subprocess
 from pathlib import Path
