@@ -133,6 +133,20 @@ PRIVATE_DESTINATIONS: tuple[str, ...] = (
 _HOST_RE = re.compile(
     r"^(?=.{1,253}$)(?!-)[a-z0-9-]{1,63}(?<!-)(?:\.(?!-)[a-z0-9-]{1,63}(?<!-))*$"
 )
+# Squid matches urlpath_regex against the percent-DECODED path (and query) but
+# forwards the raw path, which the origin then normalizes. An allowed prefix
+# such as ``^/copilot_internal/`` therefore also matched
+# ``/copilot_internal/../repos/secret`` (or ``%2e%2e`` / ``%2f`` spellings) and
+# the origin served ``/repos/secret``. On intercepted hosts, refuse any path
+# whose meaning depends on further normalization: dot segments (also before a
+# ``;`` parameter or a backslash), backslashes, and residual encoded dots or
+# separators (double encoding). Matched case-insensitively.
+AMBIGUOUS_PATH_REGEXES: tuple[str, ...] = (
+    r"/\.\.?([/?;\\]|$)",
+    r"\\",
+    r"%(2e|2f|5c)",
+)
+
 # urlpath_regex entries are inserted verbatim; keep them to a safe alphabet.
 _PATH_REGEX_RE = re.compile(r"^\^[A-Za-z0-9_/.\-?$]+$")
 
@@ -218,6 +232,7 @@ def render(
         allowed=allowed or ["invalid"],
         bumped=bumped,
         paths=paths,
+        ambiguous_paths=AMBIGUOUS_PATH_REGEXES,
         upstream=upstream,
         private_destinations=PRIVATE_DESTINATIONS,
         causes=CAUSES,

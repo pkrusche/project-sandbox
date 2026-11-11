@@ -253,6 +253,7 @@ class SquidConfigRendererTests(TestCase):
                 "host-not-allowed",
                 "plain-http-intercepted",
                 "path-not-allowed",
+                "path-not-allowed",
             ],
         )
         self.assertLess(
@@ -409,6 +410,55 @@ class SquidConfigRendererTests(TestCase):
             "/x/copilot_internal/",
         ):
             self.assertFalse(allowed(path), path)
+
+    def test_ambiguous_copilot_paths_are_denied_before_the_path_allow(self) -> None:
+        """Regression: Squid matches urlpath_regex on the percent-decoded path
+        but forwards the raw one, so ``/copilot_internal/../repos/secret`` (and
+        encoded spellings) passed ``^/copilot_internal/`` and the origin
+        served ``/repos/secret``."""
+        import re
+        from urllib.parse import unquote
+
+        conf = squid_config.render(self._policy())
+        allow = self._acl_values(conf, "intercepted_paths")
+        ambiguous = self._acl_values(conf, "ambiguous_paths")
+
+        def permitted(raw: str) -> bool:  # rfc1738_unescape, then -i regex
+            path = unquote(raw)
+            hit = lambda ps: any(re.search(p, path, re.IGNORECASE) for p in ps)
+            return hit(allow) and not hit(ambiguous)
+
+        for raw in (
+            "/copilot_internal/../repos/secret",
+            "/copilot_internal/%2e%2e/repos/secret",
+            "/copilot_internal/%2E%2E/repos/secret",
+            "/copilot_internal%2f..%2frepos/secret",
+            "/copilot_internal/./../repos/secret",
+            "/copilot_internal/..",
+            "/copilot_internal/..;/repos/secret",
+            "/copilot_internal/..\\repos/secret",
+            "/copilot_internal/%5c..%5crepos/secret",
+            "/copilot_internal/%252e%252e/repos/secret",
+            "/copilot_internal/%3f/../../repos/secret",
+            "/copilot_internal/x?/../../repos/secret",
+        ):
+            self.assertFalse(permitted(raw), raw)
+        for raw in (
+            "/copilot_internal/user",
+            "/copilot_internal/v2/token",
+            "/copilot_internal/managed_settings",
+            "/copilot_internal/user?token=abc&x=1.2",
+            "/copilot_internal/.well-known/x",
+            "/copilot_internal/a..b",
+        ):
+            self.assertTrue(permitted(raw), raw)
+        lines = self._lines(conf)
+        self.assertLess(
+            lines.index(
+                "http_access deny intercepted ambiguous_paths page_path_not_allowed"
+            ),
+            lines.index("http_access allow intercepted intercepted_paths"),
+        )
 
     def test_no_other_github_repository_host_in_any_acl(self) -> None:
         from project_sandbox import egress_policy

@@ -46,6 +46,8 @@ acl private_dst dst {{ private_destinations | join(" ") }}
 {% if bumped %}
 acl intercepted dstdomain {{ bumped | join(" ") }}
 acl intercepted_paths urlpath_regex -i {{ paths | join(" ") }}
+# Decoded-path ambiguities the origin would normalize (squid_config.AMBIGUOUS_PATH_REGEXES).
+acl ambiguous_paths urlpath_regex -i {{ ambiguous_paths | join(" ") }}
 {% endif %}
 acl step1 at_step SslBump1
 acl step2 at_step SslBump2
@@ -65,6 +67,7 @@ note sbx_cause private-address private_dst
 note sbx_cause host-not-allowed !allowed
 {% if bumped %}
 note sbx_cause plain-http-intercepted plain_http intercepted
+note sbx_cause path-not-allowed !CONNECT intercepted ambiguous_paths
 note sbx_cause path-not-allowed !CONNECT intercepted !intercepted_paths
 {% endif %}
 
@@ -90,6 +93,7 @@ http_access deny private_dst page_private_address
 {% endif %}
 {% if bumped %}
 http_access deny plain_http intercepted page_plain_http_intercepted
+http_access deny intercepted ambiguous_paths page_path_not_allowed
 http_access deny intercepted !intercepted_paths page_path_not_allowed
 http_access allow intercepted intercepted_paths
 {% endif %}
