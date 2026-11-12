@@ -2,7 +2,7 @@
 
 import os
 import uuid
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -18,7 +18,7 @@ def preview_path() -> Path:
 
 
 @contextmanager
-def allocate() -> Iterator[Path]:
+def allocate() -> Generator[Path, None, None]:
     root = storage_root()
     name = uuid.uuid4().hex
     with mount_storage.directory(root, root=root, create=True) as parent:

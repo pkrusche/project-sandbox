@@ -15,6 +15,7 @@ import unittest
 import unittest.mock
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 from project_sandbox import container_cli
 from project_sandbox.cli import build_parser
@@ -25,6 +26,7 @@ AUDIT = ROOT / "scripts/security_e2e"
 
 def load(name, file):
     spec = importlib.util.spec_from_file_location(name, AUDIT / file)
+    assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -106,7 +108,7 @@ class SecurityHarnessTests(unittest.TestCase):
             for node in source.body
             if isinstance(node, ast.FunctionDef) and node.name == "reached"
         )
-        namespace = {"json": json}
+        namespace: dict[str, Any] = {"json": json}
         exec(  # noqa: S102 - execute only the repository-owned grader AST
             compile(ast.Module(body=[function], type_ignores=[]), "<reached>", "exec"),
             namespace,

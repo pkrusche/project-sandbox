@@ -24,7 +24,7 @@ import os
 import re
 import tempfile
 import tomllib
-from collections.abc import Iterable, Iterator
+from collections.abc import Generator, Iterable
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -528,7 +528,7 @@ def _load_or_defaults(path: Path) -> PolicyFile:
 
 
 @contextmanager
-def policy_lock(path: Path) -> Iterator[Path]:
+def policy_lock(path: Path) -> Generator[Path, None, None]:
     """Lock a policy across runtimes; yield its canonical read/write path.
 
     Resolve before both locking and replacing so edits through a symlink do
@@ -541,7 +541,7 @@ def policy_lock(path: Path) -> Iterator[Path]:
 
 
 @contextmanager
-def current_policy(snapshot: PolicyFile) -> Iterator[PolicyFile]:
+def current_policy(snapshot: PolicyFile) -> Generator[PolicyFile, None, None]:
     """Reread policy and hold its lock until application has finished.
 
     A snapshot taken before a build or while waiting for a runtime lock is

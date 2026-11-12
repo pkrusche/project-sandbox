@@ -9,7 +9,7 @@ import hashlib
 import os
 import stat
 import sys
-from collections.abc import Iterator, Sequence
+from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -120,7 +120,7 @@ def _check_directory(fd: int, path: Path, *, private: bool, mask: bool = False) 
 @contextmanager
 def directory(
     path: Path, *, root: Path, create: bool = False, mask: bool = False
-) -> Iterator[int]:
+) -> Generator[int, None, None]:
     """Walk, validate and optionally create directories without following links."""
     path, root = canonical_path(path), canonical_path(root)
     if not path.is_relative_to(root):

@@ -140,6 +140,7 @@ class WorktreeSetupTests(TestCase):
 
         self.assertIn(str(wt1.path.resolve()), listed)
         # A later session must recognize the spaced path and not re-add it.
+        assert wt1.lease is not None
         wt1.lease.close()
         wt2 = worktree_mod.setup(self.repo, "feat/x", worktree_dir=custom)
         self.assertEqual(wt1.path, wt2.path)
@@ -347,6 +348,7 @@ with open(sys.argv[1], "x") as handle:
             stdout=subprocess.PIPE,
             text=True,
         )
+        assert holder.stdout is not None
         try:
             self.assertEqual(holder.stdout.readline().strip(), "ready")
             before = lock.stat().st_ino
@@ -368,6 +370,7 @@ with open(sys.argv[1], "x") as handle:
             holder.communicate(timeout=5)
         lock.unlink()
         retry = worktree_mod.setup(self.repo, self.wt.branch)
+        assert retry.lease is not None
         retry.lease.close()
 
     def test_clean_worktree_with_index_lock_is_not_removed(self) -> None:

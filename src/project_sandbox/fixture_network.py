@@ -10,7 +10,7 @@ import socket
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Generator, Sequence
 from dataclasses import dataclass
 
 from .local_service_network import APPLE_LOCALHOST_ADDRESS
@@ -230,7 +230,7 @@ def apple_forwarder(
     timeout: float = FORWARDER_READY_TIMEOUT,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
-) -> Iterator[FixtureHost]:
+) -> Generator[FixtureHost, None, None]:
     """Reach host-loopback fixtures on ``ports`` through an Apple container.
 
     Apple container's counterpart of a VM runtime's host-loopback alias. The

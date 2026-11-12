@@ -2,6 +2,7 @@ import socket
 import subprocess
 import sys
 import threading
+from collections.abc import Iterator
 from unittest import TestCase
 from unittest.mock import patch
 
@@ -129,6 +130,9 @@ FLAT_INSPECT = (
 
 
 class AppleForwarderTests(TestCase):
+    # Patched in per test (create=True) when inspect answers vary per call.
+    inspect_answers: Iterator[str]
+
     def forwarder(self, *, inspect=INSPECT, connect=None, started=None):
         calls = []
 
@@ -257,6 +261,7 @@ class AppleForwarderTests(TestCase):
                 stdout=subprocess.PIPE,
                 text=True,
             )
+            assert process.stdout is not None
             try:
                 self.assertEqual(process.stdout.readline().strip(), "ready")
 

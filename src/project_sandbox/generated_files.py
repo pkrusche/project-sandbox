@@ -11,7 +11,7 @@ import shutil
 import stat
 import sys
 import uuid
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from fnmatch import fnmatchcase
 from pathlib import Path
@@ -19,7 +19,7 @@ from typing import TextIO
 
 
 @contextmanager
-def directory(path: Path, *, create: bool = False) -> Iterator[int]:
+def directory(path: Path, *, create: bool = False) -> Generator[int, None, None]:
     """Open a directory without following links, optionally creating parents."""
     path = path.absolute()
     # macOS provides these system-owned aliases. Canonicalize only this fixed
@@ -60,7 +60,7 @@ def validate_dir(path: Path) -> None:
 
 
 @contextmanager
-def _temporary(parent: int, *, mode: int) -> Iterator[tuple[int, str]]:
+def _temporary(parent: int, *, mode: int) -> Generator[tuple[int, str], None, None]:
     name = f".project-sandbox-{uuid.uuid4().hex}.tmp"
     fd = os.open(
         name,
@@ -93,7 +93,7 @@ def write_text(
 
 
 @contextmanager
-def open_log(path: Path) -> Iterator[TextIO]:
+def open_log(path: Path) -> Generator[TextIO, None, None]:
     """Publish a fresh private log, then stream through its open descriptor."""
     with directory(path.parent) as parent, _temporary(parent, mode=0o600) as (fd, name):
         os.replace(name, path.name, src_dir_fd=parent, dst_dir_fd=parent)

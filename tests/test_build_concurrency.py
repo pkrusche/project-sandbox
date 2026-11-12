@@ -6,6 +6,7 @@ import hashlib
 import tempfile
 import threading
 from pathlib import Path
+from typing import Any
 from unittest import TestCase
 from unittest.mock import patch
 
@@ -35,7 +36,7 @@ class BuildConcurrencyTests(TestCase):
         self.threads = []
         self.releases = []
         self.addCleanup(self.finish_threads)
-        for target, name, kwargs in (
+        patches: tuple[tuple[Any, str, dict[str, Any]], ...] = (
             (cli, "read_identity", {"return_value": GitIdentity(None, None)}),
             (cli.config_agents, "_agent_host_paths", {"return_value": {}}),
             (container_cli, "select_runtime", {"return_value": container_cli.DOCKER}),
@@ -50,12 +51,13 @@ class BuildConcurrencyTests(TestCase):
                 "image_identity",
                 {"side_effect": lambda _rt, tag: self.store[tag]},
             ),
-        ):
+        )
+        for target, name, kwargs in patches:
             self.resources.enter_context(patch.object(target, name, **kwargs))
         self.build = self.resources.enter_context(
             patch.object(container_cli, "build_image", side_effect=self.build_image)
         )
-        self.run = self.resources.enter_context(
+        self.run_mock = self.resources.enter_context(
             patch.object(container_cli, "run", side_effect=self.run_image)
         )
 
@@ -178,7 +180,7 @@ class BuildConcurrencyTests(TestCase):
             patch.object(build_cache, "build_lock", side_effect=lock),
             patch.object(cli.dockerfile, "render", side_effect=render),
         ):
-            self.build.side_effect, self.run.side_effect = build, run
+            self.build.side_effect, self.run_mock.side_effect = build, run
             self.start("first", None, "--extra-domain", "strict.example")
             self.assertTrue(building.wait(10))
             second = self.start("second", None, "--extra-domain", "permissive.example")
@@ -331,7 +333,7 @@ class BuildConcurrencyTests(TestCase):
         with patch.object(
             container_cli, "select_runtime", return_value=container_cli.APPLE_CONTAINER
         ):
-            self.run.side_effect = run
+            self.run_mock.side_effect = run
             self.assertEqual(self.launch(), 0)
         self.assertNotIn(aliases[0], self.store)
         self.assertEqual(launched, [self.built[0][2]])
@@ -381,7 +383,7 @@ class BuildConcurrencyTests(TestCase):
                             self.launch()
                     else:
                         self.assertEqual(self.launch(), 42)
-                self.run.assert_not_called()
+                self.run_mock.assert_not_called()
                 for kind, target in (
                     ("build", self.project / ".project-sandbox"),
                     ("image", Path("/docker")),
@@ -392,8 +394,8 @@ class BuildConcurrencyTests(TestCase):
     def test_dry_run_does_not_lock_inspect_or_write(self):
         self.build.side_effect = None
         self.build.return_value = 0
-        self.run.side_effect = None
-        self.run.return_value = 0
+        self.run_mock.side_effect = None
+        self.run_mock.return_value = 0
         with (
             patch.object(build_cache, "build_lock", side_effect=AssertionError("lock")),
             patch.object(build_cache, "image_lock", side_effect=AssertionError("lock")),
@@ -404,4 +406,4 @@ class BuildConcurrencyTests(TestCase):
             self.assertEqual(self.launch(None, "--dry-run"), 0)
         self.assertEqual(list(self.project.iterdir()), [])
         self.assertTrue(self.build.call_args.kwargs["dry_run"])
-        self.assertTrue(self.run.call_args.kwargs["dry_run"])
+        self.assertTrue(self.run_mock.call_args.kwargs["dry_run"])

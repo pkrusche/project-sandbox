@@ -797,6 +797,8 @@ def _main_scoped(argv: list[str] | None, resources: contextlib.ExitStack) -> int
         if run_agent and args.vcs_access != "full":
             try:
                 vcs_layout = vcs_access.inspect(workspace)
+                # Dry runs returned above, so an agent run has a runtime.
+                assert runtime is not None
                 vcs_access.validate(
                     vcs_layout, args.vcs_access, runtime, args.extra_mounts
                 )

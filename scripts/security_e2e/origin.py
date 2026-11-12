@@ -114,7 +114,7 @@ class Origin:
             do_POST = do_GET
             do_DELETE = do_GET
 
-            def log_message(self, *args):
+            def log_message(self, format, *args):
                 pass
 
         self.server = http.server.ThreadingHTTPServer((listen, port), Handler)

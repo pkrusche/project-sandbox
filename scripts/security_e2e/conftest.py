@@ -236,12 +236,13 @@ class Sandbox:
         return self.shared.tag("default") if self.shared else self.own_image
 
     def argv(self, project, prompt="true", *, build=False, extra=(), base=DEFAULT_BASE):
-        key = shared_key(extra, base) if self.shared else None
+        shared = self.shared
+        key = shared_key(extra, base) if shared else None
         image = self.own_image
-        if key is not None:
-            image = self.shared.tag(key)
+        if shared is not None and key is not None:
+            image = shared.tag(key)
             # Only the first launch of each mode builds; later ones reuse it.
-            build = build and key not in self.shared.inputs
+            build = build and key not in shared.inputs
         argv = [
             sys.executable,
             "-m",
@@ -276,9 +277,12 @@ class Sandbox:
                 argv, cwd=ROOT, env=self.env, stdout=stream, stderr=subprocess.STDOUT
             )
         self.children.append(proc)
-        proc.audit_log = log
+        # Bookkeeping read back by finish(); Popen has no such attributes.
+        proc.audit_log = log  # ty: ignore[unresolved-attribute]
         launch = self.launches.pop(id(argv), None)
-        proc.shared_launch = launch[1:] if launch and launch[0] is argv else None
+        proc.shared_launch = (  # ty: ignore[unresolved-attribute]
+            launch[1:] if launch and launch[0] is argv else None
+        )
         return proc
 
     def finish(self, proc, *, ok=True, timeout=600):
@@ -286,6 +290,7 @@ class Sandbox:
         if ok:
             assert code == 0, proc.audit_log.read_text()[-8000:]
         if code == 0 and proc.shared_launch is not None:
+            assert self.shared is not None
             key, context_dir = proc.shared_launch
             self.shared.verify(key, context_dir)
         return code

@@ -668,7 +668,7 @@ class AgentProxyTests(unittest.TestCase):
                     ),
                     0,
                 )
-            self.assertIsNotNone(env_file)
+            assert env_file is not None
             self.assertFalse(env_file.exists())
 
     def test_checker_runs_both_agents_and_requires_both_to_pass(self) -> None:

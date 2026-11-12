@@ -4,6 +4,7 @@ import os
 import tempfile
 import threading
 from pathlib import Path
+from typing import Any
 from unittest import TestCase
 from unittest.mock import patch
 
@@ -95,7 +96,7 @@ class SessionInputLifecycleTests(TestCase):
         (self.home / ".claude").mkdir(parents=True)
         (self.home / ".claude/.credentials.json").write_text('{"token":"host-token"}')
         self.sync = config_agents.sync_credentials
-        for target, name, kwargs in (
+        patches: tuple[tuple[Any, str, dict[str, Any]], ...] = (
             (cli, "read_identity", {"return_value": GitIdentity(None, None)}),
             (
                 config_agents,
@@ -133,7 +134,8 @@ class SessionInputLifecycleTests(TestCase):
                 },
             ),
             (cli.agent_proxy, "discover_models", {"return_value": ["model"]}),
-        ):
+        )
+        for target, name, kwargs in patches:
             self.stack.enter_context(patch.object(target, name, **kwargs))
 
     def launch(self, agent, prompt, *extra):

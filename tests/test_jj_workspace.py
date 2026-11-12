@@ -181,6 +181,7 @@ class SetupLockTests(unittest.TestCase):
         ):
             actual = jj_workspace_mod.setup(repo, "feature")
 
+        assert actual.lease is not None
         actual.lease.close()
         self.assertIs(actual, expected)
         self.assertFalse(lock_active)
@@ -305,6 +306,7 @@ class JjWorkspaceSetupTests(unittest.TestCase):
         )
         (ws.path / "work.txt").write_text("work\n", encoding="utf-8")
 
+        assert ws.lease is not None
         ws.lease.close()
         with self.assertRaises(SystemExit) as raised:
             jj_workspace_mod.setup(self.repo, "feat/old-colocated")
@@ -441,6 +443,7 @@ class JjWorkspaceSetupTests(unittest.TestCase):
             capture_output=True,
         )
         shutil.rmtree(ws.path)
+        assert ws.lease is not None
         ws.lease.close()
 
         ws2 = jj_workspace_mod.setup(self.repo, "feat/reuse")
@@ -529,6 +532,7 @@ class JjWorkspaceSetupTests(unittest.TestCase):
             capture_output=True,
         )
         shutil.rmtree(ws1.path)
+        assert ws1.lease is not None
         ws1.lease.close()
 
         # Second session reuses the bookmark, but the build fails before the

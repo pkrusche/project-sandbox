@@ -381,7 +381,7 @@ class _HangingProc(_RunningProc):
     def communicate(self, timeout=None):
         self.timeouts.append(timeout)
         if not self.terminated:
-            raise subprocess.TimeoutExpired(["launch"], timeout)
+            raise subprocess.TimeoutExpired(["launch"], timeout or 0)
         self.returncode = -15
         return "", None
 

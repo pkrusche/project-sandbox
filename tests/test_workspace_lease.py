@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import Any, cast
 from unittest import TestCase
 from unittest.mock import patch
 
@@ -20,7 +21,12 @@ from project_sandbox.workspace_lease import WorkspaceLease
 
 class WorkspaceLeaseTests(TestCase):
     def test_overlapping_processes_and_stale_finalizers(self) -> None:
-        for backend, init in ((worktree, _make_repo), (jj_workspace, _make_jj_repo)):
+        # Both backends share the setup/finalize interface but not a type.
+        backends = (
+            (cast(Any, worktree), _make_repo),
+            (cast(Any, jj_workspace), _make_jj_repo),
+        )
+        for backend, init in backends:
             if backend is jj_workspace and not shutil.which("jj"):
                 continue
             with (
@@ -33,6 +39,7 @@ class WorkspaceLeaseTests(TestCase):
                 alias = root / "alias"
                 alias.symlink_to(repo, target_is_directory=True)
                 first = backend.setup(repo, "feature")
+                assert first.lease is not None
                 self.addCleanup(first.lease.close)
                 (first.path / "agent.txt").write_text("in progress\n")
                 # A fresh interpreter exercises actual host lock contention,
@@ -86,6 +93,7 @@ backend.setup(Path(sys.argv[2]), "feature", **kwargs)
                     message="first",
                 )
                 second = backend.setup(repo, "feature")
+                assert second.lease is not None
                 self.addCleanup(second.lease.close)
                 # A delayed/repeated cleanup must not mutate a new owner's files.
                 (second.path / "later.txt").write_text("second session\n")
@@ -161,6 +169,7 @@ backend.setup(Path(sys.argv[2]), "feature", **kwargs)
                 )
             self.assertTrue(any(args[:2] == ["worktree", "add"] for args in calls))
             self.assertTrue(any(args[:2] == ["worktree", "remove"] for args in calls))
+            assert wt.lease is not None
             self.assertFalse(wt.lease.active)
 
     def test_git_lock_uses_actual_metadata_path_when_basename_collides(self) -> None:

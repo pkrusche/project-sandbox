@@ -162,6 +162,7 @@ class FirewallInitializationTests(unittest.TestCase):
             stderr=subprocess.PIPE,
             text=True,
         ) as first:
+            assert first.stdout is not None
             try:
                 ready, _, _ = select.select([first.stdout], [], [], 5)
                 self.assertTrue(ready, "first initializer did not reach the barrier")
