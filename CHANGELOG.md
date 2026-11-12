@@ -2,7 +2,7 @@
 
 Notable changes to `project-sandbox` are documented here.
 
-## [Unreleased]
+## [0.4.0]
 
 ### Breaking
 
@@ -11,6 +11,13 @@ Notable changes to `project-sandbox` are documented here.
   Prompt text never widens the firewall. Migration: use
   `--agent copilot --prompt-text '…'`, or pass `--allow-github` and bring your
   own token to a bash session. Bash sessions never receive the Copilot token.
+- Project paths containing control characters (such as a newline), the glob
+  characters `*`, `?` and `[`, quotes, commas, colons or backslashes are refused
+  before anything is written. Migration: rename or move the project directory.
+- The firewall initializer removes its passwordless sudo entry after installing
+  the policy and refuses to run twice in one container. Restarting a previously
+  initialized container, including a devcontainer, no longer works. Migration:
+  create a fresh container from the image (rebuild/recreate devcontainers).
 
 ### Added
 
@@ -28,14 +35,18 @@ Notable changes to `project-sandbox` are documented here.
   from headless logs. See [security](docs/security.md#github-copilot-token).
 - Opt-in, billable `copilot` e2e suite (`scripts/e2e-copilot.py`;
   `run-e2e-tests.sh --with-copilot`).
-- `--egress sidecar` (opt-in, macOS runtimes): one global Squid sidecar per
-  runtime filters Internet traffic by hostname (wildcards, SNI checks, no IP
-  pinning). It publishes its proxy on host loopback, and the sandbox reaches it
-  like an `--internet-proxy` on `127.0.0.1`. The only policy is
-  `$XDG_CONFIG_HOME/project-sandbox/egress.toml`. GitHub repository access is
-  blocked; `[egress.copilot] enabled = true` admits the Copilot CLI. An upstream
-  parent proxy can sit behind the sidecar. A session-end summary counts the
-  sidecar's denials. See [egress sidecar](docs/egress-sidecar.md).
+- `--egress sidecar` (opt-in): one global Squid sidecar per runtime filters
+  Internet traffic by hostname (wildcards, SNI checks, no IP pinning). It
+  publishes its proxy on host loopback (on Docker Engine, on the default
+  bridge's gateway), and the sandbox reaches it like an `--internet-proxy`.
+  Supported on Apple container, Docker Desktop, Podman machine, Docker Engine
+  (rootful) and rootless Podman on Linux; rootless Docker is rejected. The only
+  policy is `$XDG_CONFIG_HOME/project-sandbox/egress.toml`, and concurrent
+  policy edits are serialized. GitHub repository access is blocked;
+  `[egress.copilot] enabled = true` admits the Copilot CLI, and ambiguous
+  Copilot API paths (dot segments, backslashes, encoded separators) are
+  refused. An upstream parent proxy can sit behind the sidecar. A session-end
+  summary counts the sidecar's denials. See [egress sidecar](docs/egress-sidecar.md).
 - `project-sandbox-egress`: `up`, `down`, `restart`, `status`, `reload`,
   `allow list|add|remove` and `log` for the global sidecar.
 - New runtime dependencies: `cryptography` (the sidecar CA) and `tomlkit`
@@ -44,6 +55,54 @@ Notable changes to `project-sandbox` are documented here.
   Squid release.
 - Opt-in e2e suites `egress-sidecar` (`scripts/e2e-egress-sidecar.py`) and
   `copilot-egress` (`scripts/e2e-copilot-egress.py`, billable).
+- `--vcs-access read-only|hidden` restricts `.git`/`.jj` access in CLI sessions
+  and generated devcontainers (default `full`). See [VCS access](docs/vcs-access.md).
+- `--no-internet-proxy-preflight` skips the host-side Internet-proxy check for
+  proxies that only containers can reach; the in-sandbox check still runs.
+  Rejected on Apple container. See [Internet proxy](docs/internet-proxy.md).
+- `--pi-ollama` works with `--build-only`, so a later `--no-build` Pi session
+  gets Ollama's configuration and firewall rules baked into the image.
+- End-to-end tooling: `scripts/run_all_supported_e2e_tests.sh` runs the suites
+  on every available runtime with plan and outcome tables; the proxy suites are
+  enabled by default; an opt-in incremental mode skips suites that already
+  passed on the same source; and a live security verification suite
+  (`scripts/security_e2e`, see [security verification](docs/security-verification.md))
+  runs in normal all-runtime runs.
+
+### Changed
+
+- Concurrent sessions are isolated: the build context is locked through image
+  selection, builds within one runtime queue on a shared image-store lock, and
+  every session pins its image under a private
+  `localhost/project-sandbox-session:<random>` alias until teardown, so another
+  project moving a shared `--image-tag` cannot change or delete it. See
+  [concurrent builds](docs/concurrent-builds.md).
+- Session configs, credentials, prompts and env files are staged in a private
+  per-session directory outside the checkout, so concurrent sessions of one
+  project no longer share them.
+- Shell and agent history and mask mounts moved from the repository to private
+  host storage under `$XDG_STATE_HOME/project-sandbox/mounts` (default
+  `~/.local/state/project-sandbox/mounts`). See [runtime](docs/runtime.md).
+- Docker Engine sessions share one leased host forwarder per bridge address and
+  port for local services, which exits shortly after the last session ends;
+  that forwarding no longer needs `socat`.
+- `--branch` sessions protect workspace ownership: a second session on a leased
+  workspace is refused, and live external Git index locks are left intact.
+
+### Fixed
+
+- Generated files can no longer be written through symlinks planted in the
+  repository: managed directories are checked before generation, and every write
+  walks parent directories with `O_NOFOLLOW`.
+- Extra mounts are validated against the egress sidecar's isolation boundaries.
+- Cargo workspace member paths with spaces, quotes or shell metacharacters are
+  quoted in generated build steps, and generated build inputs are validated.
+- Private state directories are created `0700` regardless of umask; under
+  umask `002` they were group-writable and later sessions refused them.
+- The egress sidecar is waited for after a policy reload, and a port in
+  `TIME_WAIT` is no longer mistaken for a taken sidecar port.
+- The chroot runtime mounts `/proc` correctly on hosts with submounts under
+  `/proc`.
 
 ## [0.3.1]
 
@@ -299,7 +358,8 @@ Initial public release.
 - Build caching, dry-run support, timeout teardown, end-to-end tests, and CI.
 - Ruff, pytest, and release preflight checks.
 
-[0.3.1]: https://github.com/pkrusche/project-sandbox/compare/v0.3.0...HEAD
+[0.4.0]: https://github.com/pkrusche/project-sandbox/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/pkrusche/project-sandbox/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/pkrusche/project-sandbox/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/pkrusche/project-sandbox/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/pkrusche/project-sandbox/compare/v0.2.0...v0.2.1
