@@ -36,6 +36,7 @@ def _mock_image_selection_for_cli_tests(request):
         "test_remote_proxy_cli",
         "test_agent_proxy",
         "test_build_proxy_forwarder",
+        "test_session_inputs",
     }:
         yield
         return

@@ -18,10 +18,14 @@ uses the runtime rather than tag spelling so aliases such as `demo` and
 `demo:latest` cannot bypass it. Builds within one runtime therefore queue;
 sessions can run concurrently after image selection, including for one context.
 
-Docker and Podman launch the full local image ID. Apple container receives a
-unique `localhost/project-sandbox-session:<random>` alias, whose content digest
-is checked before launch. The alias stays until teardown, then is deleted.
-This avoids Apple's reported [local-image digest lookup limitation](https://github.com/apple/container/issues/1962).
+Every session tags its image with a unique
+`localhost/project-sandbox-session:<random>` alias while it holds the image
+lock, checks the alias's content identity, and deletes the alias at teardown.
+The alias keeps the image alive after another project moves the shared tag:
+Docker's containerd image store deletes an image as soon as no tag names it,
+which otherwise made the earlier session's launch fail with "No such image".
+Docker and Podman launch the full local image ID; Apple container launches the
+alias itself, which avoids Apple's reported [local-image digest lookup limitation](https://github.com/apple/container/issues/1962).
 The `project-sandbox-session` repository name is reserved. Inspection or
 pinning failures abort launch. `--no-build` pins the existing image too; it
 does not check that the image implements newly requested policy flags.

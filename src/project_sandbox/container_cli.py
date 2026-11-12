@@ -586,23 +586,31 @@ def pinned_image(
 ) -> Generator[str, None, None]:
     """Pin a launch while the caller holds the image lock during entry.
 
-    Docker/Podman run local config IDs. Apple cannot reliably resolve locally
-    built images by digest, so keep a unique, verified alias until teardown.
+    Every runtime gets a unique, verified alias that lives until teardown, so
+    the image survives another launch moving the shared tag once the image
+    lock is released. Docker's containerd image store deletes an image as soon
+    as its last tag moves away, which made a concurrent launch's `docker run`
+    fail with "No such image". Docker/Podman still run the content ID; the
+    alias only keeps it alive. Apple cannot reliably resolve locally built
+    images by digest, so it runs the alias itself.
     """
-    if runtime.name != APPLE_CONTAINER.name:
-        yield identity
-        return
+    apple = runtime.name == APPLE_CONTAINER.name
     alias = f"localhost/project-sandbox-session:{uuid.uuid4().hex}"
     try:
         rc = run([runtime.binary, "image", "tag", reference, alias])
         if rc != 0:
-            raise SystemExit("Could not pin the Apple container image for this session")
+            raise SystemExit(
+                f"Could not pin the {runtime.name} image for this session"
+            )
         if image_identity(runtime, alias) != identity:
-            raise SystemExit("Pinned Apple container image identity changed; aborting")
-        yield alias
+            raise SystemExit(
+                f"Pinned {runtime.name} image identity changed; aborting"
+            )
+        yield alias if apple else identity
     finally:
         # Remove only our alias, never force deletion or prune shared layers.
-        if run([runtime.binary, "image", "delete", alias]) != 0:
+        remove = "delete" if apple else "rm"
+        if run([runtime.binary, "image", remove, alias]) != 0:
             print(f"[W] Could not remove session image alias {alias}")
 
 

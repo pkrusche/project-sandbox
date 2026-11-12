@@ -113,7 +113,17 @@ class BuildConcurrencyTests(TestCase):
         return 0
 
     def run_image(self, argv, **_kwargs):
+        if argv[1:3] == ["image", "tag"]:
+            source, alias = argv[3:]
+            self.store[alias] = self.store[source]
+            return 0
+        if argv[1:3] in (["image", "rm"], ["image", "delete"]):
+            return 0 if self.store.pop(argv[3], None) else 1
         identity = next(arg for arg in argv if arg.startswith("sha256:"))
+        # Like Docker's containerd image store: once no tag names an image it
+        # is deleted, and `docker run <id>` fails with "No such image".
+        if identity not in self.store.values():
+            return 125
         self.launched.append((threading.current_thread().name, identity))
         return 0
 
@@ -154,7 +164,7 @@ class BuildConcurrencyTests(TestCase):
             return self.build_image(**kwargs)
 
         def run(argv, **kwargs):
-            if threading.current_thread().name == "first":
+            if threading.current_thread().name == "first" and argv[1] == "run":
                 inputs = mounted_source(argv, "/project-sandbox-config/claude").parent
                 (inputs / "api-keys.env").write_text("SESSION_KEY=private")
                 running.set()
@@ -280,10 +290,16 @@ class BuildConcurrencyTests(TestCase):
             self.store["shared:latest"] = "sha256:" + "b" * 64
             return original(*args, **kwargs)
 
+        # Regression: another launch moving the shared tag after the image lock
+        # is released must not delete this session's image before it runs.
         with patch.object(cli, "_build_session_command", side_effect=replace_tag):
             self.assertEqual(self.launch(None, "--no-build"), 0)
         self.build.assert_not_called()
         self.assertEqual(self.launched[0][1], identity)
+        self.assertEqual(
+            [tag for tag in self.store if "project-sandbox-session" in tag], [],
+            "the session alias outlived the session",
+        )
 
     def test_apple_cli_pins_under_lock_and_retains_alias_through_run(self):
         aliases = []

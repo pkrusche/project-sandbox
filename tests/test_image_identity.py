@@ -62,15 +62,47 @@ class ImageIdentityTests(TestCase):
                 with self.assertRaises(SystemExit):
                     runtime_cli.image_identity(runtime_cli.DOCKER, "shared")
 
-    def test_docker_and_podman_launch_content_ids_without_aliases(self):
+    def test_docker_and_podman_launch_content_ids_kept_alive_by_an_alias(self):
+        # Regression: a concurrent launch moving the shared tag left the first
+        # launch's image untagged, and Docker's containerd store deleted it
+        # before `docker run <id>` ("No such image").
         for runtime in (runtime_cli.DOCKER, runtime_cli.PODMAN):
             with (
                 self.subTest(runtime=runtime.name),
-                patch.object(runtime_cli, "run") as run,
+                patch.object(runtime_cli, "run", return_value=0) as run,
+                patch.object(
+                    runtime_cli, "image_identity", return_value=IDENTITY
+                ) as inspect,
             ):
                 with runtime_cli.pinned_image(runtime, "shared", IDENTITY) as ref:
                     self.assertEqual(ref, IDENTITY)
-                run.assert_not_called()
+                    tag = run.call_args.args[0]
+                    self.assertEqual(tag[:4], [runtime.binary, "image", "tag", "shared"])
+                    alias = tag[4]
+                    self.assertTrue(
+                        alias.startswith("localhost/project-sandbox-session:")
+                    )
+                    inspect.assert_called_with(runtime, alias)
+                    self.assertEqual(run.call_count, 1)
+                self.assertEqual(
+                    run.call_args.args[0], [runtime.binary, "image", "rm", alias]
+                )
+
+    def test_docker_alias_failure_never_yields_and_still_cleans_up(self):
+        for tag_rc, identity in ((1, IDENTITY), (0, "sha256:" + "b" * 64)):
+            with (
+                self.subTest(tag_rc=tag_rc),
+                patch.object(runtime_cli, "run", side_effect=[tag_rc, 0]) as run,
+                patch.object(runtime_cli, "image_identity", return_value=identity),
+            ):
+                with self.assertRaises(SystemExit):
+                    with runtime_cli.pinned_image(
+                        runtime_cli.DOCKER, "shared", IDENTITY
+                    ):
+                        self.fail("Unverified alias was yielded")
+                self.assertEqual(
+                    run.call_args.args[0][:3], ["docker", "image", "rm"]
+                )
 
     def test_apple_alias_is_unique_verified_and_cleaned_on_interrupt(self):
         aliases = []
