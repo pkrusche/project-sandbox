@@ -1168,6 +1168,23 @@ def _read_json(path: Path) -> dict:
         return {}
 
 
+# How long a shared launch gets to tear down after its partner failed.
+SHARED_STOP_GRACE = 30
+
+
+def _launch_failure(log: Path, output: str, limit: int = 300) -> str:
+    """The tail of a failed launch's run log, else of its CLI output.
+
+    The CLI's own output ends with "Wrote N lines to <log>"; the runtime's
+    error (e.g. docker's "No such image") is in that log.
+    """
+    try:
+        text = log.read_text(errors="replace").strip()
+    except OSError:
+        text = ""
+    return (text or output.strip())[-limit:]
+
+
 def check_shared(args, runtime, work: Path) -> list[Result]:
     _write_policy(_policy_text(ALLOWED_HOST))
     probe = SHARED_PROBE_SOURCE.replace("__ALLOWED__", ALLOWED_HOST).replace(
@@ -1188,6 +1205,7 @@ def check_shared(args, runtime, work: Path) -> list[Result]:
         for project in projects
     ]
     results = []
+    ready = False
     try:
         ready = _wait_files(
             [p / "shared-ready.json" for p in projects], args.timeout, procs
@@ -1197,8 +1215,14 @@ def check_shared(args, runtime, work: Path) -> list[Result]:
             results += _shared_while_running(args, runtime, projects, procs)
     finally:
         for proc in procs:
+            if not ready and proc.poll() is None:
+                # The surviving probe waits for flag files only the shared
+                # steps write; waiting out --timeout just hid the real failure.
+                proc.terminate()
             try:
-                out, _ = proc.communicate(timeout=args.timeout)
+                out, _ = proc.communicate(
+                    timeout=args.timeout if ready else SHARED_STOP_GRACE
+                )
             except subprocess.TimeoutExpired:
                 proc.kill()
                 out, _ = proc.communicate()
@@ -1206,7 +1230,9 @@ def check_shared(args, runtime, work: Path) -> list[Result]:
     outputs = [(work / f"shared-{proc.pid}.out").read_text() for proc in procs]
     if not ready:
         results[0].detail = " | ".join(
-            f"exit {proc.returncode}: {out[-200:]}" for proc, out in zip(procs, outputs)
+            f"{project.name} exit {proc.returncode}: "
+            + _launch_failure(work / f"{project.name}.log", out)
+            for project, proc, out in zip(projects, procs, outputs)
         )
     results.append(
         Result(

@@ -360,10 +360,36 @@ class _ExitedProc:
     def kill(self) -> None:
         pass
 
+    def terminate(self) -> None:
+        pass
+
 
 class _RunningProc(_ExitedProc):
     def poll(self):
         return None
+
+
+class _HangingProc(_RunningProc):
+    """A healthy launch whose probe waits for flag files that never come."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.returncode = None
+        self.timeouts = []
+        self.terminated = False
+
+    def communicate(self, timeout=None):
+        self.timeouts.append(timeout)
+        if not self.terminated:
+            raise subprocess.TimeoutExpired(["launch"], timeout)
+        self.returncode = -15
+        return "", None
+
+    def terminate(self) -> None:
+        self.terminated = True
+
+    def poll(self):
+        return self.returncode
 
 
 class HangRegressionTests(unittest.TestCase):
@@ -443,6 +469,41 @@ class HangRegressionTests(unittest.TestCase):
         # The steps that need running sandboxes are skipped, not graded empty.
         self.assertNotIn("shared:allow-add", by_name)
         self.assertEqual(egress_calls, [("up",)])
+
+    def test_shared_check_stops_the_survivor_and_reports_the_run_log(self) -> None:
+        # Regression: one launch failed with docker's "No such image" (only in
+        # its run log), and the check waited out --timeout on the other one.
+        args = self.script.parse_args(["--timeout", "600"])
+        args.runtime = "docker"
+        work = self.tmp / "work"
+        work.mkdir()
+        (work / "shared-a.log").write_text(
+            "docker: Error response from daemon: No such image: sha256:d165\n"
+        )
+        failed = _ExitedProc(output="Wrote 3 lines to shared-a.log\n")
+        failed.returncode = 125
+        survivor = _HangingProc()
+        launches = iter([failed, survivor])
+        with (
+            mock.patch.dict(
+                "os.environ", {"XDG_CONFIG_HOME": str(self.tmp / "config")}
+            ),
+            mock.patch.object(
+                self.script.subprocess, "Popen", side_effect=lambda *a, **k: next(launches)
+            ),
+            mock.patch.object(
+                self.script,
+                "egress",
+                side_effect=lambda _a, *c: subprocess.CompletedProcess(c, 0, "", ""),
+            ),
+        ):
+            results = self.script.check_shared(args, container_cli.DOCKER, work)
+        self.assertTrue(survivor.terminated)
+        self.assertEqual(survivor.timeouts, [self.script.SHARED_STOP_GRACE])
+        detail = results[0].detail
+        self.assertIn("shared-a exit 125: docker: Error response from daemon", detail)
+        self.assertIn("No such image", detail)
+        self.assertIn("shared-b exit -15", detail)
 
 
 IFCONFIG = """lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> mtu 16384
