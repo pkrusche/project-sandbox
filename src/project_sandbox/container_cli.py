@@ -599,13 +599,9 @@ def pinned_image(
     try:
         rc = run([runtime.binary, "image", "tag", reference, alias])
         if rc != 0:
-            raise SystemExit(
-                f"Could not pin the {runtime.name} image for this session"
-            )
+            raise SystemExit(f"Could not pin the {runtime.name} image for this session")
         if image_identity(runtime, alias) != identity:
-            raise SystemExit(
-                f"Pinned {runtime.name} image identity changed; aborting"
-            )
+            raise SystemExit(f"Pinned {runtime.name} image identity changed; aborting")
         yield alias if apple else identity
     finally:
         # Remove only our alias, never force deletion or prune shared layers.

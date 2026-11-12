@@ -489,7 +489,9 @@ class HangRegressionTests(unittest.TestCase):
                 "os.environ", {"XDG_CONFIG_HOME": str(self.tmp / "config")}
             ),
             mock.patch.object(
-                self.script.subprocess, "Popen", side_effect=lambda *a, **k: next(launches)
+                self.script.subprocess,
+                "Popen",
+                side_effect=lambda *a, **k: next(launches),
             ),
             mock.patch.object(
                 self.script,

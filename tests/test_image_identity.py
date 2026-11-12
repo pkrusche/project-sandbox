@@ -77,7 +77,9 @@ class ImageIdentityTests(TestCase):
                 with runtime_cli.pinned_image(runtime, "shared", IDENTITY) as ref:
                     self.assertEqual(ref, IDENTITY)
                     tag = run.call_args.args[0]
-                    self.assertEqual(tag[:4], [runtime.binary, "image", "tag", "shared"])
+                    self.assertEqual(
+                        tag[:4], [runtime.binary, "image", "tag", "shared"]
+                    )
                     alias = tag[4]
                     self.assertTrue(
                         alias.startswith("localhost/project-sandbox-session:")
@@ -100,9 +102,7 @@ class ImageIdentityTests(TestCase):
                         runtime_cli.DOCKER, "shared", IDENTITY
                     ):
                         self.fail("Unverified alias was yielded")
-                self.assertEqual(
-                    run.call_args.args[0][:3], ["docker", "image", "rm"]
-                )
+                self.assertEqual(run.call_args.args[0][:3], ["docker", "image", "rm"])
 
     def test_apple_alias_is_unique_verified_and_cleaned_on_interrupt(self):
         aliases = []

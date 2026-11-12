@@ -297,7 +297,8 @@ class BuildConcurrencyTests(TestCase):
         self.build.assert_not_called()
         self.assertEqual(self.launched[0][1], identity)
         self.assertEqual(
-            [tag for tag in self.store if "project-sandbox-session" in tag], [],
+            [tag for tag in self.store if "project-sandbox-session" in tag],
+            [],
             "the session alias outlived the session",
         )
 

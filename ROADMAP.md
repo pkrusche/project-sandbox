@@ -121,3 +121,7 @@ Items still to be considered:
   resolution. Use reviewed lockfiles/integrity metadata or reproducible tool
   layers, and define a deliberate image/security-update cadence. Project build
   scripts and user-supplied Dockerfiles remain trusted image-producing code.
+
+## Podman machine shared-folder staleness
+
+Observed 2026-11-11 on macOS with Podman 6.0 (Podman machine VM): the firewall e2e suite's second container failed with `FileNotFoundError` creating `/workspace/firewall.ok` after the host had deleted that file following the first session. Overwriting files that still existed worked. Unconfirmed cause: the VM's shared-folder (virtiofs) cache still lists the deleted file across containers. The suite now writes one marker per session, which avoids the case but does not fix it. Users hit the same problem if they delete a workspace file on the host between Podman sessions and the agent re-creates it. Reproduce outside the suite (create a file in one container, delete it on the host, create it again in a fresh container); if it reproduces, document it in `docs/` and check whether the machine's cache mode or a mount option avoids it.
