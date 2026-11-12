@@ -30,7 +30,7 @@ The CLI SHALL accept `--internet-proxy URL` following the shared proxy-endpoint 
 - **THEN** the sandbox connects directly using that hostname and effective port 443 without local forwarding
 
 ### Requirement: Firewall enforcement and external policy ownership are mandatory
-Internet proxy mode SHALL require the firewall and SHALL reject `--no-firewall`. In firewall egress mode (the default), Internet proxy mode SHALL also reject `--extra-domain` and `--allow-github`, and conflict errors SHALL explain that environment variables are bypassable without firewall enforcement and that Internet destination policy belongs in the external proxy. In sidecar egress mode (`--egress sidecar`), `--internet-proxy` SHALL be rejected at launch. An external proxy SHALL instead be configured as the global sidecar's upstream parent in `egress.toml`, where the sidecar enforces local hostname policy in front of it.
+Internet proxy mode SHALL require the firewall and SHALL reject `--no-firewall`. In firewall egress mode (the default), Internet proxy mode SHALL also reject `--extra-domain` and `--allow-github`, and conflict errors SHALL explain that environment variables are bypassable without firewall enforcement and that Internet destination policy belongs in the external proxy.
 
 #### Scenario: Firewall is disabled
 - **WHEN** `--internet-proxy` is combined with `--no-firewall`
@@ -39,6 +39,9 @@ Internet proxy mode SHALL require the firewall and SHALL reject `--no-firewall`.
 #### Scenario: Project-level Internet policy is requested
 - **WHEN** `--internet-proxy` is combined with `--extra-domain` or `--allow-github` without `--egress sidecar`
 - **THEN** the CLI rejects the invocation and directs the user to configure equivalent policy in the external filtering proxy, or to use `--egress sidecar` for local host policy
+
+### Requirement: In sidecar mode an external proxy is the sidecar's parent
+In sidecar egress mode (`--egress sidecar`), `--internet-proxy` SHALL be rejected at launch. An external proxy SHALL instead be configured as the global sidecar's upstream parent in `egress.toml`, where the sidecar enforces local hostname policy in front of it.
 
 #### Scenario: Internet proxy in sidecar mode
 - **WHEN** `--internet-proxy https://proxy.corp.example` is combined with `--egress sidecar`
@@ -144,7 +147,7 @@ If the Internet proxy becomes unavailable during a session, ordinary Internet op
 Documentation SHALL explain firewall bypass prevention, externally owned Internet policy, and separate gateway credential isolation. It SHALL cover independent and mixed local/remote proxy use, verified HTTPS, CA installation, session DNS pinning, tested client compatibility, and absent Internet-proxy authentication. Routing hints SHALL NOT be described as enforcement or transparent interception. Docker and Apple container SHALL remain primary runtimes; no Docker Compose setup SHALL be required.
 
 #### Scenario: User consults Internet proxy documentation
-- **WHEN** the user reads `docs/internet-proxy.md`
+- **WHEN** the user reads the Internet proxy section of `docs/networking.md`
 - **THEN** setup responsibility, the three independent boundaries, enforcement limitations, failure behavior, primary runtimes, and externally managed policy and network connectivity are explicit
 
 ### Requirement: End-to-end filtering and bypass prevention are verifiable
