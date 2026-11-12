@@ -258,8 +258,8 @@ code. Restricted metadata therefore does not establish a complete host-execution
 boundary. Without `--branch`, no automatic capture occurs; review these changes
 before running host VCS commands.
 
-Changing the full-access default and isolating host capture/import are deferred
-in the [VCS roadmap](../ROADMAP.md#vcs-defaults-and-isolated-host-capture).
+Changing the full-access default and the remaining host-capture risks are
+tracked in the [VCS roadmap](../ROADMAP.md#vcs-isolation-and-host-capture).
 
 ## Network Firewall
 

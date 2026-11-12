@@ -1,47 +1,43 @@
 # Roadmap
 
 This file contains functionality researched but not yet planned for execution
-in the next release via <TODO.md>.
+in the next release via <TODO.md>. Items planned for the next release are in
+TODO.md's "Security proposals" table, with their OpenSpec changes in
+`openspec/changes/`.
 
-## Isolate concurrent subagents in separate clones, merge back on teardown
+## VCS isolation and host capture
 
-Every `--branch` jj agent shares one repo's `.jj/repo` store and — since we now
-also mount the git backend — its `.git`, both bind-mounted read-write into each
-container. That fits jj's concurrent-workspace model on a shared-kernel runtime,
-but concurrent writes from *inside* multiple containers to a single shared store
-are not obviously safe across separate VMs (Apple `container` + VirtioFS), where
-lock-file and rename atomicity may not hold.
+Planned for the next release (TODO.md): `--vcs-access isolated`
+(`isolated-vcs-access`), pointer-independent metadata mounts
+(`derive-vcs-mounts-from-host`), hooks/fsmonitor-free host capture
+(`harden-host-command-execution`) and restored Git/jj config in `full` mode
+(`protect-host-executed-project-config`). What remains after them:
 
-Plan: give each subagent its own clone, then merge/rebase the agent's bookmark
-back into the parent repo during teardown. This removes the shared-store race
-entirely and keeps each agent's blast radius isolated.
-
-Note the git-worktree (`--branch` non-jj) path — which shares `.git` the same way —
-should use the same approach.
-
-Interim mitigation already in place: one host-side exclusive lock
-(`_workspace_lock`) serializes workspace setup, finalization, and build-failure
-cleanup, so those shared-store mutations cannot interleave. It does not address
-concurrent in-container writes; this item supersedes it.
-
-## VCS defaults and isolated host capture
-
-Finding #2 is closed for the VCS session-mode scope. Two remaining risks are
-accepted for this release and need future work:
-
-- **Writable metadata remains the default.** `--vcs-access full` preserves
-  read/write Git/jj metadata access. Evaluate a restricted default or explicit
-  opt-in to full access, including compatibility and migration for agents that
-  commit inside the sandbox. Restricted modes already protect existing metadata
-  but are not snapshots against other host processes or concurrent full sessions.
-- **Host capture can still execute workspace-controlled code.** Read-only or
-  hidden metadata does not protect tracked `.gitattributes` or scripts referenced
-  by trusted hook/filter configuration. Automatic host `git add`/`git commit`
-  can execute those helpers. Design private VCS stores with sandbox-side capture
-  and trusted object import, alongside the separate-clone work above. Audit
-  hooks, filters, fsmonitor, signing, and other executable configuration surfaces;
-  disabling hooks alone is insufficient. Verify with inert marker hooks/helpers
-  that no agent-controlled code executes on the host during capture.
+- **Default mode.** `--vcs-access full` stays the default. Once isolated mode
+  has been used in practice, evaluate making it (or `read-only`) the default,
+  with an explicit opt-in to full access and a migration note for agents that
+  commit inside the sandbox.
+- **Filters selected by tracked files.** A tracked `.gitattributes` can route
+  files through a filter or diff driver configured in the user's trusted global
+  config during host `git add`. `protect-host-executed-project-config` restores
+  repository config but cannot stop global drivers; consider neutralizing
+  filters during capture.
+- **Isolated-mode follow-ups** (deferred by `isolated-vcs-access`):
+  - `--share PATH[:rw]` to bring ignored folders (data, `node_modules`, `.env`
+    directories) into an isolated session, read-only by default. The
+    `sec-fixing-claude` branch's `vcs-session-modes` design has the checks.
+  - A private per-session copy (`--copy`) as an alternative to sharing.
+  - Keeping the agent's commit series instead of one snapshot. That needs the
+    host to read a repository the agent wrote (bundle or fetch from an
+    untrusted local repository), which is why isolated mode doesn't.
+  - Measure setup time on a large repository (setup scans the tree twice).
+- **Concurrent writes to a shared store.** `full`, `read-only` and `hidden`
+  `--branch` sessions still mount the main `.jj/repo` store (and the Git
+  backend) into every container. Concurrent writes from separate VMs (Apple
+  `container` with VirtioFS) may not keep lock-file and rename atomicity.
+  Isolated mode avoids the shared store; for the other modes, consider a
+  per-session clone merged back at teardown. The host-side `_workspace_lock`
+  serializes setup and finalization only.
 
 See [VCS security](docs/security.md#vcs-metadata-access) and
 [VCS access limitations](docs/vcs-access.md#scope-and-remaining-risks).
@@ -53,7 +49,8 @@ See [VCS security](docs/security.md#vcs-metadata-access) and
   not identify a sandbox, and the session-end summary counts the denials of
   every client of the sidecar during the session's window. Attribution needs a
   per-session identity on the proxy connection, for example a per-session
-  listener or proxy credential.
+  listener or proxy credential. Per-session policies would build on the same
+  identity.
 - **Upstream proxy authentication** (egress-sidecar-macos). Basic, NTLM or
   Kerberos to the `[egress.upstream]` parent. Today a 407 from the parent fails
   the request.
@@ -61,8 +58,10 @@ See [VCS security](docs/security.md#vcs-metadata-access) and
   with `scripts/e2e-copilot-egress.py`: `api.{business,enterprise}.githubcopilot.com`
   are admitted by analogy with the individual-plan capture (egress-sidecar-macos
   design.md Decision 5).
-- **GHE.com tenants for `--copilot-host` in sidecar mode** (egress-sidecar-macos;
-  rejected today). Capture the tenant host set and add a tenant profile.
+- **GHE.com tenants for `--copilot-host` in sidecar mode** (rejected today).
+  Capture the tenant host set and add a tenant profile. `scope-firewall-allowlist`
+  keeps tenants working in firewall mode behind `--copilot-tenant-firewall`;
+  remove that flag when the tenant profile exists.
 
 ## GitHub Copilot agent follow-ups
 
@@ -76,48 +75,75 @@ Deferred by `add-copilot-agent-support`:
   in `tests/test_transcript.py` with captured ones, and confirm the record kinds
   in `transcript.py` and `observability.copilot_json_stream_failure`.
 
-## Remote proxy endpoints (implemented)
+## Remote proxy endpoints follow-ups
 
-Both proxy options now share HTTP loopback and remote HTTP/HTTPS endpoint
-validation. Remote endpoints connect directly; only local services use runtime
-forwarding. Sandbox startup resolves and pins each endpoint separately and
-permits its exact address/port pairs, with verified TLS on the host and through
-the final firewall. Optional public CAs apply with either proxy.
+Remote HTTP/HTTPS proxy and gateway endpoints are implemented; see
+[proxy endpoints](docs/proxy-endpoints.md) and
+[development](docs/development.md#proxy-endpoint-verification). The opt-in
+`proxy-endpoints` suite runs on Docker, Podman and Apple container, with
+fixtures behind each runtime's host-loopback path. Still to consider:
 
-See [proxy endpoints](docs/proxy-endpoints.md) for supported URLs, session DNS
-lifetime, trust, and compatibility; [development](docs/development.md#proxy-endpoint-verification)
-records verification and runtime acceptance limitations. Deferred authentication
-and dynamic DNS refresh are listed below.
-
-Items still to be considered:
-
-- Let concurrent Apple container sessions share one `--internet-proxy` relay; today the fixed, firewall-baked relay port makes a second session using the same proxy fail.
-- Consider authenticated Internet proxies without exposing credentials or forwarding gateway keys; this release intentionally rejects URL credentials and has no authentication negotiation.
-- Consider privileged DNS refresh for long sessions; current endpoint pins require a session restart after DNS changes.
-- Run the opt-in `proxy-endpoints` suite on Docker, Podman, and Apple container, including its native IPv6 scenario. Separately verify pinned bundled Pi/OpenCode versions, DNS-name pinning, and IPv6-disabled fallback. The implementation environment has no container runtime or network-administration capabilities.
-- A remote `--agent-proxy` on Apple container has the same VPN routing gap as `--internet-proxy` had; consider relaying it through the host as well.
+- Let concurrent Apple container sessions share one `--internet-proxy` relay;
+  today the firewall-baked relay port makes a second session using the same
+  proxy fail. `mount-session-firewall` removes the baked port, which makes a
+  per-session relay port possible.
+- Authenticated Internet proxies without exposing credentials or forwarding
+  gateway keys; URL credentials are rejected today.
+- Privileged DNS refresh for long sessions; endpoint pins currently need a
+  session restart after DNS changes.
+- A remote `--agent-proxy` on Apple container has the same VPN routing gap as
+  `--internet-proxy` had; consider relaying it through the host as well.
+- Verification gaps: the native IPv6 scenario, the HTTPS scenario on Apple
+  container (its forwarder address changes per run, so it needs
+  `--proxy-fixture-host`), pinned Pi/OpenCode versions, DNS-name pinning and
+  IPv6-disabled fallback.
 
 ## Additional hardening
 
 - **Mount encoding:** CLI bind mounts use CSV encoding, but devcontainer mount
-  strings still need consistent runtime encoding. Verify live parse/render round trips for unusual project names (including commas, quotes,
-  dollars, spaces, and wildcards) on each runtime, and fail closed for unsupported
-  control characters and mount forms. Keep raw user mount parsing aligned with
-  runtime grammar; JSON or argv escaping alone does not cover nested syntax.
-- **Host lock files:** `host_locks.path_lock()` correctly uses `O_NOFOLLOW` and
-  avoids truncation, but does not verify the opened inode is a regular file
-  owned by the caller. Names are predictable in shared temporary storage. Use a
+  strings still need consistent runtime encoding. Verify live parse/render round
+  trips for unusual project names (commas, quotes, dollars, spaces, wildcards)
+  on each runtime, and fail closed for unsupported control characters and mount
+  forms. `validate-all-mount-sources` adds source and target rules, not
+  encoding.
+- **Host lock files:** `host_locks.path_lock()` uses `O_NOFOLLOW` and avoids
+  truncation, but does not verify that the opened inode is a regular file owned
+  by the caller, and names are predictable in shared temporary storage. Use a
   verified private per-user lock directory, `fstat()` checks, and bounded waits
-  with useful diagnostics. Existing OS protections may limit cross-user attacks;
-  do not depend on identical behavior across Linux and macOS. Never unlink a
-  live lock file to recover it, since that can create two independently locked
-  inodes.
-- **Sensitive logs:** Squid's `%ru` logging includes URLs/query strings for
-  visible HTTP and intercepted requests; redact sensitive fields and define
-  retention/access rules. Token substitution in logs is useful but is not a
-  general data-loss prevention boundary.
+  with useful diagnostics (XFAIL `test_host_lock_wait_is_bounded`). Never unlink
+  a live lock file to recover it, since that can create two independently
+  locked inodes.
 - **Supply chain:** exact top-level npm versions are useful, but global
-  `npm install -g package@version` does not freeze all transitive dependency
-  resolution. Use reviewed lockfiles/integrity metadata or reproducible tool
-  layers, and define a deliberate image/security-update cadence. Project build
-  scripts and user-supplied Dockerfiles remain trusted image-producing code.
+  `npm install -g package@version` does not freeze transitive dependency
+  resolution (XFAIL `test_installed_tool_dependency_inventory`). Use reviewed
+  lockfiles/integrity metadata or reproducible tool layers, and define a
+  deliberate image/security-update cadence. Project build scripts and
+  user-supplied Dockerfiles remain trusted image-producing code.
+
+## E2E suite speed
+
+On Apple container a fully cached image build still costs about 15 s, because
+every build re-exports the whole image; the security suite now shares one image
+per egress mode. Further options:
+
+- **Cross-project build reuse in the CLI.** Key the build cache on the inputs
+  fingerprint without the tag, and re-tag an existing image on a hit. This would
+  also help users with fresh `--branch` worktrees. It changes the image trust
+  model, so it builds on `verify-image-inputs`' labels.
+- **Merge parametrized sidecar cases.** `test_repository_host_exclusions` runs
+  twelve sessions with the same policy; one session probing every host would
+  save about a minute per runtime, at the cost of per-case isolation.
+
+## Podman machine shared-folder staleness
+
+Observed 2026-11-11 on macOS with Podman 6.0 (Podman machine VM): the firewall
+e2e suite's second container failed with `FileNotFoundError` creating
+`/workspace/firewall.ok` after the host had deleted that file following the
+first session. Overwriting files that still existed worked. Unconfirmed cause:
+the VM's shared-folder (virtiofs) cache still lists the deleted file across
+containers. The suite now writes one marker per session, which avoids the case
+but does not fix it. Users hit the same problem if they delete a workspace file
+on the host between Podman sessions and the agent re-creates it. Reproduce
+outside the suite (create a file in one container, delete it on the host,
+create it again in a fresh container); if it reproduces, document it in
+`docs/` and check whether the machine's cache mode or a mount option avoids it.

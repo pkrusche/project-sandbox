@@ -300,8 +300,6 @@ and `release-assets` hosts under `githubusercontent.com`.
   calls fail inside the sandbox. That is the intended behaviour.
 
 If a session needs GitHub, use firewall mode with `--allow-github`.
-Per-repository read/write access for sidecar mode is on the
-[roadmap](../ROADMAP.md#smart-github-repository-access-in-sidecar-egress-mode).
 
 ## Copilot profile
 
