@@ -62,18 +62,8 @@ admitted by proxy mode and SHALL be staged only for the selected agent.
   `--api-key-env-file`
 - **THEN** the CLI rejects the invocation before reading or staging secrets
 
-### Requirement: Gateway key input and output handling is secret-safe
-
-On real runs the gateway key SHALL be resolved in this order: captured output
-from `pass show agentgateway-api-key`; the host environment variable named by
-`--agent-proxy-key-env`, defaulting to `AGENTGATEWAY_API_KEY`; then raw
-`--agent-proxy-key`. The system SHALL require no access to an external
-`agentgateway-locally` checkout. It SHALL fail if all three sources are empty or
-unavailable. It SHALL NOT expose the resolved value in its logs, errors,
-dry-run output, or transcripts, and SHALL protect and clean secret-bearing
-staged files using the existing private credential lifecycle. When the raw CLI
-fallback is used, the system SHALL warn that the invoking shell, history, and
-process listings may already expose argv and cannot be redacted retroactively.
+### Requirement: Gateway key sources are resolved in a fixed order
+On real runs the gateway key SHALL be resolved in this order: captured output from `pass show agentgateway-api-key`; the host environment variable named by `--agent-proxy-key-env`, defaulting to `AGENTGATEWAY_API_KEY`; then raw `--agent-proxy-key`. The system SHALL require no access to an external `agentgateway-locally` checkout. It SHALL fail if all three sources are empty or unavailable.
 
 #### Scenario: Pass entry succeeds
 - **WHEN** `pass show agentgateway-api-key` returns a non-empty key
@@ -85,16 +75,19 @@ process listings may already expose argv and cannot be redacted retroactively.
 - **THEN** the CLI uses the environment value without reading the raw CLI
   fallback
 
-#### Scenario: Raw CLI fallback succeeds with warning
-- **WHEN** pass and environment lookup fail and `--agent-proxy-key` is present
-- **THEN** the CLI uses it, warns about argv/history exposure without echoing
-  the key, and redacts the value from all subsequent project-sandbox output
-
 #### Scenario: All gateway key sources fail
 - **WHEN** pass, the selected environment variable, and the raw CLI fallback
   are all unavailable or empty
 - **THEN** the CLI exits before network or container work with an error naming
   the attempted source types but no secret value
+
+### Requirement: Gateway key input and output handling is secret-safe
+The system SHALL NOT expose the resolved gateway key in its logs, errors, dry-run output, or transcripts, and SHALL protect and clean secret-bearing staged files using the existing private credential lifecycle. When the raw CLI fallback is used, the system SHALL warn that the invoking shell, history, and process listings may already expose argv and cannot be redacted retroactively.
+
+#### Scenario: Raw CLI fallback succeeds with warning
+- **WHEN** pass and environment lookup fail and `--agent-proxy-key` is present
+- **THEN** the CLI uses it, warns about argv/history exposure without echoing
+  the key, and redacts the value from all subsequent project-sandbox output
 
 #### Scenario: Diagnostics are redacted
 - **WHEN** proxy planning, an error, or transcript rendering displays commands
@@ -131,15 +124,7 @@ The proxy URL SHALL follow the shared endpoint contract: HTTP loopback via runti
 - **THEN** discovery and sandbox provider configuration use that hostname and `/v1` path on effective port 443 without host-loopback forwarding
 
 ### Requirement: Preflight discovers models and validates selection
-
-Before starting forwarding resources or containers, the system SHALL perform
-a bounded direct authenticated `GET <proxy-base>/models` request using the gateway
-bearer key. It SHALL require a non-empty valid model-list response, validate
-every non-empty string in `data[].id` without changing it, deduplicate exact IDs
-while preserving response order, and use that complete catalog to configure the
-selected agent. It SHALL validate
-the regular `--model` selection against the catalog and SHALL NOT mutate or
-manage the proxy.
+Before starting forwarding resources or containers, the system SHALL perform a bounded direct authenticated `GET <proxy-base>/models` request using the gateway bearer key, and SHALL validate the regular `--model` selection against the discovered catalog. It SHALL NOT mutate or manage the proxy.
 
 #### Scenario: Proxy is unavailable
 - **WHEN** the request cannot connect or times out
@@ -149,10 +134,6 @@ manage the proxy.
 #### Scenario: Gateway key is rejected
 - **WHEN** the endpoint returns 401 or 403
 - **THEN** the CLI aborts with gateway-key guidance without exposing the key
-
-#### Scenario: Catalog is malformed or empty
-- **WHEN** `/v1/models` does not contain a non-empty list of valid model IDs
-- **THEN** the CLI rejects the endpoint before generating agent configuration
 
 #### Scenario: Selected model is absent
 - **WHEN** `/v1/models` succeeds but omits the model selected by `--model`
@@ -167,14 +148,15 @@ manage the proxy.
 - **WHEN** ambient host proxy variables are set or discovery receives a redirect
 - **THEN** discovery does not use the ambient proxy or follow the redirect and does not send the bearer key to another origin
 
-### Requirement: Proxy firewall defaults to gateway-only egress
+### Requirement: The discovered model catalog is validated and kept intact
+The system SHALL require a non-empty valid model-list response, validate every non-empty string in `data[].id` without changing it, deduplicate exact IDs while preserving response order, and use that complete catalog to configure the selected agent.
 
-With the firewall enabled, proxy mode SHALL add a TCP allow rule scoped to the
-configured proxy endpoint address(es) and port, omit the normal provider-domain allowlist and
-the devcontainer's broad host-gateway exception, and retain only domains the
-user explicitly adds with `--extra-domain` or `--allow-github`. It SHALL NOT
-infer domain exceptions from a Bash prompt. Without proxy mode no such rule
-SHALL appear. With `--no-firewall`, remote endpoints SHALL use ordinary resolution without pinning guarantees; forwarded local endpoints SHALL retain the hostname-resolution warning used by local Ollama support. When an Internet proxy is also configured, its stricter option conflicts and endpoint-only egress policy SHALL apply.
+#### Scenario: Catalog is malformed or empty
+- **WHEN** `/v1/models` does not contain a non-empty list of valid model IDs
+- **THEN** the CLI rejects the endpoint before generating agent configuration
+
+### Requirement: Proxy firewall defaults to gateway-only egress
+With the firewall enabled, proxy mode SHALL add a TCP allow rule scoped to the configured proxy endpoint address(es) and port, omit the normal provider-domain allowlist and the devcontainer's broad host-gateway exception, and retain only domains the user explicitly adds with `--extra-domain` or `--allow-github`. It SHALL NOT infer domain exceptions from a Bash prompt. Without proxy mode no such rule SHALL appear.
 
 #### Scenario: Proxy rule is added
 - **WHEN** proxy mode runs with the firewall enabled
@@ -200,18 +182,23 @@ SHALL appear. With `--no-firewall`, remote endpoints SHALL use ordinary resoluti
 - **WHEN** a remote gateway passed host discovery but fails the post-firewall sandbox connection or TLS check
 - **THEN** startup fails before agent execution without opening direct provider access or suggesting local forwarding setup
 
-### Requirement: Supported agents receive authenticated proxy configuration
+### Requirement: Agent proxy without the firewall or with an Internet proxy
+With `--no-firewall`, remote endpoints SHALL use ordinary resolution without pinning guarantees; forwarded local endpoints SHALL retain the hostname-resolution warning used by local Ollama support. When an Internet proxy is also configured, its stricter option conflicts and endpoint-only egress policy SHALL apply.
 
-Pi and OpenCode SHALL receive private, agent-specific provider configuration
-containing the effective sandbox base URL with its configured API path, every model discovered from the
-endpoint, and the gateway key. Model selection SHALL use only the existing
-`--model` dispatch; no proxy-specific model-list flag or discovery-order default
-SHALL be introduced. No unsupported agent SHALL receive this provider or key.
-For interactive and headless Bash sessions, the equivalent configuration SHALL
-be supplied as `OPENAI_BASE_URL`, `OPENAI_API_KEY`, and `OPENAI_MODEL`. Bash
-sessions SHALL additionally receive both private Pi and OpenCode proxy configs,
-including the effective sandbox URL, discovered catalog, gateway key, and selected
-default model.
+#### Scenario: Remote gateway without the firewall
+- **WHEN** an agent-proxy session with a remote endpoint runs with `--no-firewall`
+- **THEN** the endpoint is resolved with ordinary resolution and no pinning is applied or claimed
+
+#### Scenario: Local gateway without the firewall
+- **WHEN** an agent-proxy session with a forwarded local endpoint runs with `--no-firewall`
+- **THEN** the CLI prints the same hostname-resolution warning as local Ollama support
+
+#### Scenario: Combined with an Internet proxy
+- **WHEN** `--agent-proxy` and `--internet-proxy` are both given
+- **THEN** the Internet proxy's option conflicts and endpoint-only egress policy apply
+
+### Requirement: Supported agents receive authenticated proxy configuration
+Pi and OpenCode SHALL receive private, agent-specific provider configuration containing the effective sandbox base URL with its configured API path, every model discovered from the endpoint, and the gateway key. Model selection SHALL use only the existing `--model` dispatch; no proxy-specific model-list flag or discovery-order default SHALL be introduced. No unsupported agent SHALL receive this provider or key.
 
 #### Scenario: Pi provider is generated
 - **WHEN** pi runs in proxy mode
@@ -223,6 +210,9 @@ default model.
 - **WHEN** OpenCode runs in proxy mode
 - **THEN** `opencode.json` defines provider `agent-proxy` with every discovered
   model and `--model agent-proxy/<model-id>` selects the run model
+
+### Requirement: Bash sessions receive proxy environment and agent configs
+For interactive and headless Bash sessions, the equivalent configuration SHALL be supplied as `OPENAI_BASE_URL`, `OPENAI_API_KEY`, and `OPENAI_MODEL`. Bash sessions SHALL additionally receive both private Pi and OpenCode proxy configs, including the effective sandbox URL, discovered catalog, gateway key, and selected default model.
 
 #### Scenario: Interactive Bash receives proxy environment
 - **WHEN** Bash runs interactively in proxy mode

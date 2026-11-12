@@ -79,15 +79,11 @@ When `--pi-ollama` is set and the firewall is enabled, the system SHALL determin
 - **THEN** the gateway-discovery and port-scoped allow rule are applied even though the broader devcontainer-only `allow_host_network` all-ports gateway rule is not active
 
 ### Requirement: One host-loopback alias resolves to the Ollama endpoint
-The system SHALL use the shared internal hostname `host.docker.internal` for Apple `container`, Docker, Podman, supported Linux bridge modes, and chroot when `--pi-ollama` is set. Across supported combinations, enabled host-loopback services SHALL share this one hostname and SHALL remain distinguishable by port. Remote proxies SHALL retain their own hostnames and SHALL NOT alter the Ollama alias. Chroot SHALL support Ollama only when Internet-proxy mode is absent. The system SHALL pin the verified runtime-selected address for the container lifetime where the runtime permits it.
+The system SHALL use the shared internal hostname `host.docker.internal` for Apple `container`, Docker, Podman, supported Linux bridge modes, and chroot when `--pi-ollama` is set. Chroot SHALL support Ollama only when Internet-proxy mode is absent. The system SHALL pin the verified runtime-selected address for the container lifetime where the runtime permits it.
 
 #### Scenario: Container startup with Pi-Ollama enabled
 - **WHEN** the container starts with `--pi-ollama` set and the firewall enabled
 - **THEN** `host.docker.internal` resolves to the verified native or bridge-proxy endpoint and Ollama is allowed only on port 11434
-
-#### Scenario: Multiple local services are enabled
-- **WHEN** Ollama is enabled with a host-loopback Agentgateway or Internet proxy
-- **THEN** the runtime creates or requires only one `host.docker.internal` mapping or Apple localhost DNS entry and applies separate port-scoped rules to each service
 
 #### Scenario: Alias already mapped by the runtime
 - **WHEN** the runtime has already mapped the alias into `/etc/hosts` (for example a Docker `--add-host` entry)
@@ -96,6 +92,13 @@ The system SHALL use the shared internal hostname `host.docker.internal` for App
 #### Scenario: No dynamic address exposed to the agent process
 - **WHEN** the container starts with `--pi-ollama` set
 - **THEN** no `OLLAMA_HOST` (or equivalent) environment variable is set, and Pi's provider configuration references `host.docker.internal` rather than a dynamically exposed address
+
+### Requirement: Local services share the alias and differ by port
+Across supported combinations, enabled host-loopback services SHALL share the one `host.docker.internal` hostname and SHALL remain distinguishable by port. Remote proxies SHALL retain their own hostnames and SHALL NOT alter the Ollama alias.
+
+#### Scenario: Multiple local services are enabled
+- **WHEN** Ollama is enabled with a host-loopback Agentgateway or Internet proxy
+- **THEN** the runtime creates or requires only one `host.docker.internal` mapping or Apple localhost DNS entry and applies separate port-scoped rules to each service
 
 ### Requirement: Pi's Ollama provider and default model are pre-configured
 When `--pi-ollama` is set, the system SHALL bake `~/.pi/agent/models.json` with an `ollama` provider entry pointing at the host-loopback alias on port 11434 using the `openai-completions` API shape, and SHALL bake `~/.pi/settings.json` setting `defaultProvider` to `ollama` and `defaultModel` to a configured model ID. Every adapter SHALL use `http://host.docker.internal:11434/v1`.
