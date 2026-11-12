@@ -1,13 +1,5 @@
 # TODO - outstanding items for next release
 
-- `docs/runtime.md` step 2 of "End-to-End Flow" (line 11) says agent
-  credentials are staged "under `/tmp`". That step is the render-only flow,
-  whose persistent devcontainer staging really is
-  `/tmp/project-sandbox-<uid>/<digest>/<agent>` (`config_agents.py`), so the
-  location is right but vague. Name the exact path, and add that CLI runs stage
-  into [private session inputs](security.md#private-session-inputs) instead
-  (the `--agent` flow's step 2 already says so). Found while checking Colima
-  mount visibility; not part of `add-colima-runtime`.
 - Live markdown view for headless jobs seems broken, I now see only JSON lines 
 
 ## Security proposals

@@ -18,7 +18,7 @@ project-sandbox --runtime docker --agent bash /path/to/repo python:3.12-slim
 
 `auto` picks the first runtime found on `PATH` without checking that it works;
 `project-sandbox doctor` reports the pick and whether it is usable
-([doctor](doctor.md)).
+([doctor](usage.md#install)).
 
 ## Feature support
 
@@ -30,7 +30,7 @@ project-sandbox --runtime docker --agent bash /path/to/repo python:3.12-slim
 | Proxy on the host's loopback (`--internet-proxy`, `--build-proxy`, `[egress.upstream]`) | yes | yes | yes | no; a proxy the VM can reach works | no |
 
 Details of each row live with the feature: [egress sidecar](egress-sidecar.md),
-[agent proxy](agent-proxy.md), [Internet proxy](internet-proxy.md). Restricted
+[agent proxy](agent-proxy.md), [Internet proxy](networking.md#internet-proxy). Restricted
 VCS modes also differ by runtime; see [VCS access](vcs-access.md).
 
 ## Apple `container`
@@ -94,7 +94,14 @@ Or start a profile yourself (default name `project-sandbox`):
 `colima start --profile project-sandbox`. Use another profile with
 `--colima-profile NAME`; it must already be running. `--colima-profile` is
 rejected with any other runtime. Check the setup with
-`project-sandbox doctor --colima-profile NAME` ([doctor](doctor.md)).
+`project-sandbox doctor --colima-profile NAME` ([doctor](usage.md#install)).
+It reports, read-only: whether the profile's Docker context exists, points at
+that profile's socket and answers; the VM's CPUs and memory; whether the current
+directory and the four state subtrees the sandbox mounts are visible in the VM;
+the profile's exports (see [Dedicated profile](#dedicated-profile)); whether the
+`psbx-egress-uplink` and `psbx-sandbox` networks exist with project-sandbox's
+labels; and whether the profile's sidecar runs and is attached to `psbx-sandbox`
+as `egress`.
 
 A default Colima VM has 2 CPUs and Docker refuses a CPU limit above the VM's.
 Without `--cpus`, a sandbox asks for 4 CPUs, capped to the CPUs the Docker

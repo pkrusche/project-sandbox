@@ -93,6 +93,6 @@ rather than at the alias.
 ## Related
 
 - [Agent proxy](agent-proxy.md)
-- [Internet proxy](internet-proxy.md)
+- [Network access](networking.md)
 - [Usage guide](usage.md) for `--pi-ollama`
 - [Security model](security.md) for the firewall behavior referenced above
