@@ -91,15 +91,28 @@ class ProxyEndpointHarnessTests(unittest.TestCase):
         self.assertIn("host-loopback alias", str(raised.exception))
         self.assertIn("127.0.0.1", str(raised.exception))
 
-    def scenario(self, fixture_host, fixture_bind, gateway_host, name="http"):
+    def scenario(
+        self,
+        fixture_host,
+        fixture_bind,
+        gateway_host,
+        name="http",
+        fixture_ports=None,
+        checked_host=None,
+    ):
         """Run one scenario up to the CLI launch; return binds, argv, audit."""
         checker = load_script(ROOT / "scripts/e2e-proxy-endpoints.py")
         bound, launched, checked = [], [], []
+        self.ports = {}
 
         class Recorder(checker.FixtureServer):
-            def __init__(self, host, role, context=None, origin=None):
+            def __init__(self, host, role, context=None, origin=None, port=0):
                 bound.append((role, host))
+                self_test.ports[role] = port
+                # Requested ports are recorded, not bound, to stay collision-free.
                 super().__init__("127.0.0.1", role, context, origin)
+
+        self_test = self
 
         def run(command, **kwargs):
             launched.append(command)
@@ -108,6 +121,7 @@ class ProxyEndpointHarnessTests(unittest.TestCase):
         args = argparse.Namespace(
             fixture_host=fixture_host,
             fixture_bind=fixture_bind,
+            fixture_ports=fixture_ports,
             runtime="docker",
             image_tag="fixture:latest",
             timeout=5,
@@ -120,14 +134,14 @@ class ProxyEndpointHarnessTests(unittest.TestCase):
                 patch.object(
                     checker,
                     "check_round_trip",
-                    lambda host, _port: checked.append(host),
+                    lambda host, _port, *_advice: checked.append(host),
                 ),
                 self.assertRaises(subprocess.CalledProcessError),
             ):
                 checker.run_scenario(args, Path(tmp), None, "http", gateway_host, name)
             audit = json.loads((Path(tmp) / name / "audit.json").read_text())
-        # The host's own round trip uses the address the canary listens on.
-        self.assertEqual(checked, [fixture_bind])
+        # The host's own round trip uses an address it can reach.
+        self.assertEqual(checked, [checked_host or fixture_bind])
         command = launched[0]
 
         def option(name):
@@ -164,6 +178,50 @@ class ProxyEndpointHarnessTests(unittest.TestCase):
                     option("--agent-proxy").startswith(f"http://{authority}:")
                 )
                 self.assertEqual(audit["gateway_url"], option("--agent-proxy"))
+
+    def test_apple_forwarder_scenario_keeps_remote_routing_on_relayed_ports(self):
+        ports = {"proxy": 4001, "gateway": 4002, "canary": 4003}
+        for gateway_host in ("192.168.64.20", "::ffff:192.168.64.20"):
+            with self.subTest(gateway_host=gateway_host):
+                bound, command, option, audit = self.scenario(
+                    "192.168.64.20",
+                    "127.0.0.1",
+                    gateway_host,
+                    fixture_ports=ports,
+                    # The host reaches the forwarder, so it checks through it.
+                    checked_host="192.168.64.20",
+                )
+                # Fixtures sit on host loopback, on the ports the forwarder relays.
+                self.assertEqual(
+                    bound, {"origin": "127.0.0.1", **dict.fromkeys(ports, "127.0.0.1")}
+                )
+                self.assertEqual(self.ports, {"origin": 0, **ports})
+                self.assertNotIn("--no-internet-proxy-preflight", command)
+                self.assertTrue(
+                    option("--internet-proxy").startswith("http://192.168.64.20:")
+                )
+                authority = f"[{gateway_host}]" if ":" in gateway_host else gateway_host
+                self.assertTrue(
+                    option("--agent-proxy").startswith(f"http://{authority}:")
+                )
+                self.assertEqual(audit["gateway_url"], option("--agent-proxy"))
+                self.assertEqual(audit["canary_host"], "192.168.64.20")
+
+    def test_round_trip_failure_through_forwarder_points_to_apple_alias_setup(self):
+        checker = load_script(ROOT / "scripts/e2e-proxy-endpoints.py")
+        with socket.create_server(("127.0.0.1", 0)) as listener:
+            port = listener.getsockname()[1]
+
+            def drop():
+                connection, _ = listener.accept()
+                connection.close()
+
+            thread = threading.Thread(target=drop, daemon=True)
+            thread.start()
+            with self.assertRaises(SystemExit) as raised:
+                checker.check_round_trip("127.0.0.1", port, checker.FORWARDER_ADVICE)
+            thread.join(timeout=2)
+        self.assertIn("docs/apple-container-dns.md", str(raised.exception))
 
     def test_audit_uses_the_forwarded_gateway_url_when_none_is_given(self):
         audit = load_script(ROOT / "scripts/fixtures/proxy-endpoints-audit.py")

@@ -136,7 +136,9 @@
 #   --proxy-fixture-host IP
 #                    override local fixture IP (default: with Docker or Podman on
 #                    macOS the runtime's host-loopback alias address, fixtures on
-#                    127.0.0.1; otherwise the outbound IPv4 source address)
+#                    127.0.0.1; with Apple container on macOS a forwarder
+#                    container's address, fixtures on 127.0.0.1; otherwise the
+#                    outbound IPv4 source address)
 #   --proxy-fixture-ipv6-host IP
 #                    optional local IPv6 IP for an additional HTTP gateway check
 #   --proxy-fixture-hostname NAME

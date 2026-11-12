@@ -4,8 +4,9 @@
 Requires a real container runtime, host openssl, and a non-loopback address the
 runtime's containers reach the fixtures at. With Docker or Podman on macOS that
 is the runtime's host-loopback alias address (the fixtures listen on 127.0.0.1);
-otherwise, and with an explicit --fixture-host, the fixtures listen on that
-address itself.
+with Apple container it is the address of a forwarder container that relays to
+the fixtures on 127.0.0.1 through Apple's host-loopback redirect; otherwise, and
+with an explicit --fixture-host, the fixtures listen on that address itself.
 No existing proxy or gateway is used or stopped.
 """
 
@@ -131,12 +132,12 @@ class Fixture(http.server.BaseHTTPRequestHandler):
 class FixtureServer(http.server.ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, host, role, context=None, origin=None):
+    def __init__(self, host, role, context=None, origin=None, port=0):
         self.address_family = socket.AF_INET6 if ":" in host else socket.AF_INET
         self.role = role
         self.origin = origin
         self.observations: list[tuple[str, str, dict[str, str]]] = []
-        super().__init__((host, 0), Fixture)
+        super().__init__((host, port), Fixture)
         if context is not None:
             self.socket = context.wrap_socket(self.socket, server_side=True)
 
@@ -168,8 +169,22 @@ def fixture_address(value: str) -> str:
     return str(address)
 
 
-def check_round_trip(host: str, port: int) -> None:
-    """Fail clearly when the host can connect to its own address but not exchange data."""
+LAN_ADVICE = (
+    "macOS Local Network privacy, security software, a firewall or a VPN may be "
+    "filtering traffic to this machine's own LAN address. On macOS, omit "
+    "--fixture-host to reach the fixtures through the runtime's host-loopback "
+    "alias; otherwise pass a different --fixture-host."
+)
+FORWARDER_ADVICE = (
+    "The forwarder container reaches the fixtures on host loopback through "
+    "Apple container's host.docker.internal redirect to 203.0.113.113; set it up "
+    "or recover a stale one as described in docs/apple-container-dns.md, or pass "
+    "--fixture-host."
+)
+
+
+def check_round_trip(host: str, port: int, advice: str = LAN_ADVICE) -> None:
+    """Fail clearly when TCP to the fixture address connects but data does not flow."""
     connection = http.client.HTTPConnection(host, port, timeout=3)
     try:
         connection.request("GET", "/fixture")
@@ -177,19 +192,19 @@ def check_round_trip(host: str, port: int) -> None:
     except (OSError, http.client.HTTPException) as exc:
         raise SystemExit(
             f"Local network traffic to fixture host {host} is blocked: TCP connects "
-            f"but an HTTP request fails ({exc.__class__.__name__}: {exc}). macOS "
-            "Local Network privacy, security software, a firewall or a VPN may be "
-            "filtering traffic to this machine's own LAN address. On macOS, omit "
-            "--fixture-host to reach the fixtures through the runtime's "
-            "host-loopback alias; otherwise pass a different --fixture-host."
+            f"but an HTTP request fails ({exc.__class__.__name__}: {exc}). {advice}"
         ) from None
     finally:
         connection.close()
 
 
-def via_alias(args) -> bool:
-    """Whether containers reach the fixtures through a runtime host alias."""
-    return args.fixture_bind != args.fixture_host
+def host_blind(args) -> bool:
+    """Whether only containers reach the fixture address (a runtime host alias).
+
+    An Apple container forwarder also listens on another address than the
+    fixtures, but the host reaches it like any remote address.
+    """
+    return args.fixture_bind != args.fixture_host and not args.fixture_ports
 
 
 def san_type(host: str) -> str:
@@ -314,20 +329,26 @@ def run_scenario(args, root, context, scheme, gateway_host, name, url_host=None)
     """Bind fixtures to IPs; ``url_host`` names them in URLs (HTTPS needs DNS).
 
     Proxy URLs name ``args.fixture_host``; the proxy and canary listen on
-    ``args.fixture_bind``, which is loopback when a runtime alias reaches them.
-    The host then cannot reach the alias address, so the CLI skips its
-    host-side proxy check, and the gateway, whose models the host discovers
-    before launch, is a loopback gateway forwarded into the sandbox.
+    ``args.fixture_bind``, which is loopback when a runtime alias or an Apple
+    container forwarder reaches them. The host cannot reach an alias address,
+    so the CLI then skips its host-side proxy check, and the gateway, whose
+    models the host discovers before launch, is a loopback gateway forwarded
+    into the sandbox. A forwarder relays only ``args.fixture_ports``, so its
+    fixtures listen on those ports, and the gateway stays a remote one.
     """
-    alias = via_alias(args) and gateway_host in (
+    ports = args.fixture_ports or {}
+    behind_fixture_host = gateway_host in (
         args.fixture_host,
         f"::ffff:{args.fixture_host}",
     )
+    alias = host_blind(args) and behind_fixture_host
+    forwarded = bool(ports) and behind_fixture_host
     gateway_scheme = "http" if alias else scheme
     if alias:
         gateway_host, url_host_for_gateway = "127.0.0.1", None
     else:
         url_host_for_gateway = url_host
+    gateway_bind = args.fixture_bind if forwarded else gateway_host
     project = root / name
     project.mkdir()
     shutil.copyfile(
@@ -341,13 +362,17 @@ def run_scenario(args, root, context, scheme, gateway_host, name, url_host=None)
             "proxy",
             context if scheme == "https" else None,
             ("127.0.0.1", origin.server_port),
+            port=ports.get("proxy", 0),
         ) as proxy,
         FixtureServer(
-            gateway_host,
+            gateway_bind,
             "gateway",
             context if gateway_scheme == "https" else None,
+            port=ports["gateway"] if forwarded else 0,
         ) as gateway,
-        FixtureServer(args.fixture_bind, "canary") as canary,
+        FixtureServer(
+            args.fixture_bind, "canary", port=ports.get("canary", 0)
+        ) as canary,
     ):
 
         def url(host, port, scheme=scheme):
@@ -364,8 +389,16 @@ def run_scenario(args, root, context, scheme, gateway_host, name, url_host=None)
             + API_PATH
         )
         # Prove the denied port really has a live listener before testing
-        # denial, and that the host can exchange data with its own address.
-        check_round_trip(args.fixture_bind, canary.server_port)
+        # denial, and that the host can exchange data with the fixture address
+        # (through the forwarder, if any).
+        if host_blind(args):
+            check_round_trip(args.fixture_bind, canary.server_port)
+        else:
+            check_round_trip(
+                args.fixture_host,
+                canary.server_port,
+                FORWARDER_ADVICE if ports else LAN_ADVICE,
+            )
         (project / "audit.json").write_text(
             json.dumps(
                 {
@@ -388,7 +421,7 @@ def run_scenario(args, root, context, scheme, gateway_host, name, url_host=None)
             "--no-forward-credentials",
             "--internet-proxy",
             proxy_url,
-            *(["--no-internet-proxy-preflight"] if via_alias(args) else []),
+            *(["--no-internet-proxy-preflight"] if host_blind(args) else []),
             "--agent-proxy",
             gateway_url,
             "--agent-proxy-key-env",
@@ -437,8 +470,9 @@ def main(argv=None):
         help=(
             "Local fixture IP the fixtures listen on and containers connect to "
             "(default: with Docker or Podman on macOS, the runtime's host-loopback "
-            "alias address with fixtures on 127.0.0.1; otherwise the outbound IPv4 "
-            "source address)."
+            "alias address with fixtures on 127.0.0.1; with Apple container on "
+            "macOS, a forwarder container's address with fixtures on 127.0.0.1; "
+            "otherwise the outbound IPv4 source address)."
         ),
     )
     parser.add_argument(
@@ -458,29 +492,50 @@ def main(argv=None):
     parser.add_argument("--timeout", type=int, default=120)
     parser.add_argument("--keep", action="store_true")
     args = parser.parse_args(argv)
-    if args.fixture_host is None:
-        try:
-            fixture = fixture_network.runtime_host(args.runtime, args.base_image)
-        except ValueError as exc:
-            parser.error(str(exc))
-        args.fixture_host, args.fixture_bind = fixture.address, fixture.bind
-        listening = f" (listening on {fixture.bind})" if fixture.via_alias else ""
-        print(f"Using proxy fixture host: {args.fixture_host}{listening}", flush=True)
-    else:
-        args.fixture_bind = args.fixture_host
     if args.ipv6_host and ipaddress.ip_address(args.ipv6_host).version != 6:
         parser.error("--ipv6-host requires an IPv6 address")
-    if args.fixture_hostname and not resolves_to(
-        args.fixture_hostname, args.fixture_host
-    ):
-        parser.error(
-            f"--fixture-hostname {args.fixture_hostname} does not resolve to "
-            f"{args.fixture_host}"
-        )
     binary = "container" if args.runtime == "apple-container" else args.runtime
     for required in (binary, "openssl"):
         if shutil.which(required) is None:
             parser.error(f"required executable unavailable: {required}")
+    with contextlib.ExitStack() as stack:
+        args.fixture_ports = None
+        if args.fixture_host is None:
+            try:
+                if args.runtime == "apple-container" and sys.platform == "darwin":
+                    roles = ("proxy", "gateway", "canary")
+                    ports = fixture_network.loopback_ports(len(roles))
+                    args.fixture_ports = dict(zip(roles, ports, strict=True))
+                    fixture = stack.enter_context(
+                        fixture_network.apple_forwarder(args.base_image, ports)
+                    )
+                    listening = f" (forwarding to {fixture.bind})"
+                else:
+                    fixture = fixture_network.runtime_host(
+                        args.runtime, args.base_image
+                    )
+                    listening = (
+                        f" (listening on {fixture.bind})" if fixture.via_alias else ""
+                    )
+            except ValueError as exc:
+                parser.error(str(exc))
+            args.fixture_host, args.fixture_bind = fixture.address, fixture.bind
+            print(
+                f"Using proxy fixture host: {args.fixture_host}{listening}", flush=True
+            )
+        else:
+            args.fixture_bind = args.fixture_host
+        if args.fixture_hostname and not resolves_to(
+            args.fixture_hostname, args.fixture_host
+        ):
+            parser.error(
+                f"--fixture-hostname {args.fixture_hostname} does not resolve to "
+                f"{args.fixture_host}"
+            )
+        return run_scenarios(args, binary)
+
+
+def run_scenarios(args, binary):
     parent = Path(__file__).resolve().parents[1] / ".project-sandbox/e2e"
     parent.mkdir(parents=True, exist_ok=True)
     root = Path(tempfile.mkdtemp(prefix="proxy-endpoints-", dir=parent))
@@ -501,7 +556,7 @@ def main(argv=None):
                 "use a DNS name",
                 flush=True,
             )
-        if via_alias(args):
+        if host_blind(args):
             print(
                 "SKIP: mapped-ipv4: the gateway is a forwarded loopback gateway "
                 "behind a runtime host alias; pass --fixture-host for remote "

@@ -173,7 +173,10 @@ uv run python scripts/e2e-cleanup.py --runtime docker
 It removes sandbox containers running an e2e image, the IPL Squid fixture
 started by the build-proxy suite (recognised by its config mount in a
 `project-sandbox-build-proxy.*` temp directory, so a real IPL proxy is never
-touched), shared local-service forwarders (`project_sandbox.egress_relay
+touched), the Apple container fixture forwarder started by the proxy-endpoints
+suite (recognised by its `project-sandbox-e2e-forwarder-` name and
+`io.project-sandbox.e2e-fixture=forwarder` label), shared local-service
+forwarders (`project_sandbox.egress_relay
 --lease` processes with a `local-forward` state directory) that no session
 leases any more, and images whose tags the suites generate. A forwarder that a
 session still leases, and images of real projects, are left alone. It refuses
@@ -477,7 +480,20 @@ a connection opens but no data arrives. The host cannot reach the alias
 address, so these runs pass `--no-internet-proxy-preflight` and serve the
 gateway on loopback, where the CLI forwards it as a local service and can
 discover its models; the mapped-IPv4 gateway scenario, which needs a remote
-gateway, is skipped. Apple container and Linux use the outbound IPv4 source
+gateway, is skipped.
+
+Apple container on macOS has no host-loopback address the host can reach too:
+its `host.docker.internal` redirect to `203.0.113.113` (see
+[apple-container-dns.md](apple-container-dns.md), which these runs require)
+only applies to container traffic, while the CLI relays a remote Internet
+proxy from the host. The default there is a throwaway forwarder container
+(`project-sandbox-e2e-forwarder-*`, started from the base image): the fixtures
+listen on `127.0.0.1` on ports reserved for the run, and the forwarder relays
+the same ports on its container address to them through `203.0.113.113`. The
+host and the sandbox both reach that address without touching the Mac's LAN
+address, so the host-side proxy check, the remote gateway, and the mapped-IPv4
+scenario all run as on Linux. A failing round trip through the forwarder
+usually means a missing or stale alias. Linux uses the outbound IPv4 source
 address for everything. `--proxy-fixture-host IP` overrides the default: all
 fixtures then listen on that address, and the sandbox connects to it.
 
@@ -485,15 +501,16 @@ HTTPS endpoints must be named by DNS, so the HTTPS scenario runs only with
 `--proxy-fixture-hostname` (`--fixture-hostname` for the standalone script): a
 name that resolves to the fixture IP (the alias address with Docker Desktop or
 Podman on macOS, for example `192-168-65-254.sslip.io`) both on the host and
-inside the sandbox.
+inside the sandbox. An Apple container forwarder gets a new address each run,
+so HTTPS there needs `--proxy-fixture-host`.
 A wildcard-DNS service such as sslip.io works if your resolver allows public
 names to answer with private addresses; a local DNS or `/etc/hosts` entry that
 the runtime also sees works too. Without it the HTTPS scenario is skipped.
 
 Docker, Podman, and Apple container are accepted. The host needs OpenSSL and an
 address the selected runtime can reach, including access to temporary listener
-ports. The test binds only the listen address (loopback behind an alias, or the
-override); the proxy accepts only its own fixture origin and cannot relay
+ports. The test binds only the listen address (loopback behind an alias or a
+forwarder, or the override); the proxy accepts only its own fixture origin and cannot relay
 arbitrary destinations. Images are built normally, so
 build-time Internet access is required; `--no-build` is unsupported because each
 run selects fresh ports and generates a temporary CA.

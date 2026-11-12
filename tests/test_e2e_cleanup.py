@@ -103,6 +103,16 @@ class ContainerMatchTests(TestCase):
             )
         )
 
+    def test_fixture_forwarder_needs_its_prefix_and_label(self) -> None:
+        def forwarder(name, labels):
+            return {"configuration": {"id": name, "image": {}, "labels": labels}}
+
+        label = {"io.project-sandbox.e2e-fixture": "forwarder"}
+        name = "project-sandbox-e2e-forwarder-0a1b2c3d"
+        self.assertTrue(cleanup.is_e2e_container(forwarder(name, label)))
+        self.assertFalse(cleanup.is_e2e_container(forwarder(name, {})))
+        self.assertFalse(cleanup.is_e2e_container(forwarder("forwarder", label)))
+
     def test_reads_apple_container_entries(self) -> None:
         entry = {
             "configuration": {

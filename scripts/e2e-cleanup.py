@@ -7,6 +7,8 @@ Run after ``scripts/run-e2e-tests.sh`` (or an interrupted e2e script) to sweep:
 * Squid fixture containers that ``e2e-build-proxy.py`` started through IPL,
   recognised by their config mount inside a ``project-sandbox-build-proxy.*``
   temp directory, so a real IPL proxy is never touched;
+* Apple container fixture forwarders that ``e2e-proxy-endpoints.py`` started,
+  recognised by their name prefix and label;
 * shared local-service forwarders (``project_sandbox.egress_relay --lease``
   with a ``local-forward`` state directory) that no session leases any more;
 * images tagged by the e2e suites, either explicitly or derived from their
@@ -32,7 +34,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from project_sandbox import container_cli, local_forwarder, session_ca
+from project_sandbox import container_cli, fixture_network, local_forwarder, session_ca
 
 RUNTIMES = (container_cli.APPLE_CONTAINER, container_cli.DOCKER, container_cli.PODMAN)
 
@@ -136,6 +138,11 @@ def is_e2e_container(entry: dict[str, Any]) -> bool:
         return labels.get(IPL_MANAGED_LABEL) == "true" and any(
             SQUID_FIXTURE_ROOT in source for source in sources
         )
+    if name.startswith(fixture_network.FORWARDER_PREFIX):
+        return (
+            labels.get(fixture_network.FORWARDER_LABEL)
+            == fixture_network.FORWARDER_LABEL_VALUE
+        )
     return False
 
 
@@ -148,7 +155,8 @@ def e2e_containers(runtime: container_cli.Runtime) -> list[str]:
     candidates = [
         name
         for name in names or []
-        if SESSION_CONTAINER.fullmatch(name) or name.startswith(SQUID_FIXTURE_PREFIX)
+        if SESSION_CONTAINER.fullmatch(name)
+        or name.startswith((SQUID_FIXTURE_PREFIX, fixture_network.FORWARDER_PREFIX))
     ]
     if not candidates:
         return []
