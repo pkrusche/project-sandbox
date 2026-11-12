@@ -1,812 +1,262 @@
-# Usage Guide
+# Usage guide
 
 ## Install
 
-Install the command from PyPI with uv:
+```bash
+uv tool install project-sandbox      # or run without installing: uvx project-sandbox --help
+project-sandbox doctor               # check runtimes, git and jj
+```
+
+From a source checkout: `uv sync`, then `uv run project-sandbox …`.
+
+`project-sandbox doctor` is read-only (each probe times out after 10 s) and
+exits `1` only when a check fails; `--json` prints the same report for scripts.
+It checks Python ≥ 3.11; Apple `container` (version, system service and the
+[`host.docker.internal` alias](apple-container-dns.md)); Docker (client and
+daemon); Podman (must be rootless); the chroot runtime on Linux; which runtime
+`--runtime auto` would pick and whether it works; `git`, its global identity,
+and `jj` ≥ 0.46; and, per runtime, whether the [egress sidecar](egress-sidecar.md)
+runs.
+
+## Quick start
 
 ```bash
-uv tool install project-sandbox
-project-sandbox --help
+project-sandbox /path/to/repo python:3.12-slim                 # generate files only
+project-sandbox --dry-run --agent claude /path/to/repo python:3.12-slim
+project-sandbox --agent claude /path/to/repo python:3.12-slim  # build and start a session
 ```
 
-To run the PyPI package without installing it:
+`--dry-run` previews every action without writing files or starting a runtime.
+Agents: `claude`, `codex`, `opencode`, `pi`, `copilot` and `bash`. Claude,
+Codex, OpenCode and Pi need their host config directories; Copilot needs a
+token (see [GitHub Copilot](#github-copilot)); Bash is always available.
+
+**Runtimes.** `--runtime auto` (default) picks Apple `container` on macOS and
+Docker, then Podman, on Linux; pass `--runtime docker|podman|apple-container`
+to choose. Podman must be rootless and runs with `--userns=keep-id`; on Linux
+with pasta it gives builds and sessions their own address (`198.18.0.2/24`) so
+services on the host's LAN address stay reachable. `--runtime chroot` (Linux)
+only inspects the mount layout; it is not a sandbox (see
+[runtime](runtime.md#end-to-end-flow)).
+
+**Project paths** must not contain control characters, `*`, `?`, `[`, quotes,
+commas, colons or backslashes; rename such directories.
+
+**Resources.** `--memory`, `--cpus` and `--shm-size` (default `2g` with
+`--node-npm`) are passed to the runtime.
+
+**Extra mounts.** `--mount` takes Docker's `--mount` syntax with CSV quoting
+(quote a whole field to include a comma, e.g.
+`'type=bind,"source=/host/cache,shared",target=/cache'`). Only bind mounts with
+a checkable host source are accepted; `bind-propagation`, `bind-recursive`,
+`bind-nonrecursive` and `consistency` are passed through. Mounts that would
+expose project-sandbox's own state or the egress policy are refused.
+
+## Choosing the image
+
+Give either a base image, a generated flow, or your own Dockerfile.
+
+| Option | Base | Notes |
+| --- | --- | --- |
+| `IMAGE` (e.g. `python:3.12-slim`) | That image | Debian or Ubuntu based |
+| `--python-uv [--python 3.12]` | `python:<version>-slim` | Dependencies from `uv.lock` baked in |
+| `--rust-cargo [--rust 1.87]` | `rust:<version>-slim` | Dependencies fetched, best-effort build |
+| `--node-npm` | `debian:trixie-slim` | npm dependencies and Chromium baked in |
+| `--dockerfile PATH [--docker-context DIR]` | Your Dockerfile's final stage | Sandbox layers added on top |
+
+The generated flows use the whole project as build context (with a generated
+`.dockerignore` unless the project has one) and set up the environment so the
+agent works offline: uv's cache, environment (`/opt/venv`) and interpreters live
+in the image; Cargo dependencies are fetched; npm dependencies and browsers are
+installed. With `--branch`, they build from the session's worktree or
+workspace.
+
+### Python with uv
+
+`--python-uv` installs the project's locked dependencies in two layers
+(dependencies only, then the project) and sets `UV_CACHE_DIR`,
+`UV_PROJECT_ENVIRONMENT=/opt/venv` and `UV_PYTHON_INSTALL_DIR`, so `uv sync` and
+`uv run` work without PyPI. A custom `--dockerfile` must set
+`UV_PROJECT_ENVIRONMENT` itself: otherwise sandbox and host uv keep replacing
+the shared `.venv` in the mounted project (symptom: "Ignoring existing virtual
+environment linked to non-existent Python interpreter"). Generated Codex configs
+pass the uv variables through to tool shells.
+
+### Rust with Cargo
+
+`--rust-cargo` copies workspace member manifests before sources to keep the
+dependency cache. Member paths are used literally (spaces, quotes and other
+shell characters are safe); paths that escape the project, absolute paths,
+control characters and backslashes are rejected.
+
+### Node.js with npm
+
+`--node-npm` needs `package.json` and a committed `package-lock.json` or
+`npm-shrinkwrap.json` (npm only; workspaces supported through the lockfile;
+pnpm, yarn and bun are not).
+
+- `npm ci` runs at build time from the manifests and lockfile only, into
+  `/opt/node-project/node_modules`; a root lifecycle script that needs sources
+  fails the build. `.npmrc` is not copied, so private registries and options
+  such as `legacy-peer-deps` need a custom Dockerfile.
+- Debian Chromium and fonts are always installed; when the lockfile has
+  Playwright, its matching Chromium goes to `/opt/ms-playwright`. `CHROME_BIN`,
+  `PUPPETEER_EXECUTABLE_PATH` and `PLAYWRIGHT_BROWSERS_PATH` are set. Node.js is
+  the sandbox's pinned version.
+- At runtime `/workspace/node_modules` is a tmpfs filled from the image: host
+  binaries are hidden, writes never reach the host, and every session starts
+  fresh. It counts against `--memory` (default `8g`), as does `/dev/shm`.
+- Chromium needs `--no-sandbox` in the container (Playwright's default).
+- Generated devcontainers don't support `--node-npm` yet.
+
+See [Headless browser testing](headless-browser-testing.md) for a Playwright
+setup and [Network access](networking.md#tests-that-need-external-hosts) for
+tests that need external hosts.
+
+### Your own Dockerfile
+
+With `--dockerfile`, project-sandbox adds a dependency stage (apt tooling,
+Node.js, jj, OpenSpec, agents) that your final stage inherits, then appends the
+sandbox user, firewall and entrypoint. The build context is the project root
+unless `--docker-context` says otherwise.
+
+- Put prerequisites such as mirrors or CA files in a stage named `prefix` that
+  the final stage inherits from; the dependency stage is inserted right after
+  it. Use stage names, not numeric `--from=<N>`, for stages after `prefix`.
+- Your instructions run as root, before the `agent` user exists. Your own user
+  setup is removed with a warning (a `RUN` mixing it with other work is
+  rejected); the sandbox creates `agent` with your host UID/GID on Linux Docker
+  and Podman, 1000 elsewhere.
+- Only the default `\` line continuation is supported, and the final stage must
+  be Debian or Ubuntu based.
+- The Dockerfile's hash is recorded after each build, and a later change prints
+  a warning ([tamper detection](runtime.md#project-dockerfile-tamper-detection)).
+
+For build-time proxies and CAs, see [Proxies for image builds](networking.md#proxies-for-image-builds).
+
+### Image builds
+
+Builds are skipped when the generated inputs and image are unchanged
+(`Reusing cached image (inputs unchanged)`); whole-project flows always build
+and rely on the layer cache. `--force-build` rebuilds, `--no-build` uses the
+existing image as it is (it can't change a baked firewall), and `--build-only`
+builds without starting a session (add `--pi-ollama` to prepare a later Pi +
+Ollama session). See [Concurrent sessions](runtime.md#concurrent-sessions) for
+locking and image pinning.
+
+## Agents and credentials
+
+Named agents get only their own forwarded credentials, staged privately per
+session; `--agent bash` gets every detected credential except Copilot's token.
+Before staging, the host refreshes Claude and Codex tokens with their own CLIs
+(`--no-token-refresh` skips this), and the launch prints how long the staged
+token stays valid. See [Security](security.md#credential-isolation).
+
+- `--model MODEL` and `--effort {low,medium,high,xhigh,max}` become each agent's
+  own flags (Claude `--effort`, Codex `model_reasoning_effort`, OpenCode
+  `--variant`, Pi `--thinking`, Copilot `--effort`); ignored for Bash.
+- `--fast` enables fast mode for Claude and Codex (billed at a higher rate);
+  rejected for other agents.
+- `--no-forward-credentials` starts unauthenticated. With it,
+  `--api-key-env NAME` and `--api-key-env-file FILE` inject specific keys as
+  environment variables (redacted in dry-run; visible in runtime metadata).
+- `--agent-proxy URL` routes model traffic through a gateway; see
+  [Agent proxy](agent-proxy.md).
+- Pi: `--pi-tools read,grep,find,ls` limits its tools; `--pi-ollama` uses a
+  host Ollama server on `127.0.0.1:11434` (forwarding per runtime is described
+  in [runtime](runtime.md#end-to-end-flow); Apple needs the
+  [alias](apple-container-dns.md)); `--ollama-model` (repeatable) replaces the
+  default model list. OpenCode and Pi reach only the default providers unless
+  you add `--extra-domain`.
+
+### GitHub Copilot
+
+`--agent copilot` runs the pinned GitHub Copilot CLI on your Copilot
+subscription (no `--agent-proxy`, no `--fast`, not in devcontainers).
+
+- **Host.** `--copilot-host` is `github.com` (default; personal, Business and
+  Enterprise on GitHub.com) or `<tenant>.ghe.com` (data residency). GitHub
+  Enterprise Server is rejected.
+- **Token**, resolved on the host at every launch: `pass show
+  copilot-github-token` (or `copilot-github-token/<host>`;
+  `--copilot-token-pass ENTRY` to rename), then `gh auth token --hostname
+  <host>` with a warning, because that token usually has broad `repo` scope.
+  Recommended: a fine-grained token with only the **Copilot Requests**
+  permission, stored with `pass insert copilot-github-token`. Classic `ghp_`
+  tokens are rejected.
+- **In the sandbox** the token is a read-only file exported as
+  `COPILOT_GITHUB_TOKEN` to the Copilot process only. Copilot runs with
+  `--allow-all --no-auto-update --disable-builtin-mcps`; the folder-trust
+  prompt is pre-answered. `--agent copilot` opens GitHub network access in
+  firewall mode; with `--egress sidecar` it needs the Copilot profile.
+
+## Headless sessions
 
 ```bash
-uvx project-sandbox --help
-uvx project-sandbox /absolute/path/to/repo python:3.12-slim
+project-sandbox --agent claude --prompt /path/to/prompt.txt /path/to/repo python:3.12-slim
+project-sandbox --agent codex --prompt-text "Fix the failing test" /path/to/repo python:3.12-slim
 ```
 
-From a source checkout:
+A prompt makes the session unsupervised: no TTY, agents run without permission
+prompts (Claude `--dangerously-skip-permissions`, Codex `approval_policy =
+"never"`, Pi `--approve`), output goes to a log, and no shell or Claude history
+is mounted.
+
+- `--log FILE` overrides the default
+  `.project-sandbox/sessions/<agent>-main-<timestamp>.log`. Claude, Codex, Pi,
+  OpenCode and Copilot keep the raw JSON log and write a Markdown transcript
+  beside it.
+- `--json-summary PATH` (or `-` for stdout) writes `session_id`,
+  `container_name`, `workspace_path`, `agent`, `bookmark`, `jj_change_id`,
+  `exit_code`, `started_at` and `ended_at` after cleanup.
+- `--timeout SECONDS` stops the session and returns `124`. A session that ends
+  on HTTP 429 returns `75`. The agent's exit code is passed through otherwise;
+  Pi and Copilot runs that exit `0` with an errored final turn report `1`.
+- `--verbose` streams build output, the firewall banner and raw output, and
+  prints the resolved agent configuration.
+- `project-sandbox sessions list --json` lists session records
+  (`running`, `completed`, `rate_limited`, `interrupted`, `orphaned`) from
+  `$XDG_STATE_HOME/project-sandbox/sessions/`.
+
+A prompt injection in the workspace can still steer an unsupervised agent; keep
+prompts narrow and review the diff.
+
+## Branch sessions
+
+`--branch NAME` runs the agent in a Git worktree (or a jj workspace when the
+project has `.jj/`) on `NAME`, instead of your working tree:
 
 ```bash
-uv sync
-uv run project-sandbox --help
+project-sandbox --branch feature/login --agent claude --prompt /path/to/prompt.txt /path/to/repo python:3.12-slim
 ```
 
-Check that a container runtime, git, and (optionally) jj are ready:
-
-```bash
-uv run project-sandbox doctor
-```
-
-See [Host prerequisite checks](doctor.md) for what is probed.
-
-## Quick Start
-
-```bash
-uv run project-sandbox /absolute/path/to/repo python:3.12-slim
-```
-
-The resolved project path must not contain control characters (such as a
-newline), the glob characters `*`, `?` and `[`, quotes (`'`, `"`), commas,
-colons or backslashes; such projects are refused before anything is written.
-Rename the directory to use them.
-
-To build on top of a repo's existing Dockerfile instead of a base image tag:
-
-```bash
-uv run project-sandbox /absolute/path/to/repo --dockerfile /absolute/path/to/repo/Dockerfile
-```
-
-In this mode, `.project-sandbox/Dockerfile` creates a dependency stage for the
-sandbox's apt tooling, Node.js, jj, OpenSpec, and coding agents. The source
-Dockerfile's final stage inherits that dependency stage before its original
-instructions are appended. This keeps the expensive, source-independent layers
-cacheable when project files change and preserves earlier build stages and
-`COPY --from` references.
-
-For proxies and CAs needed during image construction, use
-[`--build-proxy URL`, `--build-no-proxy HOSTS`, and `--build-ca-cert`](build-network.md).
-These configure access before build commands and leave runtime firewall
-permissions unchanged.
-For custom prerequisites such as package mirrors, put setup in a stage named
-`prefix` and make the final stage inherit from it (directly or through other
-named stages):
-
-```dockerfile
-FROM python:3.12-slim AS prefix
-COPY proxy-ca.crt /usr/local/share/ca-certificates/
-RUN update-ca-certificates
-ENV HTTPS_PROXY=http://proxy.example
-
-FROM prefix AS final
-COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen
-```
-
-The name `prefix` is recognized case-insensitively. It must be unique and an
-ancestor of the final stage; otherwise rendering fails rather than silently
-running sandbox downloads without the declared prerequisites. The sandbox
-inserts its dependency stage immediately after `prefix` and carries it along the
-final stage's inheritance path. Other build branches remain unchanged.
-
-Inserting the dependency stage after `prefix` shifts the positional index of
-every stage declared after it, so a numeric `--from=<N>` (or
-`--mount=...,from=<N>`) reference to one of those stages would silently point
-at the wrong stage. Rendering fails with an error instead; use a named stage
-(`AS <name>` / `--from=<name>`) for anything declared after `prefix`.
-
-Postfix source instructions run as root and may assume sandbox-installed tools
-such as `git` and `curl` are available, but they run before the sandbox creates
-the `agent` user, its home directory, or the `/project-sandbox-config` and
-`/project-sandbox-secrets` paths. The sandbox adds that user/config setup and its
-firewall and entrypoint after the source content.
-
-The build context defaults to the project root so existing `COPY` instructions
-keep working; use `--docker-context` if that Dockerfile expects a different
-context. If the source Dockerfile defines its own non-root user or
-standalone UID/GID setup, project-sandbox removes those instructions and prints a
-warning. It creates its own `agent` user, matching the host UID/GID for direct
-Docker/Podman runs on Linux and defaulting to UID/GID 1000 elsewhere. If a
-`RUN` instruction mixes user-management commands with unrelated build steps,
-project-sandbox rejects it instead of silently dropping the unrelated work.
-
-Use `--dry-run` to preview every action without writing files or starting the
-runtime:
-
-```bash
-uv run project-sandbox --dry-run /absolute/path/to/repo python:3.12-slim
-```
-
-Direct CLI runs use `--runtime auto` by default. Auto-selection prefers Apple
-`container` on macOS, and Docker then Podman on Linux. Override it when needed:
-
-```bash
-uv run project-sandbox --runtime docker --agent bash /absolute/path/to/repo python:3.12-slim
-uv run project-sandbox --runtime podman --agent bash /absolute/path/to/repo python:3.12-slim
-uv run project-sandbox --runtime apple-container --agent bash /absolute/path/to/repo python:3.12-slim
-```
-
-With pasta (the default on Linux), Podman builds and sessions use their own
-address, `198.18.0.2/24`, so proxies and gateways on the host's own LAN address
-stay reachable; see `docs/security.md`.
-
-Podman must run rootless: `--runtime podman` (and `auto` when it picks Podman)
-refuses to start when `podman info` reports a rootful setup, such as running
-project-sandbox as root or a Podman machine set with `--rootful`. Podman runs
-pass `--userns=keep-id` so the sandbox user, built with your host UID, can
-write the bind-mounted workspace.
-
-Linux also provides an explicit layout-inspection mode that needs no image:
-
-```bash
-uv run project-sandbox --runtime chroot --agent bash /absolute/path/to/repo
-```
-
-This opens Bash in a rootless chroot mirroring the normal bind-mount layout.
-Headless Bash via `--prompt` or `--prompt-text` is also supported. It does not
-install or run coding-agent CLIs and is not an isolation or security boundary.
-
-## API Key Injection
-
-`--no-forward-credentials` starts a direct agent container without staging or
-mounting host agent credential files. For API-key based providers, inject only
-the specific environment variables the session needs:
-
-```bash
-export ANTHROPIC_API_KEY=...
-
-uv run project-sandbox \
-  --no-forward-credentials \
-  --api-key-env ANTHROPIC_API_KEY \
-  --agent bash \
-  /absolute/path/to/repo \
-  python:3.12-slim
-```
-
-You can also load a dotenv-style file containing `KEY=VALUE` lines:
-
-```bash
-uv run project-sandbox \
-  --no-forward-credentials \
-  --api-key-env-file /absolute/path/to/.env.sandbox \
-  --agent bash \
-  /absolute/path/to/repo \
-  python:3.12-slim
-```
-
-Repeat `--api-key-env` or `--api-key-env-file` to inject multiple keys. Dry-runs
-validate the variables but print `<redacted>` instead of secret values.
-Environment-based secrets can appear in container runtime metadata or logs, so
-prefer this only for explicit API-key sessions where mounted agent credentials
-are intentionally disabled.
-
-## GitHub Copilot
-
-`--agent copilot` runs the [GitHub Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli)
-(`@github/copilot`, pinned in the image) on your Copilot subscription:
-
-```bash
-uv run project-sandbox --agent copilot /absolute/path/to/repo python:3.12-slim
-uv run project-sandbox --agent copilot --model gpt-5-mini --effort high \
-  --prompt-text "Summarize this repository" /absolute/path/to/repo python:3.12-slim
-```
-
-Copilot runs only on a Copilot subscription: `--agent-proxy` and `--fast` are
-rejected. It is not offered in the generated devcontainer.
-
-### Host
-
-`--copilot-host HOST` picks the GitHub host that issues the token:
-
-- `github.com` (default) covers personal, Copilot Business, and Copilot
-  Enterprise accounts on GitHub.com (GitHub Enterprise Cloud). No flag is needed.
-- `<tenant>.ghe.com` covers GitHub Enterprise Cloud with data residency, for
-  example `--copilot-host acme.ghe.com`. The container then sets
-  `COPILOT_GH_HOST`, and the firewall also pins the tenant's hosts.
-
-Any other host, including self-hosted GitHub Enterprise Server, is rejected.
-
-### Token
-
-The token is resolved on the host at every launch, in this order:
-
-1. `pass show <entry>`. The default entry is `copilot-github-token` for
-   github.com and `copilot-github-token/<host>` for a tenant, so a github.com
-   token is never sent to a tenant. `--copilot-token-pass ENTRY` names a
-   different entry; an explicitly named entry that fails is an error and never
-   falls back to `gh`.
-2. `gh auth token --hostname <host>`. This GitHub CLI token is often broadly
-   scoped (for example `repo` and `workflow`), so every run that uses it prints
-   a `[W]` warning; see [Security](security.md#github-copilot-token).
-3. Otherwise the CLI exits and names both remedies.
-
-The recommended setup is a fine-grained personal access token with only the
-**Copilot Requests** permission (Settings → Developer settings → Fine-grained
-tokens; for a tenant, create it on the tenant host). Store it in pass:
-
-```bash
-pass insert copilot-github-token                  # github.com
-pass insert copilot-github-token/acme.ghe.com     # a GHE.com tenant
-```
-
-Only the first line of the entry is used. Classic `ghp_` tokens are rejected
-because Copilot does not accept them. To use the GitHub CLI fallback instead,
-run `gh auth login --hostname <host>` once.
-
-The token is written to a mode-0600 file in its
-[private session input directory](security.md#private-session-inputs) outside
-the project, mounted read-only at
-`/project-sandbox-secrets/copilot` for Copilot sessions only, and removed when
-the session ends. The entrypoint exports it as `COPILOT_GITHUB_TOKEN` just for
-the Copilot process. `--no-forward-credentials` skips the lookup entirely;
-Copilot then starts unauthenticated and you can log in inside the sandbox.
-
-`--dry-run` shows the planned token source, mount, environment, and firewall
-additions without calling `pass` or `gh`:
-
-```bash
-uv run project-sandbox --dry-run --agent copilot /absolute/path/to/repo python:3.12-slim
-uv run project-sandbox --dry-run --agent copilot --copilot-host acme.ghe.com \
-  --prompt-text "hi" /absolute/path/to/repo python:3.12-slim
-```
-
-### Behaviour in the sandbox
-
-- `--agent copilot` implies `--allow-github` (see the firewall notes in
-  [Security](security.md#network-firewall)).
-- `$COPILOT_HOME` is `/home/agent/.copilot`, seeded with a `config.json` whose
-  `trusted_folders` lists `/workspace`, so no folder-trust prompt appears.
-  `COPILOT_AUTO_UPDATE=false` and `--no-auto-update` keep the pinned version.
-- Interactive runs execute `copilot --allow-all --no-auto-update
-  --disable-builtin-mcps`; headless runs add `-p "$PROMPT" --no-ask-user
-  --output-format json`. The built-in GitHub MCP server is disabled because it
-  would act on GitHub with the same token.
-- `--model` and `--effort` become Copilot's own `--model` and `--effort` flags.
-
-Migrating from `--agent bash --prompt-text 'copilot …'`: that form no longer
-opens GitHub network access (the prompt heuristic was removed) and never
-receives a Copilot token. Use `--agent copilot --prompt-text '…'` instead.
-
-## Python + uv Projects
-
-For a Python project managed with uv, create a `Dockerfile` at the project root
-that installs uv and pre-populates the package cache so the agent can run
-`uv sync` / `uv run` inside the sandbox without reaching PyPI, which the firewall
-blocks at runtime:
-
-```dockerfile
-FROM python:3.11-slim
-
-ARG AGENT_UID=1000
-ARG AGENT_GID=1000
-
-COPY --from=ghcr.io/astral-sh/uv:0.11.23@sha256:d0a0a753ab981624b49c97abc98821c1c09f4ca69d1ef5cee69c501be3d88479 /uv /usr/local/bin/uv
-
-ENV UV_CACHE_DIR=/opt/uv-cache
-ENV UV_PROJECT_ENVIRONMENT=/opt/venv
-ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python
-RUN install -d -o "${AGENT_UID}" -g "${AGENT_GID}" /opt/uv-cache /opt/venv /opt/uv-python
-
-# Pre-populate the uv package cache with all project dependencies so the agent
-# can run `uv sync` / `uv run` inside the sandbox without reaching PyPI.
-# Two layers: the deps-only layer only rebuilds when pyproject.toml/uv.lock
-# change, while the slower project-install layer rebuilds on every source edit
-# but reuses the dependency cache already populated above.
-COPY pyproject.toml uv.lock /tmp/project-setup/
-RUN UV_CACHE_DIR=/opt/uv-cache uv sync \
-        --frozen \
-        --no-install-project \
-        --project /tmp/project-setup
-
-# README.md is declared as `readme =` in pyproject.toml, so the build backend
-# needs it present once the project itself is installed below.
-COPY README.md /tmp/project-setup/
-COPY src/ /tmp/project-setup/src/
-# Match ownership to the agent user created by the sandbox layers that follow.
-RUN UV_CACHE_DIR=/opt/uv-cache uv sync \
-        --frozen \
-        --project /tmp/project-setup \
-    && chown -R "${AGENT_UID}:${AGENT_GID}" /opt/uv-cache /opt/venv /opt/uv-python \
-    && rm -rf /tmp/project-setup
-```
-
-Key points:
-
-- The first layer only copies `pyproject.toml` and `uv.lock`, and installs
-  dependencies with `--no-install-project` so it doesn't need the project's
-  source at all. It only rebuilds when the manifest/lockfile change.
-- The second layer copies all files referenced by `pyproject.toml` metadata
-  (including `README.md`, since it's declared as `readme =`) plus `src/`, then
-  runs `uv sync` again (without `--no-install-project`) to build and install
-  the local project itself. This layer rebuilds on every source edit, but
-  reuses the dependency cache the first layer already populated.
-- The `chown -R 1000:1000` gives the sandbox's `agent` user, created by the
-  layers that follow, full access to the pre-warmed cache, virtual environment,
-  and managed Python directory.
-- `ENV UV_CACHE_DIR=/opt/uv-cache` persists into the running container so the
-  agent's `uv sync` reads from the cache instead of PyPI.
-
-**Custom `--dockerfile` builds must configure uv environment isolation explicitly.**
-The project directory is mounted at `/workspace`, including the host's `.venv`.
-Without `UV_PROJECT_ENVIRONMENT=/opt/venv`, sandbox `uv run` or `uv sync` can
-replace that shared `.venv` with a Linux environment, and host uv commands can
-replace it again. A typical symptom is `Ignoring existing virtual environment
-linked to non-existent Python interpreter`, followed by uv removing `.venv`.
-Recreating it may then fail because the sandbox is offline and the required
-platform-specific packages are absent from its cache.
-
-Set the environment variables shown above before the build-time `uv sync`
-commands. `UV_PYTHON_INSTALL_DIR` also keeps downloaded interpreters inside the
-container and accessible to the agent. Rebuild and recreate an existing sandbox
-to apply the settings. The generated `--python-uv` Dockerfile sets them automatically.
-
-Generated Codex configurations allow `UV_CACHE_DIR`, `UV_OFFLINE`,
-`UV_PROJECT_ENVIRONMENT`, and `UV_PYTHON_INSTALL_DIR` through
-to tool shells alongside core shell environment variables. Their values come
-from the running container; unrelated environment variables are filtered out.
-Restart with regenerated configuration to apply this policy to existing sessions.
-
-Then run:
-
-```bash
-uv run project-sandbox /absolute/path/to/repo --dockerfile /absolute/path/to/repo/Dockerfile
-```
-
-## Node.js + npm Projects
-
-For npm-based web projects, `--node-npm` synthesises the base Dockerfile
-(`.project-sandbox/Dockerfile.node-npm`) instead of you writing one:
-
-```bash
-uv run project-sandbox --node-npm --agent claude /absolute/path/to/repo
-```
-
-The image bakes in the project's dependencies and Chromium so any supported
-agent or Bash shell can build and run browser tests with the runtime firewall
-enabled. Choose the agent independently with `--agent`.
-
-For a Playwright setup and reusable repository instructions,
-see [Headless browser testing](headless-browser-testing.md).
-
-- **Dependencies:** `npm ci` runs at image build time from `package.json`, the
-  lockfile, and npm workspace member `package.json` files only, into
-  `/opt/node-project/node_modules`. Source edits do not invalidate this layer;
-  manifest or lockfile changes do. A failing `npm ci` fails the build.
-- **Browsers:** Debian `chromium`, fontconfig, `fonts-liberation`, and
-  `fonts-noto-color-emoji` are always installed. When the lockfile contains
-  `playwright` or `@playwright/test`, the project's own Playwright CLI installs
-  its matching Chromium (with system dependencies) into `/opt/ms-playwright`.
-- **Environment:** `CHROME_BIN` and `PUPPETEER_EXECUTABLE_PATH` point at
-  `/usr/bin/chromium`, `PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright`, and
-  `PUPPETEER_SKIP_DOWNLOAD=true`. `CI` is not set.
-- **Node.js:** the sandbox's pinned Node.js (v26) and its bundled npm. There is
-  no per-project Node version selection and no corepack.
-
-Supported repo shapes:
-
-- npm only, with `package.json` and a committed `package-lock.json` or
-  `npm-shrinkwrap.json` at the project root. The CLI fails if either is missing.
-- A single root `node_modules`, including npm workspaces (`workspaces` as an
-  array or `{"packages": [...]}`). Workspace manifests are selected from npm's
-  resolved local package paths in a version 2 or 3 lockfile, so npm's brace
-  patterns, extglobs, and exclusion/re-inclusion rules work without host npm
-  being required by project-sandbox. Regenerate and commit the lockfile when
-  adding, removing, or changing workspaces, including changes to directories
-  matched by existing globs. Stale root declarations, missing manifests, and
-  local package paths outside the project are rejected before building, also
-  during dry-run. `npm-shrinkwrap.json` takes precedence when both lockfiles
-  exist. Plain projects without workspaces can still use a version 1 lockfile.
-  Layouts that need per-package `node_modules` directories, pnpm, yarn, and bun
-  are not supported.
-- Only the manifests and lockfile enter the dependency layer, so a root
-  `prepare`/`postinstall` lifecycle script that needs source files fails the
-  build; move such steps into a separate npm script. `.npmrc` is not copied, so
-  private registry configuration and registry auth are not available at build
-  time. This also excludes public-registry install settings such as
-  `legacy-peer-deps` and `install-links`: npm requires the same tree-shaping
-  options used to create the lockfile for `npm ci`. Projects requiring those
-  options should use a custom Dockerfile; do not copy registry credentials into
-  the image. See [npm ci](https://docs.npmjs.com/cli/commands/npm-ci/).
-
-At runtime `/workspace/node_modules` is an in-memory tmpfs that the entrypoint
-fills from the image before the agent starts:
-
-- It hides the host's `node_modules` (whose native binaries target the host
-  platform) and writes never reach the host.
-- The entrypoint requires the destination to be a separate tmpfs mount, not a
-  symlink or an ordinary directory on a tmpfs-backed host filesystem. Without
-  that mount it fails before copying dependencies or starting the agent.
-- It is writable and executable, so `node_modules/.bin` tools, native addons,
-  and tool caches such as `.vite` and `.cache` work.
-- It is ephemeral: every session starts from the image's dependencies. To add a
-  dependency, update `package.json` and the lockfile on the host (or let the
-  agent edit them and rebuild), then start a new session; the image rebuilds the
-  dependency layer.
-- It costs memory. `node_modules` and `/dev/shm` both count against `--memory`
-  (default `8g`). The build prints the baked `node_modules` size (`du -sh`);
-  raise `--memory` for large dependency trees.
-
-`--shm-size SIZE` sets the container's `/dev/shm` size (`<number>` with a `b`,
-`k`, `m`, or `g` suffix). It defaults to `2g` under `--node-npm`, because
-Chromium crashes with the runtime's small default, and otherwise leaves the
-runtime default alone. Both flags are rejected with `--runtime chroot`.
-
-```bash
-uv run project-sandbox --node-npm --shm-size 4g --memory 12g --agent bash /absolute/path/to/repo
-```
-
-Chromium needs `--no-sandbox` inside the container (Playwright passes it by
-default; configure Puppeteer or Karma launchers to do the same); see
-[security](security.md#nodejs--npm-images---node-npm). For web tests that need
-external hosts, see [Internet proxy](internet-proxy.md#web-tests-that-need-external-hosts).
-
-With `--node-npm --branch`, the image is built from the resolved worktree or jj
-workspace, like `--python-uv --branch`.
-
-Generated Node/npm devcontainers are not supported yet: their config lacks the
-`node_modules` tmpfs and `--shm-size`. Starting a Node image through the sandbox
-entrypoint without the required tmpfs fails; use a direct CLI session instead.
-
-## Session observability and image warm-up
-
-Every direct container run reports a session ID and a container name derived
-from it. Session records survive CLI restarts in
-`$XDG_STATE_HOME/project-sandbox/sessions/` (defaulting to
-`~/.local/state/project-sandbox/sessions/`). List them for an orchestrator with:
-
-```bash
-uv run project-sandbox sessions list --json
-```
-
-A record's `status` is `running`, `completed`, `rate_limited`, `interrupted`
-(the CLI was interrupted or failed on its way out), or `orphaned` (still marked
-running, but its CLI process is gone). `container_name` can be matched against
-the selected runtime's container listing. Sessions that end on an HTTP 429 are
-marked `rate_limited` and return exit code 75 (`EX_TEMPFAIL`), while timeouts
-continue to return 124. Only the end of the session log is classified, so a
-transient 429 the agent retried through does not mark an unrelated later failure
-as rate limited.
-
-Warm the image cache without starting an agent or container with:
-
-```bash
-uv run project-sandbox /path/to/project --build-only
-```
-
-The usual image source, runtime, cache, `--force-build`, and resource options
-apply. `--dry-run --build-only` previews the build without writing files.
-
-For a later Pi session using host Ollama, add `--pi-ollama` to the build-only
-command. This installs Pi even without host Pi configuration and includes its
-Ollama configuration and port-scoped firewall rules. Building does not contact
-Ollama or start session forwarders. For example:
-
-```bash
-project-sandbox --build-only --pi-ollama --no-forward-credentials /path/to/project python:3.12-slim
-project-sandbox --agent pi --pi-ollama --no-build --no-forward-credentials /path/to/project python:3.12-slim
-```
-
-Use matching runtime and firewall/proxy options for both commands. Rebuild an
-image previously created without Ollama support: `--no-build` cannot change the
-firewall baked into that image. `--ollama-model` can select the models used by
-the later session.
-
-## Devcontainer Flow
-
-Use `--vcs-access read-only` or `--vcs-access hidden` to restrict `.git`/`.jj`
-access in CLI sessions and generated devcontainers. The default is `full`.
-Branch sessions still capture changes on the host after exit; ordinary
-working-copy sessions leave commits to the user. See [VCS access](vcs-access.md)
-for runtime/layout restrictions and the remaining `.gitattributes` risks.
-
-Before starting the devcontainer, run
-`project-sandbox /absolute/path/to/repo python:3.12-slim` once on the host. This
-refreshes the `/tmp/project-sandbox-<uid>/...` agent credential staging
-directories that the devcontainer mounts at startup.
-
-Then open the project in VS Code, Cursor, or any devcontainer-aware IDE and
-choose **Reopen in Container**. The generated `devcontainer.json` builds the same
-image, mounts the same sanitized configs and staged credentials, runs the same
-firewall via `postStartCommand`, and waits for it before opening a terminal.
-
-Firewall initialization revokes its sudo permission after success and cannot
-run twice in one container. After stopping a devcontainer, use **Rebuild
-Container** to create a fresh container; restarting the old one is unsupported.
-Failed initialization also requires recreation. Direct CLI runs already create
-fresh containers with `--rm`.
-
-Re-run the same `project-sandbox` command before starting or rebuilding the
-devcontainer again whenever credentials may have changed, `/tmp` may have been
-cleaned, or you are on a different host.
-
-Generate the devcontainer without building or running anything:
-
-```bash
-uv run project-sandbox /absolute/path/to/repo python:3.12-slim
-```
-
-This is useful for repos whose owners do not want to run a direct CLI runtime but
-want the sandboxed agent environment in a local devcontainer-capable IDE. Remote
-devcontainer services such as Codespaces need additional adaptation because the
-generated spec uses local `.project-sandbox/` files, absolute host credential
-staging under `/tmp/project-sandbox-<uid>/...`, and firewall capabilities
-(`NET_ADMIN`/`NET_RAW`) that may not be available remotely.
-
-## Image Builds
-
-The container image is built before a direct-run session starts. To keep
-repeated local runs fast, the build is **skipped when nothing changed**:
-project-sandbox fingerprints the generated build inputs (the rendered
-`Dockerfile`, `entrypoint.sh`, `init-firewall.sh`, the devcontainer init script,
-the base image, and the image tag) and records that fingerprint in
-`.project-sandbox/.build-state.json`. On the next run, if the fingerprint still
-matches and the runtime confirms the image exists, the build is skipped and
-`Reusing cached image (inputs unchanged)` is printed; otherwise the image is
-rebuilt and the build duration is reported (`Built image in 12.3s`).
-
-- Auto-skip applies to the default base-image flow. `--python-uv`,
-  `--rust-cargo`, `--node-npm`, and `--dockerfile` builds use the whole project
-  as the build context, so they always invoke the build and rely on the
-  runtime's layer cache instead.
-- For the generated `--python-uv`, `--rust-cargo`, and `--node-npm` flows only,
-  a generated `.project-sandbox/Dockerfile.dockerignore`
-  trims virtualenvs, `node_modules`, and tool caches from the context (it does
-  not exclude `.git` — git version backends read it during the in-image install
-  — nor `.project-sandbox/`, whose scripts are copied into the image). It is not
-  generated for user-supplied `--dockerfile` builds, which may legitimately copy
-  those paths. If the project already has a root `.dockerignore`, it is left
-  authoritative and no per-Dockerfile file is generated.
-- `--force-build` rebuilds even when the cache is valid.
-- `--no-build` skips the build entirely, assuming the image already exists.
-
-## Branch Mode
-
-`--branch <name>` runs the agent in an isolated git worktree (or jj workspace, if
-the project root has a `.jj/` directory) checked out on `<name>`, instead of on
-your working tree. The worktree/workspace is mounted at `/workspace` in the
-sandbox and the repo's VCS metadata is bind-mounted so `git`/`jj` work inside.
-
-```bash
-uv run project-sandbox \
-  --branch feature/login \
-  --agent claude --prompt /absolute/path/to/prompt.txt \
-  /absolute/path/to/repo python:3.12-slim
-```
-
-After the session there is one action, and it never touches your main checkout:
-
-- The agent's work is captured on the branch/bookmark. For git, any uncommitted
-  changes are committed onto `<name>`. For jj, the working copy is snapshotted
-  and the bookmark is advanced to the session tip (`@`, described if it has no
-  message; or `@-` when `@` is empty, so committed work is captured without
-  leaving an empty commit as the tip).
-- The worktree/workspace is then removed. The branch/bookmark keeps the commits
-  for you to merge, rebase, or open a PR from manually.
-
-Related flags:
-
-- `--branch-start-at <revision>` — starting commit/tag/branch/bookmark for a
-  **new** branch. Errors if the branch/bookmark already exists (delete or merge it
-  first, or omit the flag to reuse it). Without it, a new branch starts at `HEAD`
-  (git) / `@` (jj), and an existing branch/bookmark is reused.
-- `--keep-workspace` — leave the worktree/workspace in place after the session so
-  a later `--branch <name>` run reuses it (the reused workspace resumes from the
-  branch/bookmark tip). A failed session is always left in place for inspection.
-- `--worktree-dir <path>` — where to place the worktree/workspace root (default:
-  a sibling `<repo>-worktrees` / `<repo>-workspaces` directory).
-
-Parallel `--branch` runs against one repository are supported when every active
-run uses a distinct branch/bookmark (and therefore a distinct worktree/workspace).
-Do not run two agents on the same branch at once: reuse is intended for sequential
-runs and a shared working copy is not multi-writer-safe. For jj repositories,
-project-sandbox serializes the short `jj workspace add` setup phase with a
-repository-scoped filesystem lock; agent execution remains parallel. Image cache
-checks and first builds are also serialized per generated build context, so a
-second run waits for and reuses an identical image instead of building it twice.
-
-On macOS, container runtimes reach the host filesystem through a VM share whose
-metadata cache serves stale directory entries for about a second. Git deletes
-`.git/worktrees` when a repo's last worktree is removed, so a `--branch` run
-started immediately after a previous one finished could mount that deleted
-directory and fail at startup with `fatal: not a git repository: <gitdir>`.
-When project-sandbox recreates `.git/worktrees`, it now waits out the cache
-window (1.5s, measured from directory creation, so build and staging time count
-against it) before starting the container. Linux containers bind-mount the host
-filesystem directly and never wait; `--verbose` reports the wait when one
-happens.
-
-## Unsupervised Sessions
-
-Run the agent without a TTY, starting from a prompt and writing all output to a
-log file:
-
-```bash
-uv run project-sandbox \
-  --prompt /absolute/path/to/prompt.txt \
-  /absolute/path/to/repo \
-  python:3.12-slim
-```
-
-- `--prompt FILE` copies the file into a private generated staging directory,
-  bind-mounts only that directory read-only, and reads the prompt from
-  `/project-sandbox-prompt/<name>`.
-- `--prompt-text "..."` writes the prompt in a private per-session directory,
-  bind-mounts that directory read-only, and reads it from
-  `/project-sandbox-prompt/prompt.txt`.
-- `--agent {claude,codex,opencode,pi,copilot,bash}` selects which agent to run.
-  If omitted, the CLI only initializes generated config files unless a prompt
-  is supplied. Claude, Codex, OpenCode, and Pi require their host config
-  directories; Copilot needs a token from pass or `gh` (see
-  [GitHub Copilot](#github-copilot)); Bash is always available.
-- `--model MODEL_ID` selects the agent model and `--effort {low,medium,high,xhigh,max}`
-  selects the reasoning effort. Both apply to interactive and headless runs: the
-  CLI forwards them as `PROJECT_SANDBOX_MODEL` / `PROJECT_SANDBOX_EFFORT`, and the
-  entrypoint turns them into each agent's own flags — `--model` plus `--effort`
-  for Claude, `--model` plus `-c model_reasoning_effort=...` for Codex, `--model`
-  plus `--variant` for OpenCode, `--model` plus `--thinking` for Pi, and
-  separate `--model` and `--effort` flags for Copilot. Pi model
-  values are never rewritten, so `provider/id[:thinking]` forms remain intact,
-  and every `--effort` level maps onto a Pi thinking level. They are ignored for
-  Bash.
-- `--fast` turns on the agent's fast mode for Claude and Codex, in interactive
-  and headless runs. The CLI forwards `PROJECT_SANDBOX_FAST=1`, and the
-  entrypoint adds `--settings '{"fastMode":true}'` for Claude or
-  `-c service_tier="fast"` for Codex. Fast mode bills at a higher rate and only
-  works with models and plans that offer it; the agent decides what happens
-  otherwise. `--fast` is rejected for OpenCode, Pi, Copilot, and Bash. It combines with
-  `--model` and `--effort`, e.g. `--agent claude --model opus --fast`.
-- `--pi-tools TOOLS` sets Pi's comma-separated tool allowlist; pass
-  `--pi-tools read,grep,find,ls` for a read-only session. Only meaningful with
-  `--agent pi`; when omitted, Pi's own default tool set applies, so the agent
-  can still edit files and run commands. Pi headless sessions also approve
-  project-local resources and write Pi's JSON event stream to the structured
-  session log (with a Markdown transcript sidecar). Because Pi's JSON output
-  mode always exits 0, project-sandbox inspects that stream and reports exit 1
-  when the final turn errored or was aborted.
-- `--pi-ollama` (with `--agent pi` or `--build-only`) extends the firewall to reach a
-  host-run Ollama server and pre-configures Pi to use it as the default
-  provider while Ollama remains bound to `127.0.0.1:11434`. It is a no-op with
-  any other `--agent`. Build-only prepares the image and configuration; forwarding
-  starts when a Pi session launches. The runtime adapter forwards exactly the
-  planned ports over pasta (`--network=pasta:-4,-T,<port>:<port>`, with `host.docker.internal`
-  mapped to the container's `127.0.0.1`) for Podman on Linux with pasta (the
-  default), uses native host-loopback forwarding for other Podman setups
-  (slirp4netns, Podman machine) and Docker Desktop, and an
-  exact-bridge forwarder for local Linux Docker. That forwarder is part of
-  project-sandbox (no `socat` needed) and is shared: concurrent sessions that
-  use the same service share one forwarder on `<gateway>:<port>`, which exits
-  shortly after the last of them ends. If another program already listens on
-  that address and port, startup fails with "Cannot bind … another process
-  owns that address and port". VM-backed native aliases
-  are accepted only when the container startup probe reaches Ollama. Unsupported modes fail
-  closed; project-sandbox never falls back to `0.0.0.0`.
-
-  Apple `container` requires a one-time localhost DNS mapping shared by Ollama
-  and agent-proxy forwarding:
-
-  ```bash
-  sudo container system dns create host.docker.internal --localhost 203.0.113.113
-  ```
-
-  This DNS/PF change can disrupt container Internet access until runtime
-  networking is rebuilt and might disable Private Relay. Restart the container
-  system after creating the mapping with `container system stop` followed by
-  `container system start`. A mapping that resolves but no longer redirects must
-  be deleted and re-created; see
-  [Apple container host alias](apple-container-dns.md). Combining `--pi-ollama`
-  with `--no-firewall` remains
-  unsupported because the port-scoped allow rule and connectivity probe live in
-  firewall initialization.
-- `--ollama-model MODEL_ID` overrides the built-in default Ollama model list
-  baked into Pi's `models.json`. Repeatable; only meaningful with
-  `--pi-ollama`. The first model (default or first `--ollama-model` given)
-  becomes Pi's default model.
-- `--log FILE` overrides the default log path under
-  `.project-sandbox/sessions/<agent>-main-<timestamp>.log`.
-- `--json-summary PATH` writes one compact JSON object after the session and
-  worktree cleanup completes. Use `-` to print the JSON line on stdout. The
-  object contains `session_id`, `container_name`, `workspace_path`, `agent`,
-  `bookmark`, `jj_change_id`, `exit_code`, `started_at`, and `ended_at`.
-  `jj_change_id` is null for git repositories and runs without `--branch`.
-  Writing the summary is best-effort: an IO failure prints a warning and leaves
-  the session's own exit code intact, so an unusable `PATH` is rejected up front
-  instead.
-- `--branch NAME` uses a predictable sibling directory by default:
-  `<repo>-worktrees/<name>` for git and `<repo>-workspaces/<name>` for jj. A
-  name containing `/` has its slashes replaced with `-` and gains a short
-  disambiguating suffix, so `feat/x` becomes `feat-x-<6 hex chars>` (the first
-  six hex digits of `sha256("feat/x")`) and cannot collide with a literal
-  `feat-x` branch. `--keep-workspace` leaves that registered directory in
-  place, and a later run for the same branch/bookmark reuses it. Rather than
-  recomputing the name, read the exact absolute path from `workspace_path` in
-  the JSON summary.
-- jj session workspaces are always created non-colocated (`jj workspace add
-  --no-colocate` on jj >= 0.46), even when the main repo is colocated: a
-  workspace's own Git worktree cannot be opened from `/workspace` in the
-  container. The agent uses `jj` there, not `git`. A kept workspace that is
-  colocated (created by jj >= 0.46 before this rule) is rejected on reuse with
-  the commands to recreate it; its work is left untouched.
-- Headless Claude, Codex, Pi, OpenCode, and Copilot runs retain their raw JSON event log,
-  translate completed messages and tool activity to Markdown on the terminal as
-  the session runs, and render the same readable transcript beside the log.
-  Transcript generation is best-effort: a parse failure prints a warning but
-  never fails the run.
-- `--runtime {auto,apple-container,docker,podman}` selects the direct-run
-  backend. `auto` prefers Apple `container` on macOS and Docker then Podman on
-  Linux.
-- `--timeout SECONDS` stops the session if the agent runs too long: the container
-  is stopped by name, the CLI process group is also signalled as a fallback, and
-  the CLI returns exit code `124`.
-- `--verbose` controls how much is shown on the terminal. By default it is quiet:
-  image build and Apple `container system start` output is suppressed unless they
-  fail, the in-container firewall banner is silenced, interactive runs just print
-  `Starting container...` before handing off to the agent/shell, and headless
-  runs print the log path up front and a `Wrote N lines to ...` summary at the
-  end. With `--verbose`, the build output streams, the firewall banner shows, and
-  additional raw non-agent output is teed live to the terminal as well as the
-  log. Live agent progress is shown as Markdown in either mode. Verbose mode
-  also prints the resolved coding-agent config (agent, model, effort, and fast
-  mode for Claude/Codex) before launch. The entrypoint echoes those values and
-  the exact agent argv from inside the container; a blank model/effort/fast
-  value means the env var did not arrive.
-- The agent's exit code is propagated, so CI pipelines can detect failures. Pi's
-  JSON output mode always exits 0, so a headless Pi run whose last assistant
-  message ended in `error`/`aborted` is reported as exit `1` (or `75` when the
-  log identifies a rate limit); an errored turn that a later auto-retry
-  recovered from stays a success. Copilot's JSONL schema and failed-run exit
-  codes are undocumented, so an exit-0 headless Copilot run is reported as
-  exit `1` (or `75` for a rate limit) only when the final record of its stream
-  is an error record; anything ambiguous keeps the original exit code.
-
-Unsupervised sessions skip the interactive `-it` flags and switch dispatch to
-`<agent>-headless` for all supported agents. Claude runs with
-`--dangerously-skip-permissions`, Codex uses `approval_policy = "never"`,
-OpenCode runs via `opencode run --format json`, Pi runs with
-`-p --mode json --approve` (Pi has no interactive trust prompt to answer
-headlessly, so `--approve` is always passed), Copilot runs with
-`-p "$PROMPT" --allow-all --no-ask-user --output-format json`, and Bash runs
-with `bash -lc`.
-The container is still the sandbox boundary; review the diff before
-integrating.
-
-A maliciously crafted file in the workspace, such as a prompt-injection in a
-README, can still steer an unsupervised agent. Use narrow prompts and inspect the
-diff before merging.
-
-## Updating Pinned Dependencies
-
-Pinned package and tool versions are updated with the interactive helper:
-
-```bash
-uv run python scripts/update-pins.py
-```
-
-By default, a release must have been published for at least 24 hours before
-it is considered for adoption. Change that safety window with
-`--min-age-hours`, for example `--min-age-hours 48`; use `0` to disable it.
-If the newest release is inside the safety window, the script considers the
-newest release that is old enough and prints a note about the newer release.
-Stable version ordering is used when choosing candidates; alpha, beta, release
-candidate, and development versions are ignored, and updates are only offered
-when the selected version is newer than the current pin.
-
-The script checks:
-
-- exact PyPI pins in `pyproject.toml`, regenerating `uv.lock` after accepted
-  direct dependency updates;
-- lockfile-only PyPI package pins in `uv.lock`, updated through
-  `uv lock --upgrade-package`;
-- global npm tool pins in the generated Dockerfile template;
-- pinned Node.js and jj binary releases, including their per-architecture SHA256
-  checksums;
-- the pinned `ghcr.io/astral-sh/uv` image tag and digest used by the project
-  Dockerfile helpers.
-
-For each changed upstream version, the script asks before editing so individual
-updates can be accepted or skipped. After accepting updates, run the usual
-verification commands:
-
-```bash
-uv run python -m compileall src tests scripts
-uv run pytest -q
-```
-
-For session-time proxy trust, use repeatable [`--ca-cert PATH`](internet-proxy.md#injecting-proxy-ca-certificates) with `--internet-proxy`. This also applies to generated devcontainers.
-
-With `--python-uv --branch`, the image is built from the resolved Git worktree
-or jj workspace, including its `pyproject.toml` and `uv.lock`. Generated sandbox
-and devcontainer files live in that workspace so the baked environment matches
-the sources mounted at `/workspace`. Builds use the runtime's layer cache;
-`--no-build` still skips rebuilding, so the existing image must already contain
-the branch's dependencies.
+At the end, uncommitted changes are committed onto the branch (Git), or the
+working copy is snapshotted and the bookmark moved to it (jj). Nothing is merged
+or pushed; integrate the branch yourself. The worktree is then removed unless
+the session failed or `--keep-workspace` was given, in which case a later run
+for the same branch reuses it.
+
+- `--branch-start-at REV` sets the start of a **new** branch (default `HEAD` /
+  `@`); it is an error for an existing branch.
+- `--worktree-dir DIR` changes the default `<repo>-worktrees/` (Git) or
+  `<repo>-workspaces/` (jj); names with `/` become `<name with ->-<6 hex>`.
+  The JSON summary's `workspace_path` gives the exact path.
+- Concurrent sessions need distinct branches; the same branch is refused while
+  in use. jj workspaces are always non-colocated, so the agent uses `jj` there.
+- `--vcs-access read-only|hidden` protects the repository metadata from the
+  session; see [VCS access](vcs-access.md).
+
+## Devcontainers
+
+Running `project-sandbox /path/to/repo IMAGE` also writes `.devcontainer/`. Run
+it on the host first (it stages the credentials the devcontainer mounts), then
+choose **Reopen in Container** in VS Code, Cursor or another devcontainer-aware
+IDE. The devcontainer builds the same image, mounts the same configs and
+credentials, and runs the firewall from `postStartCommand`.
+
+- Use **Rebuild Container** rather than restarting a stopped one: the firewall
+  runs once per container and drops its sudo rule afterwards.
+- Re-run the `project-sandbox` command when credentials may have changed or
+  `/tmp` was cleaned.
+- Remote services such as Codespaces need adaptation: the configuration uses
+  local paths, `/tmp` credential staging and `NET_ADMIN`/`NET_RAW`.

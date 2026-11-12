@@ -30,7 +30,7 @@ sandbox.
 If you add or upgrade dependencies, exit the current sandbox and start a new
 session to rebuild from the updated manifests. Runtime `node_modules` is
 ephemeral; source files, tests, and artifacts under `/workspace` persist on the
-host. See [Node.js + npm projects](usage.md#nodejs--npm-projects) for details.
+host. See [Node.js + npm projects](usage.md#nodejs-with-npm) for details.
 
 ## Configure the application tests
 
@@ -180,7 +180,7 @@ for prerequisites and the checks performed.
   and port. The example's Vite-specific flags do not apply to every framework.
 - **External resources fail:** mock third-party calls and serve assets locally.
   For tests that require external hosts, follow the
-  [Internet proxy guide](internet-proxy.md#web-tests-that-need-external-hosts).
+  [Network access](networking.md#tests-that-need-external-hosts).
 - **Chromium crashes under load:** reduce test workers or raise `--memory` and
   `--shm-size`. The Node/npm defaults are 8 GB memory and 2 GB shared memory;
   dependencies in tmpfs also consume container memory.

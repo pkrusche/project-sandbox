@@ -78,7 +78,7 @@ Deferred by `add-copilot-agent-support`:
 ## Remote proxy endpoints follow-ups
 
 Remote HTTP/HTTPS proxy and gateway endpoints are implemented; see
-[proxy endpoints](docs/proxy-endpoints.md) and
+[network access](docs/networking.md#endpoint-rules) and
 [development](docs/development.md#proxy-endpoint-verification). The opt-in
 `proxy-endpoints` suite runs on Docker, Podman and Apple container, with
 fixtures behind each runtime's host-loopback path. Still to consider:

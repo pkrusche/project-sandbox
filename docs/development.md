@@ -1,4 +1,4 @@
-# Development Guide
+# Development guide
 
 ## Local Setup
 
@@ -37,9 +37,10 @@ fingerprint plus image tag in `.project-sandbox/.build-state.json`. `cli.py`
 skips the build when the fingerprint matches and `container_cli.image_exists()`
 confirms the image is present; auto-skip is limited to the default flow where the
 build context equals the generated `.project-sandbox` dir. `dockerfile.render_dockerignore()` writes a scoped `Dockerfile.dockerignore`
-(BuildKit's per-Dockerfile ignore convention) for the `--python-uv` flow only —
-the one whole-project context whose Dockerfile we generate — so it doesn't tar
-virtualenvs/caches to the daemon. It is skipped for user-supplied `--dockerfile`
+(BuildKit's per-Dockerfile ignore convention) for the generated whole-project
+flows (`--python-uv`, `--rust-cargo`, `--node-npm`) so they don't tar
+virtualenvs, `node_modules` or caches to the daemon. It keeps `.git` (version
+backends read it during installs) and `.project-sandbox/`. It is skipped for user-supplied `--dockerfile`
 builds (which may copy those paths) and when the project has its own root
 `.dockerignore` (left authoritative). All of this degrades safely: any mismatch
 or inconclusive check falls through to a normal build.
@@ -290,7 +291,14 @@ On Podman, leave `DOCKER_HOST` unset (or pointed at Docker) for the
 with a pull error.
 
 The Internet isolation audit expects the proxy to deny `--blocked-url`, which
-defaults to `https://example.com`; pass it only to check a different URL.
+defaults to `https://example.com`; pass it only to check a different URL. It
+sends a small Responses API request through the gateway before and after
+stopping the Internet proxy (model `gpt-5-mini`, or `AGENT_PROXY_TEST_MODEL`),
+bounded by `max_output_tokens`; a response cut off by that limit still passes.
+If the Internet checks pass but all AI checks fail, read the `DIAGNOSTIC:`
+lines in the log (HTTP status and bounded error body, gateway key redacted;
+also in `result.json` under `gateway_diagnostics` with `--keep`). An API
+rejection can fail this probe even when agent sessions work.
 
 Naming an opt-in suite with `--only` is itself the opt-in, so `--only
 proxy-endpoints`, `--only agent-proxy`, `--only agent-proxy-isolation`, `--only
@@ -417,6 +425,21 @@ It runs `uv sync --locked`, compile checks, Ruff, pytest, and the complete E2E
 aggregator in that order. The default `auto` runtime picks a real container
 runtime so container-only checks run; pass `--runtime chroot` on Linux for a
 host-only run without Docker or Podman.
+
+## Updating pinned dependencies
+
+```bash
+uv run python scripts/update-pins.py                 # interactive; asks per update
+uv run python scripts/update-pins.py --min-age-hours 48
+```
+
+It checks exact PyPI pins in `pyproject.toml` (regenerating `uv.lock`),
+lockfile-only pins in `uv.lock`, the global npm tool pins in the Dockerfile
+template, the Node.js and jj releases with their per-architecture SHA-256
+checksums, the `ghcr.io/astral-sh/uv` image tag and digest, and the egress
+sidecar's Alpine digest and Squid release. Only stable releases older than the
+safety window (24 hours by default; `0` disables it) are offered, and pins never
+move backwards. Run the usual verification afterwards.
 
 ## Releasing
 

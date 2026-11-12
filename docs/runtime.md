@@ -1,181 +1,144 @@
-# Generated Files and Runtime Behavior
+# Generated files and runtime behavior
 
-## End-to-End Flow
+## End-to-end flow
 
-Given `project-sandbox /path/to/repo python:3.12-slim`:
+`project-sandbox /path/to/repo python:3.12-slim` generates files only:
 
-1. Read host `git config --global` identity.
-2. Render `<project>/.project-sandbox/` with generated Dockerfiles, entrypoint,
-   firewall scripts, sanitized agent configs, a local `.gitignore` safeguard, and
-   a devcontainer post-start init script. Agent credentials are staged separately
-   under `/tmp` with private directory permissions to reduce the chance of
-   accidentally committing them.
-3. Render `<project>/.devcontainer/` with symlinks back into
-   `.project-sandbox/` so the Dockerfile and firewall script remain a single
-   source of truth.
-4. Detect available host agent configs (`~/.claude`, `~/.codex`,
-   `~/.config/opencode`, `~/.pi/agent`) and install only those agent CLIs into
-   the generated Dockerfile. OpenSpec and Bash are always available.
-5. Append `.project-sandbox/` and `.devcontainer/` to `<project>/.gitignore`
-   idempotently.
+1. Reads the host's global Git identity.
+2. Renders `<project>/.project-sandbox/` (Dockerfiles, entrypoint, firewall
+   scripts, sanitized agent configs, a `.gitignore` safeguard) and
+   `<project>/.devcontainer/`, whose files link back into `.project-sandbox/`.
+3. Installs only the agent CLIs whose host configs exist (`~/.claude`,
+   `~/.codex`, `~/.config/opencode`, `~/.pi/agent`); OpenSpec and Bash are always
+   available.
+4. Appends `.project-sandbox/` and `.devcontainer/` to `<project>/.gitignore`.
 
-Given `project-sandbox --agent claude /path/to/repo python:3.12-slim`, it also:
+With `--agent NAME` it also:
 
-1. Selects a direct-run runtime: Apple `container` on macOS, or Docker/Podman on
-   Linux. Podman must be rootless; a rootful Podman is refused.
-2. Verifies the Apple `container` system service is running when that runtime is
-   selected.
-3. Builds or reuses the image, pins it for this session, and releases the build
-   context lock. CLI configs, credentials, prompts, and env files are staged in
-   a unique private directory outside the checkout; persistent devcontainer
-   credentials are left alone.
-4. Starts the container entrypoint, which wires Git and jj identity, copies only
-   the selected agent's mounted credentials into the container's home, then runs
-   the firewall before exec'ing the agent. Headless modes use the same base-agent
-   credential policy. `--agent bash` is intentionally multi-agent and receives
-   every detected forwarded credential except Copilot's token. On exit, the
-   CLI removes only its own private session input tree.
+1. Selects a runtime: Apple `container` on macOS, Docker or Podman on Linux.
+   Podman must be rootless.
+2. Builds or reuses the image and pins it for the session (see
+   [Concurrent sessions](#concurrent-sessions)), then stages configs,
+   credentials, prompts and env files in a private per-session directory
+   outside the checkout.
+3. Starts the container. The entrypoint wires Git and jj identity, copies only
+   the selected agent's credentials into the container's home, installs the
+   firewall, and execs the agent. `--agent bash` gets every detected credential
+   except Copilot's token. On exit the CLI removes its own session inputs.
 
-Interactive `--agent codex` launches with `--no-daemon` to bypass Codex's shared
-background app server, which can fail to start inside the sandbox. Model, effort,
-fast mode, and forwarded arguments still apply. Headless runs continue to use `codex exec`.
-When launching Codex manually from a sandbox shell or devcontainer, use
-`codex --no-daemon` as well. Both generated Codex configs set
-`check_for_update_on_startup = false`; update Codex by rebuilding the image.
+Interactive Codex runs with `--no-daemon`, because its shared background app
+server can fail to start in the sandbox; use `codex --no-daemon` when starting
+it by hand. Generated Codex configs disable update checks; rebuild the image to
+update Codex.
 
-With `--agent pi --pi-ollama`, a runtime networking adapter is selected before
-step 4. Native host-loopback forwarding is preferred; rootless Podman on Linux
-with pasta forwards only the planned ports to host loopback over IPv4, and local
-Linux bridge modes (Docker Engine) lease a shared project-sandbox forwarder on the
-exact bridge address: one detached forwarder per bridge address and port, shared
-by concurrent sessions and exiting about two seconds after the last session ends
-(see [`docs/security.md`](security.md)). No external tool such as `socat` is
-needed. Agent-proxy and
-Ollama sessions on Apple `container` use a user-configured
-`host.docker.internal` localhost DNS mapping; see the setup and restart warning
-in `docs/usage.md`.
+**Local services** (Ollama, a local agent gateway or Internet proxy) are
+forwarded per runtime: native host-loopback forwarding where available; pasta
+for rootless Podman on Linux (planned ports only); a leased, shared forwarder
+on the bridge address for Docker Engine, which exits about two seconds after
+the last session using it. Apple `container` needs the
+[`host.docker.internal` alias](apple-container-dns.md).
 
-On Linux, `--runtime chroot` explicitly selects a dummy filesystem-layout
-verification runtime. It uses rootless `unshare --map-root-user --mount`, bind
-mounts host system directories and the normal sandbox mount set into a temporary
-chroot, then runs interactive or headless Bash. It does not build an image,
-configure a firewall or network namespace, install coding-agent CLIs, or provide
-a security boundary. `--runtime auto` never selects it.
+**`--runtime chroot`** (Linux only) checks the filesystem layout with rootless
+`unshare --map-root-user --mount` and runs Bash. It builds no image, configures
+no firewall, installs no agents and is **not a security boundary**;
+`--runtime auto` never picks it. Some hardened kernels block it, which is why CI
+uses Docker.
 
-This requires unprivileged user namespaces, which some hardened or nested
-environments restrict in ways that vary by kernel/config (e.g. AppArmor
-blocking `unshare --map-root-user`, or a mount policy rejecting a bind or
-fresh mount of `/proc`) — the CI e2e workflow uses `--runtime docker` instead
-for this reason (see `.github/workflows/e2e.yml`).
-
-## File Layout
+## File layout
 
 ```text
 <project>/
 |-- .gitignore                         # appended idempotently
-|-- .project-sandbox/
-|   |-- .gitignore                     # local safeguard
-|   |-- Dockerfile                     # generated for direct CLI runs
-|   |-- Dockerfile.devcontainer        # generated for devcontainer build
-|   |-- entrypoint.sh                  # container PID 1
-|   |-- init-firewall.sh               # CLI firewall variant
-|   |-- init-firewall-devcontainer.sh  # devcontainer firewall variant
+|-- .project-sandbox/                  # masked inside sessions
+|   |-- Dockerfile, Dockerfile.devcontainer
+|   |-- entrypoint.sh, init-firewall.sh, init-firewall-devcontainer.sh
 |   |-- project-sandbox-devcontainer-init
-|   |-- claude/settings.json
-|   |-- claude-devcontainer/settings.json
-|   |-- codex/config.toml
-|   |-- codex-devcontainer/config.toml
-|   |-- pi/models.json                 # only with --pi-ollama
-|   |-- pi/settings.json               # only with --pi-ollama
+|   |-- claude/, claude-devcontainer/, codex/, codex-devcontainer/
+|   |-- pi/                            # only with --pi-ollama
 |   |-- .dockerfile-checksums.json     # trusted project Dockerfile hashes
-|   `-- sessions/                      # unsupervised-mode logs
+|   `-- sessions/                      # unsupervised-session logs
 `-- .devcontainer/
     |-- devcontainer.json
-    |-- Dockerfile                 -> ../.project-sandbox/Dockerfile.devcontainer
-    |-- init-firewall.sh           -> ../.project-sandbox/init-firewall-devcontainer.sh
-    |-- claude                     -> ../.project-sandbox/claude
-    |-- claude-devcontainer        -> ../.project-sandbox/claude-devcontainer
-    |-- codex                      -> ../.project-sandbox/codex
-    `-- codex-devcontainer         -> ../.project-sandbox/codex-devcontainer
+    `-- Dockerfile, init-firewall.sh, claude*, codex*  -> ../.project-sandbox/…
 ```
 
-The `.project-sandbox/` and `.devcontainer/` directories are generated local
-state and are ignored as a whole. Re-run `project-sandbox` after cloning, pulling
-generated config changes, or refreshing devcontainer credentials. Persistent
-devcontainer staging lives under `/tmp/project-sandbox-<uid>/...`; CLI runs use
-separate [private session inputs](security.md#private-session-inputs) and never
-refresh or purge that persistent tree. Neither root is mounted wholesale.
-Generated devcontainers are intentionally
-multi-agent and mount all detected credential directories. Use
-`--no-forward-credentials` to render an unauthenticated devcontainer.
+Both directories are generated local state; re-run `project-sandbox` after
+cloning or pulling. Devcontainers are multi-agent and mount every detected
+credential directory, staged under `/tmp/project-sandbox-<uid>/`; use
+`--no-forward-credentials` for an unauthenticated devcontainer.
 
-## Image Tags and OpenSpec
-
-When `--image-tag` is omitted, the generated image tag is
-`project-sandbox-<project-name>-<8-char sha256>:latest`. The project name is
-sanitized from the resolved project directory name, and the hash is derived from
-the resolved absolute path so two projects with the same directory name do not
-collide. Use `--image-tag` when you need a stable external tag, want to share a
-prebuilt image, or need to align with local image cleanup scripts.
-
-Generated images install a pinned `@fission-ai/openspec` version, which puts
-`openspec` on `PATH`. project-sandbox does not run `openspec init` or create
-OpenSpec workspace files automatically; run OpenSpec initialization commands
-inside the project only when that project should own those files.
-
-## Workspace Masking
-
-The generated `.project-sandbox/` directory remains on the host for image builds
-and devcontainer setup, but direct runs and devcontainers mask
-`/workspace/.project-sandbox` with an empty read-only bind mount. Agents still
-receive the generated config, credentials, prompts, and history through their
-dedicated mounts, but cannot edit the generated files through the workspace.
-
-The `/workspace/.devcontainer` directory is masked the same way (with the same
-empty read-only mount), so the agent cannot read the devcontainer's host-path
-mounts and config or edit them. For direct runs the mask is added only when a
-`.devcontainer` directory exists in the workspace.
-
-History and mask sources live outside the repository in
-`$XDG_STATE_HOME/project-sandbox/mounts`, defaulting to
-`~/.local/state/project-sandbox/mounts`. The layout is:
+History and mask sources live in private host storage,
+`$XDG_STATE_HOME/project-sandbox/mounts` (default
+`~/.local/state/project-sandbox/mounts`):
 
 ```text
 mounts/
-|-- helpers/                       # isolated devcontainer startup helper
+|-- helpers/                       # devcontainer startup helper
 `-- projects/<hash-of-project-path>/
-    |-- history/
-    |   |-- shell/                 # bash_history is written by the container
-    |   `-- claude_projects/
-    `-- masks/
-        |-- <session-id>/empty/    # removed at CLI session teardown
-        `-- devcontainer/empty/    # retained for subsequent reopen operations
+    |-- history/shell/, history/claude_projects/
+    `-- masks/<session-id>/empty/, masks/devcontainer/empty/
 ```
 
-Each CLI session gets its own empty read-only mask. Interactive CLI sessions and
-devcontainers share persistent history for the same canonical project path;
-headless sessions do not mount that history. Dry-runs create no host storage.
+Interactive sessions and devcontainers of a project share its history; headless
+sessions mount none. Re-render devcontainer configurations after moving a
+workspace. Old `.project-sandbox/history` contents are not migrated.
 
-Regenerate existing devcontainer configurations with `project-sandbox` to adopt
-the private sources and startup helper. Regeneration is also required after
-moving a workspace or removing the helper installation. Devcontainer startup
-recreates missing history/mask directories and empty credential mount roots,
-but refuses symlinks, unexpected ownership or permissions, and nonempty masks.
+## Workspace masking
 
-Existing `.project-sandbox/history` contents are left untouched and are not
-automatically migrated; history in the new location starts empty. Broad extra
-mounts such as the entire home directory are rejected when they expose private
-mount storage. Ambiguous or unmodeled `--mount` options are also rejected; use
-explicit supported bind mounts. See [implicit mount security](security.md#implicit-history-and-mask-mounts).
+Sessions and devcontainers see `/workspace/.project-sandbox` and
+`/workspace/.devcontainer` as empty read-only directories, so an agent can't
+read or edit generated files or the devcontainer's host-executed configuration.
+Agents still get their config, credentials, prompts and history through
+dedicated mounts. In direct runs the `.devcontainer` mask is added only when the
+directory exists.
 
-## Project Dockerfile Tamper Detection
+## Image tags and OpenSpec
 
-When you build from a project Dockerfile supplied with `--dockerfile`, that file
-lives in the writable workspace where an agent could rewrite it during a session.
-After each build, project-sandbox records a SHA256 of the Dockerfile in
-`.project-sandbox/.dockerfile-checksums.json` — inside the masked directory, so a
-running sandbox can neither read nor alter it. On a later run the current
-Dockerfile is re-hashed and compared; a mismatch prints a `[W]` warning so you can
-review the change before rebuilding. Generated Dockerfiles (the `base_image` and
-`--python-uv` flows) live in the masked directory and cannot be tampered with, so
-they are not tracked.
+Without `--image-tag`, the tag is
+`project-sandbox-<project-name>-<8-char sha256 of the path>:latest`, so projects
+with the same directory name don't collide. Use `--image-tag` for a stable or
+shared tag.
+
+Images include a pinned `@fission-ai/openspec`; project-sandbox never runs
+`openspec init` for you.
+
+## Project Dockerfile tamper detection
+
+A `--dockerfile` lives in the writable workspace. After each build its SHA-256
+is recorded in `.project-sandbox/.dockerfile-checksums.json` (masked from the
+sandbox); a later run that finds a different hash prints a `[W]` warning so you
+can review the change before rebuilding. Generated Dockerfiles live in the
+masked directory and need no tracking.
+
+## Concurrent sessions
+
+**Builds.** Invocations sharing a generated `.project-sandbox` directory hold
+its lock from rendering through image selection, so build inputs stay stable
+while the builder reads them. A second lock on the runtime's image store, shared
+across projects, covers cache inspection, building and image selection; builds
+on one runtime queue, sessions then run concurrently.
+
+**Image pinning.** Each session tags its image with a private
+`localhost/project-sandbox-session:<random>` alias under the image lock, checks
+its content identity, and deletes it at teardown. Another project moving a
+shared tag can't swap or delete the session's image. Docker and Podman launch
+the image ID; Apple container launches the alias. `--no-build` pins the existing
+image but doesn't check that it was built for the session's options.
+
+**Cache reuse** needs matching generated inputs (including certificates and
+ignore files), runtime, build identity, tag and image identity. Whole-project
+build contexts always build, using the runtime's layer cache.
+
+**Workspace ownership.** A `--branch` session holds an exclusive lease on its
+branch/bookmark and workspace directory from setup through finalization; a
+second launch for either is refused as "already in use", whatever
+`--worktree-dir` or symlinked path it uses. Kept workspaces become reusable when
+their session ends. Git and jj setup and finalization each take a short
+repository lock. Git index locks are never removed automatically: if one
+exists, the worktree is kept and the lock path reported. Stop whatever uses the
+worktree, confirm the lock is stale, then remove it by hand.
+
+These locks coordinate project-sandbox processes only, not external
+devcontainer builders, manual runtime commands or your own Git use. A killed CLI
+releases its locks but can leave a container running; stop it before reusing
+the workspace.

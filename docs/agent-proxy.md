@@ -107,7 +107,7 @@ project-sandbox --agent bash --agent-proxy https://models.corp.example/api/v1 --
 Remote hosts retain their scheme, hostname, effective port (443 here), and API
 path. Only local HTTP endpoints use forwarding; HTTPS loopback is rejected, and
 HTTPS gateways must use a DNS hostname rather than an IP address
-([why](proxy-endpoints.md)).
+([why](networking.md#endpoint-rules)).
 Gateway discovery ignores ambient host proxies and rejects redirects. Both host
 and sandbox TLS checks verify trust and endpoint identity before agent startup.
 
@@ -116,4 +116,4 @@ and stopping either service leaves the other independently reachable. Remote
 names are pinned by the sandbox for the session; restart after DNS changes. The
 firewall grants IP/port access, which also covers other virtual hosts on that
 same pair. Agent-only `--no-firewall` has ordinary DNS and no pinning guarantees.
-See the [URL matrix, CA scope, and client compatibility](proxy-endpoints.md).
+See [Network access](networking.md#endpoint-rules) for the URL rules, CA scope and client compatibility.

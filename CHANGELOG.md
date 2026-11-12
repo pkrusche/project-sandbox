@@ -59,7 +59,7 @@ Notable changes to `project-sandbox` are documented here.
   and generated devcontainers (default `full`). See [VCS access](docs/vcs-access.md).
 - `--no-internet-proxy-preflight` skips the host-side Internet-proxy check for
   proxies that only containers can reach; the in-sandbox check still runs.
-  Rejected on Apple container. See [Internet proxy](docs/internet-proxy.md).
+  Rejected on Apple container. See [Network access](docs/networking.md#internet-proxy).
 - `--pi-ollama` works with `--build-only`, so a later `--no-build` Pi session
   gets Ollama's configuration and firewall rules baked into the image.
 - End-to-end tooling: `scripts/run_all_supported_e2e_tests.sh` runs the suites
@@ -76,7 +76,7 @@ Notable changes to `project-sandbox` are documented here.
   every session pins its image under a private
   `localhost/project-sandbox-session:<random>` alias until teardown, so another
   project moving a shared `--image-tag` cannot change or delete it. See
-  [concurrent builds](docs/concurrent-builds.md).
+  [concurrent sessions](docs/runtime.md#concurrent-sessions).
 - Session configs, credentials, prompts and env files are staged in a private
   per-session directory outside the checkout, so concurrent sessions of one
   project no longer share them.
@@ -139,14 +139,14 @@ Notable changes to `project-sandbox` are documented here.
   loopback. The sandbox pins each endpoint's DNS answers in `/etc/hosts` and
   the firewall allows only those addresses and ports. On Apple container, a
   remote `--internet-proxy` is reached through a host-loopback relay so the
-  host's VPN routes and DNS apply. See [proxy endpoints](docs/proxy-endpoints.md).
-- [proxied network access during image builds](docs/build-network.md):
+  host's VPN routes and DNS apply. See [endpoint rules](docs/networking.md#endpoint-rules).
+- [proxied network access during image builds](docs/networking.md#proxies-for-image-builds):
   `--build-proxy` routes image-build downloads through a credential-free
   HTTP/HTTPS proxy (via a host-loopback forwarder on Apple container), without
   persisting proxy values in generated Dockerfiles. `--build-no-proxy` adds
   `no_proxy` entries, and `--build-ca-cert` installs PEM CA certificates or
   bundles before build downloads.
-- [`project-sandbox doctor`](docs/doctor.md) checks host prerequisites
+- [`project-sandbox doctor`](docs/usage.md#install) checks host prerequisites
   (Python, container runtimes, `socat`, Git and jj) without starting services
   or writing files, with a `--json` report for scripts and CI.
 - Rootless Podman on Linux forwards host-loopback services (Ollama, agent

@@ -28,31 +28,9 @@ project-sandbox --agent claude --egress sidecar .
 
 Sidecar mode works on Apple `container` (1.4.1 or later), Docker Desktop,
 Podman machine, Docker Engine (rootful) and rootless Podman on a Linux host.
-Rootless Docker is rejected before any container work:
-
-```
---egress sidecar does not support rootless Docker: its network namespace cannot
-reach a sidecar on host loopback, and the setup is untested. Sidecar mode works
-on Apple container, Docker Desktop, Docker Engine (rootful), Podman machine and
-rootless Podman; use --egress firewall here.
-```
-
-## Choosing an egress mode
-
-| | Firewall (default) | Sidecar (`--egress sidecar`) | Your own proxy (`--internet-proxy`) |
-|---|---|---|---|
-| Policy | Domains pinned to IPs at start | Hostnames per request, wildcards | Whatever the proxy enforces |
-| Where policy lives | Flags per launch (`--extra-domain`) | One global `egress.toml` | The proxy |
-| Live changes | Relaunch | `project-sandbox-egress allow add` | The proxy's own tooling |
-| Lifecycle | None | One sidecar per runtime, managed by `project-sandbox-egress` | Managed by you |
-| Combine with a corporate proxy | — | `[egress.upstream] url` | It is the proxy |
-| GitHub | `--allow-github` | Blocked (Copilot profile only) | The proxy |
-
-Use firewall mode when a session needs only a few fixed domains or GitHub. Use
-the sidecar for one hostname policy that many sandboxes share. Use
-`--internet-proxy` when an existing filtering proxy should decide on its own
-(see [Internet proxy](internet-proxy.md)). The sidecar can also put a local
-allowlist in front of such a proxy ([Parent proxy](#parent-proxy)).
+Rootless Docker is rejected before any container work. See
+[Network access](networking.md#choosing-an-egress-mode) for how the sidecar
+compares with firewall mode and your own `--internet-proxy`.
 
 ## How it works
 
@@ -204,34 +182,6 @@ project-sandbox --dry-run --no-build --runtime docker --agent bash \
   --egress sidecar . python:3.12-slim
 ```
 
-## Extra mount validation
-
-Every extra `--mount` must have a host bind source that the launcher can check.
-Adding options such as `bind-propagation=rprivate` or `consistency=cached` does
-not bypass policy or CA-key isolation. These options are preserved for the
-runtime after their sources pass validation. Supported additional options are
-`bind-propagation`, `bind-recursive`, `bind-nonrecursive`, and `consistency`;
-acceptance by the selected runtime still depends on that runtime's support.
-
-Mount fields use CSV quoting, matching the
-[Docker CLI parser](https://github.com/docker/cli/blob/master/opts/mount.go).
-Aliases (`src`, `dst`, `destination`, `ro`) and option-name casing are normalized.
-For a comma in a path, quote the entire field, including `source=`:
-
-```bash
-project-sandbox --egress sidecar --agent bash \
-  --mount 'type=bind,"source=/host/cache,shared",target=/cache,bind-propagation=rprivate' \
-  ./project python:3.12-slim
-```
-
-Duplicate fields (including aliases), malformed quoting, empty paths, unsupported
-options, and non-bind types such as named volumes are rejected. In particular,
-volume drivers and `volume-opt=device=...` cannot smuggle a host path past the
-check. Fully modeled source/target shorthand without `type` is rendered as an
-explicit bind mount; mounts with additional passthrough options must specify
-`type=bind` so the runtime cannot interpret them as volumes. These checks also
-run during dry-runs, before sidecar inspection or generation.
-
 ## Managing the sidecar
 
 `project-sandbox-egress` manages the sidecar of one runtime. Every subcommand
@@ -263,8 +213,7 @@ project-sandbox-egress down                    # stop it and delete its CA
   lose their connections; after a `restart` to a new port, relaunch them.
 - Exit codes: 0 success, 1 operational failure, 2 usage error.
 
-`project-sandbox doctor` shows a read-only status line per runtime (see
-[doctor](doctor.md)).
+`project-sandbox doctor` shows a read-only status line per runtime.
 
 ### Concurrent policy changes
 
@@ -486,22 +435,6 @@ Other problems:
 
 ## Verification
 
-Two opt-in e2e suites cover this mode. See the
-[development guide](development.md).
-
-- `scripts/run-e2e-tests.sh --only egress-sidecar` (not billable) runs real
-  sessions and checks each policy probe both from inside the sandbox and in the
-  sidecar log. A CONNECT denial passes only on zero bytes followed by a close
-  or reset; a timeout or an unreachable sidecar fails. A second session turns
-  the Copilot profile on and probes the intercepted `api.github.com`: an
-  allowed path reaches GitHub, a denied path and plain HTTP get labelled 403
-  pages, and a foreign or missing SNI and raw tunnels fail. The suite also
-  covers parent chaining through an intercepting fixture
-  proxy, a local service that listens only on host loopback, and the shared
-  sidecar: two concurrent sandboxes, reuse across launches, a live `allow add`,
-  and `down`.
-- `scripts/run-e2e-tests.sh --only copilot-egress` (billable) captures the
-  Copilot CLI's hosts and paths, verifies the Copilot profile, and checks that
-  GitHub repository access stays blocked. It then runs a Copilot session and
-  the same repository probes through the real sidecar with the Copilot profile
-  on.
+The opt-in `egress-sidecar` e2e suite (not billable) and the billable
+`copilot-egress` suite cover this mode; see
+[development](development.md#egress-sidecar-verification).
