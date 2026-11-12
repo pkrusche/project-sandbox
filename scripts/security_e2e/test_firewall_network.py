@@ -209,6 +209,7 @@ with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
         dns.close()
 
 
+@pytest.mark.shared_image
 def test_startup_connection_and_agent_icmp_capabilities(sandbox, listener, request):
     """Observe a connection established before initialization in a fresh container.
 

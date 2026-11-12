@@ -15,9 +15,26 @@ from uuid import uuid4
 
 import pytest
 
-from project_sandbox import container_cli, mount_storage
+from project_sandbox import build_cache, container_cli, mount_storage
 
 ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_BASE = "python:3.12-slim"
+# Options that change the generated image, so a launch using one cannot share.
+IMAGE_OPTIONS = frozenset(
+    {
+        "--dockerfile",
+        "--rust-cargo",
+        "--python-uv",
+        "--node-npm",
+        "--extra-domain",
+        "--pi-ollama",
+        "--ca-cert",
+        "--build-ca-cert",
+        "--build-proxy",
+        "--internet-proxy",
+        "--agent-proxy",
+    }
+)
 
 
 def pytest_addoption(parser):
@@ -41,6 +58,14 @@ def pytest_addoption(parser):
     )
     parser.addoption(
         "--security-artifacts", help="Empty directory for retained logs and fixtures"
+    )
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "shared_image: launch from one image per egress mode built once per run "
+        "(the test must not depend on building or replacing its own image)",
     )
 
 
@@ -120,9 +145,63 @@ def runtime(request):
     return container_cli.select_runtime(name)
 
 
+def input_fingerprint(context_dir):
+    """Content fingerprint of the generated image inputs, independent of tag."""
+    return build_cache.compute_fingerprint(context_dir, extra={})
+
+
+class SharedImages:
+    """One image per egress mode, built by the first launch that needs it.
+
+    Most security tests probe policy at runtime and only build because their
+    image tag is new; on Apple container every such build re-exports the whole
+    image (~15 s). Sharing is safe only while the generated inputs match, so
+    every shared launch is checked against the inputs the image was built from.
+    """
+
+    def __init__(self, runtime):
+        self.runtime = runtime
+        self.prefix = "project-sandbox-security:shared-" + uuid4().hex[:8]
+        self.inputs: dict[str, str] = {}
+
+    def tag(self, key):
+        return f"{self.prefix}-{key}"
+
+    def verify(self, key, context_dir):
+        fingerprint = input_fingerprint(context_dir)
+        recorded = self.inputs.setdefault(key, fingerprint)
+        assert fingerprint == recorded, (
+            f"generated image inputs in {context_dir} differ from the shared "
+            f"{key!r} image; this launch must build its own image (drop the "
+            "shared_image marker or add the option to IMAGE_OPTIONS)"
+        )
+
+    def close(self):
+        command = (
+            ["image", "delete"]
+            if self.runtime.name == "apple-container"
+            else ["image", "rm"]
+        )
+        for key in self.inputs:
+            run([self.runtime.binary, *command, self.tag(key)], check=False, timeout=60)
+
+
+def shared_key(extra, base):
+    """The shared image a launch can use, or None if it changes the image."""
+    if base != DEFAULT_BASE or IMAGE_OPTIONS.intersection(extra):
+        return None
+    extra = list(extra)
+    for index, value in enumerate(extra[:-1]):
+        if value == "--egress":
+            return f"egress-{extra[index + 1]}"
+    return "default"
+
+
 class Sandbox:
-    def __init__(self, directory, runtime):
+    def __init__(self, directory, runtime, shared=None):
         self.directory, self.runtime = directory, runtime
+        self.shared = shared
+        self.launches = {}
         self.env = dict(os.environ)
         config = directory / "xdg-config"
         config.mkdir()
@@ -140,7 +219,7 @@ class Sandbox:
             GIT_COMMITTER_NAME="Security E2E",
             GIT_COMMITTER_EMAIL="e2e@example.invalid",
         )
-        self.image = "project-sandbox-security:" + uuid4().hex[:12]
+        self.own_image = "project-sandbox-security:" + uuid4().hex[:12]
         self.children = []
         self.counter = 0
 
@@ -151,17 +230,26 @@ class Sandbox:
         (path / ".gitignore").write_text(".project-sandbox/\n.devcontainer/\n")
         return path
 
-    def argv(
-        self, project, prompt="true", *, build=False, extra=(), base="python:3.12-slim"
-    ):
-        return [
+    @property
+    def image(self):
+        """The default-mode image tag direct runtime commands should use."""
+        return self.shared.tag("default") if self.shared else self.own_image
+
+    def argv(self, project, prompt="true", *, build=False, extra=(), base=DEFAULT_BASE):
+        key = shared_key(extra, base) if self.shared else None
+        image = self.own_image
+        if key is not None:
+            image = self.shared.tag(key)
+            # Only the first launch of each mode builds; later ones reuse it.
+            build = build and key not in self.shared.inputs
+        argv = [
             sys.executable,
             "-m",
             "project_sandbox",
             "--runtime",
             self.runtime.name,
             "--image-tag",
-            self.image,
+            image,
             "--agent",
             "bash",
             "--no-forward-credentials",
@@ -176,6 +264,9 @@ class Sandbox:
             str(project),
             *([base] if base else []),
         ]
+        if key is not None:
+            self.launches[id(argv)] = (argv, key, project / ".project-sandbox")
+        return argv
 
     def start(self, argv):
         self.counter += 1
@@ -186,12 +277,17 @@ class Sandbox:
             )
         self.children.append(proc)
         proc.audit_log = log
+        launch = self.launches.pop(id(argv), None)
+        proc.shared_launch = launch[1:] if launch and launch[0] is argv else None
         return proc
 
     def finish(self, proc, *, ok=True, timeout=600):
         code = proc.wait(timeout=timeout)
         if ok:
             assert code == 0, proc.audit_log.read_text()[-8000:]
+        if code == 0 and proc.shared_launch is not None:
+            key, context_dir = proc.shared_launch
+            self.shared.verify(key, context_dir)
         return code
 
     def session(self, project, prompt="true", **kwargs):
@@ -234,12 +330,26 @@ class Sandbox:
             if self.runtime.name == "apple-container"
             else ["image", "rm"]
         )
-        run([self.runtime.binary, *command, self.image], check=False, timeout=60)
+        run([self.runtime.binary, *command, self.own_image], check=False, timeout=60)
+
+
+@pytest.fixture(scope="session")
+def shared_images(runtime):
+    images = SharedImages(runtime)
+    try:
+        yield images
+    finally:
+        images.close()
 
 
 @pytest.fixture
-def sandbox(case_dir, runtime):
-    fixture = Sandbox(case_dir, runtime)
+def sandbox(case_dir, runtime, request):
+    shared = (
+        request.getfixturevalue("shared_images")
+        if request.node.get_closest_marker("shared_image")
+        else None
+    )
+    fixture = Sandbox(case_dir, runtime, shared)
     try:
         yield fixture
     finally:

@@ -72,6 +72,22 @@ are needed. The Ollama test uses a synthetic Pi executable and loopback HTTP
 server while exercising the actual CLI's `--pi-ollama` lifecycle. The other
 sessions use Bash and disable credential forwarding and refresh.
 
+Tests marked `shared_image` (every sidecar test and the runtime-policy tests
+that do not exercise the build itself) launch from one image per egress mode
+(`default`, `egress-sidecar`), tagged `project-sandbox-security:shared-*` and
+deleted when the run ends. The first launch of a mode builds it; later launches
+pass `--no-build`. Most tests would otherwise rebuild an identical image under a
+fresh tag, which on Apple container re-exports the whole image every time
+(about 15 s even when every layer is cached). The CLI still renders each test's
+build inputs before launching, and the harness fails a test whose rendered
+inputs differ from the ones the shared image was built from. Launches with
+image-changing options (`--dockerfile`, `--rust-cargo`, `--extra-domain`, a
+non-default base, and the others in `IMAGE_OPTIONS` in
+`scripts/security_e2e/conftest.py`) use the test's own image. Tests whose
+subject is the build itself — Cargo paths, mount-path builds, concurrent builds,
+the devcontainer image, the Ollama build, and the dependency inventory — keep
+their own builds.
+
 ## Coverage map
 
 Names below are pytest function names; parametrization covers the listed cases.

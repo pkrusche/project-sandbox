@@ -13,6 +13,9 @@ from origin import Origin
 
 from project_sandbox import egress_policy, egress_sidecar
 
+# Sidecar probes check runtime policy; one image per egress mode serves them.
+pytestmark = pytest.mark.shared_image
+
 PROBE = r"""
 import http.client, json, os, socket, ssl, urllib.parse
 from pathlib import Path
@@ -621,7 +624,8 @@ def test_deployment_nat64_path(sidecar, request):
     )
     sidecar.sandbox.session(sidecar.project, "python3 -I nat64-control.py", build=True)
     assert (sidecar.project / "nat64-control.ok").exists()
-    # Rebuild because egress mode changes the generated entrypoint/firewall.
+    # Egress mode changes the generated entrypoint/firewall: the probe uses
+    # the egress-sidecar image, not the default one built above.
     row = sidecar.probe([{"connect": host}])[0]
     if reached(row):
         pytest.xfail(

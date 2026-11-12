@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "project-sandbox"
-version = "0.3.1"
+version = "0.4.0"
 description = "Sandbox coding agents inside isolated container runtimes."
 readme = "README.md"
 license = { text = "MIT" }
@@ -50,3 +50,7 @@ cache-dir = ".uv_cache"
 [tool.pytest.ini_options]
 # Live security audits are explicitly invoked from scripts/security_e2e.
 testpaths = ["tests"]
+# Also registered by scripts/security_e2e/conftest.py; tests/ imports those modules.
+markers = [
+    "shared_image: security e2e launches share one image per egress mode",
+]

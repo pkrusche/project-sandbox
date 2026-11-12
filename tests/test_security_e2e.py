@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -205,6 +206,118 @@ class SecurityHarnessTests(unittest.TestCase):
         )
         self.assertEqual(
             firewall.BASE_IMAGE, harness.Sandbox.argv.__kwdefaults__["base"]
+        )
+
+
+class SharedImageTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.directory = Path(tmp.name)
+        self.shared = harness.SharedImages(container_cli.APPLE_CONTAINER)
+        self.sandbox = harness.Sandbox(
+            self.directory, container_cli.APPLE_CONTAINER, self.shared
+        )
+        self.project = self.sandbox.project()
+
+    def parsed(self, argv):
+        return build_parser().parse_args(argv[3:])
+
+    def render(self, firewall="iptables -P OUTPUT DROP\n"):
+        context = self.project / ".project-sandbox"
+        context.mkdir(exist_ok=True)
+        (context / "Dockerfile").write_text("FROM python:3.12-slim\n")
+        (context / "init-firewall.sh").write_text(firewall)
+        return context
+
+    def launch(self, argv, code=0):
+        """Run ``argv`` through start/finish with a scripted exit code."""
+        process = SimpleNamespace(
+            wait=lambda timeout: code, audit_log=self.directory / "audit.log"
+        )
+        with unittest.mock.patch.object(
+            harness.subprocess, "Popen", return_value=process
+        ):
+            proc = self.sandbox.start(argv)
+        return self.sandbox.finish(proc, ok=False)
+
+    def test_launch_keys_follow_the_egress_mode_and_image_options(self):
+        cases = (
+            ((), harness.DEFAULT_BASE, "default"),
+            (
+                ("--vcs-access", "hidden", "--branch", "x"),
+                harness.DEFAULT_BASE,
+                "default",
+            ),
+            (("--egress", "sidecar"), harness.DEFAULT_BASE, "egress-sidecar"),
+            (("--rust-cargo",), harness.DEFAULT_BASE, None),
+            (("--extra-domain", "a.example"), harness.DEFAULT_BASE, None),
+            (("--dockerfile", "Dockerfile"), None, None),
+            ((), "debian:stable-slim", None),
+        )
+        for extra, base, key in cases:
+            with self.subTest(extra=extra, base=base):
+                self.assertEqual(harness.shared_key(extra, base), key)
+
+    def test_only_the_first_launch_per_mode_builds_into_the_run_wide_tag(self):
+        first = self.sandbox.argv(self.project, build=True)
+        self.assertEqual(self.parsed(first).image_tag, self.shared.tag("default"))
+        self.assertFalse(self.parsed(first).no_build)
+        self.render()
+        self.assertEqual(self.launch(first), 0)
+        again = self.sandbox.argv(self.project, build=True)
+        self.assertTrue(self.parsed(again).no_build)
+        # The other mode has not been built yet, so its first launch builds.
+        sidecar = self.sandbox.argv(
+            self.project, build=True, extra=["--egress", "sidecar"]
+        )
+        self.assertEqual(
+            self.parsed(sidecar).image_tag, self.shared.tag("egress-sidecar")
+        )
+        self.assertFalse(self.parsed(sidecar).no_build)
+        # Direct runtime commands use the shared default image.
+        self.assertEqual(self.sandbox.image, self.shared.tag("default"))
+
+    def test_image_changing_launches_keep_the_tests_own_image(self):
+        argv = self.sandbox.argv(
+            self.project, build=True, extra=["--rust-cargo"], base=None
+        )
+        self.assertEqual(self.parsed(argv).image_tag, self.sandbox.own_image)
+        self.assertFalse(self.parsed(argv).no_build)
+
+    def test_failed_first_build_is_not_recorded(self):
+        self.render()
+        self.assertEqual(
+            self.launch(self.sandbox.argv(self.project, build=True), code=1), 1
+        )
+        self.assertEqual(self.shared.inputs, {})
+        self.assertFalse(
+            self.parsed(self.sandbox.argv(self.project, build=True)).no_build
+        )
+
+    def test_a_launch_rendering_different_inputs_fails_loudly(self):
+        self.render()
+        self.launch(self.sandbox.argv(self.project, build=True))
+        self.render(firewall="iptables -P OUTPUT ACCEPT\n")
+        with self.assertRaisesRegex(AssertionError, "differ from the shared 'default'"):
+            self.launch(self.sandbox.argv(self.project))
+
+    def test_unshared_sandboxes_and_session_teardown_keep_their_own_tags(self):
+        (self.directory / "plain").mkdir()
+        plain = harness.Sandbox(self.directory / "plain", container_cli.DOCKER)
+        self.assertEqual(plain.image, plain.own_image)
+        self.shared.inputs.update(default="a", **{"egress-sidecar": "b"})
+        calls = []
+        with unittest.mock.patch.object(
+            harness, "run", lambda argv, **_kwargs: calls.append(argv)
+        ):
+            self.sandbox.close()
+            # Per-test teardown never deletes a shared tag.
+            self.assertFalse(any(self.shared.prefix in str(c) for c in calls))
+            self.shared.close()
+        self.assertEqual(
+            [c[-1] for c in calls[-2:]],
+            [self.shared.tag("default"), self.shared.tag("egress-sidecar")],
         )
 
 

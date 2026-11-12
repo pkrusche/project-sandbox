@@ -122,6 +122,7 @@ p.joinpath(name + '.ok').write_text('ok')
 """
 
 
+@pytest.mark.shared_image
 def test_concurrent_sessions_private_inputs_and_image_identity(sandbox):
     project = sandbox.project()
     (project / "hold.py").write_text(HOLD)
@@ -180,6 +181,7 @@ def test_concurrent_sessions_private_inputs_and_image_identity(sandbox):
             assert result.returncode != 0, "session alias survived normal teardown"
 
 
+@pytest.mark.shared_image
 @pytest.mark.parametrize("backend", ["git", "jj"])
 @pytest.mark.parametrize("mode", ["full", "read-only", "hidden"])
 def test_workspace_lease_and_capture(sandbox, backend, mode):
@@ -254,6 +256,7 @@ def test_workspace_lease_and_capture(sandbox, backend, mode):
         )
 
 
+@pytest.mark.shared_image
 def test_live_external_git_lock_is_preserved(sandbox):
     project = sandbox.project()
     init_git(project)
@@ -298,6 +301,7 @@ def test_live_external_git_lock_is_preserved(sandbox):
         owner.communicate(timeout=5)
 
 
+@pytest.mark.shared_image
 @pytest.mark.parametrize("project_name", ["project", "space $HOME"])
 def test_private_mounts_and_devcontainer_reopen(sandbox, project_name):
     project = sandbox.project(project_name)
