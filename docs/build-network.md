@@ -18,6 +18,14 @@ and `--node-npm`. They require an image-based runtime; chroot is unsupported.
 Build CAs are included in both generated sandbox and devcontainer Dockerfiles.
 They also work independently of a proxy, for example with an internal HTTPS mirror.
 
+With `--egress sidecar`, sidecar image builds also use `--build-proxy`,
+`--build-no-proxy`, and `--build-ca-cert`. The Alpine sidecar installs build CAs
+before its first package download and retains them in its system trust store.
+CA contents contribute to the sidecar image tag; proxy URLs do not. Cached
+sidecar images need no proxy connection or Apple forwarder. These settings
+apply to sidecar builds launched by `project-sandbox`; the separate
+`project-sandbox-egress` management CLI does not accept build-network options.
+
 ## Proxy settings
 
 The URL must be a credential-free HTTP or HTTPS endpoint without a path.
@@ -95,8 +103,9 @@ builder -> http://203.0.113.113:PORT -> host loopback forwarder -> proxy
 Complete the [Apple localhost alias setup](apple-container-dns.md) first.
 The builder speaks HTTP to the forwarder. For an HTTPS upstream, the host
 verifies TLS using system trust plus `--build-ca-cert` inputs. The forwarder
-listens only on loopback during actual builds; cached-image and `--no-build`
-runs need none. A busy preferred port falls back to a free port without changing
+listens only on loopback during actual builds. Cached images need none;
+`--no-build` skips the sandbox build but can still build a missing sidecar image.
+A busy preferred port falls back to a free port without changing
 build inputs. Other host processes can use the forwarder while it is running.
 
 ## Devcontainers and external downloads

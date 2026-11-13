@@ -143,6 +143,45 @@ class SidecarImageRendererTests(TestCase):
         with patch.object(sidecar_image, "SQUID_PACKAGE", "squid~6.13"):
             self.assertNotEqual(tag, sidecar_image.image_tag())
 
+    def test_build_certificates_bootstrap_apk_and_change_image_tag(self) -> None:
+        fixtures = Path(__file__).parent / "fixtures"
+        certificates = ((fixtures / "test-ca.pem").read_bytes(),)
+        files = sidecar_image.render_files(build_ca_certificates=certificates)
+        text = files["Dockerfile"]
+        source = "project-sandbox-build-ca-0.crt"
+        self.assertEqual(files[source].encode(), certificates[0])
+        self.assertIn(json.dumps([source, "/usr/local/share/ca-certificates/"]), text)
+        self.assertLess(text.index("COPY"), text.index("RUN cat"))
+        self.assertLess(
+            text.index(">> /etc/ssl/certs/ca-certificates.crt"),
+            text.index("apk add --no-cache ca-certificates"),
+        )
+        self.assertLess(
+            text.index("update-ca-certificates"),
+            text.index(f"apk add --no-cache {sidecar_image.SQUID_PACKAGE}"),
+        )
+        self.assertNotIn("--no-check-certificate", text)
+        self.assertNotIn("ENV ", text)
+        self.assertNotIn("ARG ", text)
+        tag = sidecar_image.image_tag(files)
+        self.assertNotEqual(tag, sidecar_image.image_tag())
+        changed = sidecar_image.render_files(
+            build_ca_certificates=(certificates[0] + b"\n",)
+        )
+        self.assertNotEqual(tag, sidecar_image.image_tag(changed))
+        with tempfile.TemporaryDirectory() as tmp:
+            context, rendered_tag = sidecar_image.render(
+                Path(tmp), build_ca_certificates=certificates
+            )
+            self.assertEqual(rendered_tag, tag)
+            self.assertEqual((context / source).read_bytes(), certificates[0])
+            plain, plain_tag = sidecar_image.render(Path(tmp))
+            self.assertNotEqual(plain_tag, tag)
+            self.assertFalse((plain / source).exists())
+            self.assertNotIn(
+                "update-ca-certificates", (plain / "Dockerfile").read_text()
+            )
+
     def test_render_writes_context_with_modes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             context, tag = sidecar_image.render(Path(tmp))

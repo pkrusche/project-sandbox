@@ -674,6 +674,7 @@ def _main_scoped(argv: list[str] | None, resources: contextlib.ExitStack) -> int
             identity=identity,
             available_agents=available_agents,
             egress=egress,
+            build_ca_certificates=build_ca_certificates,
         )
 
     # Fail before model discovery, secret loading, filesystem rendering, image
@@ -1195,6 +1196,23 @@ def _main_scoped(argv: list[str] | None, resources: contextlib.ExitStack) -> int
         egress_mount = None
         if egress is not None:
             assert internet_proxy_config is not None
+
+            def build_sidecar_image(**kwargs) -> int:
+                # ensure_image calls this only on a cache miss. The Apple
+                # forwarder must cover the sidecar build too, then close.
+                with _build_proxy_session(
+                    args,
+                    build_proxy,
+                    no_proxy=build_no_proxy,
+                    runtime=runtime,
+                    ca_certificates=build_ca_certificates,
+                ) as proxy_environment:
+                    return container_cli.build_image(
+                        **kwargs,
+                        build_args=build_network.build_args(proxy_environment or {}),
+                        verbose=args.verbose,
+                    )
+
             egress_state = _ensure_egress_sidecar(
                 runtime,
                 egress,
@@ -1202,6 +1220,8 @@ def _main_scoped(argv: list[str] | None, resources: contextlib.ExitStack) -> int
                 port=internet_proxy_config.port,
                 verbose=args.verbose,
                 strategy=egress_strategy,
+                build=build_sidecar_image,
+                build_ca_certificates=build_ca_certificates,
             )
             egress_mount = _egress_session_inputs(
                 egress_stack, egress_state, session_id=session_id
@@ -1730,6 +1750,8 @@ def _ensure_egress_sidecar(
     now: Callable[[], datetime] | None = None,
     host_probe: Callable[[int, str], bool] | None = None,
     strategy: egress_sidecar.Strategy | None = None,
+    build: Callable[..., int] | None = None,
+    build_ca_certificates: tuple[bytes, ...] = (),
 ) -> egress_sidecar.Sidecar:
     """Start or reuse the global sidecar and check it can serve this session.
 
@@ -1740,8 +1762,10 @@ def _ensure_egress_sidecar(
     try:
         image = egress_sidecar.ensure_image(
             runtime,
-            build=lambda **kw: container_cli.build_image(verbose=verbose, **kw),
+            build=build
+            or (lambda **kw: container_cli.build_image(verbose=verbose, **kw)),
             exists=container_cli.image_exists,
+            build_ca_certificates=build_ca_certificates,
         )
         if egress_sidecar.read_state(egress_sidecar.layout(runtime)) is None:
             print("Starting the egress sidecar…")
@@ -1997,6 +2021,7 @@ def _dry_run(
     identity,
     available_agents: tuple[str, ...],
     egress: egress_policy.PolicyFile | None = None,
+    build_ca_certificates: tuple[bytes, ...] = (),
 ) -> int:
     asset_project = (
         workspace if (args.python_uv or args.node_npm) and args.branch else project
@@ -2070,8 +2095,11 @@ def _dry_run(
         if build_no_proxy:
             print("Would exclude from the build proxy: " + ",".join(build_no_proxy))
     for certificate in args.build_ca_cert:
+        images = (
+            "sandbox and sidecar" if egress is not None else "sandbox and devcontainer"
+        )
         print(
-            f"Would install build CA before downloads in sandbox and devcontainer images: {certificate}"
+            f"Would install build CA before downloads in {images} images: {certificate}"
         )
     for certificate in args.ca_cert:
         print(
@@ -2092,7 +2120,7 @@ def _dry_run(
     if (
         args.build_proxy
         and preview_runtime == container_cli.APPLE_CONTAINER
-        and not args.no_build
+        and (not args.no_build or (egress is not None and not args.build_only))
     ):
         port = build_proxy_forwarder.preferred_port(
             build_network.parse(args.build_proxy)
@@ -2166,7 +2194,11 @@ def _dry_run(
     )
     proxy_config = internet_proxy.for_runtime(external_proxy_config, runtime)
     egress_mount = (
-        _print_egress_dry_run(egress, runtime=runtime) if egress is not None else None
+        _print_egress_dry_run(
+            egress, runtime=runtime, build_ca_certificates=build_ca_certificates
+        )
+        if egress is not None
+        else None
     )
     forwarding_plans = local_service_network.prepare_services(
         runtime,
@@ -2288,7 +2320,10 @@ class _ReadOnlyRunner:
 
 
 def _print_egress_dry_run(
-    policy: egress_policy.PolicyFile, *, runtime: container_cli.Runtime
+    policy: egress_policy.PolicyFile,
+    *,
+    runtime: container_cli.Runtime,
+    build_ca_certificates: tuple[bytes, ...] = (),
 ) -> str:
     """Describe the sidecar plan; generates no key and creates no resource.
 
@@ -2297,7 +2332,9 @@ def _print_egress_dry_run(
     Returns the session-input mount the sandbox would get.
     """
     effective = egress_policy.effective(policy)
-    image = sidecar_image.image_tag()
+    image = sidecar_image.image_tag(
+        sidecar_image.render_files(build_ca_certificates=build_ca_certificates)
+    )
     lay = egress_sidecar.layout(runtime)
     endpoint = egress_sidecar.endpoint(policy.port)
     print("Egress: sidecar (global Squid sidecar per runtime; hostname policy)")

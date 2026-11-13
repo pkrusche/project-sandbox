@@ -810,9 +810,12 @@ def ensure_image(
     build: Callable[..., int],
     exists: Callable[[Runtime, str], bool],
     root: Path | None = None,
+    build_ca_certificates: tuple[bytes, ...] = (),
 ) -> str:
     """Render the sidecar build context and build it unless the tag exists."""
-    context, tag = sidecar_image.render(root)
+    context, tag = sidecar_image.render(
+        root, build_ca_certificates=build_ca_certificates
+    )
     if (
         not exists(runtime, tag)
         and build(runtime=runtime, context_dir=context, image_tag=tag) != 0

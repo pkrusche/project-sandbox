@@ -13,7 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import ClassVar
 from unittest import TestCase
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -8021,6 +8021,8 @@ class EgressSidecarLaunchTests(TestCase):
         runtime=None,
         info=None,
         extra_patches=(),
+        sidecar_build=None,
+        sidecar_cached=False,
     ):
         events = []
         runtime = runtime or cli.container_cli.DOCKER
@@ -8054,19 +8056,33 @@ class EgressSidecarLaunchTests(TestCase):
             for extra in extra_patches:
                 stack.enter_context(extra)
             stack.enter_context(
-                patch.object(cli.container_cli, "build_image", return_value=0)
+                patch.object(
+                    cli.container_cli,
+                    "build_image",
+                    side_effect=sidecar_build,
+                    return_value=0,
+                )
             )
             stack.enter_context(
-                patch.object(cli.container_cli, "image_exists", return_value=True)
+                patch.object(
+                    cli.container_cli,
+                    "image_exists",
+                    side_effect=lambda _runtime, tag: (
+                        sidecar_cached
+                        if tag.startswith("project-sandbox-egress-sidecar:")
+                        else True
+                    ),
+                )
             )
             stack.enter_context(
                 patch.object(cli.container_cli, "run", side_effect=fake_run)
             )
-            stack.enter_context(
-                patch.object(
-                    cli.egress_sidecar, "ensure_image", return_value="sidecar:tag"
+            if sidecar_build is None:
+                stack.enter_context(
+                    patch.object(
+                        cli.egress_sidecar, "ensure_image", return_value="sidecar:tag"
+                    )
                 )
-            )
             ensure = stack.enter_context(
                 patch.object(cli.egress_sidecar, "ensure", return_value=sidecar)
             )
@@ -8123,6 +8139,166 @@ class EgressSidecarLaunchTests(TestCase):
         ensure.assert_called_once()
         self.ensure_kwargs = ensure.call_args.kwargs
         return rc, events, out.getvalue()
+
+    def test_sidecar_build_uses_proxy_bypass_and_certificates(self) -> None:
+        certificate = Path(__file__).parent / "fixtures/test-ca.pem"
+        for runtime in (container_cli.DOCKER, container_cli.PODMAN):
+            with self.subTest(runtime=runtime.name):
+                observed = []
+
+                def build(*, context_dir, build_args, observed=observed, **_kwargs):
+                    observed.append(
+                        dict(
+                            arg.split("=", 1)
+                            for arg in build_args
+                            if arg != "--build-arg"
+                        )
+                    )
+                    self.assertEqual(
+                        (context_dir / "project-sandbox-build-ca-0.crt").read_bytes(),
+                        certificate.read_bytes(),
+                    )
+                    self.assertNotIn(
+                        "proxy.example", (context_dir / "Dockerfile").read_text()
+                    )
+                    return 0
+
+                rc, _, _ = self._launch(
+                    "--no-build",
+                    "--build-proxy",
+                    "http://proxy.example:3128",
+                    "--build-no-proxy",
+                    "mirror.corp",
+                    "--build-ca-cert",
+                    str(certificate),
+                    runtime=runtime,
+                    sidecar_build=build,
+                    info={
+                        "host": {
+                            "security": {"rootless": True},
+                            "pasta": {"executable": "/usr/bin/pasta"},
+                        }
+                    }
+                    if runtime == container_cli.PODMAN
+                    else None,
+                )
+                self.assertEqual(rc, 0)
+                self.assertEqual(
+                    observed,
+                    [
+                        cli.build_network.environment(
+                            "http://proxy.example:3128", ("mirror.corp",)
+                        )
+                    ],
+                )
+
+    def test_sidecar_build_ca_without_proxy_and_dry_run(self) -> None:
+        certificate = Path(__file__).parent / "fixtures/test-ca.pem"
+        expected_tag = cli.sidecar_image.image_tag(
+            cli.sidecar_image.render_files(
+                build_ca_certificates=(certificate.read_bytes(),)
+            )
+        )
+        self._policy("")
+        before = sorted(self.root.rglob("*"))
+        rc, text, _ = self._dry_run(
+            lambda argv: subprocess.CompletedProcess(argv, 1, "", "No such object"),
+            "--build-ca-cert",
+            str(certificate),
+            "--runtime",
+            "apple-container",
+            "--build-proxy",
+            "http://proxy.example:3128",
+        )
+        self.assertEqual(rc, 0)
+        self.assertIn(expected_tag, text)
+        self.assertIn("Would forward the build proxy", text)
+        self.assertIn("before downloads in sandbox and sidecar images", text)
+        self.assertEqual(sorted(self.root.rglob("*")), before)
+
+        builds = []
+
+        def build(*, context_dir, image_tag, build_args, **_kwargs):
+            builds.append(image_tag)
+            self.assertEqual(build_args, [])
+            self.assertEqual(
+                (context_dir / "project-sandbox-build-ca-0.crt").read_bytes(),
+                certificate.read_bytes(),
+            )
+            return 0
+
+        rc, _, _ = self._launch(
+            "--no-build",
+            "--build-ca-cert",
+            str(certificate),
+            sidecar_build=build,
+        )
+        self.assertEqual(rc, 0)
+        self.assertEqual(builds, [expected_tag])
+
+    def test_sidecar_apple_forwarder_lifetime_and_cache(self) -> None:
+        certificate = Path(__file__).parent / "fixtures/test-ca.pem"
+        for cached, result in (
+            (False, 0),
+            (True, 0),
+            (False, 1),
+            (False, RuntimeError("interrupted")),
+        ):
+            with self.subTest(cached=cached, result=result):
+                events = []
+
+                def forwarder(endpoint, *, ca_certificates, events=events):
+                    self.assertEqual(endpoint.url(), "https://proxy.example:3128")
+                    self.assertEqual(ca_certificates, (certificate.read_bytes(),))
+                    proxy = MagicMock(sandbox_url="http://203.0.113.113:12345")
+                    proxy.__enter__.side_effect = lambda: events.append("start")
+                    proxy.__exit__.side_effect = lambda *_args: events.append("stop")
+                    return proxy
+
+                def build(*, build_args, events=events, result=result, **_kwargs):
+                    self.assertEqual(events, ["start"])
+                    events.append("build")
+                    self.assertEqual(
+                        build_args,
+                        cli.build_network.build_args(
+                            cli.build_network.environment(
+                                "http://203.0.113.113:12345", ("mirror.corp",)
+                            )
+                        ),
+                    )
+                    if isinstance(result, Exception):
+                        raise result
+                    return result
+
+                with (
+                    self.assertRaisesRegex(RuntimeError, "interrupted")
+                    if isinstance(result, Exception)
+                    else self.assertRaisesRegex(
+                        SystemExit, "building the egress sidecar image"
+                    )
+                    if result
+                    else contextlib.nullcontext()
+                ):
+                    self._launch(
+                        "--no-build",
+                        "--build-proxy",
+                        "https://proxy.example:3128",
+                        "--build-no-proxy",
+                        "mirror.corp",
+                        "--build-ca-cert",
+                        str(certificate),
+                        runtime=container_cli.APPLE_CONTAINER,
+                        sidecar_build=build,
+                        sidecar_cached=cached,
+                        extra_patches=(
+                            patch.object(
+                                cli.build_proxy_forwarder,
+                                "BuildProxyForwarder",
+                                forwarder,
+                            ),
+                        ),
+                    )
+                self.assertEqual(events, [] if cached else ["start", "build", "stop"])
 
     def test_launch_is_firewall_mode_with_the_sidecar_as_internet_proxy(self) -> None:
         rc, events, out = self._launch()

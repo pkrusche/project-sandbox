@@ -36,8 +36,12 @@ _FILES = {
 }
 
 
-def render_files() -> dict[str, str]:
+def render_files(*, build_ca_certificates: tuple[bytes, ...] = ()) -> dict[str, str]:
     """The build context's files, rendered (name -> text)."""
+    certificates = {
+        f"project-sandbox-build-ca-{index}.crt": pem.decode("ascii")
+        for index, pem in enumerate(build_ca_certificates)
+    }
     values = {
         "base_image": BASE_IMAGE,
         "squid_package": SQUID_PACKAGE,
@@ -47,8 +51,9 @@ def render_files() -> dict[str, str]:
         "error_page_sources": [
             f"errors/{page}" for page in sorted(squid_config.error_pages())
         ],
+        "build_ca_certificate_sources": list(certificates),
     }
-    rendered = {}
+    rendered = dict(certificates)
     for name, (template, _mode) in _FILES.items():
         text = get_template(f"{TEMPLATE_DIR}/{template}").render(**values)
         rendered[name] = text if text.endswith("\n") else text + "\n"
@@ -70,13 +75,15 @@ def default_context_root() -> Path:
     return observability.state_dir().parent / "egress-sidecar-image"
 
 
-def render(root: Path | None = None) -> tuple[Path, str]:
+def render(
+    root: Path | None = None, *, build_ca_certificates: tuple[bytes, ...] = ()
+) -> tuple[Path, str]:
     """Write the build context to ``<root>/<tag suffix>``; return (dir, tag).
 
     Writing is idempotent: an existing context for the same tag is rewritten
     with identical content.
     """
-    files = render_files()
+    files = render_files(build_ca_certificates=build_ca_certificates)
     tag = image_tag(files)
     context = (root or default_context_root()) / tag.rsplit(":", 1)[1]
     mount_storage.ensure_private_dirs(context.parent)
