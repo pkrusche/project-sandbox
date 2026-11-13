@@ -82,6 +82,38 @@ class BuildProxyHarnessTests(TestCase):
         with self.assertRaises(RuntimeError):
             module.check_build(1, "failed", "success")
 
+    def test_sidecar_build_uses_proxy_and_ca_without_cache(self):
+        module = checker()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = {"http_proxy": "http://proxy.example:3128"}
+            with (
+                patch.object(
+                    module.cli,
+                    "_build_proxy_session",
+                    return_value=contextlib.nullcontext(env),
+                ) as session,
+                patch.object(
+                    module,
+                    "run_logged",
+                    return_value=subprocess.CompletedProcess([], 0),
+                ) as run,
+            ):
+                tag = module.build_sidecar(
+                    container_cli.DOCKER, env["http_proxy"], CERTIFICATE, root, {}, 60
+                )
+            command = run.call_args.args[0]
+            self.assertIn("--no-cache", command)
+            self.assertIn("http_proxy=http://proxy.example:3128", command)
+            self.assertEqual(command[command.index("-t") + 1], tag)
+            self.assertEqual(
+                session.call_args.kwargs["ca_certificates"], (CERTIFICATE.read_bytes(),)
+            )
+            self.assertIn(
+                "apk add --no-cache",
+                (run.call_args.kwargs["cwd"] / "Dockerfile").read_text(),
+            )
+
     def test_addresses_and_environment_cannot_reuse_an_existing_instance(self):
         module = checker()
         for value in (
@@ -260,6 +292,7 @@ class BuildProxyHarnessTests(TestCase):
                     ),
                     patch.object(module, "reserved_port", return_value=reservation),
                     patch.object(module, "run_logged", side_effect=run),
+                    patch.object(module, "build_sidecar", return_value="sidecar:test"),
                     patch.object(
                         module, "squid_address", return_value="192.168.64.9"
                     ) as address,
@@ -383,6 +416,7 @@ class BuildProxyHarnessTests(TestCase):
                         module, "reserved_port", return_value=reservation
                     ) as reserved,
                     patch.object(module, "run_logged", side_effect=run),
+                    patch.object(module, "build_sidecar", return_value="sidecar:test"),
                     patch.object(module, "direct_address", return_value="198.51.100.7"),
                     contextlib.redirect_stdout(io.StringIO()),
                     contextlib.redirect_stderr(io.StringIO()),

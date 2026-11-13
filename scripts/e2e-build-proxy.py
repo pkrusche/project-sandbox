@@ -31,16 +31,25 @@ import tempfile
 import tomllib
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
-from project_sandbox import container_cli, fixture_network, internet_proxy
+from project_sandbox import (
+    build_network,
+    cli,
+    container_cli,
+    fixture_network,
+    internet_proxy,
+    sidecar_image,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 # Squid's listening port inside the IPL fixture container.
 SQUID_PORT = 3128
 PROXY_NAMES = ("http_proxy", "https_proxy", "all_proxy", "no_proxy")
 BUILD_HOSTS = (
+    "dl-cdn.alpinelinux.org",
     "deb.debian.org",
     "security.debian.org",
     "nodejs.org",
@@ -230,6 +239,34 @@ def reserved_port(host: str) -> socket.socket:
     return sock
 
 
+def build_sidecar(
+    runtime, proxy_url: str, certificate: Path, root: Path, env, timeout: int
+) -> str:
+    """Build the actual sidecar context through the same build proxy session as the CLI."""
+    certificates = (certificate.read_bytes(),)
+    context, tag = sidecar_image.render(
+        root / "sidecar-context", build_ca_certificates=certificates
+    )
+    args = SimpleNamespace(build_proxy=proxy_url, verbose=False)
+    with cli._build_proxy_session(
+        args,
+        build_network.parse(proxy_url),
+        no_proxy=(),
+        runtime=runtime,
+        ca_certificates=certificates,
+    ) as proxy_env:
+        command = [runtime.binary, "build", "--no-cache", "-t", tag, "-f", "Dockerfile"]
+        if runtime == container_cli.PODMAN:
+            command += ["--format", "docker"]
+        command += [*build_network.build_args(proxy_env or {}), "."]
+        result = run_logged(
+            command, root / "sidecar-build.log", cwd=context, env=env, timeout=timeout
+        )
+    if result.returncode:
+        raise RuntimeError("proxied sidecar image build failed")
+    return tag
+
+
 def main(argv: list[str] | None = None) -> int:
     argument_parser = parser()
     args = argument_parser.parse_args(argv)
@@ -338,6 +375,17 @@ def main(argv: list[str] | None = None) -> int:
         fingerprint = hashlib.sha256(
             ssl.PEM_cert_to_DER_cert(certificate.read_text())
         ).hexdigest()
+        # The generated CA gives this fixture its own sidecar tag. No running
+        # sidecar is touched; --no-cache forces apk to contact the fixture.
+        sidecar_tag = sidecar_image.image_tag(
+            sidecar_image.render_files(
+                build_ca_certificates=(certificate.read_bytes(),)
+            )
+        )
+        images.append(sidecar_tag)
+        build_sidecar(runtime, proxy_url, certificate, root, env, args.timeout)
+        results["sidecar-build"] = True
+        print("PASS: sidecar image build through intercepting proxy", flush=True)
         template = Environment(
             loader=FileSystemLoader(FIXTURES), undefined=StrictUndefined
         ).get_template("build-proxy.Dockerfile.j2")
@@ -474,6 +522,7 @@ def main(argv: list[str] | None = None) -> int:
         control("logs")
         squid_log = (root / "squid.log").read_text()
         for host in (
+            "dl-cdn.alpinelinux.org",
             "deb.debian.org",
             "pypi.org",
             "registry.npmjs.org",

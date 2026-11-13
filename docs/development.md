@@ -649,7 +649,9 @@ proxy instances. Squid is stopped on completion, including failure.
 
 The test makes real, uncached HTTPS apt, curl, npm, and uv requests, checks
 specific missing-CA and unreachable-proxy failures, and verifies decrypted
-requests in Squid logs. Runtime probes use separate images with blocked and
+requests in Squid logs. It also builds the actual egress sidecar image without
+cache using the fixture's proxy and CA, and checks for Alpine repository requests
+in the Squid log. It does not start or replace a running sidecar. Runtime probes use separate images with blocked and
 allowed firewall policies to verify absence of build proxy settings, retained
 CA trust, blocked access without `--internet-proxy`, and successful access with it
 while direct bypass remains blocked. It needs no LLM credentials or API calls.
