@@ -29,7 +29,7 @@ from . import (
 )
 
 PROG = "project-sandbox-egress"
-RUNTIMES = ("auto", "apple-container", "docker", "podman")
+RUNTIMES = ("auto", "apple-container", "docker", "podman", "colima")
 
 
 class OperationalError(RuntimeError):
@@ -52,6 +52,9 @@ def build_parser() -> argparse.ArgumentParser:
     nested_runtime.add_argument(
         "--runtime", choices=RUNTIMES, default=argparse.SUPPRESS, help=argparse.SUPPRESS
     )
+    nested_runtime.add_argument(
+        "--colima-profile", default=argparse.SUPPRESS, help=argparse.SUPPRESS
+    )
 
     def command(name: str, help_text: str) -> argparse.ArgumentParser:
         sub = commands.add_parser(name, help=help_text, description=help_text)
@@ -60,6 +63,12 @@ def build_parser() -> argparse.ArgumentParser:
             choices=RUNTIMES,
             default="auto",
             help="Container runtime (default: the one project-sandbox selects).",
+        )
+        sub.add_argument(
+            "--colima-profile",
+            default=None,
+            metavar="NAME",
+            help="Colima profile for --runtime colima (default: project-sandbox).",
         )
         return sub
 
@@ -173,13 +182,12 @@ def cmd_up(ctx: Context, _args) -> int:
     _print_messages(ctx, sidecar.messages)
     if sidecar.started:
         ctx.out(
-            f"Started {egress_sidecar.CONTAINER} ({ctx.runtime.name}) on "
+            f"Started {egress_sidecar.CONTAINER} ({ctx.runtime.key}) on "
             f"{sidecar.endpoint}."
         )
     else:
         ctx.out(
-            f"The egress sidecar is already up ({ctx.runtime.name}, "
-            f"{sidecar.endpoint})."
+            f"The egress sidecar is already up ({ctx.runtime.key}, {sidecar.endpoint})."
         )
     return 0
 
@@ -189,11 +197,11 @@ def cmd_down(ctx: Context, _args) -> int:
     if existed:
         ctx.out(
             f"Removed {egress_sidecar.CONTAINER}, its relay and its CA "
-            f"({ctx.runtime.name}). Running sidecar-mode sandboxes have lost egress."
+            f"({ctx.runtime.key}). Running sidecar-mode sandboxes have lost egress."
         )
     else:
         ctx.out(
-            f"No {ctx.runtime.name} egress sidecar was running; removed any "
+            f"No {ctx.runtime.key} egress sidecar was running; removed any "
             "leftover relay and CA."
         )
     return 0
@@ -210,7 +218,7 @@ def cmd_restart(ctx: Context, args) -> int:
     )
     _print_messages(ctx, sidecar.messages)
     ctx.out(
-        f"Restarted {egress_sidecar.CONTAINER} ({ctx.runtime.name}) on "
+        f"Restarted {egress_sidecar.CONTAINER} ({ctx.runtime.key}) on "
         f"{sidecar.endpoint}. Sidecar sandboxes started before the restart lost "
         "their open connections; relaunch any that were built for another port."
     )
@@ -249,7 +257,7 @@ def _apply_live(ctx: Context, policy: egress_policy.PolicyFile) -> None:
     info = egress_sidecar.inspect(ctx.runtime, ctx.deps.runner)
     if info is None or not info.running:
         ctx.out(
-            f"The {ctx.runtime.name} egress sidecar is not running; the change "
+            f"The {ctx.runtime.key} egress sidecar is not running; the change "
             "applies when it next starts (`project-sandbox-egress up` or a sidecar "
             "launch)."
         )
@@ -336,7 +344,7 @@ def cmd_log(ctx: Context, args) -> int:
             raise OperationalError(str(exc)) from None
     if egress_sidecar.inspect(ctx.runtime, ctx.deps.runner) is None:
         raise OperationalError(
-            f"no egress sidecar exists for {ctx.runtime.name}; its log went with it"
+            f"no egress sidecar exists for {ctx.runtime.key}; its log went with it"
         )
     state = egress_sidecar.read_state(egress_sidecar.layout(ctx.runtime, ctx.root))
     keep = _log_filter(
@@ -393,7 +401,11 @@ def main(
 ) -> int:
     args = build_parser().parse_args(argv)
     try:
-        runtime = container_cli.select_runtime(args.runtime)
+        runtime = container_cli.select_runtime(
+            args.runtime, colima_profile=getattr(args, "colima_profile", None)
+        )
+        if runtime.context is not None:
+            container_cli.verify_colima_profile(runtime)
         ctx = context(runtime) if context is not None else Context(runtime)
         return COMMANDS[args.command](ctx, args)
     except (

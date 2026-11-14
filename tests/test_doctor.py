@@ -318,3 +318,262 @@ class EgressSidecarTests(TestCase):
             checks = by_name(doctor.run_checks())
         self.assertIn("not running", checks["docker sidecar"].detail)
         self.assertNotIn("podman sidecar", checks)  # not on PATH
+
+
+SOCKET = "unix:///Users/x/.colima/project-sandbox/docker.sock"
+CTX = ("docker", "--context", "colima-project-sandbox")
+
+
+def _network(
+    role: str, internal: bool, *, owner: str | None = "project-sandbox"
+) -> Probe:
+    labels = {
+        "project-sandbox.profile": "project-sandbox",
+        "project-sandbox.network.role": role,
+    }
+    if owner is not None:
+        labels["project-sandbox.owner"] = owner
+    return ok(json.dumps({"Driver": "bridge", "Internal": internal, "Labels": labels}))
+
+
+def _sidecar(*, attached: bool) -> Probe:
+    networks = {"psbx-egress-uplink": {"IPAddress": "172.18.0.2", "Aliases": []}}
+    if attached:
+        networks["psbx-sandbox"] = {"IPAddress": "172.19.0.2", "Aliases": ["egress"]}
+    return ok(
+        json.dumps(
+            [
+                {
+                    "State": {"Running": True},
+                    "Config": {"Labels": {}},
+                    "NetworkSettings": {"Networks": networks},
+                }
+            ]
+        )
+    )
+
+
+HEALTHY_COLIMA = {
+    ("docker", "context", "inspect", "colima-project-sandbox"): ok(SOCKET + "\n"),
+    (*CTX, "info", "--format", "{{.ID}}"): ok("ID\n"),
+    (*CTX, "version"): ok("29.5.2\n"),
+    (*CTX, "info", "--format", "{{.NCPU}} {{.MemTotal}}"): ok("8 17179869184\n"),
+    ("colima", "ssh"): ok(""),
+    (*CTX, "network", "inspect", "psbx-egress-uplink"): _network(
+        "egress-uplink", False
+    ),
+    (*CTX, "network", "inspect", "psbx-sandbox"): _network("sandbox", True),
+    (*CTX, "inspect", "project-sandbox-egress"): Probe(1, "", "No such object"),
+    **HEALTHY_VCS,
+}
+
+
+def colima_host(overrides=None, binaries=None) -> FakeHost:
+    return FakeHost(
+        binaries or {"docker", "colima", "git", "jj"},
+        {**HEALTHY_COLIMA, **(overrides or {})},
+    )
+
+
+class ColimaTests(TestCase):
+    name = "colima (project-sandbox)"
+
+    def checks(self, host: FakeHost, profile: str | None = None):
+        with host.active("darwin"):
+            return by_name(doctor.run_checks(profile))
+
+    def test_hidden_without_colima_on_path_or_a_requested_profile(self) -> None:
+        host = colima_host(binaries={"docker", "git", "jj"})
+        self.assertNotIn(self.name, self.checks(host))
+        self.assertIn(self.name, self.checks(host, "project-sandbox"))
+
+    def test_shown_when_colima_is_installed(self) -> None:
+        self.assertIn(self.name, self.checks(colima_host()))
+
+    def test_a_running_profile_is_ok_with_visible_mounts(self) -> None:
+        checks = self.checks(colima_host())
+        self.assertEqual(checks[self.name].status, doctor.OK)
+        self.assertIn("29.5.2", checks[self.name].detail)
+        self.assertEqual(checks["mounts"].status, doctor.OK)
+
+    def test_no_network_or_sidecar_yet_is_normal_not_a_problem(self) -> None:
+        absent = Probe(1, "", "No such network")
+        host = colima_host(
+            {
+                (*CTX, "network", "inspect", "psbx-egress-uplink"): absent,
+                (*CTX, "network", "inspect", "psbx-sandbox"): absent,
+            }
+        )
+        checks = self.checks(host)
+        self.assertEqual(checks["psbx-sandbox"].status, doctor.INFO)
+        self.assertIn("not created yet", checks["psbx-sandbox"].detail)
+        self.assertEqual(checks["colima-project-sandbox sidecar"].status, doctor.INFO)
+
+    def test_a_vm_with_enough_cpus_is_ok(self) -> None:
+        check = self.checks(colima_host())["resources"]
+        self.assertEqual(check.status, doctor.OK)
+        self.assertEqual(check.detail, "8 CPUs, 16.0 GiB")
+
+    def test_a_vm_with_fewer_cpus_than_the_default_warns_with_both_fixes(self) -> None:
+        host = colima_host(
+            {
+                (*CTX, "info", "--format", "{{.NCPU}} {{.MemTotal}}"): ok(
+                    "2 2147483648\n"
+                )
+            }
+        )
+        check = self.checks(host)["resources"]
+        self.assertEqual(check.status, doctor.WARN)
+        self.assertIn("2 CPUs, 2.0 GiB", check.detail)
+        self.assertIn("4 CPUs by default", check.detail)
+        self.assertIn("--cpus 2", check.hint or "")
+        self.assertIn("--cpu 4", check.hint or "")
+
+    def test_an_unreadable_vm_size_is_info(self) -> None:
+        host = colima_host(
+            {(*CTX, "info", "--format", "{{.NCPU}} {{.MemTotal}}"): ok("garbage\n")}
+        )
+        self.assertEqual(self.checks(host)["resources"].status, doctor.INFO)
+
+    def test_a_profile_that_was_never_started_is_info_with_the_start_command(
+        self,
+    ) -> None:
+        host = colima_host(
+            {
+                ("docker", "context", "inspect", "colima-project-sandbox"): Probe(
+                    1, "", "x"
+                )
+            }
+        )
+        check = self.checks(host)[self.name]
+        self.assertEqual(check.status, doctor.INFO)
+        self.assertIn("colima start --profile project-sandbox", check.hint or "")
+
+    def test_a_stopped_profile_warns_with_the_start_command(self) -> None:
+        host = colima_host(
+            {(*CTX, "info", "--format", "{{.ID}}"): Probe(1, "", "cannot connect")}
+        )
+        check = self.checks(host)[self.name]
+        self.assertEqual(check.status, doctor.WARN)
+        self.assertIn("not running", check.detail)
+        self.assertIn("colima start --profile project-sandbox", check.hint or "")
+
+    def test_a_context_that_is_not_colimas_warns(self) -> None:
+        host = colima_host(
+            {
+                ("docker", "context", "inspect", "colima-project-sandbox"): ok(
+                    "unix:///var/run/docker.sock\n"
+                )
+            }
+        )
+        check = self.checks(host)[self.name]
+        self.assertEqual(check.status, doctor.WARN)
+        self.assertIn("refusing to use it", check.detail)
+
+    def test_unexported_directories_warn_naming_them(self) -> None:
+        host = colima_host({("colima", "ssh"): ok("/somewhere/else\n")})
+        with patch.object(
+            doctor.colima_mounts,
+            "probe_path",
+            side_effect=lambda p: Path("/somewhere/else"),
+        ):
+            check = self.checks(host)["mounts"]
+        self.assertEqual(check.status, doctor.WARN)
+        self.assertIn("/somewhere/else", check.detail)
+        self.assertIn("--mount", check.hint or "")
+
+    def test_without_the_colima_binary_mounts_are_not_checked(self) -> None:
+        host = colima_host(binaries={"docker", "git", "jj"})
+        check = self.checks(host, "project-sandbox")["mounts"]
+        self.assertEqual(check.status, doctor.INFO)
+        self.assertIn("not checked", check.detail)
+
+    def test_owned_networks_are_ok_and_foreign_ones_warn(self) -> None:
+        host = colima_host()
+        self.assertEqual(self.checks(host)["psbx-egress-uplink"].status, doctor.OK)
+        foreign = colima_host(
+            {
+                (*CTX, "network", "inspect", "psbx-sandbox"): _network(
+                    "sandbox", True, owner=None
+                )
+            }
+        )
+        check = self.checks(foreign)["psbx-sandbox"]
+        self.assertEqual(check.status, doctor.WARN)
+        self.assertIn("not owned by project-sandbox", check.detail)
+
+    def test_an_attached_sidecar_is_info_and_a_detached_one_warns(self) -> None:
+        key = (*CTX, "inspect", "project-sandbox-egress")
+        attached = self.checks(colima_host({key: _sidecar(attached=True)}))
+        self.assertEqual(attached["colima-project-sandbox sidecar"].status, doctor.INFO)
+        self.assertIn("egress:3128", attached["colima-project-sandbox sidecar"].detail)
+        detached = self.checks(colima_host({key: _sidecar(attached=False)}))
+        check = detached["colima-project-sandbox sidecar"]
+        self.assertEqual(check.status, doctor.WARN)
+        self.assertIn("not attached", check.detail)
+
+    def test_every_probe_is_read_only(self) -> None:
+        host = colima_host(
+            {(*CTX, "inspect", "project-sandbox-egress"): _sidecar(attached=True)}
+        )
+        self.checks(host)
+        forbidden = {
+            "start",
+            "run",
+            "build",
+            "create",
+            "init",
+            "new",
+            "stop",
+            "rm",
+            "connect",
+            "disconnect",
+        }
+        for argv in host.calls:
+            self.assertFalse(forbidden & set(argv[1:]), argv)
+        # colima itself is only asked one read-only question.
+        for argv in host.calls:
+            if argv[0] == "colima":
+                self.assertEqual(argv[1], "ssh")
+                self.assertNotIn("start", argv[2:6])
+
+    def test_the_profile_option_selects_the_checked_profile(self) -> None:
+        import contextlib
+        import io
+
+        host = colima_host(
+            {
+                ("docker", "context", "inspect", "colima-work"): ok(
+                    "unix:///Users/x/.colima/work/docker.sock\n"
+                ),
+                (
+                    "docker",
+                    "--context",
+                    "colima-work",
+                    "info",
+                    "--format",
+                    "{{.ID}}",
+                ): ok("ID\n"),
+                (
+                    "docker",
+                    "--context",
+                    "colima-work",
+                    "info",
+                    "--format",
+                    "{{.NCPU}} {{.MemTotal}}",
+                ): ok("4 4294967296\n"),
+                ("docker", "--context", "colima-work", "version"): ok("29.5.2\n"),
+            }
+        )
+        out = io.StringIO()
+        with host.active("darwin"), contextlib.redirect_stdout(out):
+            cli.main(["doctor", "--colima-profile", "work", "--json"])
+        names = [c["name"] for c in json.loads(out.getvalue())["checks"]]
+        self.assertIn("colima (work)", names)
+
+    def test_a_bad_profile_name_and_extra_arguments_are_rejected(self) -> None:
+        with self.assertRaisesRegex(SystemExit, "Invalid Colima profile"):
+            cli.main(["doctor", "--colima-profile", "a/b"])
+        for bad in (["--colima-profile"], ["--colima-profile", "a", "b"], ["x"]):
+            with self.subTest(bad=bad), self.assertRaisesRegex(SystemExit, "usage"):
+                cli.main(["doctor", *bad])

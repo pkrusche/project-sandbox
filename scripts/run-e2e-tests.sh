@@ -24,6 +24,10 @@
 #  18. egress-sidecar           — --egress sidecar policy, TLS interception, shared sidecar, parent
 #                                 chaining and a loopback-only local service (explicit opt-in; needs
 #                                 network and builds)
+#  18a. colima                  — --runtime colima: private-network sidecar launches, bypass
+#                                 checks, concurrency, recovery and firewall mode against a
+#                                 running Colima profile (explicit opt-in; needs network and
+#                                 builds; skipped when the profile is not running)
 #  19. vcs-access               — full/read-only/hidden metadata mounts with a Bash agent
 #  20. firewall                 — firewall sudo revocation in fresh Bash-agent containers
 #  21. security                 — TODO verification and hardening release gate (explicit opt-in)
@@ -43,7 +47,8 @@
 #                            [--with-copilot [--copilot-host TENANT.ghe.com]
 #                             [--copilot-capture-dir DIR]]
 #                            [--with-copilot-egress [--copilot-egress-report-dir DIR]]
-#                            [--with-egress-sidecar] [--with-security]
+#                            [--with-egress-sidecar] [--with-colima [--colima-profile NAME]]
+#                            [--with-security]
 #                            [--proxy-fixture-ipv6-host IP]
 #                            [--proxy-fixture-hostname NAME]
 #                            [--ca-cert PATH ...]
@@ -127,6 +132,9 @@
 #                    second live runtime for concurrent policy edits in --only security
 #   --security-fixture-host IP
 #                    container-reachable host IPv4 for security firewall probes
+#   --with-colima    run scripts/e2e-colima.py against a running Colima profile
+#                    (default project-sandbox, or --colima-profile NAME). Never starts the VM;
+#                    the suite is skipped when the profile is not running.
 #   --with-egress-sidecar
 #                    run scripts/e2e-egress-sidecar.py: real --egress sidecar sessions graded
 #                    from inside the sandbox and from the sidecar log, the intercepted
@@ -169,6 +177,7 @@ SUITES=(
   copilot
   copilot-egress
   egress-sidecar
+  colima
   security
 )
 
@@ -189,6 +198,8 @@ COPILOT_HOST=""
 COPILOT_CAPTURE_DIR=""
 WITH_COPILOT_EGRESS=0
 WITH_EGRESS_SIDECAR=0
+WITH_COLIMA=0
+COLIMA_PROFILE="project-sandbox"
 WITH_SECURITY=0
 SECURITY_PEER_RUNTIME=""
 SECURITY_FIXTURE_HOST=""
@@ -231,6 +242,8 @@ while [ $# -gt 0 ]; do
     --copilot-capture-dir) COPILOT_CAPTURE_DIR="${2:?--copilot-capture-dir needs a value}"; shift 2 ;;
     --with-copilot-egress) WITH_COPILOT_EGRESS=1; shift ;;
     --with-egress-sidecar) WITH_EGRESS_SIDECAR=1; shift ;;
+    --with-colima) WITH_COLIMA=1; shift ;;
+    --colima-profile) COLIMA_PROFILE="${2:?--colima-profile needs a value}"; shift 2 ;;
     --with-security) WITH_SECURITY=1; shift ;;
     --copilot-egress-report-dir) COPILOT_EGRESS_REPORT_DIR="${2:?--copilot-egress-report-dir needs a value}"; shift 2 ;;
     --proxy-fixture-host) PROXY_FIXTURE_HOST="${2:?--proxy-fixture-host needs a value}"; shift 2 ;;
@@ -253,6 +266,7 @@ if [ "$ALL_TESTS" = 1 ]; then
   WITH_COPILOT=1
   WITH_COPILOT_EGRESS=1
   WITH_EGRESS_SIDECAR=1
+  WITH_COLIMA=1
   WITH_SECURITY=1
   missing=()
   [ -n "$INTERNET_PROXY_DIR" ] || missing+=(--internet-proxy-dir)
@@ -286,6 +300,7 @@ if [ -n "$ONLY" ]; then
     copilot) WITH_COPILOT=1 ;;
     copilot-egress) WITH_COPILOT_EGRESS=1 ;;
     egress-sidecar) WITH_EGRESS_SIDECAR=1 ;;
+    colima) WITH_COLIMA=1 ;;
     security) WITH_SECURITY=1 ;;
   esac
 fi
@@ -712,6 +727,22 @@ if selected egress-sidecar; then
     fi
   else
     skip_suite "egress-sidecar" "pass --with-egress-sidecar; needs network and builds"
+  fi
+fi
+
+# 18a. --runtime colima end to end: needs a running Colima profile, network and
+# builds, so opt-in. It never starts the VM; no running profile is a skip.
+if selected colima; then
+  if [ "$WITH_COLIMA" = 1 ]; then
+    if uv run python "$ROOT/scripts/e2e-colima.py" --colima-profile "$COLIMA_PROFILE" --check-available >/dev/null 2>&1; then
+      COLIMA_ARGS=(--colima-profile "$COLIMA_PROFILE" --base-image "$BASE_IMAGE")
+      [ "$KEEP" = 1 ] && COLIMA_ARGS+=(--keep)
+      run_suite "colima" uv run python "$ROOT/scripts/e2e-colima.py" "${COLIMA_ARGS[@]}"
+    else
+      skip_suite "colima" "no running Colima profile '$COLIMA_PROFILE' (colima start --profile $COLIMA_PROFILE)"
+    fi
+  else
+    skip_suite "colima" "pass --with-colima; needs a running Colima profile, network and builds"
   fi
 fi
 

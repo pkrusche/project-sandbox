@@ -739,6 +739,40 @@ uv run python scripts/e2e-copilot-egress.py --runtime apple-container --phases s
   `api.github.com` `/repos/…` and `/gists/public` got the sidecar's labelled
   403 (`path-not-allowed`), and `git ls-remote` exited 128.
 
+## Colima verification
+
+The opt-in `colima` suite (`scripts/e2e-colima.py`) runs real `--runtime colima`
+sessions (agent `bash`, no credentials, not billable) against a **running**
+Colima profile and grades them from inside the sandbox and from the VM. It
+never creates, starts or stops a VM and never changes the Docker context. It
+needs network access and image builds, and takes a few minutes. Its checks:
+
+- `launch`: one `--egress sidecar` session. The proxy variables name
+  `egress:3128`; the sandbox has one interface and no default route; an allowed
+  host is reached through Squid and an unlisted one is denied; raw TCP, UDP,
+  DNS, IPv6, the VM's bridge gateway, the network gateway, the sidecar's uplink
+  address and `host.docker.internal` all fail. The sidecar publishes nothing,
+  does not forward IP, sits on both networks, and the denial is logged with the
+  sandbox's own address.
+- `concurrent`: two sandboxes at once share one sidecar and create no network.
+- `recover`: `restart`, a sidecar detached behind its back, and `down` (which
+  keeps both networks) all recover on the next launch.
+- `firewall`: `--egress firewall` on Colima uses the default bridge, reaches an
+  extra domain, denies an unlisted host, and has none of the private pieces.
+
+```bash
+./scripts/run-e2e-tests.sh --only colima --colima-profile work    # skipped if "work" is not running
+uv run python scripts/e2e-colima.py --colima-profile default --checks launch --keep
+```
+
+State lives in a temporary `XDG_CONFIG_HOME`/`XDG_STATE_HOME` inside the
+repository (Colima exports only the home directory, so the VM cannot see
+`$TMPDIR`); the suite refuses to start while the profile has a sidecar unless you
+pass `--replace-existing`, removes only the networks and images it created, and
+sizes the sandboxes to the VM (a default Colima profile has 2 CPUs, fewer than
+the sandbox default of 4). The graders are tested without a runtime in
+`tests/test_e2e_colima.py`.
+
 ## Shared local-service forwarder verification
 
 Manual check for the shared bridge forwarder (OpenSpec change

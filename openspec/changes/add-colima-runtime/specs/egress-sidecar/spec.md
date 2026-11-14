@@ -32,19 +32,11 @@ The global sidecar SHALL publish its proxy port on the port set by `[egress.side
 ## ADDED Requirements
 
 ### Requirement: On Colima the sidecar is reached over a private network
-On the Colima runtime, the sidecar SHALL be attached to two labelled, project-owned networks inside the profile's VM: an outbound bridge used only by the sidecar, and an `--internal` bridge carrying the alias `egress`. Sidecar-mode sandboxes SHALL be attached to the internal bridge only, and SHALL reach the proxy at `egress` on the fixed container port 3128. The sandbox SHALL NOT be attached to the outbound bridge or have any route to the Internet except through the sidecar. Networks are created on demand and reused; a session's end SHALL NOT remove them.
+On the Colima runtime, the sidecar SHALL be attached to two labelled, project-owned networks inside the profile's VM: an outbound bridge used only by the sidecar, and an `--internal` bridge carrying the alias `egress`. Sidecar-mode sandboxes SHALL be attached to the internal bridge only and reach the proxy at `egress` on port 3128. Networks are created on demand and reused; a session's end SHALL NOT remove them.
 
 #### Scenario: Sandbox reaches the proxy privately
 - **WHEN** a sidecar-mode sandbox starts on Colima
 - **THEN** it is attached to the internal network only, `HTTP_PROXY`, `HTTPS_PROXY`, `http_proxy` and `https_proxy` are `http://egress:3128`, and an allowed request succeeds through the sidecar
-
-#### Scenario: Direct access fails regardless of proxy variables
-- **WHEN** a process in a Colima sidecar-mode sandbox connects to a public address, or resolves a public name, ignoring the proxy variables
-- **THEN** the connection or lookup fails
-
-#### Scenario: No other network path
-- **WHEN** a process in the sandbox connects to the VM's bridge gateway or to the sidecar's address on the outbound bridge
-- **THEN** the connection is refused or times out, and the sidecar does not forward arbitrary IP traffic
 
 #### Scenario: Concurrent sandboxes
 - **WHEN** two sidecar-mode sandboxes run at the same time on Colima
@@ -53,6 +45,17 @@ On the Colima runtime, the sidecar SHALL be attached to two labelled, project-ow
 #### Scenario: Networks are owned
 - **WHEN** a network named like a project network exists without the project's ownership label
 - **THEN** the CLI refuses to use or remove it and names the network
+
+### Requirement: A Colima sandbox has no route out except the sidecar
+A Colima sidecar-mode sandbox SHALL NOT be attached to the outbound bridge, and SHALL have no route to the Internet, the VM's bridge gateway or the sidecar's outbound address. The sidecar SHALL NOT forward arbitrary IP traffic between its networks.
+
+#### Scenario: Direct access fails regardless of proxy variables
+- **WHEN** a process in a Colima sidecar-mode sandbox connects to a public address, or resolves a public name, ignoring the proxy variables
+- **THEN** the connection or lookup fails
+
+#### Scenario: No other network path
+- **WHEN** a process in the sandbox connects to the VM's bridge gateway or to the sidecar's address on the outbound bridge
+- **THEN** the connection is refused or times out, and the sidecar does not forward arbitrary IP traffic
 
 ### Requirement: The Colima sandbox admits only the sidecar and uses no DNS
 In Colima sidecar mode, the sandbox firewall SHALL default-deny and SHALL admit new TCP connections only to the sidecar's address on the internal network at port 3128. It SHALL admit no DNS: the sandbox SHALL resolve `egress` from an entry pinned at launch rather than from a DNS server. A launch SHALL fail before the sandbox starts when the sidecar's address on the internal network cannot be determined.
@@ -86,3 +89,14 @@ Each Colima profile SHALL have its own sidecar, networks, state, CA and locks, s
 #### Scenario: Restart drift
 - **WHEN** a Colima sidecar is recreated, for example after a restart-affecting setting changes
 - **THEN** the new sidecar is attached to both networks before it is reported ready, and sandboxes already running keep failing closed rather than gaining a route
+
+### Requirement: A Colima sidecar launch binds nothing on the host
+A Colima sidecar-mode launch SHALL NOT bind a listening port, relay or forwarder on the macOS host, and SHALL NOT depend on a host port being free. Concurrent launches on one profile SHALL therefore never contend for a host port.
+
+#### Scenario: Concurrent launches
+- **WHEN** two sidecar-mode launches start at the same time on one Colima profile
+- **THEN** both succeed, share one sidecar, and neither reports an address already in use
+
+#### Scenario: Unreachable sidecar directory
+- **WHEN** the sidecar's state directory is not visible in the VM, for example under the macOS temporary directory
+- **THEN** the start fails before the container is created, naming the path and the Colima mount to add

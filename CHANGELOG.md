@@ -2,6 +2,25 @@
 
 Notable changes to `project-sandbox` are documented here.
 
+## [Unreleased]
+
+### Added
+
+- `--runtime colima` (with `--colima-profile`, default `project-sandbox`) runs
+  sandboxes in a Colima VM through an explicit `docker --context
+  colima-<profile>`; the user's Docker context is never changed and the VM is
+  never created or modified. A launch verifies the profile and that every host
+  path it mounts is visible in the VM. See `docs/colima.md`.
+- `--egress sidecar` on Colima reaches Squid at `egress:3128` over a private
+  in-VM network (`psbx-egress-uplink` and an `--internal` `psbx-sandbox`)
+  with no published port; `project-sandbox-egress` accepts `--runtime colima` and
+  `--colima-profile`. Features that need a path to macOS (Ollama, a loopback
+  gateway or proxy) are refused on Colima.
+- `project-sandbox doctor` reports a Colima profile (context, VM size, mount
+  visibility, networks, sidecar); `--colima-profile NAME` selects it.
+- `scripts/e2e-colima.py` (`run-e2e-tests.sh --only colima`): an opt-in
+  end-to-end suite against a running Colima profile.
+
 ## [0.4.0]
 
 ### Breaking

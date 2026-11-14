@@ -55,6 +55,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import (
+    colima_mounts,
+    colima_network,
     egress_policy,
     egress_relay,
     local_service_network,
@@ -65,6 +67,7 @@ from . import (
 )
 from .container_cli import (
     APPLE_CONTAINER,
+    COLIMA_NAME,
     DOCKER,
     PODMAN,
     MountSpec,
@@ -90,6 +93,9 @@ PUBLISH_ADDRESS = "127.0.0.1"
 LOOPBACK = "loopback"
 DOCKER_GATEWAY = "docker-gateway"
 PODMAN_PASTA = "podman-pasta"
+# Colima: no published port; sandboxes reach the sidecar as ``egress`` over a
+# private in-VM network (colima-runtime, egress-sidecar delta).
+DOCKER_PRIVATE_NETWORK = "docker-private-network"
 # Parent-proxy relays: the Apple CONNECT relay and the Docker Engine forwarder.
 RELAY_CONNECT = "connect"
 RELAY_FORWARD = "forward"
@@ -117,6 +123,7 @@ PORT_RELEASE_TIMEOUT = 5.0
 # Runtime log caps (design.md Decision 10). Apple container has no log options.
 LOG_OPTIONS: dict[str, tuple[str, ...]] = {
     DOCKER.name: ("max-size=10m", "max-file=3"),
+    COLIMA_NAME: ("max-size=10m", "max-file=3"),
     PODMAN.name: ("max-size=10m",),
     APPLE_CONTAINER.name: (),
 }
@@ -151,11 +158,15 @@ def default_runner(argv: Sequence[str]) -> subprocess.CompletedProcess:
 
 
 def endpoint(port: int, address: str = PUBLISH_ADDRESS) -> str:
-    """The published endpoint on the host."""
+    """The published endpoint on the host (``egress:3128`` on the private network)."""
+    if address == colima_network.ALIAS:
+        return f"{address}:{colima_network.PROXY_PORT}"
     return f"{address}:{port}"
 
 
 def describe_address(address: str) -> str:
+    if address == colima_network.ALIAS:
+        return "the private in-VM network"
     return (
         "host loopback"
         if address == PUBLISH_ADDRESS
@@ -187,7 +198,9 @@ class Layout:
 
 def layout(runtime: Runtime, root: Path | None = None) -> Layout:
     """``$XDG_STATE_HOME/project-sandbox/egress/<runtime>``."""
-    return Layout((root or session_ca.egress_root()) / runtime.name)
+    # ``key`` is the runtime name, plus the profile on Colima, so each Colima
+    # profile has its own sidecar state, CA and lock.
+    return Layout((root or session_ca.egress_root()) / runtime.key)
 
 
 _STATE_KEYS = {
@@ -267,6 +280,10 @@ class Strategy:
             LOOPBACK: "host loopback",
             DOCKER_GATEWAY: f"Docker's default bridge gateway {self.address}",
             PODMAN_PASTA: "host loopback, sidecar on a pasta network",
+            DOCKER_PRIVATE_NETWORK: (
+                f"private network {colima_network.SANDBOX_NETWORK} "
+                f"({colima_network.ALIAS}:{colima_network.PROXY_PORT}), no published port"
+            ),
         }[self.kind]
 
 
@@ -298,6 +315,10 @@ def endpoint_strategy(
     """
     if runtime.name == APPLE_CONTAINER.name:
         return Strategy()
+    if runtime.name == COLIMA_NAME:
+        # The sidecar and every sandbox share the profile's Linux engine, so no
+        # host or gateway address is involved.
+        return Strategy(DOCKER_PRIVATE_NETWORK, colima_network.ALIAS)
     probe = info or local_service_network._runtime_info
     try:
         data = probe(runtime)
@@ -326,7 +347,9 @@ def recorded_strategy(state: dict | None) -> Strategy:
     state = state or {}
     kind = state.get("strategy")
     return Strategy(
-        kind if kind in (LOOPBACK, DOCKER_GATEWAY, PODMAN_PASTA) else LOOPBACK,
+        kind
+        if kind in (LOOPBACK, DOCKER_GATEWAY, PODMAN_PASTA, DOCKER_PRIVATE_NETWORK)
+        else LOOPBACK,
         str(state.get("address") or PUBLISH_ADDRESS),
     )
 
@@ -378,7 +401,7 @@ def restart_inputs(
     """
     ca = policy.upstream_ca_bytes() if policy.upstream_url else b""
     extra = {} if address == PUBLISH_ADDRESS else {"address": address}
-    return {
+    inputs = {
         "image": image,
         "copilot": policy.copilot,
         "upstream_url": policy.upstream_url,
@@ -389,6 +412,10 @@ def restart_inputs(
         "log_options": list(LOG_OPTIONS.get(runtime.name, ())),
         **extra,
     }
+    if runtime.name == COLIMA_NAME:
+        # Nothing is published, so the configured port cannot drift the sidecar.
+        del inputs["port"]
+    return inputs
 
 
 def relay_mode(
@@ -526,8 +553,17 @@ def sidecar_run_argv(
             "--add-host",
             f"{local_service_network.HOSTNAME}:{strategy.address}",
         ]
+    elif strategy.kind == DOCKER_PRIVATE_NETWORK:
+        # Created on the outbound bridge only; ``connect_private_network`` adds
+        # the alias on the sandbox network. Squid must not route between them.
+        network = [
+            "--network",
+            colima_network.UPLINK_NETWORK,
+            "--sysctl",
+            "net.ipv4.ip_forward=0",
+        ]
     argv = [
-        runtime.binary,
+        *runtime.argv(),
         "run",
         "-d",
         "--name",
@@ -541,8 +577,11 @@ def sidecar_run_argv(
         "--label",
         f"{ADDRESS_LABEL}={strategy.address}",
         *network,
-        "--publish",
-        f"{strategy.address}:{port}:{CONTAINER_PORT}",
+        *(
+            []
+            if strategy.kind == DOCKER_PRIVATE_NETWORK
+            else ["--publish", f"{strategy.address}:{port}:{CONTAINER_PORT}"]
+        ),
         "--memory",
         memory,
         "--cpus",
@@ -558,11 +597,11 @@ def sidecar_run_argv(
 
 
 def container_inspect_argv(runtime: Runtime) -> list[str]:
-    return [runtime.binary, "inspect", CONTAINER]
+    return runtime.argv("inspect", CONTAINER)
 
 
 def exec_argv(runtime: Runtime, *command: str) -> list[str]:
-    return [runtime.binary, "exec", CONTAINER, *command]
+    return runtime.argv("exec", CONTAINER, *command)
 
 
 def readiness_argv(runtime: Runtime) -> list[str]:
@@ -586,7 +625,7 @@ def clock_argv(runtime: Runtime) -> list[str]:
 def logs_argv(
     runtime: Runtime, *, since: float | None = None, follow: bool = False
 ) -> list[str]:
-    argv = [runtime.binary, "logs"]
+    argv = runtime.argv("logs")
     if follow:
         argv.append("--follow")
     if since is not None and runtime.name != APPLE_CONTAINER.name:
@@ -596,11 +635,11 @@ def logs_argv(
 
 
 def remove_container_argv(runtime: Runtime) -> list[str]:
-    return [runtime.binary, "rm", "-f", CONTAINER]
+    return runtime.argv("rm", "-f", CONTAINER)
 
 
 def remove_legacy_network_argv(runtime: Runtime) -> list[str]:
-    return [runtime.binary, "network", "rm", LEGACY_NETWORK]
+    return runtime.argv("network", "rm", LEGACY_NETWORK)
 
 
 # --------------------------------------------------------------------------
@@ -888,6 +927,9 @@ class Collaborators:
     port_release_timeout: float = PORT_RELEASE_TIMEOUT
     host_probe: Callable[[int, str], bool] = probe_published
     strategy: Callable[[Runtime], Strategy] = endpoint_strategy
+    # Colima only: fail early, naming the Colima mount to add, when the VM cannot
+    # see the sidecar's directory (it is mounted into the container).
+    mount_check: Callable[[Runtime, list[Path]], None] = colima_mounts.check
 
 
 @contextlib.contextmanager
@@ -920,6 +962,23 @@ def port_drift_message(
     )
 
 
+def check_port(runtime: Runtime, policy: egress_policy.PolicyFile) -> None:
+    """Colima's proxy port is fixed; an explicit other value is an error.
+
+    Silently ignoring it would leave the user believing the sidecar listens on
+    the port they configured (colima-runtime, egress-sidecar delta).
+    """
+    if runtime.name == COLIMA_NAME and policy.port != egress_policy.DEFAULT_PORT:
+        where = policy.path or egress_policy.default_policy_path()
+        raise SidecarError(
+            f"[egress.sidecar] port = {policy.port} in {where} is not supported on "
+            "Colima: the sidecar is not published and always listens on "
+            f"{colima_network.ALIAS}:{colima_network.PROXY_PORT} on a private "
+            "network. Remove the setting (or set it to "
+            f"{egress_policy.DEFAULT_PORT}) to use --runtime colima."
+        )
+
+
 def ensure(
     runtime: Runtime,
     policy: egress_policy.PolicyFile,
@@ -941,9 +1000,11 @@ def ensure(
     hold both through application so a delayed launch cannot undo a revocation.
     """
     deps = deps or Collaborators()
+    check_port(runtime, policy)
     strategy = strategy or deps.strategy(runtime)
     lay = layout(runtime, root)
     with egress_policy.current_policy(policy) as current, _locked(lay):
+        check_port(runtime, current)
         sidecar = _ensure_locked(
             runtime, current, image=image, lay=lay, deps=deps, strategy=strategy
         )
@@ -974,6 +1035,7 @@ def _healthy(
         and info.port == state["port"]
         and info.address == (state.get("address") or PUBLISH_ADDRESS)
         and _complete(lay)
+        and (runtime.name != COLIMA_NAME or _attached(info))
         and probe_ready(runtime, runner)
     )
 
@@ -1046,13 +1108,25 @@ def _cold_start(
     except egress_policy.EgressPolicyError as exc:
         raise SidecarError(str(exc)) from None
 
+    if _private(strategy):
+        if parent_port is not None:
+            raise SidecarError(
+                "an upstream proxy on host loopback is not supported on Colima: the "
+                "sidecar cannot reach macOS loopback. Set [egress.upstream] url to "
+                "an address the VM can reach."
+            )
+        try:
+            colima_network.ensure(runtime, runner)
+        except colima_network.NetworkError as exc:
+            raise SidecarError(str(exc)) from None
+
     # Also clears a stopped one (after a reboot) or a leftover one whose state
     # does not match; its published port is released before the check below.
     runner(remove_container_argv(runtime))
     if mode == RELAY_FORWARD:
         # The sidecar's address may change, so the forwarder always restarts.
         _stop_relay(lay, deps.relay)
-    if not _wait(
+    if not _private(strategy) and not _wait(
         lambda: deps.port_free(policy.port, address),
         timeout=deps.port_release_timeout,
         clock=deps.clock,
@@ -1062,6 +1136,8 @@ def _cold_start(
 
     mount_storage.ensure_private_dirs(lay.sidecar)
     os.chmod(lay.sidecar, 0o700)
+    if _private(strategy):
+        deps.mount_check(runtime, [lay.sidecar])
     bump_set = egress_policy.derive_bump_set(copilot=policy.copilot)
     now = deps.now()
     ca = None if new_ca else session_ca.load(lay.sidecar)
@@ -1070,7 +1146,7 @@ def _cold_start(
         session_ca.generate(
             lay.sidecar,
             bump_set,
-            name=session_ca.common_name(runtime.name),
+            name=session_ca.common_name(runtime.key),
             lifetime=dt.timedelta(days=policy.ca_lifetime_days),
             now=now,
         )
@@ -1134,6 +1210,19 @@ def _cold_start(
         ),
         "starting the egress sidecar",
     )
+    if _private(strategy):
+        # Every creation attaches the alias: a removed and recreated container
+        # does not keep its network attachments (docs/colima-spikes.md A).
+        _checked(
+            runner,
+            colima_network.connect_argv(
+                runtime,
+                colima_network.SANDBOX_NETWORK,
+                CONTAINER,
+                colima_network.ALIAS,
+            ),
+            "attaching the egress sidecar to the sandbox network",
+        )
     wait_ready(
         runtime,
         runner,
@@ -1158,15 +1247,24 @@ def _cold_start(
             conf, upstream = render(relay_port)
             _write_file(lay.sidecar / CONF_NAME, conf)
             _checked(runner, reload_argv(runtime), "reloading the egress sidecar")
+    reachable = (
+        (lambda: probe_private(runtime, runner, image))
+        if _private(strategy)
+        else (lambda: deps.host_probe(policy.port, address))
+    )
     if not _wait(
-        lambda: deps.host_probe(policy.port, address),
+        reachable,
         timeout=deps.readiness_timeout,
         clock=deps.clock,
         sleep=deps.sleep,
     ):
+        where = (
+            f"as {colima_network.ALIAS} on the {colima_network.SANDBOX_NETWORK} network"
+            if _private(strategy)
+            else f"on {endpoint(policy.port, address)} on the host"
+        )
         raise SidecarError(
-            "the egress sidecar is ready inside its container but does not answer "
-            f"on {endpoint(policy.port, address)} on the host.\n"
+            f"the egress sidecar is ready inside its container but does not answer {where}.\n"
             + log_tail(runtime, runner)
         )
     state = {
@@ -1197,6 +1295,87 @@ def _sidecar_ip(runtime: Runtime, runner: Runner) -> str:
             "bridge, which the parent forwarder admits as its only peer"
         )
     return info.ip
+
+
+def _private(strategy: Strategy) -> bool:
+    return strategy.kind == DOCKER_PRIVATE_NETWORK
+
+
+def _attached(info: ContainerInfo | None) -> bool:
+    """The sidecar is on the uplink and on the sandbox network as ``egress``."""
+    if info is None:
+        return False
+    try:
+        record = _first(json.loads(info.raw))
+    except (ValueError, SidecarError):
+        return False
+    return colima_network.attached_to_both(record)
+
+
+def sandbox_address(runtime: Runtime, runner: Runner) -> str:
+    """The sidecar's address on the sandbox network, read fresh at each launch.
+
+    A recreated sidecar can get another address, so it is never cached. Raises
+    when the sidecar is not attached, naming the command that repairs it.
+    """
+    info = inspect(runtime, runner)
+    try:
+        record = _first(json.loads(info.raw)) if info is not None else {}
+    except (ValueError, SidecarError):
+        record = {}
+    attached = colima_network.attachment(record)
+    if attached is None or colima_network.ALIAS not in attached.aliases:
+        raise SidecarError(
+            "the egress sidecar is not attached to the "
+            f"{colima_network.SANDBOX_NETWORK} network as {colima_network.ALIAS!r}; "
+            "run `project-sandbox-egress restart`"
+        )
+    return attached.address
+
+
+def private_plan(
+    runtime: Runtime, runner: Runner
+) -> local_service_network.ForwardingPlan:
+    """This session's plan for reaching the Colima sidecar.
+
+    ``egress`` is pinned to the sidecar's current address on the sandbox
+    network with ``--add-host``, so the sandbox firewall admits no DNS.
+    """
+    address = sandbox_address(runtime, runner)
+    return local_service_network.ForwardingPlan(
+        "colima-private-network",
+        endpoint=address,
+        add_host=f"{colima_network.ALIAS}:{address}",
+        hostname=colima_network.ALIAS,
+        port=colima_network.PROXY_PORT,
+        label="Egress sidecar",
+    )
+
+
+def probe_private(runtime: Runtime, runner: Runner, image: str) -> bool:
+    """From the sandbox network itself: ``egress`` resolves and Squid listens.
+
+    Runs a throwaway container (the sidecar image's own busybox ``nc``, with its
+    entrypoint overridden) attached only to the internal network, so it tests
+    exactly what a sandbox will see.
+    """
+    result = runner(
+        runtime.argv(
+            "run",
+            "--rm",
+            "--network",
+            colima_network.SANDBOX_NETWORK,
+            "--entrypoint",
+            "nc",
+            image,
+            "-z",
+            "-w",
+            "3",
+            colima_network.ALIAS,
+            str(colima_network.PROXY_PORT),
+        )
+    )
+    return result.returncode == 0
 
 
 def _stop_relay(lay: Layout, relay: egress_relay.RelayLike) -> None:
@@ -1394,9 +1573,11 @@ def restart(
 ) -> Sidecar:
     """``down`` without deleting a reusable CA, then ``up``."""
     deps = deps or Collaborators()
+    check_port(runtime, policy)
     strategy = deps.strategy(runtime)
     lay = layout(runtime, root)
     with egress_policy.current_policy(policy) as current, _locked(lay):
+        check_port(runtime, current)
         _down_locked(runtime, lay, deps, keep_ca=not new_ca)
         return _ensure_locked(
             runtime,
@@ -1476,9 +1657,10 @@ def status(
         and info is not None
         and info.port == state["port"]
         and info.address == current.address
+        and (runtime.name != COLIMA_NAME or _attached(info))
     )
     report: dict = {
-        "runtime": runtime.name,
+        "runtime": runtime.key,
         "container": CONTAINER,
         "policy_path": str(policy.path or egress_policy.default_policy_path()),
         "policy_exists": policy.path is not None,
@@ -1491,6 +1673,8 @@ def status(
         "strategy": current.kind,
         "would": "reuse" if healthy else "start",
     }
+    if runtime.name == COLIMA_NAME:
+        report["attached"] = running and _attached(info)
     if strategy_error:
         report["strategy_error"] = strategy_error
     ca = session_ca.load(lay.sidecar)
@@ -1559,6 +1743,12 @@ def status_lines(report: dict) -> list[str]:
         if report["running"]:
             state += ", ready" if report["ready"] else ", NOT ready"
         lines.append(f"  State: {state}")
+        if report.get("running") and report.get("attached") is False:
+            lines.append(
+                f"  Network: NOT attached to {colima_network.SANDBOX_NETWORK} as "
+                f"{colima_network.ALIAS!r}; sandboxes cannot reach it and the next "
+                "launch recreates it"
+            )
     if "endpoint" in report:
         lines.append(
             f"  Endpoint: {report['endpoint']} "

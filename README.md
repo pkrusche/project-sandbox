@@ -92,6 +92,7 @@ project-sandbox --node-npm --agent claude /absolute/path/to/repo
 - [Agent proxy setup and security](docs/agent-proxy.md)
 - [Egress sidecar and `project-sandbox-egress`](docs/egress-sidecar.md)
 - [Generated files and runtime behavior](docs/runtime.md)
+- [Colima runtime](docs/colima.md)
 - [Security model](docs/security.md)
 - [Development guide](docs/development.md)
 - [References and related projects](docs/references.md)

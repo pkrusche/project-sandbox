@@ -6,6 +6,7 @@ on and reports what is ready, what is degraded, and what blocks a session:
 ```bash
 project-sandbox doctor          # human-readable report
 project-sandbox doctor --json   # machine-readable report for scripts/CI
+project-sandbox doctor --colima-profile work   # also check this Colima profile
 ```
 
 The command is read-only. It looks up binaries on `PATH` and asks each tool for
@@ -27,6 +28,11 @@ reported rather than blocking the command.
 | | global `user.name` / `user.email` | warn |
 | | `jj` version and `jj workspace add --no-colocate` support (jj >= 0.46) | info if absent, warn if too old |
 | Egress sidecar | For each reachable runtime: whether the global [egress sidecar](egress-sidecar.md) runs, and its published endpoint (one read-only `inspect`) | info |
+| Colima | Shown when `colima` is on `PATH` or `--colima-profile` is given (default profile `project-sandbox`). The profile's Docker context exists, points at that profile's socket and its engine answers | info if the profile was never started, warn if stopped or not Colima's |
+| | VM size: CPUs and memory against the sandbox default of 4 CPUs (Docker refuses a CPU limit above the VM's) | warn if the VM has fewer CPUs, with `--cpus N` and `colima start --cpu 4` as fixes |
+| | Mounts: the current directory and the state directory are visible in the VM (one read-only `colima ssh` call; Colima exports only the home directory by default) | warn, naming the path and the `--mount` to add |
+| | Networks: `psbx-egress-uplink` and `psbx-sandbox` exist with project-sandbox's labels | info if not created yet, warn for a same-named foreign network |
+| | The profile's sidecar (see [Colima runtime](colima.md)): running, and attached to `psbx-sandbox` as `egress` | info, warn if it is running but detached |
 
 `--runtime auto` picks the first runtime found on `PATH` (Apple `container`,
 then Docker, then Podman on macOS; Docker, then Podman on Linux) without

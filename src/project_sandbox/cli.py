@@ -23,6 +23,8 @@ from . import (
     build_network,
     build_proxy_forwarder,
     chroot,
+    colima_mounts,
+    colima_network,
     config_agents,
     container_cli,
     copilot_auth,
@@ -159,6 +161,16 @@ def build_parser() -> ArgumentParser:
         choices=list(container_cli.RUNTIME_CHOICES),
         default="auto",
         help="Container runtime for direct CLI runs (default: auto).",
+    )
+    p.add_argument(
+        "--colima-profile",
+        default=None,
+        metavar="NAME",
+        help=(
+            "Colima profile for --runtime colima (default: "
+            f"{container_cli.COLIMA_DEFAULT_PROFILE}). The profile must already "
+            "be running; project-sandbox never starts or changes it."
+        ),
     )
     p.add_argument("--no-build", action="store_true")
     p.add_argument(
@@ -547,6 +559,8 @@ def _main_scoped(argv: list[str] | None, resources: contextlib.ExitStack) -> int
     build_no_proxy = build_network.parse_no_proxy(args.build_no_proxy)
     if build_no_proxy and build_proxy is None:
         raise SystemExit("--build-no-proxy requires --build-proxy")
+    if args.colima_profile is not None and args.runtime != "colima":
+        raise SystemExit("--colima-profile requires --runtime colima")
     if args.runtime == "chroot" and (args.build_proxy or args.build_ca_cert):
         raise SystemExit(
             "--build-proxy, --build-no-proxy and --build-ca-cert require an "
@@ -593,6 +607,24 @@ def _main_scoped(argv: list[str] | None, resources: contextlib.ExitStack) -> int
             args, project=project, workspace=planned_workspace, run_agent=run_agent
         )
         internet_proxy_config = internet_proxy.for_sidecar(egress.port)
+        if args.runtime == container_cli.COLIMA_NAME:
+            try:
+                egress_sidecar.check_port(
+                    container_cli.colima_runtime(
+                        args.colima_profile or container_cli.COLIMA_DEFAULT_PROFILE
+                    ),
+                    egress,
+                )
+            except egress_sidecar.SidecarError as exc:
+                raise SystemExit(f"[E] {exc}") from None
+    if args.runtime == container_cli.COLIMA_NAME:
+        _reject_colima_host_features(
+            ollama=pi_ollama_enabled,
+            agent_proxy_endpoint=proxy_endpoint,
+            internet_proxy_config=None if sidecar else internet_proxy_config,
+            upstream_url=egress.upstream_url if egress is not None else None,
+            build_proxy_endpoint=build_proxy,
+        )
     identity = read_identity()
     available_agents = config_agents.available_agents()
     # --no-forward-credentials promises to start unauthenticated and let the
@@ -619,13 +651,17 @@ def _main_scoped(argv: list[str] | None, resources: contextlib.ExitStack) -> int
     if run_agent is not None:
         _ensure_agent_available(run_agent, available_agents)
     runtime = (
-        container_cli.select_runtime(args.runtime)
+        container_cli.select_runtime(args.runtime, colima_profile=args.colima_profile)
         if (run_agent is not None or args.build_only) and not args.dry_run
         else None
     )
+    if runtime is not None and runtime.context is not None:
+        container_cli.verify_colima_profile(runtime)
     if args.vcs_access != "full":
         validation_runtime = runtime or (
-            container_cli.select_runtime(args.runtime, dry_run=True)
+            container_cli.select_runtime(
+                args.runtime, dry_run=True, colima_profile=args.colima_profile
+            )
             if run_agent or args.runtime == "chroot"
             else container_cli.DOCKER
         )
@@ -663,6 +699,13 @@ def _main_scoped(argv: list[str] | None, resources: contextlib.ExitStack) -> int
     # a host-loopback relay to it. The original stays authoritative for host
     # preflight and devcontainer configuration.
     sandbox_proxy_config = internet_proxy.for_runtime(internet_proxy_config, runtime)
+    private_sidecar = (
+        egress_strategy is not None
+        and egress_strategy.kind == egress_sidecar.DOCKER_PRIVATE_NETWORK
+    )
+    if private_sidecar:
+        # Colima: the sandbox reaches the sidecar by name on a private network.
+        sandbox_proxy_config = internet_proxy.for_private_sidecar()
 
     if args.dry_run:
         wt, workspace = _plan_worktree(args, project) if run_agent else (None, project)
@@ -804,14 +847,23 @@ def _main_scoped(argv: list[str] | None, resources: contextlib.ExitStack) -> int
                     vcs_layout, args.vcs_access, runtime, args.extra_mounts
                 )
                 if args.vcs_access == "hidden":
-                    vcs_masks = vcs_access.new_mask_dir()
+                    vcs_masks = (
+                        # The Colima VM exports $HOME, not macOS $TMPDIR.
+                        vcs_access.new_mask_dir(
+                            parent=observability.state_dir() / "vcs-masks"
+                        )
+                        if runtime.context is not None
+                        else vcs_access.new_mask_dir()
+                    )
             except (ValueError, OSError) as exc:
                 raise SystemExit(str(exc)) from exc
-        if (
-            run_agent is not None
-            and internet_proxy_config is not None
-            and sandbox_proxy_config is not internet_proxy_config
+        if _needs_internet_proxy_relay(
+            run_agent,
+            internet_proxy_config,
+            sandbox_proxy_config,
+            private_sidecar=private_sidecar,
         ):
+            assert internet_proxy_config is not None  # _needs_internet_proxy_relay
             # Bind before any image work: the firewall admits only this port,
             # so a busy port must fail now rather than after a long build.
             internet_proxy_relay = build_proxy_forwarder.BuildProxyForwarder(
@@ -993,6 +1045,9 @@ def _main_scoped(argv: list[str] | None, resources: contextlib.ExitStack) -> int
                     ) from None
                 if answer.strip().lower() not in ("y", "yes"):
                     return 1
+
+        if runtime is not None and runtime.context is not None:
+            colima_mounts.check(runtime, [workspace])
 
         image_reference = args.image_tag
         # Tags can be shared by unrelated projects and have equivalent
@@ -1229,6 +1284,15 @@ def _main_scoped(argv: list[str] | None, resources: contextlib.ExitStack) -> int
             egress_started_at = egress_sidecar.sidecar_clock(
                 runtime, egress_sidecar.default_runner
             )
+            if private_sidecar:
+                try:
+                    forwarding_plans.append(
+                        egress_sidecar.private_plan(
+                            runtime, egress_sidecar.default_runner
+                        )
+                    )
+                except egress_sidecar.SidecarError as exc:
+                    raise SystemExit(f"[E] {exc}") from None
         # Each live CLI session owns one private mask; cleanup also runs when
         # command construction or container startup fails.
         egress_stack.callback(
@@ -1260,12 +1324,18 @@ def _main_scoped(argv: list[str] | None, resources: contextlib.ExitStack) -> int
             ollama_add_hosts=list(
                 dict.fromkeys(p.add_host for p in forwarding_plans if p.add_host)
             ),
-            network=local_service_network.network_argument(
-                forwarding_plans, pasta=podman_pasta
+            network=(
+                colima_network.SANDBOX_NETWORK
+                if private_sidecar
+                else local_service_network.network_argument(
+                    forwarding_plans, pasta=podman_pasta
+                )
             ),
             session_id=session_id,
             egress_mount=egress_mount,
         )
+        if runtime.context is not None:
+            colima_mounts.check(runtime, colima_mounts.mount_sources(cmd))
         container_name = session_container_name
 
         print(f"Session: {session_id}")
@@ -1600,6 +1670,78 @@ def _reclassify_copilot_exit(exit_code: int, log_path: Path | None) -> int:
     return exit_code
 
 
+def _needs_internet_proxy_relay(
+    run_agent: str | None,
+    internet_proxy_config: internet_proxy.InternetProxy | None,
+    sandbox_proxy_config: internet_proxy.InternetProxy | None,
+    *,
+    private_sidecar: bool,
+) -> bool:
+    """Whether the host binds a loopback relay for the sandbox's proxy.
+
+    Apple container reaches a remote proxy through one, so its sandbox proxy
+    differs from the configured one. The Colima private sidecar also differs
+    (``egress:3128``) but is reached inside the VM, never through the host: a
+    relay there would bind a pointless host port that concurrent launches
+    contend for.
+    """
+    return (
+        run_agent is not None
+        and internet_proxy_config is not None
+        and sandbox_proxy_config is not internet_proxy_config
+        and not private_sidecar
+    )
+
+
+def _reject_colima_host_features(
+    *,
+    ollama: bool,
+    agent_proxy_endpoint,
+    internet_proxy_config,
+    upstream_url: str | None,
+    build_proxy_endpoint=None,
+) -> None:
+    """Refuse, before any container work, what needs a sandbox-to-macOS path.
+
+    The Colima sandbox has no route to the Mac; widening its network to give one
+    would defeat the private-network design, so these are unsupported rather
+    than emulated (colima-runtime, "Host-dependent features are unsupported").
+    """
+    problems = []
+    if ollama:
+        problems.append(
+            "Ollama (--pi-ollama) reaches a model server on the Mac's loopback"
+        )
+    if agent_proxy_endpoint is not None and agent_proxy_endpoint.local:
+        problems.append(
+            "--agent-proxy to a gateway on the Mac's loopback; use a gateway "
+            "address the VM can reach"
+        )
+    if internet_proxy_config is not None and internet_proxy_config.endpoint.local:
+        problems.append(
+            "--internet-proxy on the Mac's loopback; use a proxy address the VM "
+            "can reach"
+        )
+    if build_proxy_endpoint is not None and build_proxy_endpoint.local:
+        problems.append(
+            "--build-proxy on the Mac's loopback; image builds run in the VM and "
+            "cannot reach it, so use a proxy address the VM can reach"
+        )
+    if (
+        upstream_url is not None
+        and egress_sidecar.loopback_parent_port(upstream_url) is not None
+    ):
+        problems.append(
+            "[egress.upstream] url on the Mac's loopback; use a parent proxy "
+            "address the VM can reach"
+        )
+    if problems:
+        raise SystemExit(
+            "Not supported with --runtime colima (the sandbox has no path to the "
+            "Mac):\n" + "\n".join(f"  - {p}" for p in problems)
+        )
+
+
 def _pi_ollama_enabled(args, run_agent: str | None) -> bool:
     return bool(args.pi_ollama and (run_agent == "pi" or args.build_only))
 
@@ -1780,7 +1922,10 @@ def _ensure_egress_sidecar(
         f"Egress sidecar: {'started' if sidecar.started else 'reusing'} "
         f"{egress_sidecar.CONTAINER} at {sidecar.endpoint}"
     )
-    if not (host_probe or egress_sidecar.probe_published)(
+    private = sidecar.strategy.kind == egress_sidecar.DOCKER_PRIVATE_NETWORK
+    # On Colima the host cannot reach the sidecar; ``ensure`` already probed it
+    # from the sandbox network.
+    if not private and not (host_probe or egress_sidecar.probe_published)(
         sidecar.port, sidecar.address
     ):
         raise SystemExit(
@@ -2113,7 +2258,9 @@ def _dry_run(
     else:
         print(f"Would render devcontainer under: {asset_project / '.devcontainer'}")
     preview_runtime = (
-        container_cli.select_runtime(args.runtime, dry_run=True)
+        container_cli.select_runtime(
+            args.runtime, dry_run=True, colima_profile=args.colima_profile
+        )
         if run_agent or args.build_only
         else None
     )
@@ -2193,6 +2340,9 @@ def _dry_run(
         else _validate_internet_proxy_args(args)
     )
     proxy_config = internet_proxy.for_runtime(external_proxy_config, runtime)
+    private_sidecar = egress is not None and runtime.name == container_cli.COLIMA_NAME
+    if private_sidecar:
+        proxy_config = internet_proxy.for_private_sidecar()
     egress_mount = (
         _print_egress_dry_run(
             egress, runtime=runtime, build_ca_certificates=build_ca_certificates
@@ -2218,6 +2368,18 @@ def _dry_run(
         ),
         dry_run=True,
     )
+    if private_sidecar:
+        # The address is read from the running sidecar at launch.
+        forwarding_plans.append(
+            local_service_network.ForwardingPlan(
+                "colima-private-network",
+                endpoint="<sidecar address on psbx-sandbox>",
+                add_host=f"{colima_network.ALIAS}:<sidecar address>",
+                hostname=colima_network.ALIAS,
+                port=colima_network.PROXY_PORT,
+                label="Egress sidecar",
+            )
+        )
     if forwarding_plans:
         if runtime == container_cli.APPLE_CONTAINER:
             print(local_service_network.apple_setup_notice("Local service"))
@@ -2289,7 +2451,11 @@ def _dry_run(
         inputs_dir=inputs_dir,
         api_key_values=preview_api_key_values,
         ollama_add_hosts=[p.add_host for p in forwarding_plans if p.add_host],
-        network=local_service_network.network_argument(forwarding_plans),
+        network=(
+            colima_network.SANDBOX_NETWORK
+            if private_sidecar
+            else local_service_network.network_argument(forwarding_plans)
+        ),
         egress_mount=egress_mount,
     )
     if unsupervised:
@@ -2336,7 +2502,15 @@ def _print_egress_dry_run(
         sidecar_image.render_files(build_ca_certificates=build_ca_certificates)
     )
     lay = egress_sidecar.layout(runtime)
-    endpoint = egress_sidecar.endpoint(policy.port)
+    private = runtime.name == container_cli.COLIMA_NAME
+    strategy = (
+        egress_sidecar.endpoint_strategy(runtime)  # pure for Colima: no probe
+        if private
+        else None
+    )
+    endpoint = egress_sidecar.endpoint(
+        policy.port, strategy.address if strategy else egress_sidecar.PUBLISH_ADDRESS
+    )
     print("Egress: sidecar (global Squid sidecar per runtime; hostname policy)")
     exists = "" if policy.path else " (missing: built-in defaults)"
     print(
@@ -2382,18 +2556,22 @@ def _print_egress_dry_run(
                 "default bridge gateway)"
             )
         print(f"  Parent proxy: {policy.upstream_url} via {via}")
-    print(
-        f"  Published endpoint: {endpoint} (host loopback only"
-        + (
-            "; on Docker Engine, the default bridge gateway instead)"
-            if runtime == container_cli.DOCKER
-            else ")"
+    if strategy is not None:
+        print(f"  Endpoint: {endpoint}, {strategy.describe()}")
+    else:
+        print(
+            f"  Published endpoint: {endpoint} (host loopback only"
+            + (
+                "; on Docker Engine, the default bridge gateway instead)"
+                if runtime == container_cli.DOCKER
+                else ")"
+            )
         )
-    )
     print(f"  Resources: {policy.memory} memory, {policy.cpus} CPU(s)")
     print(f"  Sidecar image: {image}")
     report = None
-    if shutil.which(runtime.binary) is not None:
+    # A dry run asks no Docker or Colima question for a Colima profile.
+    if not private and shutil.which(runtime.binary) is not None:
         try:
             report = egress_sidecar.status(
                 runtime,
@@ -2404,7 +2582,34 @@ def _print_egress_dry_run(
             )
         except (OSError, egress_sidecar.SidecarError):
             report = None
-    if report is None:
+
+    def print_start_plan() -> None:
+        print(
+            "Would generate or reuse the sidecar CA and config in: " + str(lay.sidecar)
+        )
+        print(
+            "Would run: "
+            + shlex.join(
+                egress_sidecar.sidecar_run_argv(
+                    runtime,
+                    image=image,
+                    sidecar_dir=lay.sidecar,
+                    port=policy.port,
+                    memory=policy.memory,
+                    cpus=policy.cpus,
+                    restart_fingerprint="<fingerprint>",
+                    strategy=strategy,
+                )
+            )
+        )
+
+    if private:
+        print(
+            f"  Sidecar: Colima profile {runtime.profile!r} is not queried in a "
+            "dry run; a launch would start or reuse it"
+        )
+        print_start_plan()
+    elif report is None:
         print(f"  Sidecar: {runtime.name} not reachable; a launch would start it")
     elif report["would"] == "reuse" or (report["running"] and "endpoint" in report):
         print(
@@ -2426,23 +2631,7 @@ def _print_egress_dry_run(
             )
     else:
         print(f"  Sidecar: would start {egress_sidecar.CONTAINER}")
-        print(
-            "Would generate or reuse the sidecar CA and config in: " + str(lay.sidecar)
-        )
-        print(
-            "Would run: "
-            + shlex.join(
-                egress_sidecar.sidecar_run_argv(
-                    runtime,
-                    image=image,
-                    sidecar_dir=lay.sidecar,
-                    port=policy.port,
-                    memory=policy.memory,
-                    cpus=policy.cpus,
-                    restart_fingerprint="<fingerprint>",
-                )
-            )
-        )
+        print_start_plan()
     session_dir = (
         lay.sessions
         / observability.new_session_id().lower()

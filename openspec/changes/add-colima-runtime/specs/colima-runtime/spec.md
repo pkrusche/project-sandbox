@@ -54,6 +54,10 @@ Before starting a Colima sandbox, the CLI SHALL check that each host path it mou
 - **WHEN** the workspace is in a directory that the Colima profile does not mount
 - **THEN** the CLI exits before the sandbox starts, naming the directory and the Colima mount setting
 
+#### Scenario: Staging outside the exported tree
+- **WHEN** a generated mount source, such as a hidden-VCS mask directory, would be created in the macOS temporary directory
+- **THEN** on Colima it is created under the project-sandbox state directory instead, and the launch does not fail on a missing bind source
+
 #### Scenario: Visible workspace
 - **WHEN** the workspace and every generated mount source are inside the profile's mounts
 - **THEN** the launch proceeds and the sandbox sees the workspace at its usual location
@@ -79,3 +83,22 @@ The CLI SHALL reject, before any container work, a Colima launch that requires a
 #### Scenario: Firewall mode
 - **WHEN** the user runs `--runtime colima --egress firewall`
 - **THEN** the sandbox runs on the profile's default bridge network with the same firewall policy as `--runtime docker`
+
+### Requirement: Doctor reports a Colima profile without changing it
+`project-sandbox doctor` SHALL check a Colima profile read-only when `colima` is on `PATH` or `--colima-profile NAME` is given: that its Docker context is the profile's, that its engine answers, whether the VM has fewer CPUs than a sandbox asks for by default, whether the current and state directories are visible in the VM, and whether the project's networks and sidecar are healthy. It SHALL NOT start the VM, create a network or change the Docker context.
+
+#### Scenario: Profile was never started
+- **WHEN** the profile's Docker context does not exist
+- **THEN** doctor reports it as informational and names `colima start --profile NAME`
+
+#### Scenario: VM smaller than the sandbox default
+- **WHEN** the VM has 2 CPUs and a sandbox asks for 4 by default
+- **THEN** doctor warns, and names both `--cpus 2` and restarting the profile with more CPUs
+
+#### Scenario: Directory not visible in the VM
+- **WHEN** the current directory is not on a host-backed mount of the VM
+- **THEN** doctor warns, names the directory and the Colima mount to add
+
+#### Scenario: Sidecar detached from the sandbox network
+- **WHEN** the sidecar runs but is not attached to the sandbox network as `egress`
+- **THEN** doctor warns that the next launch recreates it

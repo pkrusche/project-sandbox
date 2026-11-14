@@ -7,7 +7,7 @@ import socket
 import ssl
 from dataclasses import dataclass
 
-from . import build_proxy_forwarder, proxy_endpoint
+from . import build_proxy_forwarder, colima_network, proxy_endpoint
 from .container_cli import APPLE_CONTAINER, Runtime
 from .local_service_network import HOSTNAME, LocalService
 
@@ -52,6 +52,20 @@ def for_sidecar(port: int) -> InternetProxy:
     """
     url = f"http://127.0.0.1:{port}"
     return InternetProxy(url, proxy_endpoint.parse(url, option="[egress.sidecar] port"))
+
+
+def for_private_sidecar() -> InternetProxy:
+    """The Colima sidecar as this session's proxy: ``http://egress:3128``.
+
+    The sandbox reaches it by name over the private in-VM network; the name is
+    pinned to the sidecar's address at launch (``egress_sidecar.private_plan``),
+    so it is a remote-style endpoint with no host forwarding and no DNS.
+    """
+    host, port = colima_network.ALIAS, colima_network.PROXY_PORT
+    url = f"http://{host}:{port}"
+    return InternetProxy(
+        url, proxy_endpoint.ProxyEndpoint("http", host, port, "", False)
+    )
 
 
 # Separates the runtime relay's port from the build forwarder for the same URL.

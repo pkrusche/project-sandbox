@@ -268,9 +268,15 @@ def validate(
                 )
 
 
-def new_mask_dir() -> Path:
-    """Private, non-repository-controlled sources for hidden metadata mounts."""
-    path = Path(tempfile.mkdtemp(prefix="project-sandbox-vcs-"))
+def new_mask_dir(parent: Path | None = None) -> Path:
+    """Private, non-repository-controlled sources for hidden metadata mounts.
+
+    ``parent`` replaces the system temporary directory for runtimes whose VM
+    cannot see it (Colima exports the home directory only).
+    """
+    if parent is not None:
+        parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = Path(tempfile.mkdtemp(prefix="project-sandbox-vcs-", dir=parent))
     (path / "directory").mkdir(mode=0o755)
     (path / "file").touch(mode=0o644)
     return path

@@ -6,7 +6,7 @@ import shutil
 import subprocess
 import sys
 import uuid
-from collections.abc import Generator, Sequence
+from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,7 +15,11 @@ from . import config_agents, copilot_auth, mount_options, session
 from .git_identity import GitIdentity
 from .paths import WORKSPACE_NODE_MODULES_TARGET
 
-RUNTIME_CHOICES = ("auto", "apple-container", "docker", "podman", "chroot")
+RUNTIME_CHOICES = ("auto", "apple-container", "docker", "podman", "colima", "chroot")
+COLIMA_NAME = "colima"
+COLIMA_DEFAULT_PROFILE = "project-sandbox"
+# Colima profile names are directory and context names; keep them to a safe set.
+_COLIMA_PROFILE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,62}")
 
 
 @dataclass(frozen=True)
@@ -25,6 +29,22 @@ class Runtime:
     # False for runtimes (like chroot) that neither build nor run an image;
     # lets callers branch on capability instead of comparing runtime identity.
     is_container: bool = True
+    # Docker context that every invocation targets explicitly (Colima). None
+    # means the CLI's ambient default, as for every other runtime.
+    context: str | None = None
+    # Colima profile, which scopes sidecar state, networks and locks.
+    profile: str | None = None
+
+    def argv(self, *args: str) -> list[str]:
+        """The command line for ``args``, qualified by this runtime's context."""
+        if self.context is None:
+            return [self.binary, *args]
+        return [self.binary, "--context", self.context, *args]
+
+    @property
+    def key(self) -> str:
+        """The stable per-runtime key for state directories and image identity."""
+        return f"{self.name}-{self.profile}" if self.profile else self.name
 
 
 @dataclass(frozen=True)
@@ -42,6 +62,83 @@ APPLE_CONTAINER = Runtime("apple-container", "container")
 DOCKER = Runtime("docker", "docker")
 PODMAN = Runtime("podman", "podman")
 CHROOT = Runtime("chroot", "unshare", is_container=False)
+
+
+def colima_context_name(profile: str) -> str:
+    """The Docker context Colima creates for ``profile`` (``colima`` for default)."""
+    return "colima" if profile == "default" else f"colima-{profile}"
+
+
+def colima_runtime(profile: str = COLIMA_DEFAULT_PROFILE) -> Runtime:
+    """Docker CLI bound to one Colima profile's context, never the ambient one."""
+    if not _COLIMA_PROFILE_RE.fullmatch(profile):
+        raise SystemExit(f"Invalid Colima profile name: {profile!r}")
+    return Runtime(
+        COLIMA_NAME, "docker", context=colima_context_name(profile), profile=profile
+    )
+
+
+def colima_start_hint(runtime: Runtime) -> str:
+    return f"colima start --profile {runtime.profile}"
+
+
+def verify_colima_profile(
+    runtime: Runtime,
+    *,
+    run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+) -> None:
+    """Fail unless ``runtime``'s context is a running Colima profile's engine.
+
+    Read-only: it never creates, starts, stops or reconfigures a VM. Every
+    Docker call names the context, so the ambient context and ``DOCKER_HOST``
+    are never consulted.
+    """
+    assert runtime.context is not None and runtime.profile is not None
+
+    def docker(*args: str) -> subprocess.CompletedProcess:
+        try:
+            return run(
+                [runtime.binary, *args],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise SystemExit(f"Could not run {runtime.binary}: {exc}") from None
+
+    inspected = docker(
+        "context", "inspect", runtime.context, "--format", "{{.Endpoints.docker.Host}}"
+    )
+    if inspected.returncode != 0:
+        raise SystemExit(
+            f"Docker context {runtime.context!r} does not exist, so Colima profile "
+            f"{runtime.profile!r} has not been started. Run: {colima_start_hint(runtime)}"
+        )
+    endpoint = inspected.stdout.strip()
+    sock = (
+        Path(endpoint.removeprefix("unix://"))
+        if endpoint.startswith("unix://")
+        else None
+    )
+    if (
+        sock is None
+        or sock.name != "docker.sock"
+        or sock.parent.name != runtime.profile
+        or "colima" not in {part.lower().lstrip(".") for part in sock.parts}
+    ):
+        raise SystemExit(
+            f"Docker context {runtime.context!r} points at {endpoint or 'nothing'}, "
+            f"which is not Colima profile {runtime.profile!r}'s Docker socket; "
+            "refusing to use it."
+        )
+    answered = docker("--context", runtime.context, "info", "--format", "{{.ID}}")
+    if answered.returncode != 0:
+        raise SystemExit(
+            f"Colima profile {runtime.profile!r} is not running (its Docker engine "
+            f"did not answer). Run: {colima_start_hint(runtime)}"
+        )
+
 
 _RUNTIMES = {
     APPLE_CONTAINER.name: APPLE_CONTAINER,
@@ -66,9 +163,22 @@ def host_build_identity(runtime: Runtime) -> tuple[int, int] | None:
     return (uid, gid) if uid != 0 else None
 
 
-def select_runtime(requested: str, *, dry_run: bool = False) -> Runtime:
+def select_runtime(
+    requested: str,
+    *,
+    dry_run: bool = False,
+    colima_profile: str | None = None,
+) -> Runtime:
     if requested not in RUNTIME_CHOICES:
         raise SystemExit(f"Unsupported runtime: {requested}")
+    if colima_profile is not None and requested != "colima":
+        raise SystemExit("--colima-profile requires --runtime colima")
+
+    if requested == "colima":
+        runtime = colima_runtime(colima_profile or COLIMA_DEFAULT_PROFILE)
+        if not dry_run and shutil.which(runtime.binary) is None:
+            raise SystemExit(f"{runtime.binary} CLI not found on PATH")
+        return runtime
 
     if requested != "auto":
         runtime = _RUNTIMES[requested]
@@ -365,7 +475,7 @@ def build_run_argv(
     node_modules_tmpfs: bool = False,
 ) -> list[str]:
     argv = [
-        runtime.binary,
+        *runtime.argv(),
         "run",
         "--rm",
         "--memory",
@@ -452,7 +562,7 @@ def build_stop_argv(
     This bounded graceful stop (rather than an immediate `kill`) lets the
     container shut down cleanly while still guaranteeing a prompt exit.
     """
-    return [runtime.binary, "stop", "--time", str(grace), container_name]
+    return runtime.argv("stop", "--time", str(grace), container_name)
 
 
 def build_image(
@@ -489,7 +599,7 @@ def build_image(
         file_arg = str(dockerfile_path.relative_to(build_context))
     except ValueError:
         file_arg = str(dockerfile_path)
-    cmd = [runtime.binary, "build", "-t", image_tag, "-f", file_arg]
+    cmd = runtime.argv("build", "-t", image_tag, "-f", file_arg)
     # Podman defaults to OCI format, which drops the Dockerfile SHELL
     # instruction; RUN steps then use /bin/sh and fail on bashisms (pipefail).
     if runtime.name == PODMAN.name:
@@ -530,7 +640,7 @@ def image_exists(runtime: Runtime, image_tag: str, *, dry_run: bool = False) -> 
         return False
     try:
         proc = subprocess.run(
-            [runtime.binary, "image", "inspect", image_tag],
+            runtime.argv("image", "inspect", image_tag),
             check=False,
             capture_output=True,
             text=True,
@@ -548,7 +658,7 @@ def image_identity(runtime: Runtime, reference: str) -> str:
     """
     try:
         proc = subprocess.run(
-            [runtime.binary, "image", "inspect", reference],
+            runtime.argv("image", "inspect", reference),
             check=True,
             capture_output=True,
             text=True,
@@ -597,7 +707,7 @@ def pinned_image(
     apple = runtime.name == APPLE_CONTAINER.name
     alias = f"localhost/project-sandbox-session:{uuid.uuid4().hex}"
     try:
-        rc = run([runtime.binary, "image", "tag", reference, alias])
+        rc = run(runtime.argv("image", "tag", reference, alias))
         if rc != 0:
             raise SystemExit(f"Could not pin the {runtime.name} image for this session")
         if image_identity(runtime, alias) != identity:
@@ -606,7 +716,7 @@ def pinned_image(
     finally:
         # Remove only our alias, never force deletion or prune shared layers.
         remove = "delete" if apple else "rm"
-        if run([runtime.binary, "image", remove, alias]) != 0:
+        if run(runtime.argv("image", remove, alias)) != 0:
             print(f"[W] Could not remove session image alias {alias}")
 
 
@@ -615,7 +725,7 @@ def ensure_system_started(
 ) -> int:
     if runtime.name != APPLE_CONTAINER.name:
         return 0
-    cmd = [runtime.binary, "system", "start"]
+    cmd = runtime.argv("system", "start")
     if dry_run:
         print(shlex.join(cmd))
         return 0

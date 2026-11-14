@@ -51,6 +51,8 @@ The sidecar is created on the uplink and connected to the internal network (alia
 
 Both networks carry ownership labels (`project-sandbox.owner=...`, `project-sandbox.profile=<profile>`, role). The CLI inspects labels before using a network and refuses a same-named network without them. Nothing is pruned in bulk. `project-sandbox-egress down` keeps both networks: they cost nothing while idle, and removing them would need every sandbox detached first. The docs list the `docker network rm` commands for a manual cleanup.
 
+Spike findings (`docs/colima-spikes.md`) that shape this: the sidecar is run with `--sysctl net.ipv4.ip_forward=0`, because it forwards by default and only NAT absence stopped a `NET_ADMIN` sandbox from routing through it; and the `network connect` step runs on every sidecar creation, because attachments survive `docker restart` and stop/start but are lost when the container is removed and recreated.
+
 `--internal` is retained even though a single shared bridge would work, because it makes a bypassing process (one that ignores proxy variables) route-less, which matters in corporate setups where the sandbox firewall cannot be the only barrier.
 
 *Alternative:* per-session internal networks (the full spec in `project-sandbox-colima-simplified-spec.md`). Rejected for the MVP: it adds attach/detach, reconcile after a sidecar restart, address-pool pressure and a bigger test matrix for peer isolation that is out of scope.
@@ -73,16 +75,20 @@ An allow-list of features is not needed; the CLI computes whether the launch nee
 
 `layout()` keys the state directory by `colima-<profile>` (`egress/colima-project-sandbox/`). The sidecar container, CA, locks and networks are per profile: container name and network names are fixed within the profile's engine, so they cannot collide across profiles, and the on-disk layout still keeps profiles apart. Image caches already live in each profile's engine.
 
-### D8. Mount visibility is checked, not configured
+### D8. Mount visibility is checked, and staging stays under the home directory
 
-Docker can bind-mount only what the VM exports. The preflight starts no new container: it runs a throwaway `docker run --rm -v <path>:<path>:ro <image> test -e <path>` for the parent directories of each mount source (deduplicated, one container per launch), and reports missing paths. This avoids guessing at Colima's mount configuration, which differs between VZ and QEMU and across versions.
+Spike D showed that the default Colima profile exports `$HOME` read-write and nothing else, and that `--mount type=bind` fails at `docker run` with `bind source path does not exist` for a path the VM cannot see (a missing path is never silently created, unlike `-v`). The CLI keeps using `--mount`.
+
+The preflight exists so that failure comes early and names the cause, before a sidecar, network or image is touched. It asks the VM itself with one read-only `colima ssh --profile NAME -- ...` call that tests `-e` on every host mount source, or on its nearest existing ancestor when the source is staging that is created later. This is independent of the VM driver (VZ or QEMU) and of Colima's configuration files. It reports every path that is not visible, with the Colima mount to add. When the `colima` binary is not on PATH the preflight is skipped with a warning, and Docker's own `bind source path does not exist` error is the backstop.
+
+Staging that project-sandbox creates itself must be placed where the VM can see it. `vcs_access.new_mask_dir()` currently uses `tempfile.mkdtemp`, i.e. macOS `$TMPDIR`; on Colima it creates the directory under the state directory (`$XDG_STATE_HOME/project-sandbox`), which is under `$HOME`. Host-side lock files in `$TMPDIR` are not mounted and stay as they are.
 
 ## Risks / Trade-offs
 
 - **[Internal network behaves differently from expectation (alias, DNS, Squid reachability)]** → Spike 1 verifies alias resolution and connectivity on an `--internal` network before any code depends on it.
 - **[Squid acts as an IP router between networks]** → Spike 2 checks forwarding inside the sidecar and tests direct access to the gateway, uplink address, IPv6 and UDP from a sandbox; failures block the change.
 - **[Sandboxes can reach one another on `psbx-sandbox`]** → Accepted for the MVP and documented. The shared network is trusted within the profile's VM.
-- **[Build-time proxy/CA do not work behind the corporate setup]** → Spike 3 builds a sidecar image through an intercepting proxy in Colima, reusing recent build-proxy work.
+- **[Build-time proxy is not reachable from the builder]** → Spike C showed BuildKit `RUN` steps cannot reach a proxy that exists only on a container network, but can reach one by a VM-reachable address (a corporate proxy, or one published on the bridge gateway). Image builds therefore use the existing build-proxy settings with such an address, and the private `egress` alias serves runtime traffic only. TLS interception and CA installation were not tested (fixture unavailable) and remain a check for the end-to-end suite.
 - **[Mounts differ between VZ and QEMU, symlinks and `.git` for `--branch`]** → Spike 4 covers workspace, staging, credential files and a worktree's `.git`.
 - **[Sidecar address changes after recreate]** → Running sandboxes fail closed (they hold the old address); new launches read the new one. Documented.
 - **[Corporate security software still interferes with the VM's own outbound path]** → Out of reach of this change. The design removes only the sandbox-to-sidecar hop from that surface.

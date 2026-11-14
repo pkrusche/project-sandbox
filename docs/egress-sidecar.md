@@ -153,6 +153,14 @@ because the firewall and entrypoint scripts differ between the modes.
   firewall then reports the sidecar as unreachable, with a hint naming ufw.
   This case is untested.
 
+## Colima
+
+`--runtime colima` runs the sidecar and the sandboxes in a Colima VM and reaches
+Squid over a private Docker network (`egress:3128`) instead of a published port,
+which avoids the host-network hop that corporate security software tends to
+interfere with. `[egress.sidecar] port` does not apply there. See
+[Colima runtime](colima.md#egress) for the topology, its limits and cleanup.
+
 ## Policy
 
 The policy is `$XDG_CONFIG_HOME/project-sandbox/egress.toml` (usually

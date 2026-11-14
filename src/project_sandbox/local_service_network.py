@@ -307,7 +307,7 @@ def apple_setup_notice(label: str) -> str:
 
 def _runtime_info(runtime: Runtime) -> dict:
     proc = subprocess.run(
-        [runtime.binary, "info", "--format", "json"],
+        runtime.argv("info", "--format", "json"),
         check=False,
         capture_output=True,
         text=True,
@@ -383,14 +383,13 @@ def _docker_is_desktop(info: dict) -> bool:
 
 def _bridge_gateway(runtime: Runtime) -> str:
     proc = subprocess.run(
-        [
-            runtime.binary,
+        runtime.argv(
             "network",
             "inspect",
             "bridge",
             "--format",
             "{{(index .IPAM.Config 0).Gateway}}",
-        ],
+        ),
         check=False,
         capture_output=True,
         text=True,

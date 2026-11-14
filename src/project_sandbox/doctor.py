@@ -13,8 +13,17 @@ import shutil
 import subprocess
 import sys
 from dataclasses import asdict, dataclass
+from pathlib import Path
 
-from . import __version__, container_cli, egress_sidecar, local_service_network
+from . import (
+    __version__,
+    colima_mounts,
+    colima_network,
+    container_cli,
+    egress_sidecar,
+    local_service_network,
+    observability,
+)
 
 OK = "ok"
 WARN = "warn"
@@ -411,7 +420,174 @@ def check_egress_sidecars(checks: list[Check]) -> list[Check]:
     return result
 
 
-def run_checks() -> list[Check]:
+def _verify_runner(argv, **_kwargs) -> subprocess.CompletedProcess:
+    """Adapt :func:`_completed` to the keyword-taking runner of the verifiers."""
+    return _completed(argv)
+
+
+def _colima_resources(runtime: container_cli.Runtime, profile: str) -> Check:
+    """The VM's size against the CPUs a sandbox asks for by default.
+
+    Docker refuses a CPU limit above the VM's CPUs (a 2-CPU Colima VM cannot run
+    the default 4); a memory limit above its RAM is allowed, so only CPUs warn.
+    """
+    from . import cli  # lazy: cli imports doctor
+
+    probe = _run(runtime.argv("info", "--format", "{{.NCPU}} {{.MemTotal}}"))
+    try:
+        assert probe is not None and probe.returncode == 0
+        cpus, total = (int(x) for x in probe.stdout.split())
+    except (AssertionError, ValueError):
+        return Check("colima", "resources", INFO, "VM size not reported by Docker")
+    wanted = int(cli.build_parser().get_default("cpus"))
+    gib = total / 1024**3
+    detail = f"{cpus} CPUs, {gib:.1f} GiB"
+    if cpus < wanted:
+        return Check(
+            "colima",
+            "resources",
+            WARN,
+            f"{detail}; a sandbox asks for {wanted} CPUs by default and Docker "
+            "refuses more than the VM has",
+            f"Pass --cpus {cpus}, or give the VM more: colima stop --profile "
+            f"{profile} && colima start --profile {profile} --cpu {wanted}",
+        )
+    return Check("colima", "resources", OK, detail)
+
+
+def check_colima(profile: str) -> list[Check]:
+    """A Colima profile, read-only: context, engine, mounts, networks, sidecar.
+
+    Never starts the VM or creates a network. The mount probe is one read-only
+    ``colima ssh`` call that tests the current directory and the state
+    directory.
+    """
+    runtime = container_cli.colima_runtime(profile)
+    name = f"colima ({profile})"
+    if shutil.which(runtime.binary) is None:
+        return [Check("colima", name, INFO, "docker not found on PATH")]
+    try:
+        container_cli.verify_colima_profile(runtime, run=_verify_runner)
+    except SystemExit as exc:
+        message = str(exc)
+        detail, _, hint = message.partition(" Run: ")
+        # A missing context only means the profile was never started.
+        status = INFO if "does not exist" in detail else WARN
+        return [Check("colima", name, status, detail, f"Run: {hint}" if hint else None)]
+    version = _run(runtime.argv("version", "--format", "{{.Server.Version}}"))
+    detail = (
+        f"{_version(version.stdout) or version.stdout.strip()}; "
+        if version is not None and version.returncode == 0
+        else ""
+    )
+    checks = [
+        Check(
+            "colima",
+            name,
+            OK,
+            f"{detail}profile running, context {runtime.context}",
+        )
+    ]
+
+    checks.append(_colima_resources(runtime, profile))
+
+    paths = [Path.cwd(), observability.state_dir()]
+    try:
+        missing = colima_mounts.missing_in_vm(
+            runtime,
+            paths,
+            run=_verify_runner,
+            which=shutil.which,
+        )
+    except SystemExit as exc:
+        checks.append(Check("colima", "mounts", WARN, str(exc).splitlines()[0]))
+    else:
+        if missing is None:
+            checks.append(
+                Check(
+                    "colima",
+                    "mounts",
+                    INFO,
+                    "colima not on PATH; mount visibility not checked",
+                )
+            )
+        elif missing:
+            checks.append(
+                Check(
+                    "colima",
+                    "mounts",
+                    WARN,
+                    "not visible in the VM: " + ", ".join(str(m) for m in missing),
+                    "Colima exports only the home directory by default; add a "
+                    f"mount: colima start --profile {profile} --mount <dir>:w",
+                )
+            )
+        else:
+            checks.append(
+                Check(
+                    "colima",
+                    "mounts",
+                    OK,
+                    "current directory and state directory visible in the VM",
+                )
+            )
+
+    for spec in colima_network.SPECS:
+        record = colima_network.inspect(runtime, _completed, spec.name)
+        if record is None:
+            checks.append(
+                Check(
+                    "colima",
+                    spec.name,
+                    INFO,
+                    "not created yet (the first --egress sidecar launch creates it)",
+                )
+            )
+            continue
+        try:
+            colima_network.validate(runtime, record, spec)
+        except colima_network.NetworkError as exc:
+            checks.append(Check("colima", spec.name, WARN, str(exc)))
+        else:
+            checks.append(Check("colima", spec.name, OK, f"owned, {spec.role}"))
+
+    info = egress_sidecar.inspect(runtime, _completed)
+    if info is None:
+        sidecar = Check(
+            "egress",
+            f"{runtime.key} sidecar",
+            INFO,
+            "not running (the first --egress sidecar launch starts it)",
+        )
+    elif not info.running:
+        sidecar = Check(
+            "egress",
+            f"{runtime.key} sidecar",
+            INFO,
+            f"{egress_sidecar.CONTAINER} stopped (the next launch replaces it)",
+        )
+    elif not egress_sidecar._attached(info):
+        sidecar = Check(
+            "egress",
+            f"{runtime.key} sidecar",
+            WARN,
+            f"{egress_sidecar.CONTAINER} running but not attached to "
+            f"{colima_network.SANDBOX_NETWORK} as {colima_network.ALIAS!r}",
+            "The next launch recreates it, or run `project-sandbox-egress "
+            f"restart --runtime colima --colima-profile {profile}`",
+        )
+    else:
+        sidecar = Check(
+            "egress",
+            f"{runtime.key} sidecar",
+            INFO,
+            f"{egress_sidecar.CONTAINER} running on "
+            f"{colima_network.ALIAS}:{colima_network.PROXY_PORT}",
+        )
+    return [*checks, sidecar]
+
+
+def run_checks(colima_profile: str | None = None) -> list[Check]:
     checks = [check_python()]
     checks += check_apple_container()
     checks.append(check_docker())
@@ -421,6 +597,9 @@ def run_checks() -> list[Check]:
     checks += check_git()
     checks.append(check_jj())
     checks += check_egress_sidecars(checks)
+    # Colima is opt-in: shown when asked for by name or when colima is installed.
+    if colima_profile is not None or shutil.which("colima") is not None:
+        checks += check_colima(colima_profile or container_cli.COLIMA_DEFAULT_PROFILE)
     return checks
 
 
@@ -428,6 +607,7 @@ _SECTION_TITLES = {
     "host": "Host",
     "runtimes": "Container runtimes",
     "vcs": "Version control",
+    "colima": "Colima",
     "egress": "Egress sidecar",
 }
 
@@ -452,11 +632,20 @@ def render_text(checks: list[Check]) -> str:
 
 
 def main(argv: list[str]) -> int:
-    if any(item != "--json" for item in argv):
-        raise SystemExit("usage: project-sandbox doctor [--json]")
-    checks = run_checks()
+    usage = "usage: project-sandbox doctor [--json] [--colima-profile NAME]"
+    args = list(argv)
+    as_json = "--json" in args
+    args = [a for a in args if a != "--json"]
+    profile = None
+    if args[:1] == ["--colima-profile"] and len(args) == 2:
+        profile = args[1]
+        if not container_cli._COLIMA_PROFILE_RE.fullmatch(profile):
+            raise SystemExit(f"Invalid Colima profile name: {profile!r}")
+    elif args:
+        raise SystemExit(usage)
+    checks = run_checks(profile)
     ok = not any(check.status == FAIL for check in checks)
-    if "--json" in argv:
+    if as_json:
         print(
             json.dumps(
                 {
