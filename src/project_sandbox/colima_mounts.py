@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 from collections.abc import Callable, Iterable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from .container_cli import Runtime
@@ -117,7 +118,78 @@ def missing_in_vm(
     return [p for p in probes if p in missing]
 
 
-def not_visible_message(runtime: Runtime, missing: Sequence[Path]) -> str:
+@dataclass(frozen=True)
+class Export:
+    """One host path the VM exports, and whether containers may write to it."""
+
+    path: str
+    writable: bool
+
+
+def exported_mounts(
+    runtime: Runtime,
+    *,
+    run: Runner = subprocess.run,
+    which: Callable[[str], str | None] = shutil.which,
+) -> list[Export] | None:
+    """What the VM exports now (read-only ``findmnt`` over ``colima ssh``).
+
+    ``None`` when it cannot be read. Needed because ``colima start --mount``
+    *replaces* the profile's mounts instead of adding to them.
+    """
+    assert runtime.profile is not None
+    if which("colima") is None:
+        return None
+    try:
+        proc = run(
+            [
+                "colima",
+                "ssh",
+                "--profile",
+                runtime.profile,
+                "--",
+                "findmnt",
+                "-rn",
+                "-t",
+                "virtiofs,9p,fuse.sshfs",
+                "-o",
+                "TARGET,OPTIONS",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    exports = []
+    for line in proc.stdout.splitlines():
+        target, _, options = line.partition(" ")
+        if target:
+            # findmnt -r escapes a space in a path as \x20.
+            path = target.replace("\\x20", " ")
+            exports.append(Export(path, "rw" in options.split(",")))
+    return exports
+
+
+def mount_flags(exports: Sequence[Export], missing: Sequence[Path]) -> str:
+    """``--mount`` flags that keep every current export and add ``missing``."""
+    wanted = {e.path: e.writable for e in exports}
+    for path in missing:
+        wanted[str(path)] = True
+    return " ".join(
+        f"--mount {shlex.quote(path)}{':w' if writable else ''}"
+        for path, writable in wanted.items()
+    )
+
+
+def not_visible_message(
+    runtime: Runtime,
+    missing: Sequence[Path],
+    exports: Sequence[Export] | None = None,
+) -> str:
     profile = runtime.profile
     lines = [
         (
@@ -126,15 +198,31 @@ def not_visible_message(runtime: Runtime, missing: Sequence[Path]) -> str:
         )
     ]
     lines += [f"  {path}" for path in missing]
-    lines += [
-        (
-            "Colima exports only your home directory by default. Move the project "
-            "under it, or add a mount to the profile and restart it:"
-        ),
-        f"  colima stop --profile {profile}",
-        f"  colima start --profile {profile} "
-        + " ".join(f"--mount {shlex.quote(str(path))}:w" for path in missing),
-    ]
+    lines.append(
+        "`colima start --mount` REPLACES the profile's mounts instead of adding "
+        "to them, so the command must list every path the VM should export, "
+        "not only the new one."
+    )
+    if exports is None:
+        lines.append(
+            f"Current exports could not be read; list them with `colima ssh "
+            f"--profile {profile} -- findmnt -t virtiofs` and include each one."
+        )
+        flags = " ".join(f"--mount {shlex.quote(str(p))}:w" for p in missing)
+        lines.append(f"  colima stop --profile {profile}")
+        lines.append(f"  colima start --profile {profile} <current exports> {flags}")
+    else:
+        lines.append(
+            "The VM currently exports: "
+            + ", ".join(
+                f"{e.path} ({'read-write' if e.writable else 'read-only'})"
+                for e in exports
+            )
+        )
+        lines.append(f"  colima stop --profile {profile}")
+        lines.append(
+            f"  colima start --profile {profile} {mount_flags(exports, missing)}"
+        )
     return "\n".join(lines)
 
 
@@ -155,4 +243,21 @@ def check(
         )
         return
     if missing:
-        raise SystemExit(not_visible_message(runtime, missing))
+        exports = exported_mounts(runtime, run=run, which=which)
+        raise SystemExit(not_visible_message(runtime, missing, exports))
+
+
+def required_state_dirs() -> list[Path]:
+    """The state subtrees whose files the sandbox bind-mounts.
+
+    A hardened profile exports exactly these (plus the workspace roots). The
+    session records, locks and forwarder state are host-only and never mounted.
+    """
+    from . import mount_storage, session_ca, session_inputs, vcs_access
+
+    return [
+        session_inputs.storage_root(),
+        mount_storage.storage_root(),
+        session_ca.egress_root(),
+        vcs_access.colima_mask_parent(),
+    ]

@@ -48,7 +48,7 @@ Before building, creating a network or starting a container, a non-dry-run Colim
 - **THEN** the CLI prints the Docker commands it would run, with the context argument, and performs no Colima, Docker or file operation
 
 ### Requirement: Mounts must be visible in the VM
-Before starting a Colima sandbox, the CLI SHALL check that each host path it mounts (workspace, generated staging inputs, credential files, and the main repository's `.git` for `--branch`) is visible inside the VM at the same path. A path the VM does not expose SHALL cause an error before the sandbox starts, naming the path and the Colima mount to add. Mounts that the user has not granted SHALL NOT be broadened by project-sandbox.
+Before starting a Colima sandbox, the CLI SHALL check that each host path it mounts (workspace, generated inputs, credentials, `--mount` values, and `.git` for `--branch`) is visible in the VM at the same path. A path the VM does not expose SHALL fail the launch before the sandbox starts, naming the path and a `colima start` command that also lists the profile's current exports. It SHALL NOT broaden mounts the user has not granted.
 
 #### Scenario: Workspace outside the VM's mounts
 - **WHEN** the workspace is in a directory that the Colima profile does not mount
@@ -57,6 +57,14 @@ Before starting a Colima sandbox, the CLI SHALL check that each host path it mou
 #### Scenario: Staging outside the exported tree
 - **WHEN** a generated mount source, such as a hidden-VCS mask directory, would be created in the macOS temporary directory
 - **THEN** on Colima it is created under the project-sandbox state directory instead, and the launch does not fail on a missing bind source
+
+#### Scenario: The suggested command keeps the current exports
+- **WHEN** the VM exports `/Users/me/src` read-write and a launch needs `/private/tmp`
+- **THEN** the suggested command passes both `--mount /Users/me/src:w` and `--mount /private/tmp:w`, and says that `--mount` replaces the profile's mounts
+
+#### Scenario: Current exports cannot be read
+- **WHEN** the VM's exports cannot be listed
+- **THEN** the message says so and does not suggest a command that names only the new path
 
 #### Scenario: Visible workspace
 - **WHEN** the workspace and every generated mount source are inside the profile's mounts

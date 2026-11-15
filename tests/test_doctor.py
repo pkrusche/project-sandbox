@@ -368,10 +368,11 @@ HEALTHY_COLIMA = {
 }
 
 
-def colima_host(overrides=None, binaries=None) -> FakeHost:
+def colima_host(overrides=None, binaries=None, first=None) -> FakeHost:
+    """``first`` probes are consulted before the healthy defaults (prefix match)."""
     return FakeHost(
         binaries or {"docker", "colima", "git", "jj"},
-        {**HEALTHY_COLIMA, **(overrides or {})},
+        {**(first or {}), **HEALTHY_COLIMA, **(overrides or {})},
     )
 
 
@@ -481,6 +482,48 @@ class ColimaTests(TestCase):
         self.assertEqual(check.status, doctor.WARN)
         self.assertIn("/somewhere/else", check.detail)
         self.assertIn("--mount", check.hint or "")
+
+    def test_the_directories_checked_are_the_ones_the_sandbox_mounts(self) -> None:
+        seen: list[Path] = []
+
+        def capture(runtime, paths, **_kwargs):
+            seen.extend(paths)
+            return []
+
+        with patch.object(doctor.colima_mounts, "missing_in_vm", side_effect=capture):
+            self.checks(colima_host())
+        names = {p.name for p in seen}
+        self.assertIn(Path.cwd().name, names)
+        # The session records are host-only: a hardened profile must not be
+        # asked about, or told to export, them.
+        self.assertNotIn("sessions", names)
+        self.assertNotIn("locks", names)
+
+    def test_the_mount_hint_keeps_the_profiles_current_exports(self) -> None:
+        host = colima_host(
+            {("colima", "ssh"): ok("/somewhere/else\n")},
+            first={
+                ("colima", "ssh", "--profile", "project-sandbox", "--", "findmnt"): ok(
+                    "/Users/x/src rw,relatime\n/Users/x/ro ro,relatime\n"
+                )
+            },
+        )
+        with patch.object(
+            doctor.colima_mounts,
+            "probe_path",
+            side_effect=lambda p: Path("/somewhere/else"),
+        ):
+            check = self.checks(host)["mounts"]
+        self.assertEqual(check.status, doctor.WARN)
+        hint = check.hint or ""
+        self.assertIn("replaces the profile's mounts", hint)
+        for flag in (
+            "--mount /Users/x/src:w",
+            "--mount /Users/x/ro ",
+            "--mount /somewhere/else:w",
+        ):
+            self.assertIn(flag, hint + " ")
+        self.assertNotIn("exports only the home directory", hint)
 
     def test_without_the_colima_binary_mounts_are_not_checked(self) -> None:
         host = colima_host(binaries={"docker", "git", "jj"})

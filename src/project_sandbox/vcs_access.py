@@ -268,6 +268,18 @@ def validate(
                 )
 
 
+def colima_mask_parent() -> Path:
+    """Where Colima's mask directories live: under the state root, not ``$TMPDIR``.
+
+    The state root (``.../project-sandbox``), not ``observability.state_dir()``,
+    which is the host-only session-records directory a hardened profile does not
+    export.
+    """
+    from . import observability
+
+    return observability.state_dir().parent / "vcs-masks"
+
+
 def new_mask_dir(parent: Path | None = None) -> Path:
     """Private, non-repository-controlled sources for hidden metadata mounts.
 

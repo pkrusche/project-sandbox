@@ -60,21 +60,32 @@ exports your whole home directory read-write and nothing else.** (An empty
 Before the sandbox starts, a launch asks the VM, with one read-only
 `colima ssh` call, whether each host path it mounts (the workspace, generated
 session inputs, credentials, `--mount` values and the repository's `.git` for
-`--branch`) exists on a host-backed mount. Anything missing is reported with
-the mount to add:
+`--branch`) exists on a host-backed mount. Anything missing is reported with a
+command that fixes it.
+
+**`colima start --mount` replaces the profile's mounts; it does not add to
+them.** Restarting a profile with `--mount /private/tmp:w` leaves `/private/tmp`
+as its only export, and the change is saved to the profile's config. The message
+therefore reads the VM's current exports and lists them all in the command it
+prints:
 
 ```text
 These host paths are not visible inside Colima profile 'project-sandbox', so the sandbox cannot mount them:
   /private/tmp
-Colima exports only your home directory by default. Move the project under it, or add a mount to the profile and restart it:
+`colima start --mount` REPLACES the profile's mounts instead of adding to them, so the command must list every path the VM should export, not only the new one.
+The VM currently exports: /Users/you (read-write)
   colima stop --profile project-sandbox
-  colima start --profile project-sandbox --mount /private/tmp:w
+  colima start --profile project-sandbox --mount /Users/you:w --mount /private/tmp:w
 ```
 
+If the current exports cannot be read, the message says so and tells you to list
+them with `colima ssh --profile NAME -- findmnt -t virtiofs` instead of guessing.
+`project-sandbox doctor` prints the same command for a directory it cannot see.
 If `colima` is not on `PATH` the check is skipped with a warning, and Docker
 reports a missing path when the sandbox starts. With `--vcs-access hidden`, the
-mask directories are created under the state directory instead of `$TMPDIR` so
-that they are visible.
+mask directories are created under the state root
+(`$XDG_STATE_HOME/project-sandbox/vcs-masks`) instead of `$TMPDIR` so that they
+are visible.
 
 ## Egress
 

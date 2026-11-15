@@ -22,7 +22,6 @@ from . import (
     container_cli,
     egress_sidecar,
     local_service_network,
-    observability,
 )
 
 OK = "ok"
@@ -491,7 +490,12 @@ def check_colima(profile: str) -> list[Check]:
 
     checks.append(_colima_resources(runtime, profile))
 
-    paths = [Path.cwd(), observability.state_dir()]
+    # The state directories the sandbox bind-mounts, not the host-only session
+    # records; ones that do not exist yet cannot be exported and are skipped.
+    paths = [
+        Path.cwd(),
+        *(d for d in colima_mounts.required_state_dirs() if d.exists()),
+    ]
     try:
         missing = colima_mounts.missing_in_vm(
             runtime,
@@ -512,14 +516,23 @@ def check_colima(profile: str) -> list[Check]:
                 )
             )
         elif missing:
+            exports = colima_mounts.exported_mounts(
+                runtime, run=_verify_runner, which=shutil.which
+            )
+            flags = (
+                colima_mounts.mount_flags(exports, missing)
+                if exports is not None
+                else "<current exports> " + " ".join(f"--mount {m}:w" for m in missing)
+            )
             checks.append(
                 Check(
                     "colima",
                     "mounts",
                     WARN,
                     "not visible in the VM: " + ", ".join(str(m) for m in missing),
-                    "Colima exports only the home directory by default; add a "
-                    f"mount: colima start --profile {profile} --mount <dir>:w",
+                    "`colima start --mount` replaces the profile's mounts, so list "
+                    f"every export: colima stop --profile {profile} && colima start "
+                    f"--profile {profile} {flags}",
                 )
             )
         else:
@@ -528,7 +541,7 @@ def check_colima(profile: str) -> list[Check]:
                     "colima",
                     "mounts",
                     OK,
-                    "current directory and state directory visible in the VM",
+                    "current directory and the state directories the sandbox mounts are visible",
                 )
             )
 

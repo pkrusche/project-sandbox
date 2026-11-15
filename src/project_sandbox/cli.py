@@ -849,9 +849,7 @@ def _main_scoped(argv: list[str] | None, resources: contextlib.ExitStack) -> int
                 if args.vcs_access == "hidden":
                     vcs_masks = (
                         # The Colima VM exports $HOME, not macOS $TMPDIR.
-                        vcs_access.new_mask_dir(
-                            parent=observability.state_dir() / "vcs-masks"
-                        )
+                        vcs_access.new_mask_dir(parent=vcs_access.colima_mask_parent())
                         if runtime.context is not None
                         else vcs_access.new_mask_dir()
                     )

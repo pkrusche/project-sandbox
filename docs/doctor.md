@@ -30,7 +30,7 @@ reported rather than blocking the command.
 | Egress sidecar | For each reachable runtime: whether the global [egress sidecar](egress-sidecar.md) runs, and its published endpoint (one read-only `inspect`) | info |
 | Colima | Shown when `colima` is on `PATH` or `--colima-profile` is given (default profile `project-sandbox`). The profile's Docker context exists, points at that profile's socket and its engine answers | info if the profile was never started, warn if stopped or not Colima's |
 | | VM size: CPUs and memory against the sandbox default of 4 CPUs (Docker refuses a CPU limit above the VM's) | warn if the VM has fewer CPUs, with `--cpus N` and `colima start --cpu 4` as fixes |
-| | Mounts: the current directory and the state directory are visible in the VM (one read-only `colima ssh` call; Colima exports only the home directory by default) | warn, naming the path and the `--mount` to add |
+| | Mounts: the current directory and the state directories the sandbox bind-mounts (`session-inputs`, `mounts`, `egress`, `vcs-masks`; not the host-only session records) are visible in the VM (one read-only `colima ssh` call) | warn, naming the path and a `colima start` command that keeps the profile's current exports (`--mount` replaces them) |
 | | Networks: `psbx-egress-uplink` and `psbx-sandbox` exist with project-sandbox's labels | info if not created yet, warn for a same-named foreign network |
 | | The profile's sidecar (see [Colima runtime](colima.md)): running, and attached to `psbx-sandbox` as `egress` | info, warn if it is running but detached |
 
