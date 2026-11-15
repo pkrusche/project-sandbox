@@ -10,6 +10,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import mount_storage
 from .container_cli import (
     APPLE_CONTAINER,
     MountSpec,
@@ -287,7 +288,11 @@ def new_mask_dir(parent: Path | None = None) -> Path:
     cannot see it (Colima exports the home directory only).
     """
     if parent is not None:
-        parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        # Create missing components 0700 regardless of the umask, and refuse a
+        # pre-existing parent that is a symlink, not ours or not private: the
+        # masks are mount sources and must not be swappable by another user.
+        with mount_storage.directory(parent, root=parent, create=True):
+            pass
     path = Path(tempfile.mkdtemp(prefix="project-sandbox-vcs-", dir=parent))
     (path / "directory").mkdir(mode=0o755)
     (path / "file").touch(mode=0o644)

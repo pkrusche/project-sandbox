@@ -9,6 +9,7 @@ the path and the Colima mount to add (design.md D8, archived colima spikes, D).
 
 from __future__ import annotations
 
+import re
 import shlex
 import shutil
 import subprocess
@@ -169,10 +170,24 @@ def exported_mounts(
     for line in proc.stdout.splitlines():
         target, _, options = line.partition(" ")
         if target:
-            # findmnt -r escapes a space in a path as \x20.
-            path = target.replace("\\x20", " ")
+            path = unescape_findmnt(target)
             exports.append(Export(path, "rw" in options.split(",")))
     return exports
+
+
+_FINDMNT_ESCAPE = re.compile(rb"\\x([0-9a-fA-F]{2})")
+
+
+def unescape_findmnt(value: str) -> str:
+    """Undo ``findmnt -r`` escaping, which hex-encodes every unsafe byte.
+
+    Spaces, tabs, newlines and backslashes (and, in the C locale, every
+    non-ASCII byte) appear as ``\\xHH``. Decoding only spaces left a path with
+    any other escaped character mismatched against its host spelling.
+    """
+    raw = value.encode("utf-8", "surrogateescape")
+    decoded = _FINDMNT_ESCAPE.sub(lambda m: bytes([int(m[1], 16)]), raw)
+    return decoded.decode("utf-8", "surrogateescape")
 
 
 def mount_flags(exports: Sequence[Export], missing: Sequence[Path]) -> str:

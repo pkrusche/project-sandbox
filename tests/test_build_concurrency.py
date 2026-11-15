@@ -115,6 +115,8 @@ class BuildConcurrencyTests(TestCase):
         return 0
 
     def run_image(self, argv, **_kwargs):
+        if argv[1:2] == ["--context"]:  # Colima: same commands, one engine
+            argv = [argv[0], *argv[3:]]
         if argv[1:3] == ["image", "tag"]:
             source, alias = argv[3:]
             self.store[alias] = self.store[source]
@@ -276,6 +278,33 @@ class BuildConcurrencyTests(TestCase):
             ),
         ):
             self.assertEqual(self.launch(), 0)
+        self.assertEqual(len(self.built), 2)
+
+    def test_image_store_lock_and_cache_are_per_colima_profile(self):
+        # Regression: every Colima profile shared one "colima" lock and cache
+        # key although each profile's VM has its own image store.
+        keys = []
+        original_lock = build_cache.image_lock
+
+        @contextlib.contextmanager
+        def lock(key):
+            keys.append(key)
+            with original_lock(key):
+                yield
+
+        for profile in ("work", "play"):
+            with (
+                patch.object(
+                    container_cli,
+                    "select_runtime",
+                    return_value=container_cli.colima_runtime(profile),
+                ),
+                patch.object(container_cli, "verify_colima_profile"),
+                patch.object(cli.colima_mounts, "check"),
+                patch.object(build_cache, "image_lock", side_effect=lock),
+            ):
+                self.assertEqual(self.launch(), 0)
+        self.assertEqual(keys, ["colima-work", "colima-play"])
         self.assertEqual(len(self.built), 2)
 
     def test_session_image_repository_is_reserved_before_writes(self):

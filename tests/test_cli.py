@@ -1141,6 +1141,57 @@ class CliTests(TestCase):
                 )
         self.assertIn("--branch-start-at requires --branch", str(raised.exception))
 
+    def _branch_dry_run(self, *extra: str) -> str:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "repo"
+            (project / ".git").mkdir(parents=True)
+            with (
+                patch.object(cli.worktree_mod, "setup") as git_setup,
+                self.assertRaises(SystemExit) as raised,
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                cli.main(
+                    [
+                        "--dry-run",
+                        "--no-build",
+                        "--agent",
+                        "claude",
+                        *extra,
+                        str(project),
+                        "python:3.12-slim",
+                    ]
+                )
+            git_setup.assert_not_called()
+        return str(raised.exception)
+
+    def test_branch_names_that_git_or_jj_would_read_as_options_are_refused(
+        self,
+    ) -> None:
+        # Regression: these reached `git worktree add`/`jj workspace add` as
+        # positional arguments, where a leading '-' is parsed as an option.
+        for extra in (
+            ("--branch=--force",),
+            ("--branch", "feat", "--branch-start-at=--detach"),
+            ("--branch", " "),
+        ):
+            with self.subTest(extra=extra):
+                self.assertIn("must be a name", self._branch_dry_run(*extra))
+
+    def test_invalid_ref_names_are_refused(self) -> None:
+        for name in ("..", "a..b", "feat/.hidden", "a b", "x.lock", "a:b", "x\\y"):
+            with self.subTest(name=name):
+                self.assertIn(
+                    "not a valid branch/bookmark name",
+                    self._branch_dry_run("--branch", name),
+                )
+
+    def test_a_worktree_path_mounts_cannot_encode_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            message = self._branch_dry_run(
+                "--branch", "feat", "--worktree-dir", str(Path(tmp) / "a,b")
+            )
+        self.assertIn("worktree path", message)
+
     def test_keep_workspace_requires_branch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(SystemExit) as raised:

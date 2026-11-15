@@ -614,7 +614,14 @@ class FirewallModeParityTests(TestCase):
         out = io.StringIO()
         with tempfile.TemporaryDirectory() as tmp:
             env = {"XDG_CONFIG_HOME": tmp, "XDG_STATE_HOME": tmp}
-            with patch.dict(os.environ, env), contextlib.redirect_stdout(out):
+            # Colima is macOS-only; compare against Docker on the same host
+            # platform. On Linux Docker builds for the host UID, which a macOS
+            # Docker (Desktop/OrbStack) does not.
+            with (
+                patch.dict(os.environ, env),
+                patch("project_sandbox.container_cli.sys.platform", "darwin"),
+                contextlib.redirect_stdout(out),
+            ):
                 cli.main(
                     [
                         "--dry-run",
@@ -627,7 +634,8 @@ class FirewallModeParityTests(TestCase):
                         "python:3.12-slim",
                     ]
                 )
-        text = out.getvalue().replace(" --context colima-project-sandbox", "")
+            text = out.getvalue().replace(tmp, "TMP")
+        text = text.replace(" --context colima-project-sandbox", "")
         text = re.sub(r"project-sandbox-2[0-9t]+-[0-9a-f]+", "NAME", text)
         return re.sub(r"session-inputs/[0-9a-z]+", "session-inputs/X", text)
 

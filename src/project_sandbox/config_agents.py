@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 
 from . import generated_files
@@ -679,8 +680,7 @@ def _copy_path(source: Path, target: Path) -> None:
         return
     if source.is_file() and source.stat().st_size > 0:
         target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        shutil.copyfile(source, target)
-        target.chmod(0o600)
+        _write_private_bytes(target, source.read_bytes())
 
 
 def _copy_dir_contents(source: Path, target: Path) -> None:
@@ -694,9 +694,25 @@ def _copy_dir_contents(source: Path, target: Path) -> None:
 def _copy_if_file(source: Path, target: Path) -> bool:
     if not source.is_file() or source.stat().st_size == 0:
         return False
-    shutil.copyfile(source, target)
-    target.chmod(0o600)
+    _write_private_bytes(target, source.read_bytes())
     return True
+
+
+def _write_private_bytes(target: Path, data: bytes) -> None:
+    """Write a credential copy that is never readable beyond its owner.
+
+    Created ``0600`` (not umask-default and chmod-ed afterwards, which leaves a
+    window where another local user can open it) and without following a link
+    planted at ``target``. An existing file is replaced, not truncated in place.
+    """
+    temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _stage_config_state(
@@ -797,8 +813,6 @@ def _is_claude_oauth_credentials(raw: str) -> bool:
 
 
 def _write_secure_text(target: Path, content: str) -> None:
-    target.write_text(
-        content if content.endswith("\n") else content + "\n",
-        encoding="utf-8",
+    _write_private_bytes(
+        target, (content if content.endswith("\n") else content + "\n").encode()
     )
-    target.chmod(0o600)

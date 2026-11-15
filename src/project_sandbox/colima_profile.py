@@ -438,13 +438,15 @@ def add_root(
             "restart with the new path alone, which would drop every other export."
         )
     root = validate_root(args.path)
-    if any(e.path == str(root) for e in exports):
+    if any(e.path == str(root) and e.writable for e in exports):
         print(
             f"{root} is already exported by Colima profile {profile!r}; nothing changed."
         )
         return 0
     check_start_flags(start_help(run))
-    mounts = [*exports, Export(str(root), True)]
+    # A read-only export of the same path is replaced: the sandbox needs to
+    # write its workspace, and a second --mount for one path is ambiguous.
+    mounts = [*(e for e in exports if e.path != str(root)), Export(str(root), True)]
     start = build_restart_argv(profile, mounts)
     stop = ["colima", "stop", "--profile", profile]
     running = [] if args.force else running_sandboxes(runtime, run)

@@ -651,6 +651,11 @@ def _main_scoped(argv: list[str] | None, resources: contextlib.ExitStack) -> int
 
     if run_agent is not None and args.branch:
         _validate_worktree_project(project)
+        _validate_branch_args(args)
+        _refuse_unsupported_path(
+            _plan_worktree(args, project)[1].resolve(strict=False),
+            what="worktree path",
+        )
     if run_agent is not None:
         _ensure_agent_available(run_agent, available_agents)
     runtime = (
@@ -1054,7 +1059,8 @@ def _main_scoped(argv: list[str] | None, resources: contextlib.ExitStack) -> int
         # Tags can be shared by unrelated projects and have equivalent
         # spellings. Protect the runtime store until we have a pinned launch.
         with (
-            build_cache.image_lock(runtime.name)
+            # Keyed per Colima profile: each profile's VM has its own store.
+            build_cache.image_lock(runtime.key)
             if runtime.is_container
             else contextlib.nullcontext()
         ):
@@ -1064,7 +1070,7 @@ def _main_scoped(argv: list[str] | None, resources: contextlib.ExitStack) -> int
                     context_dir,
                     extra={
                         "image_tag": args.image_tag,
-                        "runtime": runtime.name,
+                        "runtime": runtime.key,
                         "base_image": base_image or "",
                         "host_identity": (
                             "default"
@@ -1437,7 +1443,13 @@ def _main_scoped(argv: list[str] | None, resources: contextlib.ExitStack) -> int
         # private inputs and count what the shared sidecar denied meanwhile.
         egress_stack.close()
         if vcs_masks is not None:
-            shutil.rmtree(vcs_masks)
+            # Never let cleanup raise out of this finally and replace the
+            # session's exit code; the masks are read-only mounts, but remove
+            # them without following links all the same.
+            try:
+                generated_files.remove(vcs_masks, recursive=True)
+            except (OSError, RuntimeError) as exc:
+                print(f"[W] Could not remove VCS mask sources {vcs_masks}: {exc}")
         if egress_state is not None and agent_ran:
             assert runtime is not None
             _print_egress_denials(runtime, egress_state, started_at=egress_started_at)
@@ -3373,6 +3385,40 @@ def _wait_for_worktree_metadata(wt, runtime) -> float:
 
 def _worktree_dir(args) -> Path | None:
     return Path(args.worktree_dir) if args.worktree_dir else None
+
+
+def _validate_branch_args(args) -> None:
+    """Refuse names that git or jj would read as options or cannot store.
+
+    ``--branch`` and ``--branch-start-at`` are passed as positional arguments
+    to ``git worktree add``/``git branch`` and ``jj workspace add``/``jj
+    bookmark``; a leading ``-`` would be parsed as an option there.
+    """
+    for flag, value in (
+        ("--branch", args.branch),
+        ("--branch-start-at", args.branch_start_at),
+    ):
+        if value is None:
+            continue
+        if not value.strip() or value.startswith("-"):
+            raise SystemExit(f"{flag} must be a name, not empty or starting with '-'")
+        if any(ord(c) < 0x20 or ord(c) == 0x7F for c in value):
+            raise SystemExit(f"{flag} must not contain control characters")
+    branch = args.branch
+    if (
+        any(c in branch for c in " ~^:?*[\\")
+        or ".." in branch
+        or "@{" in branch
+        or "//" in branch
+        or branch in ("@", ".")
+        or branch.endswith((".", "/", ".lock"))
+        or branch.startswith("/")
+        or any(part.startswith(".") for part in branch.split("/"))
+    ):
+        raise SystemExit(
+            f"--branch {branch!r} is not a valid branch/bookmark name "
+            "(see `git check-ref-format`)"
+        )
 
 
 def _validate_worktree_project(project: Path) -> None:

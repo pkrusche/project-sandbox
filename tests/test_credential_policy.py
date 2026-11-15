@@ -1,5 +1,6 @@
 from pathlib import Path
 from unittest import TestCase
+from unittest.mock import patch
 
 from project_sandbox.config_agents import (
     SUPPORTED_CREDENTIAL_AGENTS,
@@ -50,3 +51,45 @@ class CredentialPolicyTests(TestCase):
             filter_credential_dirs(staged, "claude-headless"),
             {"claude": Path("/staged/claude")},
         )
+
+
+class StagedCredentialFileTests(TestCase):
+    """Regression: copies were created umask-default, then chmod-ed to 0600."""
+
+    def test_copies_are_private_from_creation_and_replace_planted_links(self) -> None:
+        import os
+        import tempfile
+
+        from project_sandbox import config_agents
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "credentials.json"
+            source.write_text('{"token": "secret"}\n')
+            outside = root / "outside"
+            outside.write_text("untouched\n")
+            target = root / "staged.json"
+            target.symlink_to(outside)
+            seen_modes: list[int] = []
+            real_open = os.open
+
+            def recording_open(path, flags, mode=0o777, *args, **kwargs):
+                if flags & os.O_CREAT:
+                    seen_modes.append(mode)
+                return real_open(path, flags, mode, *args, **kwargs)
+
+            old = os.umask(0o002)
+            try:
+                with patch.object(config_agents.os, "open", recording_open):
+                    self.assertTrue(config_agents._copy_if_file(source, target))
+            finally:
+                os.umask(old)
+            self.assertEqual(seen_modes, [0o600])
+            self.assertFalse(target.is_symlink())
+            self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(target.read_text(), '{"token": "secret"}\n')
+            self.assertEqual(outside.read_text(), "untouched\n")
+            self.assertEqual(
+                sorted(p.name for p in root.iterdir()),
+                sorted(["credentials.json", "outside", "staged.json"]),
+            )

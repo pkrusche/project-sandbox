@@ -181,6 +181,36 @@ class VcsMaskDirTests(TestCase):
                 child.rmdir() if child.is_dir() else child.unlink()
             path.rmdir()
 
+    def test_an_unsafe_existing_parent_is_refused(self) -> None:
+        # Regression: an existing parent was used as found, so a symlinked or
+        # group-writable directory could redirect or swap the mask sources.
+        with tempfile.TemporaryDirectory() as tmp:
+            real = Path(tmp) / "elsewhere"
+            real.mkdir(mode=0o700)
+            link = Path(tmp) / "vcs-masks"
+            link.symlink_to(real)
+            with self.assertRaises(OSError):
+                vcs_access.new_mask_dir(link)
+            shared = Path(tmp) / "shared"
+            shared.mkdir()
+            shared.chmod(0o770)
+            with self.assertRaises(ValueError):
+                vcs_access.new_mask_dir(shared)
+            self.assertEqual(list(real.iterdir()), [])
+            self.assertEqual(list(shared.iterdir()), [])
+
+    def test_missing_ancestors_are_private_whatever_the_umask(self) -> None:
+        import os
+
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp) / "state" / "vcs-masks"
+            old = os.umask(0o002)
+            try:
+                vcs_access.new_mask_dir(parent)
+            finally:
+                os.umask(old)
+            self.assertEqual(parent.parent.stat().st_mode & 0o777, 0o700)
+
     def test_colima_places_it_under_the_given_state_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             parent = Path(tmp) / "vcs-masks"
@@ -228,6 +258,15 @@ class ExportedMountsTests(TestCase):
         )
         self.assertEqual(
             calls[0][:6], ["colima", "ssh", "--profile", "work", "--", "findmnt"]
+        )
+
+    def test_every_findmnt_escape_is_decoded(self) -> None:
+        # Regression: only \\x20 was decoded, so a path with a tab, backslash
+        # or (in the C locale) a non-ASCII byte never matched its host path.
+        run, _ = _runner("/Users/me/a\\x09b\\x5cc rw\n/Users/me/caf\\xc3\\xa9 rw\n")
+        exports = colima_mounts.exported_mounts(self.runtime, run=run, which=_which())
+        self.assertEqual(
+            [e.path for e in exports or []], ["/Users/me/a\tb\\c", "/Users/me/café"]
         )
 
     def test_unreadable_exports_are_none_never_an_empty_list(self) -> None:

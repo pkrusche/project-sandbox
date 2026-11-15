@@ -27,6 +27,21 @@ Notable changes to `project-sandbox` are documented here.
 - `scripts/e2e-colima.py` (`run-e2e-tests.sh --only colima`): an opt-in
   end-to-end suite against a running Colima profile.
 
+### Fixed
+
+- `--branch` and `--branch-start-at` values that start with `-` (which git and
+  jj would parse as options) or are invalid ref names are refused, and so is a
+  worktree path (`--worktree-dir`) that mounts cannot encode.
+- Staged agent credential copies are created `0600` from the start and replace
+  a planted symlink instead of following it.
+- Colima: each profile has its own image-store lock and build-cache key;
+  `colima add-root` makes a read-only export of the path writable instead of
+  reporting it as already exported; every `findmnt` escape in an export path is
+  decoded (not only spaces); hidden-VCS mask parents are created private and an
+  unsafe existing parent is refused.
+- Failing to remove hidden-VCS mask sources no longer replaces the session's
+  exit code with an exception.
+
 ## [0.4.0]
 
 ### Breaking

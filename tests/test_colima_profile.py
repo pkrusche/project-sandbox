@@ -480,6 +480,19 @@ class AddRootTests(_CommandEnv):
         self.assertIn("already exported", out)
         self.assertEqual(fake.mutating, [])
 
+    def test_a_read_only_export_of_the_root_is_made_writable(self) -> None:
+        # Regression: a read-only export used to count as "already exported",
+        # leaving a workspace the sandbox cannot write.
+        fake = FakeColima(
+            findmnt=_findmnt((str(self.work), "rw"), (str(self.new), "ro"))
+        )
+        code, out = self.add(fake, "--yes")
+        self.assertEqual(code, 0)
+        self.assertNotIn("already exported", out)
+        _stop, start = fake.mutating
+        mounts = [start[i + 1] for i, t in enumerate(start) if t == "--mount"]
+        self.assertEqual(mounts, [f"{self.work}:w", f"{self.new}:w"])
+
     def test_an_invalid_root_is_refused_before_restarting(self) -> None:
         fake = FakeColima(findmnt=self.exports)
         with self.assertRaises(ProfileError):
