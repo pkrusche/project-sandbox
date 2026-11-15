@@ -17,6 +17,7 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import container_cli
 from .container_cli import Runtime
 
 Runner = Callable[..., subprocess.CompletedProcess]
@@ -198,6 +199,23 @@ def not_visible_message(
         )
     ]
     lines += [f"  {path}" for path in missing]
+    from . import colima_profile  # lazy: colima_profile imports this module
+
+    if profile is not None and colima_profile.read_record(profile) is not None:
+        suffix = (
+            ""
+            if profile == container_cli.COLIMA_DEFAULT_PROFILE
+            else f" --colima-profile {profile}"
+        )
+        lines.append(
+            "This profile was created by `project-sandbox colima init`; add each "
+            "path (this keeps the current exports):"
+        )
+        lines += [
+            f"  project-sandbox colima add-root {shlex.quote(str(p))}{suffix}"
+            for p in missing
+        ]
+        return "\n".join(lines)
     lines.append(
         "`colima start --mount` REPLACES the profile's mounts instead of adding "
         "to them, so the command must list every path the VM should export, "

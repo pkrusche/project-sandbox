@@ -255,3 +255,69 @@ class ProbeAndMainTests(TestCase):
             mock.patch("sys.stderr", new_callable=io.StringIO),
         ):
             self.assertEqual(e2e.main([]), 2)
+
+
+GOOD_HARDENED: dict[str, Any] = {
+    "exports": ["/w", "/s/a"],
+    "expected_exports": ["/s/a", "/w"],
+    "must_hide": ["/h/.ssh", "/h/.aws"],
+    "hidden": ["/h/.aws", "/h/.ssh"],
+    "context_before": "colima",
+    "context_after": "colima",
+    "profiles_before": {"default": "Running"},
+    "profiles_after": {"default": "Running"},
+    "profile_gone": True,
+    "context_gone": True,
+}
+
+
+class HardenedGraderTests(TestCase):
+    def failed_names(self, **change: Any) -> list[str]:
+        report = {**GOOD_HARDENED, **change}
+        return [r.name for r in e2e.grade_hardened(report) if not r.ok]
+
+    def test_a_good_report_passes(self) -> None:
+        self.assertEqual(self.failed_names(), [])
+
+    def test_an_extra_export_fails(self) -> None:
+        self.assertEqual(
+            self.failed_names(exports=["/w", "/s/a", "/Users/me"]),
+            ["hardened:exports-are-exactly-the-expected-set"],
+        )
+
+    def test_a_visible_credential_directory_fails(self) -> None:
+        self.assertEqual(
+            self.failed_names(hidden=["/h/.aws"]),
+            ["hardened:credentials-and-records-not-visible"],
+        )
+
+    def test_nothing_to_hide_is_not_a_pass(self) -> None:
+        self.assertEqual(
+            self.failed_names(must_hide=[], hidden=[]),
+            ["hardened:credentials-and-records-not-visible"],
+        )
+
+    def test_a_switched_context_fails(self) -> None:
+        self.assertEqual(
+            self.failed_names(context_after="colima-psbx"),
+            ["hardened:active-context-unchanged"],
+        )
+
+    def test_a_changed_other_profile_fails(self) -> None:
+        self.assertEqual(
+            self.failed_names(profiles_after={}),
+            ["hardened:other-profiles-unchanged"],
+        )
+
+    def test_a_leftover_profile_or_context_fails(self) -> None:
+        self.assertEqual(
+            self.failed_names(context_gone=False),
+            ["hardened:throwaway-profile-removed"],
+        )
+
+    def test_hardened_is_opt_in_and_runs_alone(self) -> None:
+        self.assertNotIn("hardened", e2e.CHECKS)
+        with mock.patch("sys.stderr", new=io.StringIO()):
+            self.assertEqual(
+                e2e.main(["--checks", "hardened,launch", "--check-available"]), 2
+            )

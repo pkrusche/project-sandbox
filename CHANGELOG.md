@@ -18,6 +18,12 @@ Notable changes to `project-sandbox` are documented here.
   gateway or proxy) are refused on Colima.
 - `project-sandbox doctor` reports a Colima profile (context, VM size, mount
   visibility, networks, sidecar); `--colima-profile NAME` selects it.
+- `project-sandbox colima init --workspace-root PATH` creates a dedicated Colima
+  profile that exports only the workspace roots and the sandbox's four state
+  subtrees (never `$HOME`), with `--activate=false` and `--ssh-config=false`, and
+  `colima add-root PATH` extends it without dropping exports. `doctor` warns when
+  a profile exports `$HOME` and reports drift from the chosen roots. See
+  `docs/colima.md`.
 - `scripts/e2e-colima.py` (`run-e2e-tests.sh --only colima`): an opt-in
   end-to-end suite against a running Colima profile.
 

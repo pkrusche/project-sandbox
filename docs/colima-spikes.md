@@ -132,3 +132,95 @@ Not checked: `~/.ssh/config` itself (a deny rule blocked the `stat`; compare it
 yourself, see the change notes), the QEMU driver, TLS interception through a parent
 proxy.
 
+
+## F. Remaining questions for `colima init` / `add-root`: PASS
+
+Run 2026-11-15 on Colima v0.10.3, Docker 29.5.2, VZ/virtiofs, with a throwaway
+profile `psbx-spike` (2 CPUs, 2 GiB, 20 GiB) created by `project-sandbox colima
+init --workspace-root ~/psbx-spike-work --colima-profile psbx-spike --cpu 2
+--memory 2 --disk 20 --yes`. The active Docker context was `colima` before and
+after every step.
+
+### F1. Restart keeps the size and replaces the exports: PASS
+
+`colima stop`, then `colima start --profile psbx-spike <the five --mount flags>
+--activate=false --ssh-config=false` (no size flags):
+
+| Check | Result |
+|---|---|
+| `colima list` after the restart | `2` CPUs, `2GiB`, `20GiB`: the saved size is kept |
+| `findmnt -t virtiofs` | exactly the five exports of the list, all `rw`; the order differs from the command line |
+| `docker context show` | `colima`, unchanged |
+
+So `add-root` does not need to pass `--cpu`, `--memory` or `--disk`.
+
+### F2. Symlinked state home: PASS, confirms design D3
+
+`~/psbx-spike-link` is a symlink to `~/psbx-spike-real`; `real/f` contains `hi`.
+A `docker run --mount type=bind,source=...` then reads `/m/f`:
+
+| Exported | Mount source | Result |
+|---|---|---|
+| the resolved path | resolved path | `hi` |
+| the resolved path | the symlink | `No such file or directory`: an **empty** directory was mounted |
+| the symlink | the symlink | `hi` |
+| the symlink | resolved path | `No such file or directory` (empty) |
+
+The export has to match the mount source string exactly, so D3's refusal of a
+symlinked `XDG_STATE_HOME` stands. The empty result (instead of an error) comes
+from a stale directory: a mount point that was once exported stays behind in the
+VM as an empty directory after the export is removed, so `docker run --mount`
+finds a source and mounts nothing. The launch preflight is not fooled, because it
+requires the path to sit on a `virtiofs` mount, not only to exist.
+
+### F3. Running-sandbox detection: PASS
+
+Three containers were started: `project-sandbox-spike-1`,
+`project-sandbox-egress` and `other-thing`.
+
+```text
+$ docker --context colima-psbx-spike ps --filter name=project-sandbox- --format '{{.Names}}'
+project-sandbox-egress
+project-sandbox-spike-1
+```
+
+The filter finds the sandbox and the sidecar and not `other-thing`; the code
+removes `project-sandbox-egress` by name. After `colima stop` / `colima start`
+the same command printed nothing and `docker ps -a` showed all three as `Exited
+(137)`: a restart ends them.
+
+### F4. Credential locations outside the exports: PASS, with a trap
+
+With `~/.ssh` and `~/.aws` not exported:
+
+| Command | Result |
+|---|---|
+| `docker run --mount type=bind,source=$HOME/.ssh,target=/m ...` | exit 125, `invalid mount config for type "bind": bind source path does not exist` (same for `.aws`) |
+| `docker run -v $HOME/.ssh:/m ...` | exit 0 and an **empty** directory at `/m`: Docker creates `/Users/you/.ssh` in the VM, owned by root |
+
+The host's `~/.ssh` and `~/.aws` were untouched; the created directories exist
+only on the VM's disk. The sandbox always uses `--mount`, so an unexported
+credential directory fails loudly. A person running `docker -v` against the VM
+gets an empty directory, not the host's files.
+
+### F5. Documented commands run as written, and the `hardened` end-to-end check
+
+Run 2026-11-15 on a throwaway profile `psbx-doc` (2 CPUs, 2 GiB, 20 GiB), deleted
+afterwards; `docs/colima.md` shows these commands.
+
+| Command | Result |
+|---|---|
+| `colima init --workspace-root DIR --dry-run` | printed the command (4 CPUs, 8 GiB, `--activate=false --ssh-config=false`); nothing created |
+| `colima init --workspace-root ~` | refused: "is the home directory or contains it" |
+| `colima init --workspace-root DIR --cpu 2 --memory 2 --disk 20 --yes` | profile created; exports exactly `DIR` and the four state subtrees |
+| `doctor --colima-profile psbx-doc` | `exports: dedicated`; `mounts` warned that the repository (not exported) is not visible and named `colima add-root /path --colima-profile psbx-doc` |
+| `colima add-root DIR2 --colima-profile psbx-doc --yes` | restart passed all five current exports plus `DIR2`; the VM then exported six paths, all `rw`; the record lists both roots |
+| the same `add-root` again | "already exported ... nothing changed" |
+
+`scripts/e2e-colima.py --checks hardened` (profile `psbx-hardened-e2e`, 4 CPUs,
+6 GiB, 30 GiB): 7 passed, 0 failed. `init` succeeded; the launch and recover
+checks passed against it (34 of 34); the exports were exactly the workspace
+root and the four state subtrees; `~/.ssh`, `~/.aws` and `sessions/` were not on
+a host-backed mount in the VM; the active Docker context (`colima`) and the
+`default` profile were unchanged; and the profile and its `colima-psbx-hardened-e2e`
+context were gone afterwards.

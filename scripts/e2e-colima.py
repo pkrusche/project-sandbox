@@ -20,6 +20,13 @@ Checks (default: all):
   firewall    --egress firewall on Colima: the default bridge, an extra domain
               reachable, an unlisted host not, and none of the private pieces.
 
+  hardened    (opt-in, not in the default set) `colima init` a throwaway profile,
+              run the launch and recover checks against it, assert the VM cannot
+              see ~/.ssh, ~/.aws or the host-only session records, then delete
+              the profile and confirm the active Docker context and every other
+              profile are unchanged. This is the one check that creates and
+              deletes a VM, and only the one it named itself.
+
 All state lives in a temporary XDG_CONFIG_HOME/XDG_STATE_HOME, never the
 user's egress.toml. The project directories are created under the repository
 (Colima exports the home directory by default) and removed afterwards. The
@@ -54,6 +61,8 @@ ALLOWED_HOST = "api.anthropic.com"  # an agent provider host, always allowed
 DENIED_HOST = "example.com"
 FIREWALL_DOMAIN = "pypi.org"
 CHECKS = ("launch", "concurrent", "recover", "firewall")
+OPT_IN_CHECKS = ("hardened",)
+HARDENED_PROFILE = "psbx-hardened-e2e"
 PROXY = f"http://{colima_network.ALIAS}:{colima_network.PROXY_PORT}"
 
 
@@ -258,6 +267,50 @@ def grade_denials(log_text: str, sandbox_subnet_prefix: str) -> list[Result]:
             "launch:denial-attributed-to-the-sandbox-address",
             any(sandbox_subnet_prefix in line for line in lines),
             sandbox_subnet_prefix,
+        ),
+    ]
+
+
+def grade_hardened(report: dict) -> list[Result]:
+    """Grade the hardened-profile facts gathered around ``colima init``/delete.
+
+    ``report`` keys: ``exports`` (paths the VM exported), ``expected_exports``,
+    ``hidden`` (paths the VM could not see), ``must_hide``, ``context_before``,
+    ``context_after``, ``profiles_before`` / ``profiles_after`` (name -> status of
+    every profile other than the throwaway one), ``profile_gone`` and
+    ``context_gone``.
+    """
+    exports = sorted(report.get("exports") or [])
+    expected = sorted(report.get("expected_exports") or [])
+    must_hide = list(report.get("must_hide") or [])
+    leaked = sorted(set(must_hide) - set(report.get("hidden") or []))
+    return [
+        Result(
+            "hardened:exports-are-exactly-the-expected-set",
+            bool(exports) and exports == expected,
+            f"exports={exports} expected={expected}",
+        ),
+        Result(
+            "hardened:credentials-and-records-not-visible",
+            bool(must_hide) and not leaked,
+            f"visible in the VM: {leaked}",
+        ),
+        Result(
+            "hardened:active-context-unchanged",
+            report.get("context_before") is not None
+            and report.get("context_before") == report.get("context_after"),
+            f"{report.get('context_before')!r} -> {report.get('context_after')!r}",
+        ),
+        Result(
+            "hardened:other-profiles-unchanged",
+            report.get("profiles_before") == report.get("profiles_after"),
+            f"{report.get('profiles_before')} -> {report.get('profiles_after')}",
+        ),
+        Result(
+            "hardened:throwaway-profile-removed",
+            bool(report.get("profile_gone")) and bool(report.get("context_gone")),
+            f"profile_gone={report.get('profile_gone')} "
+            f"context_gone={report.get('context_gone')}",
         ),
     ]
 
@@ -636,13 +689,145 @@ class Suite:
         self.record(results)
 
 
+def _out(argv: list[str]) -> str:
+    proc = subprocess.run(
+        argv, capture_output=True, text=True, errors="replace", check=False, timeout=900
+    )
+    return proc.stdout.strip()
+
+
+def _profile_states() -> dict[str, str]:
+    states = {}
+    for line in _out(["colima", "list", "--json"]).splitlines():
+        try:
+            item = json.loads(line)
+        except ValueError:
+            continue
+        if item.get("name") != HARDENED_PROFILE:
+            states[item["name"]] = item.get("status", "")
+    return states
+
+
+def run_hardened(args: argparse.Namespace) -> list[Result]:
+    """init a throwaway profile, run launch + recover against it, grade, delete."""
+    from project_sandbox import colima_mounts, colima_profile
+
+    name = HARDENED_PROFILE
+    # Before the child run overrides XDG_STATE_HOME process-wide.
+    record = colima_profile.record_path(name)
+    if name in {
+        n for n in _out(["colima", "list", "--json"]).replace('"', " ").split()
+    }:
+        return [Result("hardened:profile-name-free", False, f"{name} already exists")]
+    work = Path(tempfile.mkdtemp(prefix=".e2e-colima-hardened-", dir=ROOT)).resolve()
+    home = Path.home()
+    before = {
+        "context": _out(["docker", "context", "show"]),
+        "profiles": _profile_states(),
+    }
+    report: dict = {
+        "context_before": before["context"],
+        "profiles_before": before["profiles"],
+        "must_hide": [
+            str(p)
+            for p in (
+                home / ".ssh",
+                home / ".aws",
+                colima_profile.state_root() / "sessions",
+            )
+            if p.exists()
+        ],
+    }
+    results: list[Result] = []
+    created = False
+    try:
+        init = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "project_sandbox",
+                "colima",
+                "init",
+                "--workspace-root",
+                str(work),
+                "--colima-profile",
+                name,
+                "--cpu",
+                "4",
+                "--memory",
+                "6",
+                "--disk",
+                "30",
+                "--yes",
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            check=False,
+            timeout=args.timeout,
+        )
+        created = True
+        results.append(
+            Result("hardened:init", init.returncode == 0, init.stderr[-300:])
+        )
+        if init.returncode != 0:
+            return results
+        runtime = container_cli.colima_runtime(name)
+        exports = colima_mounts.exported_mounts(runtime) or []
+        report["exports"] = [e.path for e in exports]
+        report["expected_exports"] = [
+            str(work),
+            *map(str, colima_mounts.required_state_dirs()),
+        ]
+        report["hidden"] = [
+            str(p)
+            for p in (
+                colima_mounts.missing_in_vm(runtime, map(Path, report["must_hide"]))
+                or []
+            )
+        ]
+        child = argparse.Namespace(**vars(args))
+        child.colima_profile = name
+        child.checks = "launch,recover"
+        child.keep = False
+        # The child runs in a work directory under the repository, which the new
+        # profile does not export; give it the exported one instead.
+        os.environ["PSBX_E2E_WORKDIR"] = str(work)
+        code = main_checks(child)
+        results.append(Result("hardened:launch-and-recover", code == 0, f"exit {code}"))
+    finally:
+        os.environ.pop("PSBX_E2E_WORKDIR", None)
+        if created and not args.keep:
+            subprocess.run(
+                ["colima", "delete", "--profile", name, "--force"],
+                capture_output=True,
+                check=False,
+                timeout=300,
+            )
+        report["context_after"] = _out(["docker", "context", "show"])
+        report["profiles_after"] = _profile_states()
+        report["profile_gone"] = name not in _out(["colima", "list", "--json"])
+        report["context_gone"] = (
+            f"colima-{name}"
+            not in _out(["docker", "context", "ls", "--format", "{{.Name}}"]).split()
+        )
+        shutil.rmtree(work, ignore_errors=True)
+        record.unlink(missing_ok=True)
+    if args.keep:
+        report["profile_gone"] = report["context_gone"] = True
+    return [*results, *grade_hardened(report)]
+
+
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     p.add_argument("--colima-profile", default=container_cli.COLIMA_DEFAULT_PROFILE)
     p.add_argument(
-        "--checks", default=",".join(CHECKS), help=f"comma list of: {', '.join(CHECKS)}"
+        "--checks",
+        default=",".join(CHECKS),
+        help=f"comma list of: {', '.join(CHECKS)}; opt-in: {', '.join(OPT_IN_CHECKS)}",
     )
     p.add_argument("--base-image", default="python:3.12-slim")
     p.add_argument("--image-tag", default="project-sandbox-e2e-colima:latest")
@@ -666,10 +851,30 @@ def parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     checks = tuple(c.strip() for c in args.checks.split(",") if c.strip())
-    unknown = [c for c in checks if c not in CHECKS]
+    unknown = [c for c in checks if c not in CHECKS + OPT_IN_CHECKS]
     if unknown:
         print(f"unknown checks: {', '.join(unknown)}", file=sys.stderr)
         return 2
+    if "hardened" in checks:
+        if len(checks) > 1:
+            print(
+                "hardened runs on its own throwaway profile; pass it alone",
+                file=sys.stderr,
+            )
+            return 2
+        results = run_hardened(args)
+        for r in results:
+            print(
+                f"{'ok  ' if r.ok else 'FAIL'} {r.name} {'' if r.ok else r.detail[:300]}"
+            )
+        failed = [r for r in results if not r.ok]
+        print(f"\n{len(results) - len(failed)} passed, {len(failed)} failed")
+        return 1 if failed else 0
+    return main_checks(args)
+
+
+def main_checks(args: argparse.Namespace) -> int:
+    checks = tuple(c.strip() for c in args.checks.split(",") if c.strip())
     runtime = container_cli.colima_runtime(args.colima_profile)
     try:
         container_cli.verify_colima_profile(runtime)
@@ -693,7 +898,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    work = Path(tempfile.mkdtemp(prefix=".e2e-colima-", dir=ROOT))
+    work = Path(
+        tempfile.mkdtemp(
+            prefix=".e2e-colima-", dir=os.environ.get("PSBX_E2E_WORKDIR") or ROOT
+        )
+    )
     # Under the repository, not $TMPDIR: the VM exports the home directory only.
     config_home = work / "xdg"
     config_home.mkdir()

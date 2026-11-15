@@ -620,3 +620,105 @@ class ColimaTests(TestCase):
         for bad in (["--colima-profile"], ["--colima-profile", "a", "b"], ["x"]):
             with self.subTest(bad=bad), self.assertRaisesRegex(SystemExit, "usage"):
                 cli.main(["doctor", *bad])
+
+
+class ColimaExportsTests(TestCase):
+    """Home-directory exposure and drift of a profile's exports (read-only)."""
+
+    FINDMNT = ("colima", "ssh", "--profile", "project-sandbox", "--", "findmnt")
+
+    def setUp(self) -> None:
+        import os
+        import tempfile
+
+        from project_sandbox import colima_mounts, colima_profile
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.base = Path(tmp.name).resolve()
+        (self.base / "home").mkdir()
+        patcher = patch.dict(
+            os.environ,
+            {"HOME": str(self.base / "home"), "XDG_STATE_HOME": str(self.base / "st")},
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.profile = colima_profile
+        self.dirs = [str(d) for d in colima_mounts.required_state_dirs()]
+        self.home = str(self.base / "home")
+
+    def checks(self, exports: list[tuple[str, str]]):
+        out = "".join(f"{path} {mode},relatime\n" for path, mode in exports)
+        host = colima_host(first={self.FINDMNT: ok(out)})
+        with host.active("darwin"):
+            return by_name(doctor.run_checks()), host
+
+    def test_a_home_export_warns_and_names_init(self) -> None:
+        checks, _ = self.checks([(self.home, "rw")])
+        check = checks["exports"]
+        self.assertEqual(check.status, WARN)
+        self.assertIn("home directory", check.detail)
+        self.assertIn("project-sandbox colima init", check.hint or "")
+
+    def test_an_ancestor_export_warns(self) -> None:
+        checks, _ = self.checks([(str(self.base), "rw")])
+        self.assertEqual(checks["exports"].status, WARN)
+
+    def test_a_read_only_home_export_is_not_a_warning(self) -> None:
+        checks, _ = self.checks([(self.home, "ro")])
+        self.assertNotIn("exports", checks)
+
+    def test_a_dedicated_profile_without_a_record_has_no_finding(self) -> None:
+        checks, _ = self.checks([(str(self.base / "work"), "rw")])
+        self.assertNotIn("exports", checks)
+
+    def test_exact_exports_of_a_managed_profile_are_ok(self) -> None:
+        work = str(self.base / "work")
+        self.profile.write_record("project-sandbox", [work])
+        checks, _ = self.checks([(work, "rw"), *((d, "rw") for d in self.dirs)])
+        self.assertEqual(checks["exports"].status, OK)
+
+    def test_an_extra_export_is_named(self) -> None:
+        work = str(self.base / "work")
+        self.profile.write_record("project-sandbox", [work])
+        checks, _ = self.checks(
+            [
+                (work, "rw"),
+                ("/Users/me/Documents", "rw"),
+                *((d, "rw") for d in self.dirs),
+            ]
+        )
+        check = checks["exports"]
+        self.assertEqual(check.status, WARN)
+        self.assertIn("/Users/me/Documents", check.detail)
+
+    def test_a_missing_root_is_named(self) -> None:
+        work = str(self.base / "work")
+        self.profile.write_record("project-sandbox", [work])
+        checks, _ = self.checks([(d, "rw") for d in self.dirs])
+        check = checks["exports"]
+        self.assertEqual(check.status, WARN)
+        self.assertIn(work, check.detail)
+
+    def test_the_new_probe_is_read_only(self) -> None:
+        _, host = self.checks([(self.home, "rw")])
+        for argv in host.calls:
+            self.assertNotIn(argv[:2], (["colima", "start"], ["colima", "stop"]))
+            self.assertNotIn(argv[:2], (["colima", "delete"], ["colima", "init"]))
+
+    def test_the_mount_hint_names_add_root_for_a_managed_profile(self) -> None:
+        self.profile.write_record("project-sandbox", [str(self.base / "work")])
+        host = colima_host({("colima", "ssh"): ok("/somewhere/else\n")})
+        with (
+            host.active("darwin"),
+            patch.object(
+                doctor.colima_mounts,
+                "probe_path",
+                side_effect=lambda p: Path("/somewhere/else"),
+            ),
+        ):
+            check = by_name(doctor.run_checks())["mounts"]
+        self.assertIn(
+            "project-sandbox colima add-root /somewhere/else", check.hint or ""
+        )
+        self.assertNotIn("colima start", check.hint or "")

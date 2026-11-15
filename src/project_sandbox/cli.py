@@ -25,6 +25,7 @@ from . import (
     chroot,
     colima_mounts,
     colima_network,
+    colima_profile,
     config_agents,
     container_cli,
     copilot_auth,
@@ -527,6 +528,8 @@ def _main_scoped(argv: list[str] | None, resources: contextlib.ExitStack) -> int
         return 0
     if raw_argv[:1] == ["doctor"]:
         return doctor.main(raw_argv[1:])
+    if raw_argv[:1] == ["colima"]:
+        return colima_profile.main(raw_argv[1:])
     args = build_parser().parse_args(raw_argv)
 
     _validate_egress_args(args)

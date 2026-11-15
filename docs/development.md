@@ -773,6 +773,18 @@ sizes the sandboxes to the VM (a default Colima profile has 2 CPUs, fewer than
 the sandbox default of 4). The graders are tested without a runtime in
 `tests/test_e2e_colima.py`.
 
+The opt-in `hardened` check is the only one that creates a VM. It runs
+`project-sandbox colima init` for a throwaway profile `psbx-hardened-e2e` (4 CPUs,
+6 GiB, 30 GiB), runs `launch` and `recover` against it, asserts that the profile
+exports exactly its workspace root and the four state subtrees and that the VM
+cannot see `~/.ssh`, `~/.aws` or the session records, then deletes the profile and
+confirms the active Docker context and every other profile are unchanged. It runs
+alone and needs no running profile:
+
+```bash
+uv run python scripts/e2e-colima.py --checks hardened          # a few minutes; --keep leaves the profile
+```
+
 ## Shared local-service forwarder verification
 
 Manual check for the shared bridge forwarder (OpenSpec change

@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import platform
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -19,6 +20,7 @@ from . import (
     __version__,
     colima_mounts,
     colima_network,
+    colima_profile,
     container_cli,
     egress_sidecar,
     local_service_network,
@@ -454,6 +456,80 @@ def _colima_resources(runtime: container_cli.Runtime, profile: str) -> Check:
     return Check("colima", "resources", OK, detail)
 
 
+def _mount_hint(profile: str, missing, flags: str) -> str:
+    if colima_profile.read_record(profile) is not None:
+        return "; ".join(
+            f"project-sandbox colima add-root {shlex.quote(str(m))}"
+            + (
+                ""
+                if profile == container_cli.COLIMA_DEFAULT_PROFILE
+                else f" --colima-profile {profile}"
+            )
+            for m in missing
+        )
+    return (
+        "`colima start --mount` replaces the profile's mounts, so list "
+        f"every export: colima stop --profile {profile} && colima start "
+        f"--profile {profile} {flags}"
+    )
+
+
+def _colima_exports(runtime: container_cli.Runtime, profile: str) -> list[Check]:
+    """Whether the profile exports the home directory, and (with a roots record)
+    whether its exports are exactly the expected set. Read-only."""
+    exports = colima_mounts.exported_mounts(
+        runtime, run=_verify_runner, which=shutil.which
+    )
+    if exports is None:
+        return []
+    checks: list[Check] = []
+    home = colima_profile.home_exports(exports)
+    if home:
+        checks.append(
+            Check(
+                "colima",
+                "exports",
+                WARN,
+                "the whole home directory is readable and writable from the VM "
+                f"(exported: {', '.join(e.path for e in home)})",
+                "Create a dedicated profile that exports only your workspace: "
+                "project-sandbox colima init --workspace-root PATH",
+            )
+        )
+    roots = colima_profile.read_record(profile)
+    if roots is None:
+        return checks
+    extra, missing = colima_profile.export_drift(
+        roots, exports, colima_mounts.required_state_dirs()
+    )
+    if extra or missing:
+        parts = []
+        if extra:
+            parts.append("unexpected export(s): " + ", ".join(extra))
+        if missing:
+            parts.append("expected but not exported: " + ", ".join(missing))
+        checks.append(
+            Check(
+                "colima",
+                "exports",
+                WARN,
+                "; ".join(parts),
+                "Add a root with `project-sandbox colima add-root PATH`; "
+                "`colima start --mount` replaces exports instead of adding to them",
+            )
+        )
+    elif not home:
+        checks.append(
+            Check(
+                "colima",
+                "exports",
+                OK,
+                "dedicated: only the workspace roots and the sandbox state directories",
+            )
+        )
+    return checks
+
+
 def check_colima(profile: str) -> list[Check]:
     """A Colima profile, read-only: context, engine, mounts, networks, sidecar.
 
@@ -530,9 +606,7 @@ def check_colima(profile: str) -> list[Check]:
                     "mounts",
                     WARN,
                     "not visible in the VM: " + ", ".join(str(m) for m in missing),
-                    "`colima start --mount` replaces the profile's mounts, so list "
-                    f"every export: colima stop --profile {profile} && colima start "
-                    f"--profile {profile} {flags}",
+                    _mount_hint(profile, missing, flags),
                 )
             )
         else:
@@ -544,6 +618,8 @@ def check_colima(profile: str) -> list[Check]:
                     "current directory and the state directories the sandbox mounts are visible",
                 )
             )
+
+    checks += _colima_exports(runtime, profile)
 
     for spec in colima_network.SPECS:
         record = colima_network.inspect(runtime, _completed, spec.name)

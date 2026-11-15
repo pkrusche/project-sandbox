@@ -1,12 +1,21 @@
 # Colima runtime
 
 `--runtime colima` runs sandboxes in a [Colima](https://colima.run) VM through
-its Docker engine. project-sandbox only **uses** the VM: it never creates,
-starts, stops or reconfigures it, and it never changes your Docker context.
+its Docker engine. A launch only **uses** the VM: it never creates, starts,
+stops or reconfigures it, and it never changes your Docker context. Two explicit
+commands, `colima init` and `colima add-root`, create and extend a dedicated
+profile; see [Dedicated profile](#dedicated-profile).
 
 ## Setup
 
-Start a Colima profile with the Docker runtime yourself. The default profile
+Create the dedicated profile (recommended, it does not export your home
+directory; see [Dedicated profile](#dedicated-profile)):
+
+```sh
+project-sandbox colima init --workspace-root ~/src
+```
+
+or start a Colima profile with the Docker runtime yourself. The default profile
 name is `project-sandbox`:
 
 ```sh
@@ -65,9 +74,11 @@ command that fixes it.
 
 **`colima start --mount` replaces the profile's mounts; it does not add to
 them.** Restarting a profile with `--mount /private/tmp:w` leaves `/private/tmp`
-as its only export, and the change is saved to the profile's config. The message
-therefore reads the VM's current exports and lists them all in the command it
-prints:
+as its only export, and the change is saved to the profile's config. For a
+profile made with `colima init`, the message therefore names
+`project-sandbox colima add-root PATH`, which keeps the current exports (see
+below). For a profile you made by hand, the message reads the VM's current
+exports and lists them all in the command it prints:
 
 ```text
 These host paths are not visible inside Colima profile 'project-sandbox', so the sandbox cannot mount them:
@@ -80,12 +91,95 @@ The VM currently exports: /Users/you (read-write)
 
 If the current exports cannot be read, the message says so and tells you to list
 them with `colima ssh --profile NAME -- findmnt -t virtiofs` instead of guessing.
-`project-sandbox doctor` prints the same command for a directory it cannot see.
+`project-sandbox doctor` prints the same advice for a directory it cannot see.
 If `colima` is not on `PATH` the check is skipped with a warning, and Docker
 reports a missing path when the sandbox starts. With `--vcs-access hidden`, the
 mask directories are created under the state root
 (`$XDG_STATE_HOME/project-sandbox/vcs-masks`) instead of `$TMPDIR` so that they
 are visible.
+
+## Dedicated profile
+
+`project-sandbox colima init` creates a profile that exports **only** what the
+sandbox bind-mounts, instead of your home directory:
+
+```sh
+project-sandbox colima init --workspace-root ~/src
+project-sandbox colima init --workspace-root ~/src --workspace-root ~/work --cpu 4 --memory 8
+project-sandbox colima init --workspace-root ~/src --dry-run   # print the command, run nothing
+```
+
+What the profile exports, all read-write:
+
+- each `--workspace-root` (repeatable, at least one), resolved through symlinks;
+- the four state subtrees the sandbox mounts, under
+  `$XDG_STATE_HOME/project-sandbox`: `session-inputs`, `mounts`, `egress` and
+  `vcs-masks`. They are created first (mode 0700), because a mount source must
+  exist.
+
+It does not export your home directory, `~/.ssh`, `~/.aws`, the session records
+or the locks. Be aware that `session-inputs` holds credentials staged for the
+life of a session and `egress` holds the sidecar CA key, and the VM's root can
+read both.
+
+| Option | Meaning |
+|---|---|
+| `--workspace-root PATH` | directory to export (required, repeatable) |
+| `--colima-profile NAME` | profile name (default `project-sandbox`) |
+| `--cpu N`, `--memory GiB`, `--disk GiB` | size; default 4 CPUs and 8 GiB so a default launch is not refused by Docker; the disk keeps Colima's default |
+| `--yes` | skip the confirmation (required without a terminal) |
+| `--dry-run` | print the command, create nothing, run nothing |
+
+`init` prints the exact `colima start` command and asks for confirmation. The
+command always passes `--activate=false` (your active Docker context is never
+switched) and `--ssh-config=false` (your `~/.ssh/config` is not changed; Colima
+still writes its own `~/.colima/ssh_config`, which `colima delete` removes). It
+reads `colima start --help` first and stops if one of the flags it relies on is
+gone. It refuses a profile name that already exists, running or stopped, and
+never stops, restarts or deletes one.
+
+A root is refused when it is not an existing directory, is your home directory or
+an ancestor of it, is a system directory (`/`, `/Users`, `/System`, `/Library`,
+`/private`, `/var`, `/etc`), is or contains a credential location (`~/.ssh`,
+`~/.aws`, `~/.gnupg`, `~/.config/gcloud`, `~/.docker`), overlaps the sandbox
+state directory, or contains `:` or `,`. A symlinked `XDG_STATE_HOME` is refused
+too, because the export and the sandbox's mount source would not match; `init`
+names the resolved directory to use. Symlinks inside an exported root that point
+outside it do not resolve in the VM.
+
+The chosen roots are recorded in
+`$XDG_STATE_HOME/project-sandbox/colima-profiles/<profile>.json` (mode 0600,
+paths only). That directory is never exported. `doctor` uses it to tell your
+roots from unexpected exports.
+
+**Moving from `default`.** A new profile is a separate engine: images and
+volumes do not carry over, so the first launch builds again. Run
+`project-sandbox --runtime colima ...` as before. The old profile can stay or be
+removed with Colima's own commands; rollback of the new one is
+`colima delete --profile project-sandbox`.
+
+### Adding a root
+
+```sh
+project-sandbox colima add-root ~/more-projects
+```
+
+`add-root` reads the profile's current exports from the running VM, validates the
+new root with the rules above, and after confirmation runs `colima stop` and
+`colima start` with **every current export (and its access mode) plus the new
+root**, again with `--activate=false --ssh-config=false`. It never passes the new
+path alone. It stops without changing anything when the exports cannot be read
+(for example the VM is stopped) or the path is already exported. The restart ends
+running sandboxes, so it refuses while any project-sandbox container (the egress
+sidecar excluded) runs in the profile; `--force` restarts anyway. `--yes`,
+`--dry-run` and `--colima-profile` work as for `init`. Removing a root is not
+provided.
+
+`doctor` warns about any profile that exports your home directory read-write
+(naming `colima init`) and, for a profile with a record, about exports that are
+not a root or a state subtree and roots that are not exported. See
+[doctor](doctor.md). Launches are never refused because of what a profile
+exports.
 
 ## Egress
 
@@ -182,6 +276,6 @@ the sandbox's network.
 | `[egress.upstream] url` on the Mac's loopback | unsupported; a parent the VM can reach works |
 | `--build-proxy` on the Mac's loopback | unsupported; a proxy the VM can reach works |
 | `--egress sidecar` with a non-default `[egress.sidecar] port` | error |
-| `colima init`, reset, mount management | not provided; you manage the VM |
+| `colima start/stop/delete`, removing a root, reset | not provided beyond `colima init` and `add-root`; you manage the VM |
 
 Spike notes and measurements are in [colima-spikes.md](colima-spikes.md).
