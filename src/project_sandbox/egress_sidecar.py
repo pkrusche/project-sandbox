@@ -1212,7 +1212,7 @@ def _cold_start(
     )
     if _private(strategy):
         # Every creation attaches the alias: a removed and recreated container
-        # does not keep its network attachments (docs/colima-spikes.md A).
+        # does not keep its network attachments (archived add-colima-runtime spikes, A).
         _checked(
             runner,
             colima_network.connect_argv(

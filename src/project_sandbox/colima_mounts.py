@@ -4,7 +4,7 @@ Docker can bind-mount only what the VM exports. The default Colima profile
 exports the home directory and nothing else, so a source under ``/private/tmp``
 or ``$TMPDIR`` fails at ``docker run`` with ``bind source path does not exist``.
 This module asks the VM itself, read-only, so the launch fails early and names
-the path and the Colima mount to add (design.md D8, docs/colima-spikes.md D).
+the path and the Colima mount to add (design.md D8, archived colima spikes, D).
 """
 
 from __future__ import annotations

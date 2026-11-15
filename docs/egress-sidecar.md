@@ -155,11 +155,9 @@ because the firewall and entrypoint scripts differ between the modes.
 
 ## Colima
 
-`--runtime colima` runs the sidecar and the sandboxes in a Colima VM and reaches
-Squid over a private Docker network (`egress:3128`) instead of a published port,
-which avoids the host-network hop that corporate security software tends to
-interfere with. `[egress.sidecar] port` does not apply there. See
-[Colima runtime](colima.md#egress) for the topology, its limits and cleanup.
+On `--runtime colima` the sidecar and sandboxes share the Colima VM and Squid is
+reached over a private Docker network (`egress:3128`), not a published port;
+`[egress.sidecar] port` does not apply. See [Runtimes](runtimes.md#egress).
 
 ## Policy
 

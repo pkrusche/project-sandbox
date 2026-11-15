@@ -480,9 +480,9 @@ The tool does not protect against:
 - Base images, including the final stage of a Dockerfile passed with
   `--dockerfile`, must be Debian or Ubuntu based. The firewall depends on `apt`
   packages including `aggregate`, which Alpine does not ship.
-- Direct Python CLI runs support Apple `container`, Docker, and Podman.
-  Docker/Podman provide container isolation rather than the Apple MicroVM
-  boundary. Incus is a future backend candidate, but it has a different
+- Direct Python CLI runs support Apple `container`, Docker, Podman and Colima
+  (see [Runtimes](runtimes.md)). Everything but Apple `container` provides
+  container isolation rather than a per-container MicroVM boundary. Incus is a future backend candidate, but it has a different
   image/import and launch lifecycle from the generated Dockerfile flow used here.
 - The generated `.devcontainer/` targets local Docker-compatible runtimes such as
   Docker Desktop or OrbStack; remote services may require rewriting local mounts

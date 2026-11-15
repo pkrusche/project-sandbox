@@ -21,15 +21,13 @@ Given `project-sandbox /path/to/repo python:3.12-slim`:
 
 Given `project-sandbox --agent claude /path/to/repo python:3.12-slim`, it also:
 
-1. Selects a direct-run runtime: Apple `container` on macOS, or Docker/Podman on
-   Linux. Podman must be rootless; a rootful Podman is refused.
-2. Verifies the Apple `container` system service is running when that runtime is
-   selected.
-3. Builds or reuses the image, pins it for this session, and releases the build
+1. Selects a direct-run runtime and verifies it is ready (see
+   [Runtimes](runtimes.md)).
+2. Builds or reuses the image, pins it for this session, and releases the build
    context lock. CLI configs, credentials, prompts, and env files are staged in
    a unique private directory outside the checkout; persistent devcontainer
    credentials are left alone.
-4. Starts the container entrypoint, which wires Git and jj identity, copies only
+3. Starts the container entrypoint, which wires Git and jj identity, copies only
    the selected agent's mounted credentials into the container's home, then runs
    the firewall before exec'ing the agent. Headless modes use the same base-agent
    credential policy. `--agent bash` is intentionally multi-agent and receives
@@ -55,18 +53,8 @@ Ollama sessions on Apple `container` use a user-configured
 `host.docker.internal` localhost DNS mapping; see the setup and restart warning
 in `docs/usage.md`.
 
-On Linux, `--runtime chroot` explicitly selects a dummy filesystem-layout
-verification runtime. It uses rootless `unshare --map-root-user --mount`, bind
-mounts host system directories and the normal sandbox mount set into a temporary
-chroot, then runs interactive or headless Bash. It does not build an image,
-configure a firewall or network namespace, install coding-agent CLIs, or provide
-a security boundary. `--runtime auto` never selects it.
-
-This requires unprivileged user namespaces, which some hardened or nested
-environments restrict in ways that vary by kernel/config (e.g. AppArmor
-blocking `unshare --map-root-user`, or a mount policy rejecting a bind or
-fresh mount of `/proc`) — the CI e2e workflow uses `--runtime docker` instead
-for this reason (see `.github/workflows/e2e.yml`).
+Runtime-specific behavior (Apple `container`, Docker, Podman, Colima and the
+Linux-only `chroot` layout check) is described in [Runtimes](runtimes.md).
 
 ## File Layout
 

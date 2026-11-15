@@ -33,7 +33,7 @@ reported rather than blocking the command.
 | | Mounts: the current directory and the state directories the sandbox bind-mounts (`session-inputs`, `mounts`, `egress`, `vcs-masks`; not the host-only session records) are visible in the VM (one read-only `colima ssh` call) | warn, naming the path and either `project-sandbox colima add-root PATH` (a profile made by `colima init`) or a `colima start` command that keeps the profile's current exports (`--mount` replaces them) |
 | | Networks: `psbx-egress-uplink` and `psbx-sandbox` exist with project-sandbox's labels | info if not created yet, warn for a same-named foreign network |
 | | Exports: a profile that exports `$HOME` or an ancestor read-write; for a profile made by `colima init`, whether its exports are exactly its roots plus the four state subtrees (the same read-only `colima ssh` probe) | warn, naming `project-sandbox colima init` for a home export, and each unexpected or missing path for a drifted profile; a read-only home export is not a warning |
-| | The profile's sidecar (see [Colima runtime](colima.md)): running, and attached to `psbx-sandbox` as `egress` | info, warn if it is running but detached |
+| | The profile's sidecar (see [Colima runtime](runtimes.md#colima)): running, and attached to `psbx-sandbox` as `egress` | info, warn if it is running but detached |
 
 `--runtime auto` picks the first runtime found on `PATH` (Apple `container`,
 then Docker, then Podman on macOS; Docker, then Podman on Linux) without

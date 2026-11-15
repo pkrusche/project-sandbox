@@ -579,7 +579,7 @@ class LaunchMessageTests(_Env):
 class DocsTests(TestCase):
     def test_no_document_suggests_a_bare_colima_start_mount(self) -> None:
         docs = Path(__file__).resolve().parents[1] / "docs"
-        for name in ("colima.md", "doctor.md"):
+        for name in ("runtimes.md", "doctor.md"):
             text = (docs / name).read_text()
             for line in text.splitlines():
                 with self.subTest(name=name, line=line):

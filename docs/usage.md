@@ -108,34 +108,14 @@ runtime:
 uv run project-sandbox --dry-run /absolute/path/to/repo python:3.12-slim
 ```
 
-Direct CLI runs use `--runtime auto` by default. Auto-selection prefers Apple
-`container` on macOS, and Docker then Podman on Linux. Override it when needed:
+Direct CLI runs use `--runtime auto` by default; pick one explicitly with
+`--runtime {apple-container,docker,podman,colima,chroot}`:
 
 ```bash
 uv run project-sandbox --runtime docker --agent bash /absolute/path/to/repo python:3.12-slim
-uv run project-sandbox --runtime podman --agent bash /absolute/path/to/repo python:3.12-slim
-uv run project-sandbox --runtime apple-container --agent bash /absolute/path/to/repo python:3.12-slim
 ```
 
-With pasta (the default on Linux), Podman builds and sessions use their own
-address, `198.18.0.2/24`, so proxies and gateways on the host's own LAN address
-stay reachable; see `docs/security.md`.
-
-Podman must run rootless: `--runtime podman` (and `auto` when it picks Podman)
-refuses to start when `podman info` reports a rootful setup, such as running
-project-sandbox as root or a Podman machine set with `--rootful`. Podman runs
-pass `--userns=keep-id` so the sandbox user, built with your host UID, can
-write the bind-mounted workspace.
-
-Linux also provides an explicit layout-inspection mode that needs no image:
-
-```bash
-uv run project-sandbox --runtime chroot --agent bash /absolute/path/to/repo
-```
-
-This opens Bash in a rootless chroot mirroring the normal bind-mount layout.
-Headless Bash via `--prompt` or `--prompt-text` is also supported. It does not
-install or run coding-agent CLIs and is not an isolation or security boundary.
+What each runtime supports, and its prerequisites, is in [Runtimes](runtimes.md).
 
 ## API Key Injection
 
@@ -722,9 +702,8 @@ uv run project-sandbox \
   the session runs, and render the same readable transcript beside the log.
   Transcript generation is best-effort: a parse failure prints a warning but
   never fails the run.
-- `--runtime {auto,apple-container,docker,podman}` selects the direct-run
-  backend. `auto` prefers Apple `container` on macOS and Docker then Podman on
-  Linux.
+- `--runtime {auto,apple-container,docker,podman,colima,chroot}` selects the
+  direct-run backend; see [Runtimes](runtimes.md).
 - `--timeout SECONDS` stops the session if the agent runs too long: the container
   is stopped by name, the CLI process group is also signalled as a fallback, and
   the CLI returns exit code `124`.
