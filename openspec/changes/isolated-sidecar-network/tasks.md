@@ -4,15 +4,17 @@
 
 Each spike records its commands, the macOS, `container`, Colima and Docker versions, the observed output, and a PASS / WORKAROUND / BLOCKED verdict in `openspec/changes/isolated-sidecar-network/spikes.md`. A BLOCKED verdict removes that runtime from scope and goes back to design before any code for it.
 
-- [ ] 0.1 S1, Colima host path and streaming:
+The spikes are scripted: `spikes/spike_colima.py` runs S1, S2 and S6, and `spikes/spike_apple.py` runs S3–S6. See "How to run" in `spikes.md`.
+
+- [x] 0.1 S1, Colima host path and streaming:
   - from a container on `psbx-egress-uplink`, reach a Mac service on `127.0.0.1` and one on `0.0.0.0` through `host.lima.internal` (record the resolved address), on the VZ driver;
   - run Squid with one `accel` port and an `originserver` `cache_peer` to that address;
   - from a container on `psbx-sandbox`, measure first-chunk latency for an Ollama `/api/generate` stream and a 1-event-per-second SSE stream.
 
   Verify: recorded output showing both requests succeed and chunks arrive incrementally.
-- [ ] 0.2 S2, Colima containment without the firewall: from a container on `psbx-sandbox` with no added capabilities and no project firewall, probe `192.168.5.2` on 22, 80, 11434 and a random port, then repeat Spike B's matrix. Then, with `NET_ADMIN`, set the sidecar as the default route and probe again. Verify: a recorded PASS, with every probe refused or timed out.
-- [ ] 0.3 S3, Apple internal network: on macOS 26 with the latest `container`, run `container network create --internal` as a normal user (with labels, if supported). From a container on it, probe public IPv4/IPv6 TCP and UDP, DNS for a public name, the host's address on that network, `203.0.113.113`, `192.168.64.1` and `169.254.169.254`. Verify: recorded output, the `container` version that first supports this, and a verdict.
-- [ ] 0.4 S4, Apple topology:
+- [x] 0.2 S2, Colima containment without the firewall: from a container on `psbx-sandbox` with no added capabilities and no project firewall, probe `192.168.5.2` on 22, 80, 11434 and a random port, then repeat Spike B's matrix. Then, with `NET_ADMIN`, set the sidecar as the default route and probe again. Verify: a recorded PASS, with every probe refused or timed out.
+- [x] 0.3 S3, Apple internal network: on macOS 26 with the latest `container`, run `container network create --internal` as a normal user (with labels, if supported). From a container on it, probe public IPv4/IPv6 TCP and UDP, DNS for a public name, the host's address on that network, `203.0.113.113`, `192.168.64.1` and `169.254.169.254`. Verify: recorded output, the `container` version that first supports this, and a verdict.
+- [x] 0.4 S4, Apple topology:
   - attach one container to a NAT network and the internal network, and check it reaches the Internet and is reachable from a second container on the internal network;
   - record whether two containers on the internal network reach each other;
   - record whether `container run` supports `--add-host`, and whether network aliases exist;
@@ -20,8 +22,8 @@ Each spike records its commands, the macOS, `container`, Colima and Docker versi
   - check that `ip_forward=0` in the gateway blocks a default-route bypass.
 
   Verify: recorded output and a verdict. If containers on a host-only network can't reach each other, the verdict is BLOCKED.
-- [ ] 0.5 S5, Apple host path and streaming: from the S4 gateway, reach a Mac loopback service through `host.docker.internal` (the configured alias), then repeat S1's Squid accel and streaming measurements from a sandbox on the internal network. Verify: recorded output showing incremental delivery.
-- [ ] 0.6 S6, attribution: on both runtimes, record the client address in Squid's access log for two sandboxes on the internal network. Verify: recorded log lines with distinct per-sandbox addresses (informational; no verdict needed).
+- [x] 0.5 S5, Apple host path and streaming: from the S4 gateway, reach a Mac loopback service through `host.docker.internal` (the configured alias), then repeat S1's Squid accel and streaming measurements from a sandbox on the internal network. Verify: recorded output showing incremental delivery.
+- [x] 0.6 S6, attribution: on both runtimes, record the client address in Squid's access log for two sandboxes on the internal network. Verify: recorded log lines with distinct per-sandbox addresses (informational; no verdict needed).
 - [ ] 0.7 Review the verdicts:
   - update `design.md` D2–D8 for each WORKAROUND, including the minimum `container` version (D8) and the `egress` pinning method (D7);
   - drop a runtime from scope on BLOCKED;
