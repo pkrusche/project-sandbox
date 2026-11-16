@@ -21,7 +21,9 @@ uv run python openspec/changes/isolated-sidecar-network/spikes/spike_apple.py   
   and `--cleanup` removes them and the spike image.
 
 Each run writes `spikes/results/<runtime>-<timestamp>.md` (tables, suggested
-verdicts, command log) and a `.json` with the raw probe output. The scripts
+verdicts, command log) and a `.json` with the raw probe output. The reports
+stay local: `spikes/results/` is gitignored, because they hold host paths and
+machine details. This file is the committed record. The scripts
 use their own `psbx-spike-*` networks and containers, created with the same
 flags as the project's. They never touch the real sidecar, the Docker context,
 a Colima VM or Apple `container`'s DNS settings, and never run `sudo`.
