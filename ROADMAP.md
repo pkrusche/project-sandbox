@@ -34,14 +34,27 @@ accepted for this release and need future work:
   opt-in to full access, including compatibility and migration for agents that
   commit inside the sandbox. Restricted modes already protect existing metadata
   but are not snapshots against other host processes or concurrent full sessions.
-- **Host capture can still execute workspace-controlled code.** Read-only or
-  hidden metadata does not protect tracked `.gitattributes` or scripts referenced
-  by trusted hook/filter configuration. Automatic host `git add`/`git commit`
-  can execute those helpers. Design private VCS stores with sandbox-side capture
-  and trusted object import, alongside the separate-clone work above. Audit
-  hooks, filters, fsmonitor, signing, and other executable configuration surfaces;
-  disabling hooks alone is insufficient. Verify with inert marker hooks/helpers
-  that no agent-controlled code executes on the host during capture.
+- **Host capture can still execute workspace-controlled code.** Host
+  finalization (`worktree.finalize`: `git status`, `git add -A`, `git commit`)
+  runs Git with the repository's own configuration. Two paths let the agent
+  choose what runs there:
+  - With the default `--vcs-access full`, the agent can edit `.git/config`
+    directly, setting `core.fsmonitor`, `core.hooksPath`, `filter.<name>.clean`
+    or signing programs that the host then executes. jj's repository config is
+    exposed the same way.
+  - With read-only or hidden metadata, tracked `.gitattributes` can still route
+    files through filter drivers already defined in trusted config, and hooks
+    already configured on the host can run scripts that live in the workspace.
+
+  Per-call `-c` overrides cannot close this. They cannot enumerate arbitrary
+  `filter.<name>.*` keys, and `core.hooksPath=/dev/null` also disables the
+  user's own hooks and signing hooks. `-c core.fsmonitor=false` is a cheap
+  interim step with no user-visible cost (tracked in TODO.md); hooks, filters
+  and signing stay here. The real fix is private VCS stores with sandbox-side
+  capture and trusted object import, alongside the separate-clone work above.
+  Audit hooks, filters, fsmonitor, signing and other executable configuration
+  surfaces, and verify with inert marker hooks/helpers that no agent-controlled
+  code executes on the host during capture.
 
 See [VCS security](docs/security.md#vcs-metadata-access) and
 [VCS access limitations](docs/vcs-access.md#scope-and-remaining-risks).
