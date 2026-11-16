@@ -96,9 +96,10 @@ Or start a profile yourself (default name `project-sandbox`):
 rejected with any other runtime. Check the setup with
 `project-sandbox doctor --colima-profile NAME` ([doctor](doctor.md)).
 
-A default Colima VM has 2 CPUs and Docker refuses a CPU limit above the VM's, so
-pass `--cpus 2` or start the profile with `--cpu 4`. `colima init` uses 4 CPUs and
-8 GiB.
+A default Colima VM has 2 CPUs and Docker refuses a CPU limit above the VM's.
+Without `--cpus`, a sandbox asks for 4 CPUs, capped to the CPUs the Docker
+engine reports (`docker info`), and says so when it caps. For more, start the
+profile with `--cpu 4`. `colima init` uses 4 CPUs and 8 GiB.
 
 ### How the VM is targeted
 

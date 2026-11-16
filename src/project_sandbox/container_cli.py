@@ -15,6 +15,10 @@ from . import config_agents, copilot_auth, mount_options, session
 from .git_identity import GitIdentity
 from .paths import WORKSPACE_NODE_MODULES_TARGET
 
+# CPUs a sandbox asks for unless --cpus says otherwise; capped to what a Docker
+# engine has (see available_cpus).
+DEFAULT_CPUS = 4
+
 RUNTIME_CHOICES = ("auto", "apple-container", "docker", "podman", "colima", "chroot")
 COLIMA_NAME = "colima"
 COLIMA_DEFAULT_PROFILE = "project-sandbox"
@@ -138,6 +142,38 @@ def verify_colima_profile(
             f"Colima profile {runtime.profile!r} is not running (its Docker engine "
             f"did not answer). Run: {colima_start_hint(runtime)}"
         )
+
+
+def available_cpus(
+    runtime: Runtime,
+    *,
+    run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+) -> int | None:
+    """The CPUs a Docker engine can give a container, or None when unknown.
+
+    Docker refuses a ``--cpus`` limit above the engine's CPU count, which on
+    macOS is the VM's (Colima, Docker Desktop), not the host's. Only Docker
+    engines are probed; other runtimes return None.
+    """
+    if runtime.name not in (DOCKER.name, COLIMA_NAME):
+        return None
+    try:
+        probe = run(
+            runtime.argv("info", "--format", "{{.NCPU}}"),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if probe.returncode != 0:
+        return None
+    try:
+        cpus = int(probe.stdout.strip())
+    except ValueError:
+        return None
+    return cpus if cpus > 0 else None
 
 
 _RUNTIMES = {

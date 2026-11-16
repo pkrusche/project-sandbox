@@ -415,7 +415,7 @@ class ColimaTests(TestCase):
         self.assertEqual(check.status, doctor.OK)
         self.assertEqual(check.detail, "8 CPUs, 16.0 GiB")
 
-    def test_a_vm_with_fewer_cpus_than_the_default_warns_with_both_fixes(self) -> None:
+    def test_a_vm_with_fewer_cpus_than_the_default_reports_the_cap(self) -> None:
         host = colima_host(
             {
                 (*CTX, "info", "--format", "{{.NCPU}} {{.MemTotal}}"): ok(
@@ -424,10 +424,9 @@ class ColimaTests(TestCase):
             }
         )
         check = self.checks(host)["resources"]
-        self.assertEqual(check.status, doctor.WARN)
+        self.assertEqual(check.status, doctor.INFO)
         self.assertIn("2 CPUs, 2.0 GiB", check.detail)
-        self.assertIn("4 CPUs by default", check.detail)
-        self.assertIn("--cpus 2", check.hint or "")
+        self.assertIn("capped to 2 CPUs instead of the default 4", check.detail)
         self.assertIn("--cpu 4", check.hint or "")
 
     def test_an_unreadable_vm_size_is_info(self) -> None:

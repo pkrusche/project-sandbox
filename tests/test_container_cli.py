@@ -1067,3 +1067,56 @@ class CopilotMountTests(TestCase):
                     self.assertFalse(
                         any(e.startswith("COPILOT_") for e in self._envs(argv))
                     )
+
+
+class AvailableCpusTests(TestCase):
+    """Docker refuses --cpus above the engine's CPUs (a 2-CPU Colima VM)."""
+
+    @staticmethod
+    def _runner(stdout: str = "2\n", returncode: int = 0):
+        calls: list[list[str]] = []
+
+        def run(argv, **_kwargs):
+            calls.append(list(argv))
+            return SimpleNamespace(returncode=returncode, stdout=stdout, stderr="")
+
+        return run, calls
+
+    def test_colima_reports_the_vm_cpus_through_its_context(self) -> None:
+        from project_sandbox.container_cli import available_cpus, colima_runtime
+
+        run, calls = self._runner("2\n")
+        self.assertEqual(available_cpus(colima_runtime(), run=run), 2)
+        self.assertEqual(
+            calls,
+            [
+                [
+                    "docker",
+                    "--context",
+                    "colima-project-sandbox",
+                    "info",
+                    "--format",
+                    "{{.NCPU}}",
+                ]
+            ],
+        )
+
+    def test_non_docker_runtimes_are_not_probed(self) -> None:
+        from project_sandbox.container_cli import available_cpus
+
+        run, calls = self._runner()
+        for runtime in (APPLE_CONTAINER, PODMAN, CHROOT):
+            self.assertIsNone(available_cpus(runtime, run=run))
+        self.assertEqual(calls, [])
+
+    def test_an_unanswered_or_garbled_probe_is_unknown(self) -> None:
+        from project_sandbox.container_cli import available_cpus
+
+        for stdout, returncode in (("2\n", 1), ("garbage\n", 0), ("0\n", 0)):
+            run, _ = self._runner(stdout, returncode)
+            self.assertIsNone(available_cpus(DOCKER, run=run))
+
+        def missing(*_args, **_kwargs):
+            raise FileNotFoundError("docker")
+
+        self.assertIsNone(available_cpus(DOCKER, run=missing))

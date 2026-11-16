@@ -8601,3 +8601,39 @@ class LocalForwarderDryRunTests(TestCase):
                 out.getvalue(),
             )
             self.assertFalse((state / "project-sandbox" / "local-forward").exists())
+
+
+class DefaultCpusTests(TestCase):
+    """Without --cpus the default is capped to the Docker engine's CPUs."""
+
+    def test_parser_leaves_cpus_unset_so_it_can_be_resolved(self) -> None:
+        args = cli.build_parser().parse_args(["proj"])
+        self.assertIsNone(args.cpus)
+        self.assertEqual(cli.build_parser().parse_args(["proj", "--cpus", "6"]).cpus, 6)
+
+    def test_a_smaller_vm_caps_the_default_and_says_so(self) -> None:
+        stderr = io.StringIO()
+        with (
+            patch.object(container_cli, "available_cpus", return_value=2),
+            contextlib.redirect_stderr(stderr),
+        ):
+            cpus = cli._default_cpus(container_cli.colima_runtime())
+        self.assertEqual(cpus, 2)
+        self.assertIn("limiting the sandbox to 2", stderr.getvalue())
+        self.assertIn("--cpus", stderr.getvalue())
+
+    def test_a_larger_or_unknown_engine_keeps_the_default(self) -> None:
+        for available in (8, 4, None):
+            stderr = io.StringIO()
+            with (
+                patch.object(container_cli, "available_cpus", return_value=available),
+                contextlib.redirect_stderr(stderr),
+            ):
+                cpus = cli._default_cpus(container_cli.DOCKER)
+            self.assertEqual(cpus, container_cli.DEFAULT_CPUS)
+            self.assertEqual(stderr.getvalue(), "")
+
+    def test_no_runtime_keeps_the_default_without_probing(self) -> None:
+        with patch.object(container_cli, "available_cpus") as probe:
+            self.assertEqual(cli._default_cpus(None), container_cli.DEFAULT_CPUS)
+        probe.assert_not_called()

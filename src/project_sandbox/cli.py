@@ -100,6 +100,24 @@ def _default_image_tag(project: Path) -> str:
     return f"project-sandbox-{name}-{path_hash}:latest"
 
 
+def _default_cpus(runtime: container_cli.Runtime | None) -> int:
+    """The CPU limit when --cpus is not given: the default, capped to the engine.
+
+    Docker refuses a limit above the CPUs its VM has, so a 2-CPU Colima VM
+    would otherwise reject every sandbox started without --cpus.
+    """
+    default = container_cli.DEFAULT_CPUS
+    available = container_cli.available_cpus(runtime) if runtime else None
+    if available is None or available >= default:
+        return default
+    print(
+        f"{runtime.name} has {available} CPU(s); limiting the sandbox to "
+        f"{available} instead of the default {default}. Pass --cpus to override.",
+        file=sys.stderr,
+    )
+    return available
+
+
 def build_parser() -> ArgumentParser:
     p = ArgumentParser(prog="project-sandbox")
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -190,7 +208,15 @@ def build_parser() -> ArgumentParser:
         ),
     )
     p.add_argument("--memory", default="8g")
-    p.add_argument("--cpus", type=int, default=4)
+    p.add_argument(
+        "--cpus",
+        type=int,
+        default=None,
+        help=(
+            f"CPU limit for the sandbox (default: {container_cli.DEFAULT_CPUS}, "
+            "capped to the CPUs a Docker engine such as a Colima VM has)."
+        ),
+    )
     p.add_argument(
         "--shm-size",
         default=None,
@@ -665,6 +691,8 @@ def _main_scoped(argv: list[str] | None, resources: contextlib.ExitStack) -> int
     )
     if runtime is not None and runtime.context is not None:
         container_cli.verify_colima_profile(runtime)
+    if args.cpus is None:
+        args.cpus = _default_cpus(runtime)
     if args.vcs_access != "full":
         validation_runtime = runtime or (
             container_cli.select_runtime(

@@ -429,29 +429,28 @@ def _verify_runner(argv, **_kwargs) -> subprocess.CompletedProcess:
 def _colima_resources(runtime: container_cli.Runtime, profile: str) -> Check:
     """The VM's size against the CPUs a sandbox asks for by default.
 
-    Docker refuses a CPU limit above the VM's CPUs (a 2-CPU Colima VM cannot run
-    the default 4); a memory limit above its RAM is allowed, so only CPUs warn.
+    Docker refuses a CPU limit above the VM's CPUs, so a sandbox started without
+    --cpus is capped to them (a 2-CPU Colima VM runs it with 2, not the default
+    4); a memory limit above its RAM is allowed, so only CPUs are reported.
     """
-    from . import cli  # lazy: cli imports doctor
-
     probe = _run(runtime.argv("info", "--format", "{{.NCPU}} {{.MemTotal}}"))
     try:
         assert probe is not None and probe.returncode == 0
         cpus, total = (int(x) for x in probe.stdout.split())
     except (AssertionError, ValueError):
         return Check("colima", "resources", INFO, "VM size not reported by Docker")
-    wanted = int(cli.build_parser().get_default("cpus"))
+    wanted = container_cli.DEFAULT_CPUS
     gib = total / 1024**3
     detail = f"{cpus} CPUs, {gib:.1f} GiB"
     if cpus < wanted:
         return Check(
             "colima",
             "resources",
-            WARN,
-            f"{detail}; a sandbox asks for {wanted} CPUs by default and Docker "
-            "refuses more than the VM has",
-            f"Pass --cpus {cpus}, or give the VM more: colima stop --profile "
-            f"{profile} && colima start --profile {profile} --cpu {wanted}",
+            INFO,
+            f"{detail}; sandboxes are capped to {cpus} CPUs instead of the "
+            f"default {wanted} because Docker refuses more than the VM has",
+            f"To give sandboxes more: colima stop --profile {profile} && "
+            f"colima start --profile {profile} --cpu {wanted}",
         )
     return Check("colima", "resources", OK, detail)
 
