@@ -77,6 +77,27 @@ otherwise Docker, then Podman) and accept
 `--runtime chroot|auto|apple-container|docker|podman`, `--base-image IMAGE`,
 `--no-build`, and `--keep`.
 
+The host lock end-to-end test runs real bash-agent sessions with a private
+`XDG_STATE_HOME`, so it never touches your real state directory, and checks
+that [host locks](security.md#host-locks) are stored and enforced as
+documented. It checks that:
+
+- locks are created `0700`/`0600` under the state root;
+- a launch waits while another process holds the project's build lock;
+- a second session on a leased `--branch` is refused;
+- a sandbox can neither `--mount` nor see the locks directory;
+- a group-accessible or symlinked locks directory is refused;
+- no lock file appears in the system temp dir.
+
+```bash
+./scripts/e2e-host-locks.sh
+./scripts/run-e2e-tests.sh --only host-locks --runtime docker
+```
+
+It accepts the same options as the workflow scripts, plus `--wait SECONDS`
+(default 8): how long a launch must stay blocked behind a held lock to count
+as waiting.
+
 The `vcs-access` suite runs three real `--agent bash` sessions in one throwaway
 colocated Git/jj workspace. Full access creates a commit verified on the host;
 read-only access saves commit titles to a persistent source file while Git

@@ -130,6 +130,23 @@ user accepted their organization's server-managed settings. Forwarding it means
 a sandboxed Claude session can skip the managed settings dialog for those same
 settings. If they change, Claude Code prompts again inside the container.
 
+## Host locks
+
+Host-side locks that serialize concurrent runs (build contexts, the per-runtime
+image store, Git and jj workspaces, egress policy) live in
+`$XDG_STATE_HOME/project-sandbox/locks` (default
+`~/.local/state/project-sandbox/locks`). The directory is created `0700` and
+validated through no-follow traversal; lock files are `0600`. It is never
+mounted into a sandbox, used as a build context, or exported by a Colima
+profile, and a `--mount` of it or anything inside it is refused. If the
+directory is a symlink, not owned by you, or accessible by group or others, the
+run stops with an error naming it instead of falling back to a shared location.
+
+Locks used to live in the shared system temp dir, where another local user could
+pre-create or `flock` a predictable name and block your launches. Runs only
+serialize against runs that see the same `XDG_STATE_HOME`; processes with
+different values have separate lock namespaces.
+
 ## GitHub Copilot token
 
 `--agent copilot` authenticates with a GitHub token rather than an agent-specific

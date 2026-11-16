@@ -20,7 +20,7 @@ Every host-side lock file SHALL be created in `$XDG_STATE_HOME/project-sandbox/l
 - **THEN** they cannot reach the locks directory, and our launch neither fails with `EACCES` nor blocks on their lock
 
 ### Requirement: Unsafe lock storage is refused
-A run SHALL refuse to take a lock when the locks directory or any of its ancestors up to the filesystem root is a symlink, or when the locks directory is not owned by the invoking user or is accessible by group or others. The error SHALL name the offending path. The run SHALL NOT fall back to the system temp dir or any other shared location.
+A run SHALL refuse to take a lock when the locks directory or any of its ancestors up to the filesystem root is a symlink, or when the locks directory is not owned by the invoking user or is accessible by group or others. A run SHALL also refuse an existing lock name that is not a regular file owned by the invoking user. The error SHALL name the offending path. The run SHALL NOT fall back to the system temp dir or any other shared location.
 
 #### Scenario: Locks directory is a symlink
 - **WHEN** `~/.local/state/project-sandbox/locks` is a symlink
@@ -29,6 +29,10 @@ A run SHALL refuse to take a lock when the locks directory or any of its ancesto
 #### Scenario: Locks directory is group-writable
 - **WHEN** the locks directory has mode `0770`
 - **THEN** the run exits with an error naming that path and does not tighten or reuse it
+
+#### Scenario: Lock name is not a regular file
+- **WHEN** a FIFO exists at a lock file's name inside the locks directory
+- **THEN** the run exits with an error naming the lock path and does not enter the locked section
 
 ### Requirement: Lock identity is independent of path spelling
 A lock SHALL be keyed by its kind and the symlink-resolved path of the target it protects, so that every run serializes on the same lock however the target path was spelled.

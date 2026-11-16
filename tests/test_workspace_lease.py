@@ -3,6 +3,7 @@
 import contextlib
 import fcntl
 import io
+import os
 import shutil
 import subprocess
 import sys
@@ -18,9 +19,19 @@ from test_worktree import _make_repo
 from project_sandbox import host_locks, jj_workspace, worktree
 from project_sandbox.workspace_lease import WorkspaceLease
 
+# conftest patches ``locks_root`` in-process only; captured before that patch.
+_REAL_LOCKS_ROOT = host_locks.locks_root
+
 
 class WorkspaceLeaseTests(TestCase):
     def test_overlapping_processes_and_stale_finalizers(self) -> None:
+        # The competing launches run in fresh interpreters, which compute the
+        # lock directory from XDG_STATE_HOME rather than conftest's patch. Point
+        # both sides at one private state root so they contend on the same
+        # locks without touching the developer's real one.
+        state = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.enterContext(patch.dict(os.environ, {"XDG_STATE_HOME": str(state)}))
+        self.enterContext(patch.object(host_locks, "locks_root", _REAL_LOCKS_ROOT))
         # Both backends share the setup/finalize interface but not a type.
         backends = (
             (cast(Any, worktree), _make_repo),

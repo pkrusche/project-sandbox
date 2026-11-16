@@ -8,7 +8,16 @@ from unittest import TestCase
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from project_sandbox import colima_mounts, observability, vcs_access
+from project_sandbox import (
+    colima_mounts,
+    colima_profile,
+    host_locks,
+    observability,
+    vcs_access,
+)
+
+# conftest patches ``locks_root`` per test; keep the real one to test it.
+_REAL_LOCKS_ROOT = host_locks.locks_root
 from project_sandbox.container_cli import colima_runtime
 
 
@@ -385,6 +394,27 @@ class RequiredStateDirsTests(TestCase):
         self.assertEqual(records, "sessions")
         for host_only in ("sessions", "locks", "projects", "local-forward"):
             self.assertNotIn(host_only, names)
+
+    def test_the_locks_directory_is_never_exported(self) -> None:
+        import os
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp) / "work"
+            work.mkdir()
+            with mock.patch.dict(os.environ, {"XDG_STATE_HOME": tmp}):
+                locks = _REAL_LOCKS_ROOT()
+                dirs = colima_mounts.required_state_dirs()
+                exports = colima_profile.init_mounts([work], dirs)
+        self.assertEqual(
+            locks.parent.resolve(), (Path(tmp) / "project-sandbox").resolve()
+        )
+        for export in (Path(e.path) for e in exports):
+            # Neither the locks directory, anything inside it, nor an ancestor
+            # that would expose it may be exported.
+            self.assertNotEqual(export, locks)
+            self.assertNotIn(export, locks.parents)
+            self.assertNotIn(locks, export.parents)
 
     def test_the_colima_mask_parent_is_not_inside_the_session_records(self) -> None:
         import os

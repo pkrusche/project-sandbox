@@ -6,21 +6,42 @@ generated build context's image/cache pair. Each of those gets an exclusive
 ``flock`` keyed by the path it protects, so a second run waits instead of
 interleaving.
 
-The lock files live in the system temp dir — outside the project, so they are
-neither part of a build context nor reachable from a sandbox — which is world
-writable and holds names any local user can guess from a project path. Opening
-them with ``O_NOFOLLOW`` and without ``O_TRUNC`` keeps a pre-planted symlink at
-one of those names from redirecting the open onto (and truncating) a file
-elsewhere in the caller's home; the open fails loudly instead.
+The lock files live in a private per-user directory under the sandbox state
+root (``$XDG_STATE_HOME/project-sandbox/locks``), outside the project, so they
+are neither part of a build context nor reachable from a sandbox, and the
+directory is never mounted or exported to a Colima VM. They used to live in the
+shared, world-writable system temp dir, where any local user could guess a name
+from a project path and pre-create it (our open then failed) or ``flock`` it
+(our launches then blocked forever). The directory is created ``0700`` and
+validated through a no-follow walk, and lock files are opened relative to that
+validated directory fd, so a swapped path component cannot redirect the open.
+An unsafe directory is refused, never replaced by a shared fallback.
 """
 
 import fcntl
 import hashlib
 import os
-import tempfile
+import stat
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
+
+from . import mount_storage
+
+
+def locks_root() -> Path:
+    """``$XDG_STATE_HOME/project-sandbox/locks`` (default ``~/.local/state/...``).
+
+    A relative or empty ``XDG_STATE_HOME`` is invalid per the XDG spec and is
+    ignored, as for the other state subtrees.
+    """
+    configured = os.environ.get("XDG_STATE_HOME", "")
+    base = (
+        Path(configured)
+        if configured and Path(configured).is_absolute()
+        else Path.home() / ".local/state"
+    )
+    return mount_storage.canonical_path(base / "project-sandbox/locks")
 
 
 def lock_path(kind: str, target: Path) -> Path:
@@ -31,7 +52,7 @@ def lock_path(kind: str, target: Path) -> Path:
     argument, ``/tmp`` vs ``/private/tmp`` on macOS).
     """
     key = hashlib.sha256(str(target.resolve()).encode()).hexdigest()[:16]
-    return Path(tempfile.gettempdir()) / f"project-sandbox-{kind}-{key}.lock"
+    return locks_root() / f"project-sandbox-{kind}-{key}.lock"
 
 
 @contextmanager
@@ -45,11 +66,26 @@ def path_lock(
     """
     path = lock_path(kind, target)
     try:
-        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
-    except OSError as exc:
+        with mount_storage.directory(
+            path.parent, root=path.parent, create=True
+        ) as dir_fd:
+            fd = os.open(
+                path.name,
+                os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=dir_fd,
+            )
+        # A FIFO or device at the lock name opens fine O_RDWR; refuse anything
+        # but our own regular file before relying on it.
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+            os.close(fd)
+            raise ValueError("not a regular file owned by you")
+    except (OSError, ValueError) as exc:
         raise SystemExit(
-            f"Could not open the {kind} lock at {path}: {exc}. Remove it if it is "
-            f"not a regular file owned by you, then retry."
+            f"Could not open the {kind} lock at {path}: {exc}. The lock directory "
+            f"{path.parent} must be a real directory owned by you with mode 0700, "
+            f"and the lock must be a regular file; fix or remove it, then retry."
         ) from exc
     with os.fdopen(fd, "r+") as handle:
         fcntl.flock(handle, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))

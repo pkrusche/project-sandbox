@@ -16,7 +16,13 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from project_sandbox import config_agents, container_cli, mount_storage, oauth_refresh
+from project_sandbox import (
+    config_agents,
+    container_cli,
+    host_locks,
+    mount_storage,
+    oauth_refresh,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -62,6 +68,15 @@ def _private_mount_storage(tmp_path):
         patch.object(mount_storage, "storage_root", return_value=tmp_path / "mounts"),
         patch.object(config_agents, "CREDENTIALS_ROOT", tmp_path / "credentials"),
     ):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _private_host_locks(tmp_path):
+    # Host locks live under the developer's real state root; keep every test's
+    # locks private so a suite run neither touches it nor contends with (or
+    # probes) parallel workers' runtime-wide image locks.
+    with patch.object(host_locks, "locks_root", return_value=tmp_path / "locks"):
         yield
 
 

@@ -8,6 +8,7 @@
   into [private session inputs](security.md#private-session-inputs) instead
   (the `--agent` flow's step 2 already says so). Found while checking Colima
   mount visibility; not part of `add-colima-runtime`.
+- Live markdown view for headless jobs seems broken, I now see only JSON lines 
 
 ## Decided, ready to implement (2026-11-16)
 
@@ -33,11 +34,6 @@
   the host's `git status`/`add`/`commit` would execute it. No user-visible cost.
   Add a regression test that asserts the argv. Hooks, filters and signing stay
   in ROADMAP.md ("Host capture can still execute workspace-controlled code").
-
-## In progress
-
-- **Host lock files in the shared temp dir**: OpenSpec change
-  `move-host-locks-to-state-root`.
 
 ## Deferred
 

@@ -6,6 +6,7 @@
 #   2. env-injection            — bash-agent env/API-key forwarding
 #   3. git-workflow             — git rebase/merge/nothing workflows
 #   4. jj-workflow              — jj rebase/merge/nothing workflows (skipped if jj not on PATH)
+#   4a. host-locks              — host lock location, contention, leases and refusal
 #   5. dockerfile-tamper        — Dockerfile integrity and override behavior
 #   6. timeout-teardown         — container/VM cleanup after timeout
 #   7. python-uv                — --python-uv interpreter/venv usable by the agent
@@ -161,6 +162,7 @@ SUITES=(
   env-injection
   git-workflow
   jj-workflow
+  host-locks
   vcs-access
   firewall
   dockerfile-tamper
@@ -487,6 +489,11 @@ if selected jj-workflow; then
   else
     skip_suite "jj-workflow" "jj not found on PATH"
   fi
+fi
+
+# 4a. Host locks: private location, real contention, branch leases, refusal
+if selected host-locks; then
+  run_suite "host-locks" "$ROOT/scripts/e2e-host-locks.sh" "${WORKFLOW_ARGS[@]}"
 fi
 
 # VCS access needs real mounts and builds one image for all three access modes.

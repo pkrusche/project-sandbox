@@ -27,6 +27,17 @@ Notable changes to `project-sandbox` are documented here.
 - `scripts/e2e-colima.py` (`run-e2e-tests.sh --only colima`): an opt-in
   end-to-end suite against a running Colima profile.
 
+### Changed
+
+- Host lock files moved from the shared system temp dir to the private
+  `$XDG_STATE_HOME/project-sandbox/locks` (default
+  `~/.local/state/project-sandbox/locks`), so another local user can no longer
+  pre-create or hold them to block launches. An unsafe locks directory is
+  refused, and a sandbox cannot mount it. Finish or stop running sessions before
+  upgrading: old and new versions do not serialize against each other. Leftover
+  `$TMPDIR/project-sandbox-*.lock` files are harmless. See
+  [host locks](docs/security.md#host-locks).
+
 ### Fixed
 
 - `--branch` and `--branch-start-at` values that start with `-` (which git and

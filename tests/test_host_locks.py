@@ -11,6 +11,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from project_sandbox import build_cache, host_locks, jj_workspace, worktree
 
+# conftest patches ``locks_root`` per test; keep the real one to test it.
+_REAL_LOCKS_ROOT = host_locks.locks_root
+
 
 @contextlib.contextmanager
 def _noop():
@@ -84,14 +87,15 @@ with open(sys.argv[1], "r") as lock:
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
     def test_symlinked_lock_name_is_refused_instead_of_truncated(self) -> None:
-        """The lock name is guessable and lives in the shared temp dir, so a
-        pre-planted symlink must not redirect the open onto another file."""
+        """The lock name is guessable from a project path, so a symlink planted
+        at it must not redirect the open onto another file."""
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "repo"
             target.mkdir()
             victim = Path(tmp) / "important.txt"
             victim.write_text("keep me\n", encoding="utf-8")
             path = host_locks.lock_path("build", target)
+            path.parent.mkdir(mode=0o700)
             path.symlink_to(victim)
             try:
                 with self.assertRaisesRegex(SystemExit, "Could not open the build"):
@@ -100,6 +104,17 @@ with open(sys.argv[1], "r") as lock:
                 self.assertEqual(victim.read_text(encoding="utf-8"), "keep me\n")
             finally:
                 path.unlink()
+
+    def test_non_regular_lock_file_is_refused(self) -> None:
+        target = Path(".")
+        with host_locks.path_lock("build", target):
+            pass
+        path = host_locks.lock_path("build", target)
+        path.unlink()
+        os.mkfifo(path, 0o600)
+        with self.assertRaisesRegex(SystemExit, "not a regular file"):
+            with host_locks.path_lock("build", target):
+                self.fail("entered a lock held on a FIFO")
 
     def test_lock_lives_outside_the_project(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -111,8 +126,64 @@ with open(sys.argv[1], "r") as lock:
                 str(path).startswith(str(Path(tmp).resolve())),
                 "a lock inside the project would land in the build context",
             )
-            self.assertEqual(path.parent, Path(tempfile.gettempdir()))
-            self.assertTrue(os.access(path.parent, os.W_OK))
+            self.assertEqual(path.parent, host_locks.locks_root())
+
+    def test_locks_root_is_under_the_state_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp).resolve()
+            with patch.dict(os.environ, {"XDG_STATE_HOME": str(state)}):
+                self.assertEqual(
+                    _REAL_LOCKS_ROOT(), state / "project-sandbox" / "locks"
+                )
+            for value in ("", "relative/state"):
+                with patch.dict(os.environ, {"XDG_STATE_HOME": value}):
+                    self.assertEqual(
+                        _REAL_LOCKS_ROOT(),
+                        Path.home() / ".local/state/project-sandbox/locks",
+                    )
+
+    def test_missing_lock_directory_is_created_private(self) -> None:
+        root = host_locks.locks_root()
+        self.assertFalse(root.exists())
+        previous = os.umask(0o022)
+        try:
+            with host_locks.path_lock("build", Path(".")):
+                pass
+        finally:
+            os.umask(previous)
+        self.assertEqual(root.stat().st_mode & 0o777, 0o700)
+        lock = host_locks.lock_path("build", Path("."))
+        self.assertEqual(lock.stat().st_mode & 0o777, 0o600)
+
+    def test_no_lock_is_created_in_the_temp_dir(self) -> None:
+        temp = Path(tempfile.gettempdir())
+        before = set(temp.glob("project-sandbox-*.lock"))
+        with tempfile.TemporaryDirectory() as tmp:
+            with host_locks.path_lock("build", Path(tmp)):
+                pass
+            path = host_locks.lock_path("build", Path(tmp))
+        self.assertTrue(path.is_file())
+        self.assertEqual(set(temp.glob("project-sandbox-*.lock")), before)
+
+    def test_symlinked_lock_directory_is_refused(self) -> None:
+        root = host_locks.locks_root()
+        elsewhere = root.parent / "elsewhere"
+        elsewhere.mkdir(mode=0o700)
+        root.symlink_to(elsewhere)
+        with self.assertRaisesRegex(SystemExit, str(root)):
+            with host_locks.path_lock("build", Path(".")):
+                pass
+        self.assertEqual(list(elsewhere.iterdir()), [])
+
+    def test_shared_lock_directory_is_refused_and_left_alone(self) -> None:
+        root = host_locks.locks_root()
+        root.mkdir()
+        os.chmod(root, 0o770)
+        with self.assertRaisesRegex(SystemExit, str(root)):
+            with host_locks.path_lock("build", Path(".")):
+                pass
+        self.assertEqual(root.stat().st_mode & 0o777, 0o770)
+        self.assertEqual(list(root.iterdir()), [])
 
     def test_all_host_locks_use_the_shared_helper(self) -> None:
         """One helper keeps every lock symlink-safe; a hand-rolled open() in any

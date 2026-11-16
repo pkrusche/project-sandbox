@@ -16,6 +16,7 @@ from project_sandbox import (
     cli,
     container_cli,
     devcontainer,
+    host_locks,
     implicit_mounts,
     mount_storage,
     paths,
@@ -264,6 +265,23 @@ class ImplicitMountTests(TestCase):
                             extra_mounts=[f"type=bind,{alias}={source},target=/exposed"]
                         )
         self.assertFalse(self.root.exists())
+
+    def test_host_locks_are_never_a_mount_source(self) -> None:
+        with host_locks.path_lock("build", self.project):
+            pass
+        locks = host_locks.locks_root()
+        lock = host_locks.lock_path("build", self.project)
+        for source in (locks, lock):
+            with (
+                self.subTest(source=source),
+                self.assertRaisesRegex(ValueError, "overlaps"),
+            ):
+                implicit_mounts.validate_sources(
+                    self.project,
+                    extra_mounts=[f"type=bind,source={source},target=/exposed"],
+                )
+        with self.assertRaisesRegex(ValueError, "overlaps"):
+            implicit_mounts.validate_sources(self.project, sources=[lock])
 
     def test_ambiguous_and_unmodeled_extra_mounts_fail_closed(self) -> None:
         for mount in (

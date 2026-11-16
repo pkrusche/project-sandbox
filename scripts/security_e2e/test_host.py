@@ -19,6 +19,14 @@ with path_lock('security-e2e', Path(sys.argv[1]), blocking=sys.argv[2] == 'wait'
 """
 
 
+@pytest.fixture(autouse=True)
+def private_state(case_dir, monkeypatch):
+    # Host locks live under XDG_STATE_HOME. Give every case a fresh state root
+    # (inherited by the lock children) so cases do not depend on each other's
+    # setup and never touch the developer's real state directory.
+    monkeypatch.setenv("XDG_STATE_HOME", str(case_dir / "state"))
+
+
 def test_live_lock_contention_and_symlink(case_dir):
     target = case_dir / "target"
     lock = host_locks.lock_path("security-e2e", target)
@@ -93,6 +101,21 @@ def test_live_lock_contention_and_symlink(case_dir):
 def test_host_lock_private_directory_and_inode_validation(case_dir):
     target = case_dir / "target"
     lock = host_locks.lock_path("security-e2e", target)
+    # Take and release the lock once so its private directory exists.
+    run(
+        [
+            sys.executable,
+            "-c",
+            LOCK_CHILD,
+            target,
+            "nonblocking",
+            case_dir / "created",
+            "0",
+        ]
+    )
+    assert lock.parent.stat().st_mode & 0o777 == 0o700
+    assert lock.stat().st_mode & 0o777 == 0o600
+    lock.unlink()
     # A FIFO opened O_RDWR does not block: this detects missing regular-file
     # validation without opening a device or touching another user's files.
     os.mkfifo(lock, 0o600)
@@ -110,10 +133,8 @@ def test_host_lock_private_directory_and_inode_validation(case_dir):
             check=False,
             timeout=5,
         )
-        if result.returncode == 0 or lock.parent.stat().st_mode & 0o077:
-            pytest.xfail(
-                "TODO: host locks lack private-directory and regular-inode validation"
-            )
+        assert result.returncode != 0, result.stdout
+        assert "not a regular file" in result.stdout, result.stdout
         assert not (case_dir / "fifo-entered").exists()
     finally:
         lock.unlink()

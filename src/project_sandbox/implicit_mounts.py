@@ -7,7 +7,7 @@ import uuid
 from collections.abc import Sequence
 from pathlib import Path
 
-from . import mount_options, mount_storage, session_inputs
+from . import host_locks, mount_options, mount_storage, session_inputs
 
 
 def validate_sources(
@@ -44,6 +44,9 @@ def validate_sources(
         ],
     )
     mount_storage.check_exposure(mount_storage.storage_root(), exposed)
+    # Host locks are host-only: a sandbox that could open them could flock one
+    # and stall every later launch against the same project or runtime.
+    mount_storage.check_exposure(host_locks.locks_root(), exposed)
     return exposed
 
 
