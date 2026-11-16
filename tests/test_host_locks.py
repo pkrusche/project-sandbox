@@ -134,7 +134,9 @@ with open(sys.argv[1], "r") as lock:
             target = Path(f"/nonexistent/race-{round_}")
             barrier = threading.Barrier(8)
 
-            def worker() -> None:
+            def worker(
+                barrier: threading.Barrier = barrier, target: Path = target
+            ) -> None:
                 try:
                     barrier.wait()
                     with host_locks.path_lock("build", target):
