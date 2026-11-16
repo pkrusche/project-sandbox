@@ -134,7 +134,9 @@ class RunAllSupportedE2ETests(unittest.TestCase):
     def test_running_colima_profile_runs_colima_once(self) -> None:
         log: list[str] = []
         result = self._run(
-            colima_list=_colima_list(("default", "Stopped"), ("project-sandbox", "Running")),
+            colima_list=_colima_list(
+                ("default", "Stopped"), ("project-sandbox", "Running")
+            ),
             colima_log=log,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -157,7 +159,8 @@ class RunAllSupportedE2ETests(unittest.TestCase):
         start = out.index("+ colima start --profile project-sandbox")
         self.assertLess(start, out.index("Test plan"))
         self.assertLess(
-            out.rindex("e2e-cleanup.py"), out.index("+ colima stop --profile project-sandbox")
+            out.rindex("e2e-cleanup.py"),
+            out.index("+ colima stop --profile project-sandbox"),
         )
         self.assertIn("--with-colima", self._runs(result)[0])
         # A dry run only prints the start and stop.
@@ -170,7 +173,10 @@ class RunAllSupportedE2ETests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("colima profile 'project-sandbox' does not exist", result.stdout)
-        self.assertIn("project-sandbox colima init --colima-profile project-sandbox", result.stdout)
+        self.assertIn(
+            "project-sandbox colima init --colima-profile project-sandbox",
+            result.stdout,
+        )
         self.assertTrue(all("--with-colima" not in line for line in self._runs(result)))
         self.assertEqual(log, ["colima list --json"])
 
@@ -178,7 +184,9 @@ class RunAllSupportedE2ETests(unittest.TestCase):
         result = self._run(
             "--colima-profile",
             "work",
-            colima_list=_colima_list(("project-sandbox", "Running"), ("work", "Stopped")),
+            colima_list=_colima_list(
+                ("project-sandbox", "Running"), ("work", "Stopped")
+            ),
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("+ colima start --profile work", result.stdout)
