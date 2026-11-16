@@ -107,7 +107,9 @@ def _default_cpus(runtime: container_cli.Runtime | None) -> int:
     would otherwise reject every sandbox started without --cpus.
     """
     default = container_cli.DEFAULT_CPUS
-    available = container_cli.available_cpus(runtime) if runtime else None
+    if runtime is None:
+        return default
+    available = container_cli.available_cpus(runtime)
     if available is None or available >= default:
         return default
     print(
