@@ -1,7 +1,7 @@
 # Rendered by project_sandbox.squid_config for the global --egress sidecar.
 # Applied live by sbx-reload (squid -k reconfigure); see design.md Decision 9.
 # Policy: design.md Decisions 2 (pipeline), 5 (Copilot) and 7 (parent proxy).
-http_port {{ listen_port }} ssl-bump tls-cert={{ ca_cert }} tls-key={{ ca_key }} generate-host-certificates=on dynamic_cert_mem_cache_size=4MB
+http_port {% if bind_placeholder %}{{ bind_placeholder }}:{% endif %}{{ listen_port }} ssl-bump tls-cert={{ ca_cert }} tls-key={{ ca_key }} generate-host-certificates=on dynamic_cert_mem_cache_size=4MB
 sslcrtd_program /usr/lib/squid/security_file_certgen -s {{ ssl_db }} -M 4MB
 sslcrtd_children 4
 # squid -k reconfigure (sbx-reload) finds the running Squid through this file.

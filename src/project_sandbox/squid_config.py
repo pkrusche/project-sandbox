@@ -34,6 +34,9 @@ from .templating import get_template
 # Squid's port inside the sidecar; published on host loopback as
 # [egress.sidecar] port (design.md Decision 1).
 LISTEN_PORT = 3128
+# Replaced in the sidecar by its internal address (sbx-internal-address) when
+# Squid must listen only on the internal network (Colima, design.md D2).
+BIND_PLACEHOLDER = "@SBX_INTERNAL_IP@"
 # Read-only host input mount (egress/<runtime>/sidecar/ on the host).
 INPUT_DIR = "/project-sandbox-egress"
 # Paths inside the sidecar (staged by the entrypoint into tmpfs).
@@ -207,6 +210,7 @@ def render(
     *,
     upstream: Upstream | None = None,
     api_paths: Iterable[str] = egress_policy.COPILOT_API_PATHS,
+    internal_only: bool = False,
 ) -> str:
     allowed = [_squid_domain(h) for h in policy.allow]
     bumped = [_squid_domain(h) for h in policy.bump_set]
@@ -220,6 +224,7 @@ def render(
         _validate_upstream(upstream)
     text = get_template("egress-sidecar/squid.conf.j2", trim_blocks=True).render(
         listen_port=LISTEN_PORT,
+        bind_placeholder=BIND_PLACEHOLDER if internal_only else None,
         ca_cert=CA_CERT,
         ca_key=CA_KEY,
         ssl_db=SSL_DB,

@@ -38,12 +38,12 @@ The spikes are scripted: `spikes/spike_colima.py` runs S1, S2 and S6, and `spike
 
 ## 2. Colima internal network without a VM address
 
-- [ ] 2.1 Create `psbx-sandbox` with `-o com.docker.network.bridge.gateway_mode_ipv4=isolated` and require the option in `colima_network.validate` (D2). When the engine rejects the option, fail naming it, Docker Engine 28 and the Colima upgrade. Verify with argv-equality tests (the uplink's argv unchanged; the sandbox network gains only the option) and validation tests for a missing or different option.
-- [ ] 2.2 Replace a legacy `psbx-sandbox` (D2): `up`, `restart` and a sidecar-mode launch remove and recreate it when no container is attached. Otherwise they fail before any container work, naming the attached sandboxes and `project-sandbox-egress restart`. `restart` detaches the sidecar first. Verify with runner tests for the unattached, sandbox-attached and sidecar-only cases, and that `doctor` and `status` report a legacy network.
+- [x] 2.1 Create `psbx-sandbox` with `-o com.docker.network.bridge.gateway_mode_ipv4=isolated` and require the option in `colima_network.validate` (D2). When the engine rejects the option, fail naming it, Docker Engine 28 and the Colima upgrade. Verify with argv-equality tests (the uplink's argv unchanged; the sandbox network gains only the option) and validation tests for a missing or different option.
+- [x] 2.2 Replace a legacy `psbx-sandbox` (D2): `up`, `restart` and a sidecar-mode launch remove and recreate it when no container is attached. Otherwise they fail before any container work, naming the attached sandboxes and `project-sandbox-egress restart`. `restart` detaches the sidecar first. Verify with runner tests for the unattached, sandbox-attached and sidecar-only cases, and that `doctor` and `status` report a legacy network.
 
 ## 3. Sidecar on Colima
 
-- [ ] 3.1 Render Squid listeners bound to the sidecar's internal address, discovered inside the container at start (D2). Verify with a rendered-config test and a test of the entrypoint discovery helper.
+- [x] 3.1 Render Squid listeners bound to the sidecar's internal address, discovered inside the container at start (D2). Verify with a rendered-config test and a test of the entrypoint discovery helper.
 - [ ] 3.2 Add `203.0.113.0/24` to `squid_config.PRIVATE_DESTINATIONS` for every runtime (D8). Verify with a rendered-config test, and a policy test that an allowlisted name resolving into the range is denied.
 - [ ] 3.3 Update `docs/egress-sidecar.md` and `docs/runtimes.md` for the Colima network (gateway mode, Docker Engine 28, the one-time replacement), and say why Apple `container` keeps the published endpoint (S3). Verify the documented commands against `--dry-run` output.
 

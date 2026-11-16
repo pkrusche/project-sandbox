@@ -92,9 +92,14 @@ class FakeRuntime:
             kind = self.kind(argv)
         if kind in self.fail:
             return _done(argv, 1, err=f"{kind} failed")
-        if kind == "run":
-            time.sleep(self.run_delay)
+        if kind == "start":
+            if self.container is None:
+                return _done(argv, 1, err="no such container")
             self.container = "running"
+            return _done(argv)
+        if kind in ("run", "create"):
+            time.sleep(self.run_delay)
+            self.container = "running" if kind == "run" else "created"
             self.labels = {}
             for i, item in enumerate(argv):
                 if item == "--label":

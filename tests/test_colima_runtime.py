@@ -439,6 +439,22 @@ class ColimaSidecarDryRunTests(TestCase):
         self.assertIn("Endpoint: egress:3128", output)
         self.assertNotIn("Published endpoint", output)
 
+    def test_the_sidecar_is_created_attached_then_started(self) -> None:
+        """isolated-sidecar-network task 3.1: Squid binds to the internal address."""
+        runs = [
+            line.removeprefix("Would run: ")
+            for line in self.run_cli().splitlines()
+            if line.startswith("Would run:")
+        ]
+        self.assertEqual(len(runs), 3)
+        self.assertIn(" create --name project-sandbox-egress ", runs[0])
+        self.assertTrue(
+            runs[1].endswith(
+                "network connect --alias egress psbx-sandbox project-sandbox-egress"
+            )
+        )
+        self.assertTrue(runs[2].endswith(" start project-sandbox-egress"))
+
     def test_a_non_default_port_fails_before_any_work(self) -> None:
         with self.assertRaises(SystemExit) as ctx:
             self.run_cli(config="[egress.sidecar]\nport = 3140\n")

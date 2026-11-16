@@ -202,6 +202,7 @@ class SidecarImageRendererTests(TestCase):
                     "Dockerfile",
                     "entrypoint.sh",
                     "errors",
+                    "sbx-internal-address",
                     "sbx-reload",
                     "sni-match",
                 ],
@@ -213,6 +214,9 @@ class SidecarImageRendererTests(TestCase):
             self.assertEqual((context / "entrypoint.sh").stat().st_mode & 0o777, 0o755)
             self.assertEqual((context / "sni-match").stat().st_mode & 0o777, 0o755)
             self.assertEqual((context / "sbx-reload").stat().st_mode & 0o777, 0o755)
+            self.assertEqual(
+                (context / "sbx-internal-address").stat().st_mode & 0o777, 0o755
+            )
             self.assertEqual((context / "Dockerfile").stat().st_mode & 0o777, 0o644)
             # Idempotent: a second render reuses the same directory and tag.
             self.assertEqual(sidecar_image.render(Path(tmp)), (context, tag))
@@ -592,3 +596,92 @@ class SquidConfigRendererTests(TestCase):
             "cache_peer host.docker.internal parent 41234 0 no-query no-digest default name=upstream\n",
             conf,
         )
+
+
+class InternalBindingTests(TestCase):
+    """isolated-sidecar-network task 3.1: Squid listens only on the internal network."""
+
+    HELPER = (
+        Path(__file__).resolve().parents[1]
+        / "src/project_sandbox/templates/egress-sidecar/sbx-internal-address"
+    )
+
+    def _effective(self):
+        from project_sandbox import egress_policy
+
+        return egress_policy.effective(egress_policy.PolicyFile())
+
+    def test_internal_only_binds_the_placeholder_and_the_default_is_unchanged(
+        self,
+    ) -> None:
+        plain = squid_config.render(self._effective())
+        bound = squid_config.render(self._effective(), internal_only=True)
+        self.assertIn("\nhttp_port 3128 ssl-bump", "\n" + plain)
+        self.assertNotIn(squid_config.BIND_PLACEHOLDER, plain)
+        self.assertIn(
+            f"\nhttp_port {squid_config.BIND_PLACEHOLDER}:3128 ssl-bump", "\n" + bound
+        )
+        self.assertEqual(plain, bound.replace(f"{squid_config.BIND_PLACEHOLDER}:", ""))
+
+    def test_entrypoint_and_reload_substitute_the_address(self) -> None:
+        files = sidecar_image.render_files()
+        for name, target in (
+            ("entrypoint.sh", "/etc/squid/squid.conf"),
+            ("sbx-reload", '"$NEXT"'),
+        ):
+            with self.subTest(name):
+                text = files[name]
+                self.assertIn(
+                    f"grep -q '{squid_config.BIND_PLACEHOLDER}' {target}", text
+                )
+                self.assertIn("/usr/local/libexec/sbx-internal-address", text)
+                self.assertIn(
+                    f's/{squid_config.BIND_PLACEHOLDER}/$address/g" {target}', text
+                )
+        # Reload substitutes before the parse check, so a bad address never goes live.
+        reload = files["sbx-reload"]
+        self.assertLess(reload.index("sbx-internal-address"), reload.index("-k parse"))
+        self.assertIn(
+            "COPY sbx-internal-address /usr/local/libexec/sbx-internal-address",
+            files["Dockerfile"],
+        )
+
+    def _run_helper(self, routes: str, addrs: str) -> subprocess.CompletedProcess:
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_ip = Path(tmp) / "ip"
+            fake_ip.write_text(
+                "#!/bin/sh\n"
+                'case "$*" in\n'
+                f"  *route*) cat <<'OUT'\n{routes}OUT\n;;\n"
+                f"  *addr*) cat <<'OUT'\n{addrs}OUT\n;;\n"
+                "esac\n"
+            )
+            fake_ip.chmod(0o755)
+            return subprocess.run(
+                ["/bin/sh", str(self.HELPER)],
+                capture_output=True,
+                text=True,
+                check=False,
+                env={"PATH": f"{tmp}:/usr/bin:/bin"},
+            )
+
+    def test_helper_prints_the_address_without_the_default_route(self) -> None:
+        routes = "default via 172.18.0.1 dev eth0 \n"
+        for name in ("eth1", "eth1@if12"):
+            with self.subTest(name):
+                addrs = (
+                    "2: eth0    inet 172.18.0.2/16 brd 172.18.255.255 scope global eth0\n"
+                    f"3: {name}    inet 172.19.0.2/16 brd 172.19.255.255 scope global eth1\n"
+                )
+                result = self._run_helper(routes, addrs)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, "172.19.0.2\n")
+
+    def test_helper_fails_without_an_internal_interface(self) -> None:
+        result = self._run_helper(
+            "default via 172.18.0.1 dev eth0 \n",
+            "2: eth0    inet 172.18.0.2/16 brd 172.18.255.255 scope global eth0\n",
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("eth0", result.stderr)

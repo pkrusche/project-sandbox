@@ -325,7 +325,11 @@ CTX = ("docker", "--context", "colima-project-sandbox")
 
 
 def _network(
-    role: str, internal: bool, *, owner: str | None = "project-sandbox"
+    role: str,
+    internal: bool,
+    *,
+    owner: str | None = "project-sandbox",
+    options: dict | None = None,
 ) -> Probe:
     labels = {
         "project-sandbox.profile": "project-sandbox",
@@ -333,7 +337,22 @@ def _network(
     }
     if owner is not None:
         labels["project-sandbox.owner"] = owner
-    return ok(json.dumps({"Driver": "bridge", "Internal": internal, "Labels": labels}))
+    if options is None:  # what the current version creates
+        options = (
+            {"com.docker.network.bridge.gateway_mode_ipv4": "isolated"}
+            if role == "sandbox"
+            else {}
+        )
+    return ok(
+        json.dumps(
+            {
+                "Driver": "bridge",
+                "Internal": internal,
+                "Labels": labels,
+                "Options": options,
+            }
+        )
+    )
 
 
 def _sidecar(*, attached: bool) -> Probe:
@@ -543,6 +562,20 @@ class ColimaTests(TestCase):
         check = self.checks(foreign)["psbx-sandbox"]
         self.assertEqual(check.status, doctor.WARN)
         self.assertIn("not owned by project-sandbox", check.detail)
+
+    def test_a_current_sandbox_network_is_ok_and_a_legacy_one_warns(self) -> None:
+        self.assertEqual(self.checks(colima_host())["psbx-sandbox"].status, doctor.OK)
+        legacy = colima_host(
+            {
+                (*CTX, "network", "inspect", "psbx-sandbox"): _network(
+                    "sandbox", True, options={}
+                )
+            }
+        )
+        check = self.checks(legacy)["psbx-sandbox"]
+        self.assertEqual(check.status, doctor.WARN)
+        self.assertIn("gateway_mode_ipv4=isolated", check.detail)
+        self.assertIn("project-sandbox-egress restart", check.detail)
 
     def test_an_attached_sidecar_is_info_and_a_detached_one_warns(self) -> None:
         key = (*CTX, "inspect", "project-sandbox-egress")

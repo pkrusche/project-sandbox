@@ -24,6 +24,7 @@ COPY {{ (error_page_sources + [error_directory + '/']) | tojson }}
 COPY entrypoint.sh /usr/local/bin/egress-sidecar-entrypoint
 COPY sni-match /usr/local/libexec/sni-match
 COPY sbx-reload /usr/local/bin/sbx-reload
+COPY sbx-internal-address /usr/local/libexec/sbx-internal-address
 RUN chmod 0755 /usr/local/bin/egress-sidecar-entrypoint /usr/local/libexec/sni-match \
-      /usr/local/bin/sbx-reload
+      /usr/local/bin/sbx-reload /usr/local/libexec/sbx-internal-address
 ENTRYPOINT ["/usr/local/bin/egress-sidecar-entrypoint"]

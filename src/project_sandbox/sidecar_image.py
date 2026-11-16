@@ -33,6 +33,7 @@ _FILES = {
     "entrypoint.sh": ("entrypoint.sh.j2", 0o755),
     "sni-match": ("sni-match", 0o755),
     "sbx-reload": ("sbx-reload.j2", 0o755),
+    "sbx-internal-address": ("sbx-internal-address", 0o755),
 }
 
 
@@ -53,6 +54,7 @@ def render_files(*, build_ca_certificates: tuple[bytes, ...] = ()) -> dict[str, 
         ],
         "build_ca_certificate_sources": list(certificates),
         "build_proxy_names": build_network.ARG_NAMES,
+        "bind_placeholder": squid_config.BIND_PLACEHOLDER,
     }
     rendered = dict(certificates)
     for name, (template, _mode) in _FILES.items():

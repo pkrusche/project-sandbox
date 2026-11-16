@@ -1,0 +1,17 @@
+#!/bin/sh
+# Print the sidecar's IPv4 address on the internal sandbox network: the
+# address of the interface that does not carry the default route (on Colima
+# the uplink carries it; isolated-sidecar-network design.md D2). Exit 1 when
+# there is no such interface, for example before psbx-sandbox is attached.
+set -eu
+
+default_if=$(ip -4 route show default 2>/dev/null \
+  | awk '{ for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit } }')
+address=$(ip -4 -o addr show scope global 2>/dev/null \
+  | awk -v skip="$default_if" '{ name = $2; sub(/@.*/, "", name) }
+      name != skip { split($4, a, "/"); print a[1]; exit }')
+if [ -z "$address" ]; then
+  echo "sbx-internal-address: no IPv4 address outside the default-route interface (${default_if:-none})" >&2
+  exit 1
+fi
+printf '%s\n' "$address"

@@ -634,6 +634,16 @@ def check_colima(profile: str) -> list[Check]:
             continue
         try:
             colima_network.validate(runtime, record, spec)
+        except colima_network.LegacyNetwork as exc:
+            checks.append(
+                Check(
+                    "colima",
+                    spec.name,
+                    WARN,
+                    f"{exc}. `project-sandbox-egress restart` replaces it once no "
+                    "sandbox is attached.",
+                )
+            )
         except colima_network.NetworkError as exc:
             checks.append(Check("colima", spec.name, WARN, str(exc)))
         else:

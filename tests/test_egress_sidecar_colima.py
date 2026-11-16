@@ -9,8 +9,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_egress_sidecar import IMAGE, Base, FakeRuntime, _done, _policy
 
 from project_sandbox import colima_network as net
-from project_sandbox import egress_sidecar
-from project_sandbox.container_cli import colima_runtime
+from project_sandbox import egress_sidecar, squid_config
+from project_sandbox.container_cli import DOCKER, colima_runtime
 from project_sandbox.egress_sidecar import (
     CONTAINER,
     DOCKER_PRIVATE_NETWORK,
@@ -31,6 +31,7 @@ class ColimaFake(FakeRuntime):
         self.attached = False
         self.probe_ok = True
         self.sandbox_ip = "172.19.0.2"
+        self.engine = "29.5.2"
 
     def kind(self, argv) -> str:
         # Drop `--context <name>` so the parent's argv classification applies.
@@ -73,17 +74,29 @@ class ColimaFake(FakeRuntime):
             labels = dict(
                 a.split("=", 1) for i, a in enumerate(argv) if argv[i - 1] == "--label"
             )
+            options = dict(
+                a.split("=", 1) for i, a in enumerate(argv) if argv[i - 1] == "-o"
+            )
             self.networks[argv[-1]] = {
                 "Driver": "bridge",
                 "Internal": "--internal" in argv,
                 "Labels": labels,
+                "Options": options,
             }
             return _done(argv, out="id\n")
+        if kind == "version":
+            self.calls.append(argv)
+            return _done(argv, out=self.engine + "\n")
+        if kind in ("network-disconnect", "network-rm") and argv[-1] in self.networks:
+            self.calls.append(argv)
+            if kind == "network-rm":
+                self.networks.pop(argv[-1])
+            return _done(argv)
         if kind == "network-connect":
             self.calls.append(argv)
             self.attached = True
             return _done(argv)
-        if kind in ("run", "rm"):
+        if kind in ("run", "create", "rm"):
             self.attached = False  # a (re)created container has no attachments
         return super().__call__(argv)
 
@@ -115,7 +128,8 @@ class PrivateNetworkBase(Base):
         return super().deps(**values)
 
     def runs(self) -> list[list[str]]:
-        return [c for c in self.fake.calls if self.fake.kind(c) == "run" and "-d" in c]
+        # The Colima sidecar is created, connected, then started (design.md D2).
+        return [c for c in self.fake.calls if self.fake.kind(c) == "create"]
 
 
 class StrategySelectionTests(PrivateNetworkBase):
@@ -154,8 +168,9 @@ class RunArgvTests(PrivateNetworkBase):
 
     def test_publishes_nothing_and_starts_on_the_uplink_only(self) -> None:
         argv = self.argv()
+        # Created, not run: psbx-sandbox is connected before it starts (D2).
         self.assertEqual(
-            argv[:6], ["docker", "--context", "colima-work", "run", "-d", "--name"]
+            argv[:5], ["docker", "--context", "colima-work", "create", "--name"]
         )
         for forbidden in ("--publish", "-p", "--add-host"):
             self.assertNotIn(forbidden, argv)
@@ -173,9 +188,13 @@ class EnsureTests(PrivateNetworkBase):
         kinds = self.fake.kinds()
         self.assertTrue(sidecar.started)
         self.assertEqual(kinds.count("network-create"), 2)
-        self.assertLess(kinds.index("network-create"), kinds.index("run"))
-        self.assertLess(kinds.index("run"), kinds.index("network-connect"))
-        self.assertLess(kinds.index("network-connect"), kinds.index("probe"))
+        # create -> connect psbx-sandbox -> start, so Squid can bind to the
+        # internal address when it starts (design.md D2).
+        self.assertLess(kinds.index("network-create"), kinds.index("create"))
+        self.assertLess(kinds.index("create"), kinds.index("network-connect"))
+        self.assertLess(kinds.index("network-connect"), kinds.index("start"))
+        self.assertLess(kinds.index("start"), kinds.index("probe"))
+        self.assertNotIn("run", kinds[: kinds.index("start")])
         self.assertNotIn("--publish", self.runs()[0])
         self.assertEqual(sidecar.endpoint, "egress:3128")
         self.assertEqual(sidecar.strategy, PRIVATE)
@@ -479,3 +498,109 @@ class SidecarMountCheckTests(PrivateNetworkBase):
             ).started
         )
         self.assertEqual(asked, [])
+
+
+class LegacyNetworkTests(PrivateNetworkBase):
+    """isolated-sidecar-network task 2.2: replacing a pre-gateway-mode psbx-sandbox."""
+
+    def _make_legacy(self, *containers: str) -> None:
+        record = self.fake.networks[net.SANDBOX_NETWORK]
+        record["Options"] = {}
+        record["Containers"] = {f"id-{n}": {"Name": n} for n in containers}
+
+    def _sandbox_network(self) -> dict:
+        return self.fake.networks[net.SANDBOX_NETWORK]
+
+    def test_a_launch_replaces_a_legacy_network_used_only_by_the_sidecar(self) -> None:
+        self.ensure()
+        self._make_legacy(egress_sidecar.CONTAINER)
+        before = len(self.fake.calls)
+        again = self.ensure()
+        self.assertTrue(again.started)
+        kinds = [self.fake.kind(c) for c in self.fake.calls[before:]]
+        self.assertIn("network-disconnect", kinds)
+        self.assertLess(kinds.index("network-rm"), kinds.index("network-create"))
+        self.assertLess(kinds.index("network-create"), kinds.index("run"))
+        self.assertEqual(
+            self._sandbox_network()["Options"],
+            {net.GATEWAY_MODE_OPTION: net.GATEWAY_MODE},
+        )
+        self.assertTrue(self.fake.attached)
+
+    def test_an_attached_sandbox_stops_the_launch_before_any_container_work(
+        self,
+    ) -> None:
+        self.ensure()
+        self._make_legacy(egress_sidecar.CONTAINER, "psbx-myproj-1")
+        before = len(self.fake.calls)
+        with self.assertRaises(SidecarError) as ctx:
+            self.ensure()
+        message = str(ctx.exception)
+        self.assertIn("psbx-myproj-1 is still attached", message)
+        self.assertIn("project-sandbox-egress restart", message)
+        mutating = {"run", "rm", "network-create", "network-rm", "network-disconnect"}
+        new = {self.fake.kind(c) for c in self.fake.calls[before:]}
+        self.assertFalse(new & mutating)
+        self.assertEqual(self._sandbox_network()["Options"], {})
+
+    def test_restart_replaces_it(self) -> None:
+        self.ensure()
+        self._make_legacy(egress_sidecar.CONTAINER)
+        egress_sidecar.restart(
+            RUNTIME, _policy(self.tmp), image=IMAGE, root=self.root, deps=self.deps()
+        )
+        self.assertFalse(colima_is_legacy(self.fake))
+        self.assertTrue(self.fake.attached)
+
+    def test_status_reports_the_legacy_network(self) -> None:
+        self.ensure()
+        self._make_legacy(egress_sidecar.CONTAINER)
+        report = egress_sidecar.status(
+            RUNTIME, _policy(self.tmp), image=IMAGE, root=self.root, deps=self.deps()
+        )
+        self.assertTrue(report["network_legacy"])
+        self.assertEqual(report["would"], "start")
+        text = "\n".join(egress_sidecar.status_lines(report))
+        self.assertIn("predates the isolated gateway mode", text)
+        self.assertIn("project-sandbox-egress restart", text)
+
+
+def colima_is_legacy(fake: ColimaFake) -> bool:
+    return net.is_legacy(RUNTIME, fake)
+
+
+class InternalBindingTests(PrivateNetworkBase):
+    """isolated-sidecar-network task 3.1: binding recorded and honoured on reload."""
+
+    def test_cold_start_renders_and_records_the_internal_binding(self) -> None:
+        self.ensure()
+        conf = (self.root_layout().sidecar / egress_sidecar.CONF_NAME).read_text()
+        self.assertIn(f"http_port {squid_config.BIND_PLACEHOLDER}:3128", conf)
+        self.assertTrue(egress_sidecar.read_state(self.root_layout())["bind_internal"])
+
+    def test_readiness_targets_the_internal_address_on_colima_only(self) -> None:
+        colima = " ".join(egress_sidecar.readiness_argv(RUNTIME))
+        self.assertIn(
+            'nc -w 3 "$(/usr/local/libexec/sbx-internal-address)" 3128', colima
+        )
+        docker = " ".join(egress_sidecar.readiness_argv(DOCKER))
+        self.assertIn("nc -w 3 127.0.0.1 3128", docker)
+
+    def test_a_sidecar_started_before_the_binding_is_not_reloaded_with_it(self) -> None:
+        self.ensure()
+        lay = self.root_layout()
+        state = egress_sidecar.read_state(lay)
+        del state["bind_internal"]  # as written by an older version
+        old_conf = egress_sidecar.render_squid_conf(
+            _policy(self.tmp), copilot=state["copilot"], upstream=None
+        )
+        state["reload_fingerprint"] = egress_sidecar.reload_fingerprint(old_conf)
+        egress_sidecar.write_state(lay, state)
+        before = len(self.fake.calls)
+        self.ensure()
+        self.assertNotIn(
+            "reload", [self.fake.kind(c) for c in self.fake.calls[before:]]
+        )
+
+    def root_layout(self):
+        return egress_sidecar.layout(RUNTIME, self.root)

@@ -2645,6 +2645,23 @@ def _print_egress_dry_run(
                 )
             )
         )
+        if private:
+            # Created, attached, then started (design.md D2).
+            print(
+                "Would run: "
+                + shlex.join(
+                    colima_network.connect_argv(
+                        runtime,
+                        colima_network.SANDBOX_NETWORK,
+                        egress_sidecar.CONTAINER,
+                        colima_network.ALIAS,
+                    )
+                )
+            )
+            print(
+                "Would run: "
+                + shlex.join(runtime.argv("start", egress_sidecar.CONTAINER))
+            )
 
     if private:
         print(

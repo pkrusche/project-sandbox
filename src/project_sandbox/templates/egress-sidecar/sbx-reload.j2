@@ -12,6 +12,11 @@ LIVE=/etc/squid/squid.conf
 NEXT=/etc/squid/squid.conf.next
 
 cp "$INPUT/squid.conf" "$NEXT"
+if grep -q '{{ bind_placeholder }}' "$NEXT"; then
+  # Colima: listen only on the internal sandbox network (design.md D2).
+  address=$(/usr/local/libexec/sbx-internal-address)
+  sed -i "s/{{ bind_placeholder }}/$address/g" "$NEXT"
+fi
 chown squid:squid "$NEXT"
 if ! su-exec squid squid -k parse -f "$NEXT" >/dev/null 2>"{{ state_dir }}/parse.err"; then
   echo "sbx-reload: the new squid.conf does not parse; the running config is unchanged:" >&2

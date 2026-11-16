@@ -476,14 +476,20 @@ def render_squid_conf(
     *,
     copilot: bool,
     upstream: squid_config.Upstream | None,
+    internal_only: bool = False,
 ) -> str:
     """``squid.conf`` from ``policy``'s allowlist, with ``copilot`` and ``upstream``.
 
-    For the reload fingerprint both come from the *running* sidecar, so a change
+    For the reload fingerprint these come from the *running* sidecar, so a change
     to them (restart-only) never shows up as a reloadable difference.
+    ``internal_only`` binds Squid to the internal network (Colima, design.md D2);
+    a sidecar started by an older version has no binding recorded and keeps its
+    config until a restart replaces it.
     """
     effective = egress_policy.effective(dataclasses.replace(policy, copilot=copilot))
-    return squid_config.render(effective, upstream=upstream)
+    return squid_config.render(
+        effective, upstream=upstream, internal_only=internal_only
+    )
 
 
 def reload_fingerprint(squid_conf: str) -> str:
@@ -562,10 +568,12 @@ def sidecar_run_argv(
             "--sysctl",
             "net.ipv4.ip_forward=0",
         ]
+    # Colima: created, connected to psbx-sandbox, then started, so Squid can
+    # bind to its internal address at start (design.md D2).
+    launch = ["create"] if strategy.kind == DOCKER_PRIVATE_NETWORK else ["run", "-d"]
     argv = [
         *runtime.argv(),
-        "run",
-        "-d",
+        *launch,
         "--name",
         CONTAINER,
         "--label",
@@ -610,7 +618,13 @@ def readiness_argv(runtime: Runtime) -> list[str]:
     )
     # BusyBox nc closes the connection when stdin ends, before the reply is
     # read; keep stdin open briefly so the denial page comes back.
-    script = f"{{ printf '{request}'; sleep 1; }} | nc -w 3 127.0.0.1 {CONTAINER_PORT}"
+    # On Colima Squid listens only on its internal address (design.md D2).
+    target = (
+        '"$(/usr/local/libexec/sbx-internal-address)"'
+        if runtime.name == COLIMA_NAME
+        else "127.0.0.1"
+    )
+    script = f"{{ printf '{request}'; sleep 1; }} | nc -w 3 {target} {CONTAINER_PORT}"
     return exec_argv(runtime, "sh", "-c", script)
 
 
@@ -1036,6 +1050,10 @@ def _healthy(
         and info.address == (state.get("address") or PUBLISH_ADDRESS)
         and _complete(lay)
         and (runtime.name != COLIMA_NAME or _attached(info))
+        # A legacy sandbox network is replaced by the cold start (design.md D2).
+        and (
+            runtime.name != COLIMA_NAME or not colima_network.is_legacy(runtime, runner)
+        )
         and probe_ready(runtime, runner)
     )
 
@@ -1116,7 +1134,9 @@ def _cold_start(
                 "an address the VM can reach."
             )
         try:
-            colima_network.ensure(runtime, runner)
+            # The sidecar is recreated below, so its own attachment does not
+            # block replacing a legacy sandbox network.
+            colima_network.ensure(runtime, runner, owned=(CONTAINER,))
         except colima_network.NetworkError as exc:
             raise SidecarError(str(exc)) from None
 
@@ -1188,7 +1208,10 @@ def _cold_start(
             strategy=strategy,
         )
         return render_squid_conf(
-            policy, copilot=policy.copilot, upstream=upstream
+            policy,
+            copilot=policy.copilot,
+            upstream=upstream,
+            internal_only=_private(strategy),
         ), upstream
 
     conf, upstream = render(relay_port)
@@ -1208,7 +1231,9 @@ def _cold_start(
             strategy=strategy,
             parent_port=parent_port,
         ),
-        "starting the egress sidecar",
+        "creating the egress sidecar"
+        if _private(strategy)
+        else "starting the egress sidecar",
     )
     if _private(strategy):
         # Every creation attaches the alias: a removed and recreated container
@@ -1222,6 +1247,9 @@ def _cold_start(
                 colima_network.ALIAS,
             ),
             "attaching the egress sidecar to the sandbox network",
+        )
+        _checked(
+            runner, runtime.argv("start", CONTAINER), "starting the egress sidecar"
         )
     wait_ready(
         runtime,
@@ -1273,6 +1301,7 @@ def _cold_start(
         "restart_fingerprint": restart_fp,
         "restart_inputs": desired,
         "reload_fingerprint": reload_fingerprint(conf),
+        "bind_internal": _private(strategy),
         "copilot": policy.copilot,
         "upstream_url": policy.upstream_url,
         "upstream": dataclasses.asdict(upstream) if upstream else None,
@@ -1492,7 +1521,12 @@ def _reconcile(
 
     # Allowlist (reload fingerprint, rendered against the running upstream and
     # Copilot setting so restart-only changes never show up here).
-    conf = render_squid_conf(policy, copilot=state["copilot"], upstream=upstream)
+    conf = render_squid_conf(
+        policy,
+        copilot=state["copilot"],
+        upstream=upstream,
+        internal_only=state.get("bind_internal", False),
+    )
     fp = reload_fingerprint(conf)
     if fp != state["reload_fingerprint"]:
         _write_file(lay.sidecar / CONF_NAME, conf)
@@ -1675,6 +1709,9 @@ def status(
     }
     if runtime.name == COLIMA_NAME:
         report["attached"] = running and _attached(info)
+        report["network_legacy"] = colima_network.is_legacy(runtime, deps.runner)
+        if report["network_legacy"]:
+            report["would"] = "start"  # the cold start replaces the network
     if strategy_error:
         report["strategy_error"] = strategy_error
     ca = session_ca.load(lay.sidecar)
@@ -1720,7 +1757,10 @@ def status(
         report["started_at"] = state["started_at"]
         try:
             conf = render_squid_conf(
-                policy, copilot=state["copilot"], upstream=_running_upstream(state)
+                policy,
+                copilot=state["copilot"],
+                upstream=_running_upstream(state),
+                internal_only=state.get("bind_internal", False),
             )
             drift["reload"] = reload_fingerprint(conf) != state["reload_fingerprint"]
             drift["restart"] = restart_drift(
@@ -1749,6 +1789,13 @@ def status_lines(report: dict) -> list[str]:
                 f"{colima_network.ALIAS!r}; sandboxes cannot reach it and the next "
                 "launch recreates it"
             )
+    if report.get("network_legacy"):
+        lines.append(
+            f"  Network: {colima_network.SANDBOX_NETWORK} predates the isolated gateway "
+            "mode, so the Colima VM is reachable from sandboxes; it is replaced by the "
+            "next `project-sandbox-egress restart` (or sidecar-mode launch) once no "
+            "sandbox is attached"
+        )
     if "endpoint" in report:
         lines.append(
             f"  Endpoint: {report['endpoint']} "

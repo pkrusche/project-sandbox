@@ -26,6 +26,8 @@ def _record(
     role=None,
     internal=None,
     driver="bridge",
+    options=None,
+    containers=None,
 ) -> dict:
     labels = {net.PROFILE_LABEL: profile, net.ROLE_LABEL: role or spec.role}
     if owner is not None:
@@ -35,6 +37,8 @@ def _record(
         "Driver": driver,
         "Internal": spec.internal if internal is None else internal,
         "Labels": labels,
+        "Options": dict(spec.options) if options is None else options,
+        "Containers": {f"id-{name}": {"Name": name} for name in (containers or ())},
     }
 
 
@@ -47,15 +51,24 @@ class FakeDocker:
         *,
         create_rc: int = 0,
         create_race: bool = False,
+        engine: str = "29.5.2",
     ) -> None:
         self.networks = dict(existing or {})
         self.calls: list[list[str]] = []
         self.create_rc = create_rc
         self.create_race = create_race
+        self.engine = engine
 
     def __call__(self, argv):
         argv = list(argv)
         self.calls.append(argv)
+        if "version" in argv:
+            return _Result(0, self.engine + "\n")
+        if "disconnect" in argv:
+            return _Result(0)
+        if argv[-2:-1] == ["rm"]:
+            self.networks.pop(argv[-1], None)
+            return _Result(0)
         if "inspect" in argv:
             name = argv[argv.index("inspect") + 1]
             if name not in self.networks:
@@ -204,3 +217,128 @@ class AttachmentTests(TestCase):
                 "c",
             ],
         )
+
+
+class GatewayModeTests(TestCase):
+    """isolated-sidecar-network tasks 2.1/2.2: no VM address on psbx-sandbox."""
+
+    runtime = colima_runtime("work")
+    uplink, sandbox = net.SPECS
+
+    def test_argv_uplink_unchanged_sandbox_gains_only_the_option(self) -> None:
+        labels = [
+            "--label",
+            f"{net.OWNER_LABEL}={net.OWNER}",
+            "--label",
+            f"{net.PROFILE_LABEL}=work",
+        ]
+        base = ["docker", "--context", "colima-work", "network", "create"]
+        self.assertEqual(
+            net.create_argv(self.runtime, self.uplink),
+            [*base, "--driver", "bridge", *labels, "--label",
+             f"{net.ROLE_LABEL}=egress-uplink", net.UPLINK_NETWORK],
+        )  # fmt: skip
+        self.assertEqual(
+            net.create_argv(self.runtime, self.sandbox),
+            [*base, "--driver", "bridge", "--internal", "-o",
+             "com.docker.network.bridge.gateway_mode_ipv4=isolated", *labels,
+             "--label", f"{net.ROLE_LABEL}=sandbox", net.SANDBOX_NETWORK],
+        )  # fmt: skip
+
+    def test_missing_option_is_legacy_and_a_different_one_is_foreign(self) -> None:
+        with self.assertRaises(net.LegacyNetwork) as ctx:
+            net.validate(self.runtime, _record(self.sandbox, options={}), self.sandbox)
+        self.assertIn("gateway_mode_ipv4=isolated", str(ctx.exception))
+        other = _record(self.sandbox, options={net.GATEWAY_MODE_OPTION: "nat"})
+        with self.assertRaises(net.NetworkError) as ctx:
+            net.validate(self.runtime, other, self.sandbox)
+        self.assertNotIsInstance(ctx.exception, net.LegacyNetwork)
+        self.assertIn("'nat'", str(ctx.exception))
+
+    def test_a_foreign_network_without_the_option_is_not_replaced(self) -> None:
+        record = _record(self.sandbox, owner=None, options={})
+        docker = FakeDocker(
+            {self.uplink.name: _record(self.uplink), self.sandbox.name: record}
+        )
+        with self.assertRaises(net.NetworkError) as ctx:
+            net.ensure(self.runtime, docker)
+        self.assertNotIsInstance(ctx.exception, net.LegacyNetwork)
+        self.assertFalse([c for c in docker.calls if c[-2:-1] == ["rm"]])
+
+    def test_old_or_unknown_engine_is_refused_before_creating(self) -> None:
+        for engine in ("27.5.1", "", "not-a-version"):
+            with self.subTest(engine=engine):
+                docker = FakeDocker(
+                    {self.uplink.name: _record(self.uplink)}, engine=engine
+                )
+                with self.assertRaises(net.NetworkError) as ctx:
+                    net.ensure(self.runtime, docker)
+                message = str(ctx.exception)
+                self.assertIn("Docker Engine 28.0", message)
+                self.assertIn("colima update --profile work", message)
+                self.assertEqual(docker.created(), [])
+
+    def test_engine_is_not_checked_when_the_network_is_reused(self) -> None:
+        docker = FakeDocker({s.name: _record(s) for s in net.SPECS}, engine="27.0.0")
+        net.ensure(self.runtime, docker)
+        self.assertFalse([c for c in docker.calls if "version" in c])
+
+    def test_create_failure_names_the_option(self) -> None:
+        docker = FakeDocker({self.uplink.name: _record(self.uplink)}, create_rc=1)
+        with self.assertRaises(net.NetworkError) as ctx:
+            net.ensure(self.runtime, docker)
+        self.assertIn("gateway_mode_ipv4=isolated", str(ctx.exception))
+
+    def _legacy(self, *containers: str) -> FakeDocker:
+        return FakeDocker(
+            {
+                self.uplink.name: _record(self.uplink),
+                self.sandbox.name: _record(
+                    self.sandbox, options={}, containers=containers
+                ),
+            }
+        )
+
+    def test_unattached_legacy_network_is_replaced(self) -> None:
+        docker = self._legacy()
+        self.assertTrue(net.is_legacy(self.runtime, docker))
+        net.ensure(self.runtime, docker)
+        self.assertIn(["docker", "--context", "colima-work", "network", "rm",
+                       net.SANDBOX_NETWORK], docker.calls)  # fmt: skip
+        self.assertEqual(docker.created(), [net.SANDBOX_NETWORK])
+        self.assertFalse(net.is_legacy(self.runtime, docker))
+        self.assertEqual(
+            docker.networks[net.SANDBOX_NETWORK]["Options"],
+            {net.GATEWAY_MODE_OPTION: net.GATEWAY_MODE},
+        )
+
+    def test_owned_sidecar_is_disconnected_before_the_replacement(self) -> None:
+        docker = self._legacy("project-sandbox-egress")
+        net.ensure(self.runtime, docker, owned=("project-sandbox-egress",))
+        disconnect = next(i for i, c in enumerate(docker.calls) if "disconnect" in c)
+        remove = next(i for i, c in enumerate(docker.calls) if c[-2:-1] == ["rm"])
+        self.assertLess(disconnect, remove)
+        self.assertEqual(docker.created(), [net.SANDBOX_NETWORK])
+
+    def test_attached_sandboxes_block_the_replacement(self) -> None:
+        docker = self._legacy("project-sandbox-egress", "psbx-myproj-1")
+        with self.assertRaises(net.NetworkError) as ctx:
+            net.ensure(self.runtime, docker, owned=("project-sandbox-egress",))
+        message = str(ctx.exception)
+        self.assertIn("psbx-myproj-1 is still attached", message)
+        self.assertNotIn("project-sandbox-egress is", message)
+        self.assertIn(
+            "project-sandbox-egress restart --runtime colima --colima-profile work",
+            message,
+        )
+        mutating = [c for c in docker.calls if {"rm", "disconnect", "create"} & set(c)]
+        self.assertEqual(mutating, [])
+
+    def test_is_legacy_is_false_for_absent_current_and_foreign(self) -> None:
+        self.assertFalse(net.is_legacy(self.runtime, FakeDocker()))
+        current = FakeDocker({self.sandbox.name: _record(self.sandbox)})
+        self.assertFalse(net.is_legacy(self.runtime, current))
+        foreign = FakeDocker(
+            {self.sandbox.name: _record(self.sandbox, owner=None, options={})}
+        )
+        self.assertFalse(net.is_legacy(self.runtime, foreign))

@@ -15,6 +15,11 @@ STATE={{ state_dir }}
 mkdir -p "$STATE"
 cp "$INPUT/ca.pem" "$INPUT/ca-key.pem" "$STATE/"
 cp "$INPUT/squid.conf" /etc/squid/squid.conf
+if grep -q '{{ bind_placeholder }}' /etc/squid/squid.conf; then
+  # Colima: listen only on the internal sandbox network (design.md D2).
+  address=$(/usr/local/libexec/sbx-internal-address)
+  sed -i "s/{{ bind_placeholder }}/$address/g" /etc/squid/squid.conf
+fi
 if [ -f "$INPUT/upstream-ca.pem" ]; then
   cp "$INPUT/upstream-ca.pem" "$STATE/upstream-ca.pem"
 fi
