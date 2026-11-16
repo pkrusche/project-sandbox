@@ -208,11 +208,17 @@ a private Docker network instead of a published port:
                      Internet / parent proxy      sandboxes: HTTP(S)_PROXY=http://egress:3128
 ```
 
-- Two labelled networks are created in the VM on first use: `psbx-egress-uplink`
-  (an ordinary bridge only the sidecar uses to reach out) and `psbx-sandbox` (an
-  `--internal` bridge with no route out).
-- The sidecar sits on the uplink, is attached to `psbx-sandbox` as `egress`, and
-  runs with `net.ipv4.ip_forward=0` so it cannot route between the networks.
+- Two labelled networks are created in the VM on first use:
+  - `psbx-egress-uplink`, an ordinary bridge that only the sidecar uses to reach out;
+  - `psbx-sandbox`, an `--internal` bridge with no route out, created with
+    `-o com.docker.network.bridge.gateway_mode_ipv4=isolated`. The VM gets no
+    address on it, so a sandbox can't reach the VM's own listeners (its sshd, or
+    a port another container publishes in the VM). This needs Docker Engine 28 or
+    later in the VM: if the engine is older, the first launch says so and names
+    `colima update --profile <profile>`.
+- The sidecar is created on the uplink, attached to `psbx-sandbox` as `egress`,
+  then started. It runs with `net.ipv4.ip_forward=0`, so it can't route between
+  the networks, and Squid listens only on its `psbx-sandbox` address.
 - A sandbox joins `psbx-sandbox` only, with `egress` pinned to the sidecar's
   address (`--add-host`), so its firewall admits that address on port 3128 and no
   DNS. A process that ignores the proxy variables has no route out.
@@ -227,9 +233,15 @@ project-sandbox-egress up --runtime colima        # also: status, log, restart, 
 Each profile has its own sidecar, CA, state directory
 (`$XDG_STATE_HOME/project-sandbox/egress/colima-<profile>`) and lock.
 
-- **Shared network.** Sandboxes of a profile can reach one another and the VM's
-  kernel; this is not per-sandbox isolation like Apple `container`. They have no
-  route to the Internet, the VM's bridge gateway or the sidecar's uplink side.
+- **Shared network.** Sandboxes of a profile can reach one another; this is not
+  per-sandbox isolation like Apple `container`. They have no route to the
+  Internet, the Mac, the VM itself, the VM's bridge gateways or the sidecar's
+  uplink side.
+- **Upgrading.** A `psbx-sandbox` created by an older version lacks the gateway
+  mode. The next launch, `project-sandbox-egress up` or `restart` replaces it
+  once no sandbox is attached; until then it refuses, naming the attached
+  sandboxes. `project-sandbox doctor` and `project-sandbox-egress status` report
+  such a network.
 - **Restarts.** Attachments survive `docker restart` and stop/start, not removal
   and recreation. A launch reads the sidecar's address fresh and refuses to start
   when it is detached (`project-sandbox-egress restart` repairs it). Running

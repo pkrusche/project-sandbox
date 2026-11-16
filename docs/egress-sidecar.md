@@ -158,7 +158,15 @@ because the firewall and entrypoint scripts differ between the modes.
 
 On `--runtime colima` the sidecar and sandboxes share the Colima VM and Squid is
 reached over a private Docker network (`egress:3128`), not a published port;
-`[egress.sidecar] port` does not apply. See [Runtimes](runtimes.md#egress).
+`[egress.sidecar] port` does not apply. The sandbox network gives the VM no
+address, so it reaches only the sidecar (Docker Engine 28 or later in the VM).
+See [Runtimes](runtimes.md#egress).
+
+Apple `container` keeps the published endpoint. Its `--internal` networks are
+host-only: a sandbox on one still reaches every Mac service that listens on all
+interfaces, and every Mac loopback service through the `host.docker.internal`
+alias (`203.0.113.113`). The sandbox firewall therefore stays the containment
+boundary there.
 
 ## Policy
 
