@@ -21,7 +21,7 @@
 
 ## 4. Integration check
 
-- [ ] 4.1 Run `uv run pytest -q` and one real concurrent launch pair against the same project (two `uv run project-sandbox --build-only <project> <image>` invocations started together). Verify: the second waits on the first, lock files appear only under the state root, and none appear in `$TMPDIR`.
+- [x] 4.1 Run `uv run pytest -q` and one real concurrent launch pair against the same project (two `uv run project-sandbox --build-only <project> <image>` invocations started together). Verify: the second waits on the first, lock files appear only under the state root, and none appear in `$TMPDIR`.
   - Partial (2026-11-16, no container runtime in the dev environment): full suite passes with the real locks directory untouched, and two real interpreters contending on the `build` lock via the unpatched `locks_root()` serialized (second waited ~1.5 s) with the lock at `$XDG_STATE_HOME/project-sandbox/locks` (`0700`/`0600`) and none in `$TMPDIR`. The `--build-only` pair against a real runtime is still to do.
   - Added `scripts/e2e-host-locks.sh` (suite `host-locks` in `run-e2e-tests.sh`), which covers this with real CLI processes. It passes with `--runtime chroot`, and against the pre-change code it reports 5 BAD results (checks 1, 4, 5, 6). Remaining: run it on a container runtime (`scripts/e2e-host-locks.sh --runtime docker|apple-container`), then tick this task.
 
