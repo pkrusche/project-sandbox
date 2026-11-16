@@ -120,7 +120,7 @@ Each spike records its commands, the macOS, `container`, Colima and Docker versi
 
 ## 8. Roadmap
 
-- [ ] 8.1 Add a ROADMAP entry "Namespace-owner gateway for Linux sidecar mode": a per-session privileged gateway container owns the network namespace and its nftables, and the sandbox joins with `--network container:` and no capabilities. It applies to Docker Engine, rootless Podman, Docker Desktop and Podman machine, and is not possible on Apple `container`. Also add "per-sandbox denial attribution from internal-network source IPs" under the existing sidecar follow-ups, citing S6. Verify that `ROADMAP.md` contains both entries.
+- [x] 8.1 Add a ROADMAP entry "Namespace-owner gateway for Linux sidecar mode": a per-session privileged gateway container owns the network namespace and its nftables, and the sandbox joins with `--network container:` and no capabilities. It applies to Docker Engine, rootless Podman, Docker Desktop and Podman machine, and is not possible on Apple `container`. Also add "per-sandbox denial attribution from internal-network source IPs" under the existing sidecar follow-ups, citing S6. Verify that `ROADMAP.md` contains both entries.
 
 ## Workflow follow-up
 

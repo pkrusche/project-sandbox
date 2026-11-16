@@ -67,6 +67,14 @@ See [VCS security](docs/security.md#vcs-metadata-access) and
   every client of the sidecar during the session's window. Attribution needs a
   per-session identity on the proxy connection, for example a per-session
   listener or proxy credential.
+- **Per-sandbox denial attribution from internal-network source IPs**
+  (isolated-sidecar-network). On the isolated strategy (Colima, Apple
+  `container`) sandboxes reach Squid directly over the internal network, so
+  each connection carries the sandbox's own address and no port forwarder sits
+  in between. Spike S6 (`spikes.md` in that change) records whether Squid's
+  access log shows distinct per-sandbox addresses. If it does, the launch can
+  record the sandbox's internal address and the session-end summary can filter
+  denials by it, with no per-session listener or credential.
 - **Upstream proxy authentication** (egress-sidecar-macos). Basic, NTLM or
   Kerberos to the `[egress.upstream]` parent. Today a 407 from the parent fails
   the request.
@@ -76,6 +84,24 @@ See [VCS security](docs/security.md#vcs-metadata-access) and
   design.md Decision 5).
 - **GHE.com tenants for `--copilot-host` in sidecar mode** (egress-sidecar-macos;
   rejected today). Capture the tenant host set and add a tenant profile.
+
+## Namespace-owner gateway for Linux sidecar mode
+
+Deferred by `isolated-sidecar-network`, which makes the container network the
+containment boundary only on Colima and Apple `container`. On Docker Engine,
+rootless Podman, Docker Desktop and Podman machine, sidecar-mode sandboxes
+still hold `NET_ADMIN`/`NET_RAW` and contain themselves with their own
+firewall.
+
+- A per-session privileged gateway container owns the session's network
+  namespace and installs its nftables policy: default-deny, with only the
+  sidecar endpoint and this session's local-service ports admitted.
+- The sandbox joins that namespace with `--network container:<gateway>` and
+  holds no network capabilities, so nothing running in the sandbox can change
+  the rules that contain it.
+- The gateway does nothing after setup and is removed with the session.
+- This isn't possible on Apple `container`: each container is its own VM, and
+  there is no way to share a network namespace between containers.
 
 ## GitHub Copilot agent follow-ups
 
