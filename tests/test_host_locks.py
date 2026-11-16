@@ -3,6 +3,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path
 from unittest import TestCase
 from unittest.mock import patch
@@ -104,6 +105,49 @@ with open(sys.argv[1], "r") as lock:
                 self.assertEqual(victim.read_text(encoding="utf-8"), "keep me\n")
             finally:
                 path.unlink()
+
+    def test_losing_the_create_race_opens_the_winners_lock(self) -> None:
+        """Regression: two runs creating one fresh lock at once must both get
+        it. A plain O_CREAT open could fail with a spurious ENOENT on macOS."""
+        target = Path(".")
+        path = host_locks.lock_path("build", target)
+        real_open = os.open
+        raced = []
+
+        def racing_open(name, flags, *args, **kwargs):
+            if flags & os.O_EXCL and not raced:
+                # Another run creates the lock between our two attempts.
+                raced.append(name)
+                real_open(name, flags, *args, **kwargs)
+                raise FileExistsError(name)
+            return real_open(name, flags, *args, **kwargs)
+
+        with patch.object(host_locks.os, "open", side_effect=racing_open):
+            with host_locks.path_lock("build", target):
+                pass
+        self.assertEqual(raced, [path.name])
+        self.assertTrue(path.is_file())
+
+    def test_concurrent_first_use_of_a_lock_succeeds(self) -> None:
+        errors: list[BaseException] = []
+        for round_ in range(20):
+            target = Path(f"/nonexistent/race-{round_}")
+            barrier = threading.Barrier(8)
+
+            def worker() -> None:
+                try:
+                    barrier.wait()
+                    with host_locks.path_lock("build", target):
+                        pass
+                except BaseException as exc:  # noqa: BLE001
+                    errors.append(exc)
+
+            threads = [threading.Thread(target=worker) for _ in range(8)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+        self.assertEqual(errors, [])
 
     def test_non_regular_lock_file_is_refused(self) -> None:
         target = Path(".")

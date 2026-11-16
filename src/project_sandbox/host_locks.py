@@ -55,6 +55,36 @@ def lock_path(kind: str, target: Path) -> Path:
     return locks_root() / f"project-sandbox-{kind}-{key}.lock"
 
 
+_CREATE_ATTEMPTS = 8
+
+
+def _open_or_create(name: str, dir_fd: int) -> int:
+    """Open ``name`` in ``dir_fd``, creating it ``0600`` if it is missing.
+
+    Two runs (or threads) often reach a fresh lock at the same instant. On
+    macOS a plain ``O_CREAT`` open that races another creator of the same name
+    can fail with a spurious ``ENOENT``. Splitting it into "open existing" and
+    "create exclusively" gives each step a definite answer: whoever loses the
+    ``O_EXCL`` race sees ``EEXIST`` and opens the winner's file. ``O_EXCL``
+    also refuses a symlink at the name, like ``O_NOFOLLOW``.
+    """
+    for _ in range(_CREATE_ATTEMPTS):
+        try:
+            return os.open(name, os.O_RDWR | os.O_NOFOLLOW, dir_fd=dir_fd)
+        except FileNotFoundError:
+            pass
+        try:
+            return os.open(
+                name,
+                os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=dir_fd,
+            )
+        except FileExistsError:
+            continue  # created (or replaced) by someone else meanwhile; reopen
+    raise OSError(f"lock file {name} kept appearing and disappearing")
+
+
 @contextmanager
 def path_lock(
     kind: str, target: Path, *, blocking: bool = True
@@ -69,12 +99,7 @@ def path_lock(
         with mount_storage.directory(
             path.parent, root=path.parent, create=True
         ) as dir_fd:
-            fd = os.open(
-                path.name,
-                os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW,
-                0o600,
-                dir_fd=dir_fd,
-            )
+            fd = _open_or_create(path.name, dir_fd)
         # A FIFO or device at the lock name opens fine O_RDWR; refuse anything
         # but our own regular file before relying on it.
         info = os.fstat(fd)
