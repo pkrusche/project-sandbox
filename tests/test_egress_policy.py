@@ -472,6 +472,108 @@ port = 3140
         self.assertEqual(policy.upstream_ca_bytes(), b"PEM")
 
 
+class ServicesTableTests(TestCase):
+    """isolated-sidecar-network task 1.1: [egress.services]."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name).resolve()
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _load(self, text: str) -> egress_policy.PolicyFile:
+        return egress_policy.load(_write(self.tmp, text))
+
+    def test_valid_table(self) -> None:
+        policy = self._load(
+            """
+[egress.services]
+ollama = { port = 11434 }
+agent-proxy = { port = 4000 }
+
+[egress.services.mcp]
+port = 1024
+"""
+        )
+        self.assertEqual(
+            policy.services,
+            (
+                egress_policy.Service("agent-proxy", 4000),
+                egress_policy.Service("mcp", 1024),
+                egress_policy.Service("ollama", 11434),
+            ),
+        )
+
+    def test_no_services_by_default(self) -> None:
+        self.assertEqual(self._load("").services, ())
+        self.assertEqual(self._load("[egress.services]\n").services, ())
+
+    def test_port_bounds_are_accepted(self) -> None:
+        for port in (1024, 65535):
+            with self.subTest(port=port):
+                policy = self._load(f"[egress.services]\nsvc = {{ port = {port} }}\n")
+                self.assertEqual(policy.services[0].port, port)
+
+    def test_duplicate_ports_name_both_keys(self) -> None:
+        with self.assertRaises(EgressPolicyError) as ctx:
+            self._load(
+                "[egress.services]\nfirst = { port = 4000 }\nsecond = { port = 4000 }\n"
+            )
+        message = str(ctx.exception)
+        self.assertIn("egress.services.second.port", message)
+        self.assertIn("egress.services.first.port", message)
+        self.assertIn("unique", message)
+
+    def test_reserved_proxy_port(self) -> None:
+        with self.assertRaises(EgressPolicyError) as ctx:
+            self._load("[egress.services]\nother = { port = 3128 }\n")
+        self.assertIn("egress.services.other.port", str(ctx.exception))
+        self.assertIn("reserved", str(ctx.exception))
+
+    def test_invalid_ports_name_the_key(self) -> None:
+        cases = (
+            ("{ port = 80 }", "1024 to 65535"),
+            ("{ port = 65536 }", "1024 to 65535"),
+            ('{ port = "4000" }', "integer"),
+            ("{ port = true }", "integer"),
+            ("{ }", "missing"),
+        )
+        for value, message in cases:
+            with self.subTest(value=value):
+                with self.assertRaises(EgressPolicyError) as ctx:
+                    self._load(f"[egress.services]\nsvc = {value}\n")
+                self.assertIn("egress.services.svc.port", str(ctx.exception))
+                self.assertIn(message, str(ctx.exception))
+
+    def test_bad_names(self) -> None:
+        for name in (
+            '"Ollama"',
+            '"1st"',
+            '"-svc"',
+            '"svc-"',
+            '"my_svc"',
+            '"svc.local"',
+            '"a b"',
+            '""',
+            '"' + "a" * 33 + '"',
+        ):
+            with self.subTest(name=name):
+                with self.assertRaises(EgressPolicyError) as ctx:
+                    self._load(f"[egress.services]\n{name} = {{ port = 4000 }}\n")
+                self.assertIn("Invalid service name", str(ctx.exception))
+                self.assertIn("egress.services", str(ctx.exception))
+
+    def test_entries_must_be_tables_without_unknown_keys(self) -> None:
+        with self.assertRaisesRegex(EgressPolicyError, r"egress\.services\.svc\]"):
+            self._load("[egress.services]\nsvc = 4000\n")
+        with self.assertRaises(EgressPolicyError) as ctx:
+            self._load('[egress.services]\nsvc = { port = 4000, host = "x" }\n')
+        self.assertIn("egress.services.svc.'host'", str(ctx.exception))
+        with self.assertRaisesRegex(EgressPolicyError, r"\[egress\.services\]"):
+            self._load("[egress]\nservices = 1\n")
+
+
 class EditTests(TestCase):
     """Task 1.2: tomlkit edits keep comments and are validated atomically."""
 
@@ -542,4 +644,116 @@ memory = "512M"
     def test_file_mode_is_kept(self) -> None:
         self.path.chmod(0o600)
         egress_policy.add_allowed_hosts(self.path, ["example.org"])
+        self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
+
+
+class ServiceEditTests(TestCase):
+    """isolated-sidecar-network task 1.2: service add|remove edits."""
+
+    ORIGINAL = (
+        EditTests.ORIGINAL
+        + """
+[egress.services]
+# local models
+ollama = { port = 11434 } # loopback only
+"""
+    )
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.path = _write(Path(self._tmp.name), self.ORIGINAL)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _assert_kept(self) -> None:
+        text = self.path.read_text()
+        for needle in (
+            "# My egress policy",
+            "# hosts I need",
+            "# python",
+            "# not yet",
+            "# local models",
+            'memory = "512M"',
+            '"pypi.org"',
+        ):
+            self.assertIn(needle, text)
+
+    def test_add_and_remove_keep_comments_and_unrelated_keys(self) -> None:
+        policy, previous = egress_policy.add_service(self.path, "agent-proxy", 4000)
+        self.assertIsNone(previous)
+        self.assertEqual(
+            policy.services,
+            (
+                egress_policy.Service("agent-proxy", 4000),
+                egress_policy.Service("ollama", 11434),
+            ),
+        )
+        self.assertEqual(policy.allow, ("pypi.org",))
+        self._assert_kept()
+        self.assertIn("# loopback only", self.path.read_text())
+        self.assertEqual(egress_policy.load(self.path).services, policy.services)
+
+        policy, port = egress_policy.remove_service(self.path, "ollama")
+        self.assertEqual(port, 11434)
+        self.assertEqual(policy.services, (egress_policy.Service("agent-proxy", 4000),))
+        self._assert_kept()
+
+    def test_add_existing_name_updates_or_keeps_the_port(self) -> None:
+        before = self.path.read_bytes()
+        _, previous = egress_policy.add_service(self.path, "ollama", 11434)
+        self.assertEqual(previous, 11434)
+        self.assertEqual(self.path.read_bytes(), before)
+
+        policy, previous = egress_policy.add_service(self.path, "ollama", 11500)
+        self.assertEqual(previous, 11434)
+        self.assertEqual(policy.services, (egress_policy.Service("ollama", 11500),))
+        self._assert_kept()
+
+    def test_invalid_edit_leaves_file_byte_identical(self) -> None:
+        before = self.path.read_bytes()
+        cases: tuple[tuple[Callable[..., object], tuple, str], ...] = (
+            (egress_policy.add_service, ("other", 3128), "reserved"),
+            (egress_policy.add_service, ("other", 11434), "unique"),
+            (egress_policy.add_service, ("other", 80), "1024 to 65535"),
+            (egress_policy.add_service, ("Other", 4000), "Invalid service name"),
+            (egress_policy.add_service, ("svc.local", 4000), "Invalid service name"),
+            (egress_policy.remove_service, ("missing",), "not declared"),
+        )
+        for call, args, message in cases:
+            with self.subTest(call=call.__name__, args=args):
+                with self.assertRaisesRegex(EgressPolicyError, message):
+                    call(self.path, *args)
+                self.assertEqual(self.path.read_bytes(), before)
+
+    def test_reserved_port_names_the_key(self) -> None:
+        with self.assertRaises(EgressPolicyError) as ctx:
+            egress_policy.add_service(self.path, "other", 3128)
+        self.assertIn("egress.services.other.port", str(ctx.exception))
+
+    def test_edit_revalidates_the_whole_file(self) -> None:
+        self.path.write_text(self.ORIGINAL + "bogus = { port = 1 }\n")
+        before = self.path.read_bytes()
+        with self.assertRaisesRegex(EgressPolicyError, "bogus"):
+            egress_policy.add_service(self.path, "agent-proxy", 4000)
+        self.assertEqual(self.path.read_bytes(), before)
+
+    def test_missing_file_and_table_are_created(self) -> None:
+        path = Path(self._tmp.name) / "new" / "egress.toml"
+        policy, _ = egress_policy.add_service(path, "ollama", 11434)
+        self.assertEqual(policy.services, (egress_policy.Service("ollama", 11434),))
+        self.assertEqual(egress_policy.load(path).services, policy.services)
+        with self.assertRaisesRegex(EgressPolicyError, "not declared"):
+            egress_policy.remove_service(path, "other")
+
+    def test_remove_from_file_without_services(self) -> None:
+        path = _write(Path(self._tmp.name), EditTests.ORIGINAL, name="plain.toml")
+        before = path.read_bytes()
+        with self.assertRaisesRegex(EgressPolicyError, "not declared"):
+            egress_policy.remove_service(path, "ollama")
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_file_mode_is_kept(self) -> None:
+        self.path.chmod(0o600)
+        egress_policy.add_service(self.path, "agent-proxy", 4000)
         self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)

@@ -3,8 +3,10 @@
 ``$XDG_CONFIG_HOME/project-sandbox/egress.toml`` is the only policy of the
 global sidecar (egress-sidecar-macos, design.md Decision 6). It holds the
 allowlist, the Copilot profile, the upstream parent proxy and its CA, the CA
-lifetime, and the sidecar's published port and resource limits. Every agent
-provider host is always allowed on top of ``allow``.
+lifetime, the sidecar's published port and resource limits, and the
+host-loopback HTTP services the sidecar exposes on the isolated strategy
+(``[egress.services]``). Every agent provider host is always allowed on top of
+``allow``.
 
 GitHub repository access is blocked in sidecar mode: repository hosts cannot be
 allowlisted, and per-repository rules are on the roadmap (ROADMAP.md, "Smart
@@ -12,9 +14,10 @@ GitHub repository access"). The file must live outside anything the sandbox can
 write, so an agent cannot widen the policy that governs it, now or in a later
 session.
 
-Every hostname is validated strictly here because it is later inserted into
-``squid.conf``. Edits (``project-sandbox-egress allow``) go through
-tomlkit so comments survive, and are re-validated before the file is replaced.
+Every hostname and service name is validated strictly here because it is
+later inserted into ``squid.conf``. Edits (``project-sandbox-egress allow`` and
+``service``) go through tomlkit so comments survive, and are re-validated
+before the file is replaced.
 """
 
 from __future__ import annotations
@@ -45,6 +48,11 @@ MAX_CA_LIFETIME_DAYS = 30
 DEFAULT_MEMORY = "256M"
 DEFAULT_CPUS = 1
 _MEMORY_RE = re.compile(r"^[1-9][0-9]{0,5}[KMG]$")
+# Squid's forward-proxy port inside the sidecar; services cannot take it.
+PROXY_PORT = 3128
+# Service names become Squid ACL, peer and site names (svc_<name>,
+# <name>.service), so they are lowercase identifiers with inner hyphens.
+_SERVICE_NAME_RE = re.compile(r"^[a-z](?:[a-z0-9-]{0,30}[a-z0-9])?$")
 
 
 class EgressPolicyError(ValueError):
@@ -169,6 +177,14 @@ def normalize_host_pattern(value: object, *, source: str) -> str:
 
 
 @dataclass(frozen=True)
+class Service:
+    """A host-loopback HTTP service the isolated sidecar exposes on ``port``."""
+
+    name: str
+    port: int
+
+
+@dataclass(frozen=True)
 class PolicyFile:
     """The parsed contents of an egress policy TOML file."""
 
@@ -185,6 +201,8 @@ class PolicyFile:
     memory: str = DEFAULT_MEMORY
     cpus: int = DEFAULT_CPUS
     port: int = DEFAULT_PORT
+    # [egress.services], sorted by name.
+    services: tuple[Service, ...] = ()
     # Retain the source of built-in defaults too: a file may be created while
     # a launch builds its image. `path` stays None for the missing-file display.
     source_path: Path | None = field(default=None, compare=False, repr=False)
@@ -233,11 +251,12 @@ class EffectivePolicy:
 # --------------------------------------------------------------------------
 
 _TOP_KEYS = {"egress"}
-_EGRESS_KEYS = {"allow", "copilot", "upstream", "ca", "sidecar"}
+_EGRESS_KEYS = {"allow", "copilot", "upstream", "ca", "sidecar", "services"}
 _COPILOT_KEYS = {"enabled"}
 _UPSTREAM_KEYS = {"url", "ca_cert"}
 _CA_KEYS = {"lifetime_days"}
 _SIDECAR_KEYS = {"port", "memory", "cpus"}
+_SERVICE_KEYS = {"port"}
 
 
 def _reject_unknown(table: dict, allowed: set[str], where: str, path: Path) -> None:
@@ -383,6 +402,8 @@ def parse(data: dict, *, path: Path) -> PolicyFile:
             f"the published port must be {MIN_PORT} to {MAX_PORT}."
         )
 
+    services = _services(egress.get("services", {}), path)
+
     return PolicyFile(
         path=path,
         allow=allow,
@@ -393,7 +414,59 @@ def parse(data: dict, *, path: Path) -> PolicyFile:
         memory=memory.upper(),
         cpus=cpus,
         port=port,
+        services=services,
     )
+
+
+def validate_service_name(name: object, *, source: str) -> str:
+    """Return ``name`` when it is a valid service name, or raise."""
+    if not isinstance(name, str) or not _SERVICE_NAME_RE.fullmatch(name):
+        raise EgressPolicyError(
+            f"Invalid service name {name!r} in {source}: expected a lowercase "
+            "identifier of letters, digits and inner hyphens, starting with a "
+            "letter (at most 32 characters)."
+        )
+    return name
+
+
+def validate_service_port(port: object, *, key: str, source: str) -> int:
+    """Return ``port`` when a service may use it, or raise naming ``key``."""
+    if isinstance(port, bool) or not isinstance(port, int):
+        raise EgressPolicyError(f"{key} in {source} must be an integer.")
+    if not MIN_PORT <= port <= MAX_PORT:
+        raise EgressPolicyError(
+            f"{key} = {port} in {source} is out of range: a service port must be "
+            f"{MIN_PORT} to {MAX_PORT}."
+        )
+    if port == PROXY_PORT:
+        raise EgressPolicyError(
+            f"{key} = {port} in {source} is reserved: the sidecar's forward proxy "
+            f"listens on {PROXY_PORT}."
+        )
+    return port
+
+
+def _services(value: object, path: Path) -> tuple[Service, ...]:
+    table = _table(value, "egress.services", path)
+    source = f"egress policy {path}"
+    services: list[Service] = []
+    owners: dict[int, str] = {}
+    for name, entry in table.items():
+        validate_service_name(name, source=f"egress.services of {source}")
+        key = f"egress.services.{name}"
+        entry = _table(entry, key, path)
+        _reject_unknown(entry, _SERVICE_KEYS, f"{key}.", path)
+        if "port" not in entry:
+            raise EgressPolicyError(f"{key}.port is missing in {source}.")
+        port = validate_service_port(entry["port"], key=f"{key}.port", source=source)
+        if port in owners:
+            raise EgressPolicyError(
+                f"{key}.port = {port} in {source} duplicates "
+                f"egress.services.{owners[port]}.port: service ports must be unique."
+            )
+        owners[port] = name
+        services.append(Service(name=name, port=port))
+    return tuple(sorted(services, key=lambda s: s.name))
 
 
 # --------------------------------------------------------------------------
@@ -745,3 +818,63 @@ def remove_allowed_hosts(
                 del array[index]
 
     return _edit(path, change), removed
+
+
+# --------------------------------------------------------------------------
+# Editing (project-sandbox-egress service)
+# --------------------------------------------------------------------------
+
+
+def add_service(path: Path, name: str, port: int) -> tuple[PolicyFile, int | None]:
+    """Declare ``name`` on ``port`` in ``[egress.services]``.
+
+    Returns the policy and the service's previous port: ``None`` when it was
+    new, ``port`` when nothing changed. Duplicate and reserved ports are
+    refused by the re-validation of the whole file, which leaves it untouched.
+    """
+    validate_service_name(name, source="service add")
+    validate_service_port(
+        port, key=f"egress.services.{name}.port", source="service add"
+    )
+    previous: list[int | None] = [None]
+
+    def change(document) -> None:
+        table = _egress_table(document, "services")
+        if name in table:
+            entry = table[name]
+            if not isinstance(entry, dict):
+                raise EgressPolicyError(
+                    f"[egress.services.{name}] in egress policy {path} must be a table."
+                )
+            old = entry.get("port")
+            previous[0] = int(old) if isinstance(old, int) else None
+            if previous[0] != port:
+                entry["port"] = port
+            return
+        entry = tomlkit.inline_table()
+        entry["port"] = port
+        table[name] = entry
+
+    return _edit(path, change), previous[0]
+
+
+def remove_service(path: Path, name: str) -> tuple[PolicyFile, int | None]:
+    """Remove ``name`` from ``[egress.services]``; return its port, if valid.
+
+    An undeclared name is an error and leaves the file untouched.
+    """
+    removed: list[int | None] = [None]
+
+    def change(document) -> None:
+        egress = document.get("egress")
+        table = egress.get("services") if isinstance(egress, dict) else None
+        if not isinstance(table, dict) or name not in table:
+            raise EgressPolicyError(
+                f"Service {name!r} is not declared in [egress.services] of {path}."
+            )
+        entry = table[name]
+        port = entry.get("port") if isinstance(entry, dict) else None
+        del table[name]
+        removed[0] = int(port) if isinstance(port, int) else None
+
+    return _edit(path, change), removed[0]

@@ -31,8 +31,8 @@ Each spike records its commands, the macOS, `container`, Colima and Docker versi
 
 ## 1. Policy: `[egress.services]`
 
-- [ ] 1.1 Add `[egress.services]` to `egress_policy.py`: name pattern, port range 1024–65535, unique ports, 3128 reserved, unknown-key rejection inside entries. Verify with `tests/test_egress_policy.py` cases for valid tables, duplicates, the reserved port and bad names, each naming the key.
-- [ ] 1.2 Add `tomlkit` edit helpers for `service add|remove`, re-validated before an atomic replace. Verify with tests that comments and unrelated keys survive, and that an invalid edit leaves the file byte-identical.
+- [x] 1.1 Add `[egress.services]` to `egress_policy.py`: name pattern, port range 1024–65535, unique ports, 3128 reserved, unknown-key rejection inside entries. Verify with `tests/test_egress_policy.py` cases for valid tables, duplicates, the reserved port and bad names, each naming the key.
+- [x] 1.2 Add `tomlkit` edit helpers for `service add|remove`, re-validated before an atomic replace. Verify with tests that comments and unrelated keys survive, and that an invalid edit leaves the file byte-identical.
 
 ## 2. Isolated network backend
 
