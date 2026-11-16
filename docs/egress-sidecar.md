@@ -14,7 +14,8 @@ cannot express wildcards. Sidecar mode avoids those problems:
 - IP-literal destinations and ports other than 443 (HTTPS) and 80 (HTTP) are
   refused.
 - In direct mode, hosts that resolve to private, loopback, link-local or cloud
-  metadata addresses are refused.
+  metadata addresses are refused, and so are hosts that resolve into
+  `203.0.113.0/24`, the range of Apple `container`'s localhost alias.
 - GitHub repository access is blocked. The Copilot CLI still works through a
   narrow Copilot profile.
 - An existing corporate proxy can sit behind the sidecar as its parent.

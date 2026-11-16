@@ -640,7 +640,9 @@ parts that matter for security:
 - **Squid policy.** Squid refuses IP-literal destinations, CONNECTs to ports
   other than 443, tunnels whose TLS SNI is missing or differs from the CONNECT
   host, and non-TLS tunnels. In direct mode it also refuses names that resolve
-  to private, loopback, link-local or metadata addresses. These denials happen
+  to private, loopback, link-local or metadata addresses, or into
+  `203.0.113.0/24` (Apple `container`'s localhost alias, which leads to the
+  Mac's loopback). These denials happen
   before any upstream connection is made.
 - **Sidecar CA.** The sidecar owns one CA per runtime: EC P-256, `pathlen:0`,
   with critical name constraints, valid for `[egress.ca] lifetime_days`

@@ -121,6 +121,10 @@ PRIVATE_DESTINATIONS: tuple[str, ...] = (
     "192.0.0.0/24",
     "192.168.0.0/16",
     "198.18.0.0/15",
+    # TEST-NET-3: Apple container's administrator-managed localhost alias
+    # (203.0.113.113, docs/apple-container-dns.md) redirects it to the Mac's
+    # loopback (isolated-sidecar-network spike S5, design.md D8).
+    "203.0.113.0/24",
     "224.0.0.0/4",
     "240.0.0.0/4",
     "::/128",

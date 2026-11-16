@@ -395,6 +395,29 @@ class SquidConfigRendererTests(TestCase):
         self.assertIn("http_access deny CONNECT private_dst reset", conf)
         self.assertNotIn("never_direct", conf)
 
+    def test_apple_localhost_alias_range_is_a_private_destination(self) -> None:
+        """isolated-sidecar-network task 3.2 (spike S5, design.md D8)."""
+        import ipaddress
+
+        values = self._acl_values(squid_config.render(self._policy()), "private_dst")
+        self.assertIn("203.0.113.0/24", values)
+        # An allowlisted name that resolves to the alias is caught by the
+        # resolved-address check, like any other private destination.
+        alias = ipaddress.ip_address("203.0.113.113")
+        self.assertTrue(
+            any(
+                alias in ipaddress.ip_network(cidr)
+                for cidr in squid_config.PRIVATE_DESTINATIONS
+            )
+        )
+        # Ordinary public documentation-adjacent space stays allowed.
+        self.assertFalse(
+            any(
+                ipaddress.ip_address("203.0.114.1") in ipaddress.ip_network(cidr)
+                for cidr in squid_config.PRIVATE_DESTINATIONS
+            )
+        )
+
     def test_allowlist_rendering(self) -> None:
         from project_sandbox import egress_policy
 
