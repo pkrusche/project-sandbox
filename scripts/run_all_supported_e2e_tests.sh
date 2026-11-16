@@ -22,6 +22,14 @@
 #                                     afterwards; needs the gateway listening
 #   copilot, copilot-egress           always (billable; needs a Copilot token);
 #                                     pass --no-copilot to leave them out
+#   colima                            colima on PATH and the profile (default
+#                                     project-sandbox) exists; runs once, with the
+#                                     first container runtime. A stopped profile is
+#                                     started before the plan (`colima start
+#                                     --profile NAME`, its stored configuration) and
+#                                     stopped again afterwards. A missing profile is
+#                                     never created: create it with `project-sandbox
+#                                     colima init`. Pass --no-colima to leave it out
 # A missing checkout skips its suites; a checkout whose service is not listening
 # still runs them. Both cases are reported as notes before and after the run.
 # The chroot runtime only runs the suites run-e2e-tests.sh supports without a
@@ -36,6 +44,7 @@
 #       [--internet-proxy-dir DIR] [--agentgateway-dir DIR]
 #       [--no-copilot] [--no-internet-proxy-isolation] [--no-build] [--keep]
 #       [--incremental] [--strict-security-coverage]
+#       [--colima-profile NAME] [--no-colima]
 #       [--base-image IMAGE] [--dry-run] [-- RUN-E2E-TESTS-OPTIONS...]
 #
 #   --runtimes LIST   comma-separated subset of detected runtimes to run
@@ -47,6 +56,9 @@
 #   --no-copilot      skip the billable copilot and copilot-egress suites
 #   --no-internet-proxy-isolation
 #                     never run the destructive two-service isolation audit
+#   --colima-profile NAME
+#                     Colima profile for the colima suite (default: project-sandbox)
+#   --no-colima       skip the colima suite and never start a Colima profile
 #   --no-build        forwarded; also drops opt-in suites that require builds
 #   --keep            forwarded to run-e2e-tests.sh
 #   --strict-security-coverage
@@ -74,6 +86,8 @@ RUNTIMES_FILTER=""
 INTERNET_PROXY_DIR="$ROOT/../internet-proxy-locally"
 AGENTGATEWAY_DIR="$ROOT/../agentgateway-locally"
 WITH_COPILOT=1
+WITH_COLIMA=1
+COLIMA_PROFILE="project-sandbox"
 NO_INTERNET_ISOLATION=0
 NO_BUILD=0
 DRY_RUN=0
@@ -90,6 +104,8 @@ while [ $# -gt 0 ]; do
     --internet-proxy-dir) INTERNET_PROXY_DIR="${2:?--internet-proxy-dir needs a value}"; shift 2 ;;
     --agentgateway-dir) AGENTGATEWAY_DIR="${2:?--agentgateway-dir needs a value}"; shift 2 ;;
     --no-copilot) WITH_COPILOT=0; shift ;;
+    --no-colima) WITH_COLIMA=0; shift ;;
+    --colima-profile) COLIMA_PROFILE="${2:?--colima-profile needs a value}"; shift 2 ;;
     --no-internet-proxy-isolation) NO_INTERNET_ISOLATION=1; shift ;;
     --no-build) NO_BUILD=1; COMMON_ARGS+=(--no-build); shift ;;
     --keep) COMMON_ARGS+=(--keep); shift ;;
@@ -199,8 +215,65 @@ if [ "$WITH_COPILOT" = 0 ]; then
   note "copilot and copilot-egress disabled by --no-copilot"
 fi
 if [ "$NO_BUILD" = 1 ]; then
-  note "--no-build: skipping proxy-endpoints, egress-sidecar, security, build-proxy and copilot-egress"
+  note "--no-build: skipping proxy-endpoints, egress-sidecar, security, build-proxy, copilot-egress and colima"
 fi
+
+# --- Colima detection -------------------------------------------------------
+# The colima suite targets its own profile, not a --runtime, so it runs once:
+# with the first selected container runtime (chroot only when nothing else is).
+# COLIMA_STATE: off | absent | error | missing | running | stopped.
+COLIMA_STATE=off
+COLIMA_STARTED=0
+COLIMA_RT=""
+for rt in "${RUNTIMES[@]}"; do
+  if [ "$rt" != chroot ]; then COLIMA_RT="$rt"; break; fi
+done
+[ -n "$COLIMA_RT" ] || COLIMA_RT="${RUNTIMES[0]}"
+
+# Prints the profile's lowercased status from `colima list --json`, or "missing".
+colima_profile_status() {
+  printf '%s' "$1" | uv run --no-project python -I -c '
+import json, sys
+want = sys.argv[1]
+for line in sys.stdin:
+    try:
+        item = json.loads(line)
+    except ValueError:
+        continue
+    for entry in item if isinstance(item, list) else [item]:
+        if isinstance(entry, dict) and entry.get("name") == want:
+            print(str(entry.get("status") or "unknown").lower())
+            sys.exit(0)
+print("missing")
+' "$COLIMA_PROFILE"
+}
+
+if [ "$WITH_COLIMA" = 0 ]; then
+  note "colima disabled by --no-colima"
+elif [ "$NO_BUILD" = 0 ]; then
+  if ! command -v colima >/dev/null 2>&1; then
+    COLIMA_STATE=absent
+    note "colima not available: colima not on PATH; skipping colima"
+  elif ! COLIMA_LIST="$(colima list --json 2>&1)"; then
+    COLIMA_STATE=error
+    note "colima not available: 'colima list --json' failed: ${COLIMA_LIST:-no output}; skipping colima"
+  else
+    case "$(colima_profile_status "$COLIMA_LIST")" in
+      running) COLIMA_STATE=running ;;
+      missing)
+        COLIMA_STATE=missing
+        note "colima profile '$COLIMA_PROFILE' does not exist; skipping colima. Create it with: uv run project-sandbox colima init --colima-profile $COLIMA_PROFILE --workspace-root $(dirname "$ROOT")"
+        ;;
+      *)
+        COLIMA_STATE=stopped
+        note "colima profile '$COLIMA_PROFILE' is not running; it is started before the plan and stopped again afterwards"
+        ;;
+    esac
+  fi
+fi
+
+# True when this invocation passes the colima suite to run-e2e-tests.sh.
+colima_selected() { [ "$COLIMA_STATE" = running ] || [ "$COLIMA_STATE" = stopped ]; }
 
 # --- Per-runtime argument assembly -----------------------------------------
 # Select only from the requested/detected runtimes, never an excluded backend.
@@ -220,6 +293,9 @@ runtime_args() {
   local rt="$1"
   local peer
   printf '%s\n' --runtime "$rt"
+  if [ "$rt" = "$COLIMA_RT" ] && colima_selected; then
+    printf '%s\n' --with-colima --colima-profile "$COLIMA_PROFILE"
+  fi
   [ "$rt" = chroot ] && return 0
   [ -n "$IPL_DIR" ] && printf '%s\n' --internet-proxy-dir "$IPL_DIR"
   [ -n "$GW_DIR" ] && printf '%s\n' --agentgateway-dir "$GW_DIR"
@@ -261,8 +337,53 @@ print_notes() {
   done
 }
 
+RESULT_RT=()
+RESULT_RC=()
+overall=0
+
+# Starts a stopped Colima profile so the colima suite is not skipped. Run
+# before planning: run-e2e-tests.sh decides the suite by asking the profile.
+start_colima() {
+  [ "$COLIMA_STATE" = stopped ] || return 0
+  echo "========================================"
+  echo "Colima start ($COLIMA_PROFILE)"
+  echo "========================================"
+  echo "+ colima start --profile $COLIMA_PROFILE"
+  if [ "$DRY_RUN" = 1 ]; then
+    echo
+    return 0
+  fi
+  local rc=0
+  colima start --profile "$COLIMA_PROFILE" || rc=$?
+  RESULT_RT+=("colima-start")
+  RESULT_RC+=("$rc")
+  if [ "$rc" = 0 ]; then
+    COLIMA_STARTED=1
+  else
+    overall=1
+  fi
+  echo
+}
+
+# Stops the profile again, but only when this script started it.
+stop_colima() {
+  [ "$COLIMA_STARTED" = 1 ] || return 0
+  COLIMA_STARTED=0
+  echo "========================================"
+  echo "Colima stop ($COLIMA_PROFILE)"
+  echo "========================================"
+  echo "+ colima stop --profile $COLIMA_PROFILE"
+  local rc=0
+  colima stop --profile "$COLIMA_PROFILE" || rc=$?
+  RESULT_RT+=("colima-stop")
+  RESULT_RC+=("$rc")
+  [ "$rc" = 0 ] || overall=1
+  echo
+}
+
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/project-sandbox-e2e-all.XXXXXX")"
-trap 'rm -rf "$WORK_DIR"' EXIT
+# An interrupted run still stops a profile it started.
+trap 'stop_colima; rm -rf "$WORK_DIR"' EXIT
 
 # Sets CMD to the run-e2e-tests.sh invocation for runtime $1.
 build_cmd() {
@@ -277,11 +398,15 @@ build_cmd() {
 # Renders a suite x runtime table from run-e2e-tests.sh "Summary" sections.
 # $1 is "plan" or "outcome"; the rest are RUNTIME=OUTPUT_FILE[=EXIT_CODE].
 render_table() {
-  uv run --no-project python -I - "$@" <<'PY'
+  local colima_rt=""
+  colima_selected && colima_rt="$COLIMA_RT"
+  COLIMA_RT_FOR_TABLE="$colima_rt" uv run --no-project python -I - "$@" <<'PY'
+import os
 import re
 import sys
 
 mode, specs = sys.argv[1], sys.argv[2:]
+colima_rt = os.environ.get("COLIMA_RT_FOR_TABLE", "")
 row = re.compile(r"^  (PASS|FAIL|SKIP|RUN)\s+(\S+)(?:  \((.*)\))?$")
 runtimes, results, suites, broken = [], {}, [], []
 for spec in specs:
@@ -297,7 +422,15 @@ for spec in specs:
             match = row.match(line) if in_summary else None
             if match:
                 status, suite, detail = match.groups()
-                if runtime == "chroot" and (detail or "").startswith("pass --with"):
+                if (
+                    suite == "colima"
+                    and colima_rt
+                    and runtime != colima_rt
+                    and (detail or "").startswith("pass --with")
+                ):
+                    # The colima suite is requested for one runtime only.
+                    detail = f"runs once, with {colima_rt}"
+                elif runtime == "chroot" and (detail or "").startswith("pass --with"):
                     # Opt-in suites are never requested for chroot: none can run there.
                     detail = "needs a container runtime"
                 results[(runtime, suite)] = (status, detail or "")
@@ -358,7 +491,9 @@ fi
 echo "Runtimes to test: ${RUNTIMES[*]}"
 echo "Internet proxy:   ${IPL_DIR:-not found} ($([ "$IPL_UP" = 1 ] && echo up || echo down))"
 echo "Agent proxy:      ${GW_DIR:-not found} ($([ "$GW_UP" = 1 ] && echo up || echo down))"
+echo "Colima profile:   $COLIMA_PROFILE ($COLIMA_STATE)"
 echo
+start_colima
 PLAN_SPECS=()
 for rt in "${RUNTIMES[@]}"; do
   build_cmd "$rt"
@@ -380,10 +515,7 @@ fi
 print_notes
 echo
 
-RESULT_RT=()
-RESULT_RC=()
 OUTCOME_SPECS=()
-overall=0
 
 # Runs the cleanup and records it in the summary as cleanup-$1.
 run_cleanup() {
@@ -421,11 +553,12 @@ for rt in "${RUNTIMES[@]}"; do
   echo
 done
 run_cleanup after
-
 if [ "$DRY_RUN" = 1 ]; then
+  [ "$COLIMA_STATE" = stopped ] && echo "+ colima stop --profile $COLIMA_PROFILE" && echo
   echo "Dry run: nothing executed."
   exit 0
 fi
+stop_colima
 
 # --- Outcome -----------------------------------------------------------------
 echo "========================================"

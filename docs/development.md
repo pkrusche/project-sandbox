@@ -167,7 +167,14 @@ in [Security verification](security-verification.md).
 Missing checkouts (suites skipped) and stopped services (suites still run) are
 reported as notes before and after the run. The billable
 Copilot suites (`copilot`, `copilot-egress`) run by default and need a Copilot
-token; pass `--no-copilot` to skip them. `scripts/e2e-cleanup.py` sweeps the
+token; pass `--no-copilot` to skip them. When `colima` is on `PATH` and the
+profile (`project-sandbox`, or `--colima-profile NAME`) exists, the `colima`
+suite runs once, with the first selected container runtime. A stopped profile
+is started with `colima start --profile NAME` before the plan and stopped again
+afterwards; a profile that was already running is left running. A missing
+profile is never created; the notes print the `project-sandbox colima init`
+command instead. `--no-colima` and `--no-build` leave Colima alone.
+`scripts/e2e-cleanup.py` sweeps the
 detected container runtimes before the first and after the last run; a failed
 cleanup fails the overall result. Before anything runs, the script prints a
 test plan table (suite x runtime: RUN/SKIP/FAIL, with skip reasons) built from
@@ -765,7 +772,9 @@ uv run python scripts/e2e-copilot-egress.py --runtime apple-container --phases s
 The opt-in `colima` suite (`scripts/e2e-colima.py`) runs real `--runtime colima`
 sessions (agent `bash`, no credentials, not billable) against a **running**
 Colima profile and grades them from inside the sandbox and from the VM. It
-never creates, starts or stops a VM and never changes the Docker context. It
+never creates, starts or stops a VM and never changes the Docker context
+(`run_all_supported_e2e_tests.sh` starts and stops an existing profile around
+it). It
 needs network access and image builds, and takes a few minutes. Its checks:
 
 - `launch`: one `--egress sidecar` session. The proxy variables name

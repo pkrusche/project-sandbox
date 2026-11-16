@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -61,32 +62,184 @@ i = args.index("python")
 os.execv({sys.executable!r}, [{sys.executable!r}, *args[i + 1:]])
 """
 
+# Fake colima: logs every invocation; `list --json` prints $FAKE_COLIMA_LIST
+# (one JSON object per line, as colima does); start/stop succeed.
+FAKE_COLIMA = """#!/usr/bin/env bash
+[ -n "${FAKE_COLIMA_LOG:-}" ] && echo "colima $*" >>"$FAKE_COLIMA_LOG"
+if [ "$1" = list ]; then printf '%s' "${FAKE_COLIMA_LIST:-}"; fi
+exit 0
+"""
+
+# Fake docker for colima tests: no context exists, so the real run-e2e-tests.sh
+# plan decides the colima suite without reaching a real engine.
+FAKE_DOCKER = "#!/usr/bin/env bash\nexit 1\n"
+
+
+def _install(bindir: Path, name: str, text: str) -> None:
+    path = bindir / name
+    path.write_text(text)
+    path.chmod(0o755)
+
+
+def _colima_list(*profiles: tuple[str, str]) -> str:
+    return "".join(
+        json.dumps({"name": name, "status": status}) + "\n" for name, status in profiles
+    )
+
 
 class RunAllSupportedE2ETests(unittest.TestCase):
     def _run(
-        self, *args: str, doctor: dict | None = None
+        self,
+        *args: str,
+        doctor: dict | None = None,
+        colima_list: str = "",
+        colima_log: list[str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             bindir = tmp_path / "bin"
             bindir.mkdir()
-            uv = bindir / "uv"
-            uv.write_text(FAKE_UV)
-            uv.chmod(0o755)
+            _install(bindir, "uv", FAKE_UV)
+            _install(bindir, "colima", FAKE_COLIMA)
+            _install(bindir, "docker", FAKE_DOCKER)
             doctor_path = tmp_path / "doctor.json"
             doctor_path.write_text(json.dumps(DOCTOR if doctor is None else doctor))
+            log = tmp_path / "colima.log"
             env = {
                 **os.environ,
                 "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
                 "FAKE_DOCTOR": str(doctor_path),
+                "FAKE_COLIMA_LIST": colima_list,
+                "FAKE_COLIMA_LOG": str(log),
             }
-            return subprocess.run(
+            result = subprocess.run(
                 ["bash", str(SCRIPT), "--dry-run", *args],
                 env=env,
                 capture_output=True,
                 text=True,
                 check=False,
             )
+            if colima_log is not None:
+                colima_log.extend(log.read_text().splitlines() if log.exists() else [])
+            return result
+
+    @staticmethod
+    def _runs(result: subprocess.CompletedProcess[str]) -> list[str]:
+        return [
+            line
+            for line in result.stdout.splitlines()
+            if line.startswith("+ ") and "run-e2e-tests.sh" in line
+        ]
+
+    def test_running_colima_profile_runs_colima_once(self) -> None:
+        log: list[str] = []
+        result = self._run(
+            colima_list=_colima_list(("default", "Stopped"), ("project-sandbox", "Running")),
+            colima_log=log,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Colima profile:   project-sandbox (running)", result.stdout)
+        docker, chroot = self._runs(result)
+        self.assertIn("--with-colima --colima-profile project-sandbox", docker)
+        self.assertNotIn("--with-colima", chroot)
+        self.assertNotIn("+ colima start", result.stdout)
+        self.assertNotIn("+ colima stop", result.stdout)
+        self.assertEqual(log, ["colima list --json"])
+
+    def test_stopped_colima_profile_is_started_and_stopped(self) -> None:
+        log: list[str] = []
+        result = self._run(
+            colima_list=_colima_list(("project-sandbox", "Stopped")), colima_log=log
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        out = result.stdout
+        self.assertIn("is not running; it is started before the plan", out)
+        start = out.index("+ colima start --profile project-sandbox")
+        self.assertLess(start, out.index("Test plan"))
+        self.assertLess(
+            out.rindex("e2e-cleanup.py"), out.index("+ colima stop --profile project-sandbox")
+        )
+        self.assertIn("--with-colima", self._runs(result)[0])
+        # A dry run only prints the start and stop.
+        self.assertEqual(log, ["colima list --json"])
+
+    def test_missing_colima_profile_is_never_created(self) -> None:
+        log: list[str] = []
+        result = self._run(
+            colima_list=_colima_list(("default", "Running")), colima_log=log
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("colima profile 'project-sandbox' does not exist", result.stdout)
+        self.assertIn("project-sandbox colima init --colima-profile project-sandbox", result.stdout)
+        self.assertTrue(all("--with-colima" not in line for line in self._runs(result)))
+        self.assertEqual(log, ["colima list --json"])
+
+    def test_colima_profile_option_selects_the_profile(self) -> None:
+        result = self._run(
+            "--colima-profile",
+            "work",
+            colima_list=_colima_list(("project-sandbox", "Running"), ("work", "Stopped")),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("+ colima start --profile work", result.stdout)
+        self.assertIn("--with-colima --colima-profile work", self._runs(result)[0])
+
+    def test_colima_runs_with_the_first_container_runtime(self) -> None:
+        doctor = json.loads(json.dumps(DOCTOR))
+        for check in doctor["checks"]:
+            if check["name"] == "podman":
+                check["status"] = "ok"
+        result = self._run(
+            "--runtimes",
+            "chroot,podman,docker",
+            doctor=doctor,
+            colima_list=_colima_list(("project-sandbox", "Running")),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        chroot, podman, docker = self._runs(result)
+        self.assertIn("--with-colima", podman)
+        self.assertNotIn("--with-colima", chroot)
+        self.assertNotIn("--with-colima", docker)
+
+    def test_no_colima_and_no_build_leave_colima_alone(self) -> None:
+        stopped = _colima_list(("project-sandbox", "Stopped"))
+        for flag, note in (
+            ("--no-colima", "colima disabled by --no-colima"),
+            ("--no-build", "copilot-egress and colima"),
+        ):
+            with self.subTest(flag=flag):
+                log: list[str] = []
+                result = self._run(flag, colima_list=stopped, colima_log=log)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(note, result.stdout)
+                self.assertNotIn("+ colima start", result.stdout)
+                self.assertTrue(
+                    all("--with-colima" not in line for line in self._runs(result))
+                )
+                self.assertEqual(log, [])
+
+    def test_colima_not_on_path_is_noted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            bindir = tmp_path / "bin"
+            bindir.mkdir()
+            _install(bindir, "uv", FAKE_UV)
+            doctor_path = tmp_path / "doctor.json"
+            doctor_path.write_text(json.dumps(DOCTOR))
+            # System directories only, so a Homebrew/user colima stays invisible.
+            path = os.pathsep.join((str(bindir), "/usr/bin", "/bin"))
+            if shutil.which("colima", path=path) or not shutil.which("bash", path=path):
+                self.skipTest("needs a PATH with bash and without colima")
+            result = subprocess.run(
+                ["bash", str(SCRIPT), "--dry-run", "--runtimes", "chroot"],
+                env={**os.environ, "PATH": path, "FAKE_DOCTOR": str(doctor_path)},
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("colima not available: colima not on PATH", result.stdout)
+        self.assertIn("Colima profile:   project-sandbox (absent)", result.stdout)
 
     def test_incremental_is_forwarded_to_every_runtime(self) -> None:
         result = self._run(
@@ -323,14 +476,19 @@ class RunAllSupportedE2ETests(unittest.TestCase):
 # Stub runner: --plan prints RUN rows; execution fails security on Docker
 # and smoke on chroot, mimicking run-e2e-tests.sh's Summary format.
 FAKE_RUNNER = """#!/usr/bin/env bash
-rt=""; plan=0; security=0
+rt=""; plan=0; security=0; colima=0
 while [ $# -gt 0 ]; do
-  case "$1" in --runtime) rt="$2"; shift 2 ;; --plan) plan=1; shift ;; --with-security) security=1; shift ;; *) shift ;; esac
+  case "$1" in --runtime) rt="$2"; shift 2 ;; --plan) plan=1; shift ;; --with-security) security=1; shift ;; --with-colima) colima=1; shift ;; *) shift ;; esac
 done
+[ -n "${FAKE_COLIMA_LOG:-}" ] && echo "runner $rt plan=$plan" >>"$FAKE_COLIMA_LOG"
 echo "[1/2] smoke ..."
 echo "========================================"
 echo "Summary"
 echo "========================================"
+if [ -n "${FAKE_COLIMA_ROWS:-}" ]; then
+  if [ "$colima" = 1 ]; then echo "  $([ "$plan" = 1 ] && echo RUN || echo PASS)  colima"
+  else echo "  SKIP colima  (pass --with-colima; needs a running Colima profile, network and builds)"; fi
+fi
 if [ "$plan" = 1 ]; then
   echo "  RUN  smoke"
   if [ "$rt" = chroot ]; then echo "  SKIP egress-sidecar  (pass --with-egress-sidecar; needs network and builds)"
@@ -356,29 +514,33 @@ echo "  SKIP security  (pass --with-security)"
 
 
 class RunAllSupportedE2ETablesTests(unittest.TestCase):
-    def test_plan_and_outcome_tables(self) -> None:
+    def _execute(
+        self, colima_list: str = "", **extra_env: str
+    ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+        """Really run the script against FAKE_RUNNER, a fake uv and a fake colima."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             scripts = tmp_path / "repo" / "scripts"
             scripts.mkdir(parents=True)
             runner = scripts / "run_all_supported_e2e_tests.sh"
             runner.write_text(SCRIPT.read_text())
-            fake = scripts / "run-e2e-tests.sh"
-            fake.write_text(FAKE_RUNNER)
-            fake.chmod(0o755)
+            _install(scripts, "run-e2e-tests.sh", FAKE_RUNNER)
             (scripts / "e2e-cleanup.py").write_text("print('cleaned')\n")
             bindir = tmp_path / "bin"
             bindir.mkdir()
-            uv = bindir / "uv"
-            uv.write_text(FAKE_UV)
-            uv.chmod(0o755)
+            _install(bindir, "uv", FAKE_UV)
+            _install(bindir, "colima", FAKE_COLIMA)
             doctor = tmp_path / "doctor.json"
             doctor.write_text(json.dumps(DOCTOR))
+            log = tmp_path / "calls.log"
             env = {
                 **os.environ,
                 "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
                 "FAKE_DOCTOR": str(doctor),
+                "FAKE_COLIMA_LIST": colima_list,
+                "FAKE_COLIMA_LOG": str(log),
                 "TMPDIR": str(tmp_path),
+                **extra_env,
             }
             result = subprocess.run(
                 [
@@ -394,6 +556,41 @@ class RunAllSupportedE2ETablesTests(unittest.TestCase):
                 text=True,
                 check=False,
             )
+            calls = log.read_text().splitlines() if log.exists() else []
+        return result, calls
+
+    def test_stopped_colima_profile_is_started_for_the_run_and_stopped(self) -> None:
+        result, calls = self._execute(
+            _colima_list(("project-sandbox", "Stopped")), FAKE_COLIMA_ROWS="1"
+        )
+        out = result.stdout
+        self.assertEqual(
+            calls,
+            [
+                "colima list --json",
+                "colima start --profile project-sandbox",
+                "runner docker plan=1",
+                "runner chroot plan=1",
+                "runner docker plan=0",
+                "runner chroot plan=0",
+                "colima stop --profile project-sandbox",
+            ],
+        )
+        plan = out[out.index("Test plan") : out.index("Cleanup (before)")]
+        self.assertRegex(plan, r"colima\s+RUN\s+SKIP")
+        self.assertIn("colima [chroot]: runs once, with docker", plan)
+        outcome = out[out.index("Outcome") :]
+        self.assertRegex(outcome, r"colima\s+PASS\s+SKIP")
+        self.assertIn("PASS colima-start", outcome)
+        self.assertIn("PASS colima-stop", outcome)
+
+    def test_already_running_colima_profile_is_left_running(self) -> None:
+        _, calls = self._execute(_colima_list(("project-sandbox", "Running")))
+        self.assertNotIn("colima start --profile project-sandbox", calls)
+        self.assertNotIn("colima stop --profile project-sandbox", calls)
+
+    def test_plan_and_outcome_tables(self) -> None:
+        result, _ = self._execute()
         out = result.stdout
         self.assertEqual(result.returncode, 1, out + result.stderr)
         plan = out[out.index("Test plan") : out.index("Cleanup (before)")]
