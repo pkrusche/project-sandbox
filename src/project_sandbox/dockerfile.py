@@ -8,7 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import build_inputs, generated_files, templating
+from . import build_inputs, build_network, generated_files, templating
 
 _USER_SETUP_COMMAND_RE = re.compile(
     r"(?<![\w.-])(addgroup|adduser|groupadd|groupmod|useradd|usermod)(?![\w.-])"
@@ -272,7 +272,28 @@ def render(
                     f"WARNING: --build-ca-cert is not applied to stage '{name}': "
                     "its base is not recognized as Debian/Ubuntu."
                 )
+    for path in (container, context_dir / "Dockerfile.devcontainer"):
+        _declare_build_proxy_args(path)
     return container
+
+
+def _declare_build_proxy_args(path: Path) -> None:
+    """Declare the build proxy ARGs right after each ``FROM`` that runs commands.
+
+    Runs after build-CA injection so the CA bootstrap, which can download
+    ``ca-certificates``, already sees the proxy. Covers base images and every
+    stage of ``--dockerfile``, ``--python-uv``, ``--rust-cargo`` and
+    ``--node-npm`` sources, which are composed into this Dockerfile.
+    """
+    declaration = templating.get_template("_build-proxy-args.Dockerfile.j2").render(
+        build_proxy_names=build_network.ARG_NAMES
+    )
+    blocks = _dockerfile_blocks(path.read_text(encoding="utf-8"))
+    for stage in reversed(_dockerfile_stages(blocks)):
+        body = blocks[stage.from_block_index + 1 : stage.end_block_index]
+        if any(_is_run_block(block) for block in body):
+            blocks.insert(stage.from_block_index + 1, declaration.splitlines())
+    generated_files.write_text(path, _join_dockerfile_blocks(blocks), encoding="utf-8")
 
 
 def _stage_certificates(

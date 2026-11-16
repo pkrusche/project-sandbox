@@ -2246,8 +2246,8 @@ def _dry_run(
             print(f"Would mount .git metadata: {(project / '.git').resolve()}")
     if args.build_proxy:
         print(
-            "Would pass the build proxy as predefined proxy build-args, which are "
-            "not written to Dockerfiles or images (values redacted)."
+            "Would pass the build proxy as proxy build-args, declared without "
+            "values in each build stage and not written to ENV (values redacted)."
         )
         build_no_proxy = build_network.parse_no_proxy(args.build_no_proxy)
         if build_no_proxy:

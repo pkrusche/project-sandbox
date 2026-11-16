@@ -31,9 +31,15 @@ apply to sidecar builds launched by `project-sandbox`; the separate
 The URL must be a credential-free HTTP or HTTPS endpoint without a path.
 SOCKS and proxy authentication are unsupported. Host proxy variables are not read.
 The builder receives lowercase and uppercase `http_proxy`, `https_proxy`, and
-`no_proxy` as predefined build arguments. Generated Dockerfiles do not declare
-these arguments or persist their values. Custom build commands can still print
-or save them; values are also visible in the builder's process arguments.
+`no_proxy` as build arguments. Every generated build stage that runs commands
+declares them with `ARG` (no value) right after `FROM`, so `RUN` steps see them
+as environment variables on every builder. This includes the egress sidecar and
+all stages from `--dockerfile`, `--python-uv`, `--rust-cargo`, and `--node-npm`.
+Podman/Buildah, unlike BuildKit, does not export undeclared proxy arguments.
+Without `--build-proxy` the arguments stay unset. Values are never written to
+`ENV`, so the image's runtime environment has no build proxy. Custom build
+commands can still print or save them. Values are also visible in the builder's
+process arguments and may appear in image history for `RUN` steps.
 
 `no_proxy` defaults to `localhost,127.0.0.1,::1`. Add comma-separated hosts,
 `.domain` suffixes (optionally with `:port`), IP addresses, or CIDRs using
@@ -42,8 +48,10 @@ Bypassed hosts must be reachable directly from the builder, including on VPNs.
 Commands that clear their environment, such as default `sudo apt-get`, lose the
 proxy settings; run as root or preserve the environment explicitly.
 
-BuildKit excludes undeclared predefined proxy arguments from its layer cache
-key and image history. Changing the proxy alone therefore reuses layers.
+Declared arguments are part of the `RUN` layer cache key. Changing the proxy
+URL, or the Apple forwarder falling back to another port, therefore rebuilds
+`RUN` layers on the next actual build. It does not change the rendered
+Dockerfiles, so an image that is already up to date is reused without a build.
 Changing CA contents invalidates generated build inputs. Removing CA options
 removes their staged files and generated setup on the next render. Rebuild to
 apply trust changes; `--no-build` retains the existing image.
@@ -106,7 +114,7 @@ verifies TLS using system trust plus `--build-ca-cert` inputs. The forwarder
 listens only on loopback during actual builds. Cached images need none;
 `--no-build` skips the sandbox build but can still build a missing sidecar image.
 A busy preferred port falls back to a free port without changing
-build inputs. Other host processes can use the forwarder while it is running.
+the rendered Dockerfiles, though layers built with it miss the cache. Other host processes can use the forwarder while it is running.
 
 ## Devcontainers and external downloads
 

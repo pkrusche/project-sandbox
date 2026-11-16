@@ -412,7 +412,7 @@ class CliForwardingTests(TestCase):
         for text in (observed["dockerfile"], observed["devcontainer"]):
             self.assertNotIn("203.0.113.113", text)
             self.assertNotIn("corp.proxy.example", text)
-            self.assertNotIn("_proxy", text)
+            self.assertNotRegex(text, r"(?i)_proxy=")
         self.assertIn("container system dns create", observed["output"])
         with self.assertRaises(OSError):
             socket.create_connection(("127.0.0.1", port), timeout=1).close()

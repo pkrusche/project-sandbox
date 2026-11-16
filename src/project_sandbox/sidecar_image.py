@@ -12,7 +12,7 @@ import hashlib
 import os
 from pathlib import Path
 
-from . import mount_storage, observability, squid_config
+from . import build_network, mount_storage, observability, squid_config
 from .templating import get_template
 
 # Pinned by digest; updated by scripts/update-pins.py (Alpine release + digest).
@@ -52,6 +52,7 @@ def render_files(*, build_ca_certificates: tuple[bytes, ...] = ()) -> dict[str, 
             f"errors/{page}" for page in sorted(squid_config.error_pages())
         ],
         "build_ca_certificate_sources": list(certificates),
+        "build_proxy_names": build_network.ARG_NAMES,
     }
     rendered = dict(certificates)
     for name, (template, _mode) in _FILES.items():

@@ -1,0 +1,6 @@
+# --build-proxy values (unset without it). Declared so that every builder,
+# including Podman/Buildah, exports them to RUN; ARG is not kept in the image
+# config, so the proxy does not reach runtime.
+{% for name in build_proxy_names -%}
+ARG {{ name }}
+{% endfor -%}

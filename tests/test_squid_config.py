@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest import TestCase
 from unittest.mock import patch
 
-from project_sandbox import sidecar_image, squid_config
+from project_sandbox import build_network, sidecar_image, squid_config
 
 
 class SidecarImageRendererTests(TestCase):
@@ -143,6 +143,15 @@ class SidecarImageRendererTests(TestCase):
         with patch.object(sidecar_image, "SQUID_PACKAGE", "squid~6.13"):
             self.assertNotEqual(tag, sidecar_image.image_tag())
 
+    def test_proxy_args_are_declared_before_package_downloads(self) -> None:
+        # Regression: Podman/Buildah only exports declared proxy build-args.
+        text = sidecar_image.render_files()["Dockerfile"]
+        first_run = text.index("\nRUN ")
+        for name in build_network.ARG_NAMES:
+            self.assertLess(text.index(f"\nARG {name}\n"), first_run)
+        self.assertNotRegex(text, r"(?i)_proxy=")
+        self.assertNotIn("ENV ", text)
+
     def test_build_certificates_bootstrap_apk_and_change_image_tag(self) -> None:
         fixtures = Path(__file__).parent / "fixtures"
         certificates = ((fixtures / "test-ca.pem").read_bytes(),)
@@ -162,7 +171,8 @@ class SidecarImageRendererTests(TestCase):
         )
         self.assertNotIn("--no-check-certificate", text)
         self.assertNotIn("ENV ", text)
-        self.assertNotIn("ARG ", text)
+        self.assertNotRegex(text, r"(?i)_proxy=")
+        self.assertLess(text.index("ARG http_proxy"), text.index("apk add"))
         tag = sidecar_image.image_tag(files)
         self.assertNotEqual(tag, sidecar_image.image_tag())
         changed = sidecar_image.render_files(

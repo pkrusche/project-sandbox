@@ -1,10 +1,14 @@
 """Explicit build-only proxy environment, independent of runtime networking.
 
-The proxy reaches image builds only as BuildKit's predefined proxy build-args
-(``--build-arg http_proxy=...``), which ``RUN`` instructions see as environment
-variables. They are never declared with ``ARG``, so they are not persisted in
-the image, do not appear in the generated Dockerfiles, and are excluded from
-the layer cache key: a changed proxy URL or forwarder port causes no rebuild.
+The proxy reaches image builds only as ``--build-arg http_proxy=...`` values.
+Every generated build stage that runs commands declares the names in
+:data:`ARG_NAMES` with ``ARG`` (no default), so ``RUN`` instructions see them as
+environment variables on every builder: BuildKit exports undeclared proxy
+build-args on its own, Podman/Buildah does not. ``ARG`` values are not kept in
+the image config, so the proxy never reaches the runtime environment. Declared
+values do enter the ``RUN`` layer cache key, so a changed proxy URL or
+forwarder port rebuilds those layers; without ``--build-proxy`` the ARGs stay
+unset and change nothing.
 """
 
 import ipaddress
@@ -14,6 +18,8 @@ from collections.abc import Iterable
 from . import proxy_endpoint
 
 PROXY_NAMES = ("http_proxy", "https_proxy", "no_proxy")
+# Declared in every generated build stage; matches environment()'s keys.
+ARG_NAMES = (*PROXY_NAMES, *(name.upper() for name in PROXY_NAMES))
 NO_PROXY = "localhost,127.0.0.1,::1"
 
 _HOST_LABEL = r"(?!-)[A-Za-z0-9-]{1,63}(?<!-)"

@@ -90,7 +90,9 @@ class BuildEnvironmentTests(TestCase):
                     0,
                 )
             self.assertIn("before downloads", output.getvalue())
-            self.assertIn("predefined proxy build-args", output.getvalue())
+            self.assertIn(
+                "proxy build-args, declared without values", output.getvalue()
+            )
             self.assertIn(
                 "Would exclude from the build proxy: .corp.example", output.getvalue()
             )
@@ -327,7 +329,14 @@ class BuildNetworkRendererTests(TestCase):
                 self.assertGreater(
                     text.index("# Session trust"), text.index("RUN echo late")
                 )
-                self.assertNotIn("_proxy", text)
+                # Proxy names are declared per stage, ahead of the CA bootstrap
+                # (which may download ca-certificates), but never given values.
+                self.assertNotRegex(text, r"(?i)_proxy=")
+                self.assertNotRegex(text, r"(?im)^ENV\s+\S*_proxy")
+                self.assertEqual(text.count("ARG https_proxy\n"), 3)
+                self.assertLess(
+                    text.index("ARG http_proxy"), text.index("update-ca-certificates;")
+                )
                 self.assertNotIn("Acquire::http::Proxy", text)
                 self.assertIn(
                     'COPY ["sandbox with spaces/project-sandbox-build-ca-', text
@@ -500,6 +509,75 @@ class BuildNetworkRendererTests(TestCase):
                         )
                     if source == custom:
                         self.assertIn("COPY --from=0 /tmp/tool /tmp/tool", text)
+
+    def test_every_build_stage_declares_proxy_args_before_its_first_run(self):
+        # Regression: Podman/Buildah does not export undeclared proxy
+        # build-args to RUN, so uv/cargo/npm/apt in generated stages and in
+        # --dockerfile stages could not reach the build proxy.
+        def stages(text: str) -> list[list[str]]:
+            result: list[list[str]] = []
+            for line in text.splitlines():
+                if line.startswith("FROM "):
+                    result.append([line])
+                elif result:
+                    result[-1].append(line)
+            return result
+
+        declarations = [f"ARG {name}" for name in build_network.ARG_NAMES]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            python = dockerfile.render_python_uv_dockerfile(root, "3.12", True, True)
+            rust = dockerfile.render_rust_cargo_dockerfile(root, None, True, True)
+            custom = root / "custom.Dockerfile"
+            custom.write_text(
+                "FROM alpine AS tools\nRUN apk add curl\n"
+                "FROM scratch AS files\nCOPY custom.Dockerfile /\n"
+                "FROM debian\nRUN echo final\n"
+            )
+            # label -> (base_image, base_dockerfile); exactly one is set.
+            cases: dict[str, tuple[str | None, Path | None]] = {
+                "base image": ("debian:bookworm", None),
+                "python-uv": (None, python),
+                "rust-cargo": (None, rust),
+                "dockerfile": (None, custom),
+            }
+            for label, (base_image, base_dockerfile) in cases.items():
+                dockerfile.render(
+                    root,
+                    base_image=base_image,
+                    base_dockerfile=base_dockerfile,
+                    build_context=root,
+                )
+                for name in ("Dockerfile", "Dockerfile.devcontainer"):
+                    text = (root / name).read_text()
+                    with self.subTest(source=label, file=name):
+                        self.assertNotRegex(text, r"(?i)_proxy=")
+                        for stage in stages(text):
+                            runs = [
+                                i
+                                for i, line in enumerate(stage)
+                                if line.startswith("RUN")
+                            ]
+                            if not runs:
+                                self.assertNotIn("ARG http_proxy", stage, stage[0])
+                                continue
+                            for declaration in declarations:
+                                self.assertIn(declaration, stage, stage[0])
+                                self.assertLess(
+                                    stage.index(declaration), runs[0], stage[0]
+                                )
+                        if label == "python-uv":
+                            self.assertLess(
+                                text.rindex(
+                                    "ARG https_proxy", 0, text.index("uv sync")
+                                ),
+                                text.index("uv sync"),
+                            )
+                        if label == "rust-cargo":
+                            self.assertLess(
+                                text.index("ARG https_proxy"),
+                                text.index("cargo fetch --locked"),
+                            )
 
     def test_bootstrap_works_without_existing_ca_tools_or_bundle(self):
         # Execute the actual rendered bootstrap in a fake root. The fake apt
