@@ -234,7 +234,7 @@ def sh(
 class _Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
-    def log_message(self, *args: object) -> None:  # quiet
+    def log_message(self, format: str, *args: object) -> None:  # quiet
         pass
 
     def do_GET(self) -> None:
@@ -247,7 +247,8 @@ class _Handler(BaseHTTPRequestHandler):
         self._route()
 
     def _route(self) -> None:
-        server: _Server = self.server  # type: ignore[assignment]
+        server = self.server
+        assert isinstance(server, _Server)
         server.requests.append(
             {
                 "time": time.time(),

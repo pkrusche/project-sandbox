@@ -396,7 +396,7 @@ class MacServices:
         class Handler(http.server.BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.0"
 
-            def log_message(self, *_args) -> None:
+            def log_message(self, format: str, *args: object) -> None:
                 pass
 
             def _stream(self, content_type: str, lines: list[str]) -> None:

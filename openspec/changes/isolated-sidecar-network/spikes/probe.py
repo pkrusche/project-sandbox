@@ -242,7 +242,8 @@ def op_read(op):
 
 
 def op_addrs(op):
-    result = {"outcome": "read", "ipv4": [], "ipv6": []}
+    addresses: dict[str, list[dict[str, str]]] = {"ipv4": [], "ipv6": []}
+    result: dict[str, object] = {"outcome": "read", **addresses}
     for family, key in (("-4", "ipv4"), ("-6", "ipv6")):
         out = subprocess.run(
             ["ip", "-o", family, "addr", "show", "scope", "global"],
@@ -253,7 +254,7 @@ def op_addrs(op):
         for line in out.splitlines():
             parts = line.split()
             if len(parts) >= 4:
-                result[key].append({"ifname": parts[1], "cidr": parts[3]})
+                addresses[key].append({"ifname": parts[1], "cidr": parts[3]})
     for family, key in (("-4", "routes4"), ("-6", "routes6")):
         result[key] = subprocess.run(
             ["ip", family, "route", "show"], capture_output=True, check=False, text=True

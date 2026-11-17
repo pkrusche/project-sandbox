@@ -712,18 +712,23 @@ ollama = { port = 11434 } # loopback only
 
     def test_invalid_edit_leaves_file_byte_identical(self) -> None:
         before = self.path.read_bytes()
-        cases: tuple[tuple[Callable[..., object], tuple, str], ...] = (
-            (egress_policy.add_service, ("other", 3128), "reserved"),
-            (egress_policy.add_service, ("other", 11434), "unique"),
-            (egress_policy.add_service, ("other", 80), "1024 to 65535"),
-            (egress_policy.add_service, ("Other", 4000), "Invalid service name"),
-            (egress_policy.add_service, ("svc.local", 4000), "Invalid service name"),
-            (egress_policy.remove_service, ("missing",), "not declared"),
+        add, remove = egress_policy.add_service, egress_policy.remove_service
+        cases: tuple[tuple[str, Callable[[Path], object], str], ...] = (
+            ("add other 3128", lambda p: add(p, "other", 3128), "reserved"),
+            ("add other 11434", lambda p: add(p, "other", 11434), "unique"),
+            ("add other 80", lambda p: add(p, "other", 80), "1024 to 65535"),
+            ("add Other", lambda p: add(p, "Other", 4000), "Invalid service name"),
+            (
+                "add svc.local",
+                lambda p: add(p, "svc.local", 4000),
+                "Invalid service name",
+            ),
+            ("remove missing", lambda p: remove(p, "missing"), "not declared"),
         )
-        for call, args, message in cases:
-            with self.subTest(call=call.__name__, args=args):
+        for label, call, message in cases:
+            with self.subTest(label):
                 with self.assertRaisesRegex(EgressPolicyError, message):
-                    call(self.path, *args)
+                    call(self.path)
                 self.assertEqual(self.path.read_bytes(), before)
 
     def test_reserved_port_names_the_key(self) -> None:

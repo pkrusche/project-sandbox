@@ -846,22 +846,19 @@ class ServiceRouteTests(TestCase):
     def test_refuses_unsafe_service_input(self) -> None:
         effective = self.egress_policy.effective(self.egress_policy.PolicyFile())
         Service = self.egress_policy.Service
-        cases = {
-            "not internal": {"internal_only": False, "service_host": self.HOST},
-            "no host": {"internal_only": True, "service_host": None},
-            "host name": {
-                "internal_only": True,
-                "service_host": "host.lima.internal",
-            },
-            "host injection": {
-                "internal_only": True,
-                "service_host": "192.168.5.2\nhttp_access allow all",
-            },
+        cases: dict[str, tuple[bool, str | None]] = {
+            "not internal": (False, self.HOST),
+            "no host": (True, None),
+            "host name": (True, "host.lima.internal"),
+            "host injection": (True, "192.168.5.2\nhttp_access allow all"),
         }
-        for label, kwargs in cases.items():
+        for label, (internal_only, service_host) in cases.items():
             with self.subTest(label), self.assertRaises(ValueError):
                 squid_config.render(
-                    effective, services=(Service("ollama", 11434),), **kwargs
+                    effective,
+                    services=(Service("ollama", 11434),),
+                    internal_only=internal_only,
+                    service_host=service_host,
                 )
         for label, services in {
             "bad name": (Service("Ollama x", 11434),),

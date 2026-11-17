@@ -1870,11 +1870,12 @@ def status(
         report["internal_address"] = (
             _internal_address(info) if running and info is not None else None
         )
-        report["host_address"] = (state or {}).get("host_address")
-        report["services_exposed"] = running and report["host_address"] is not None
-        if report["services_exposed"] and probe and policy.services:
+        host_address = (state or {}).get("host_address")
+        report["host_address"] = host_address
+        report["services_exposed"] = running and host_address is not None
+        if running and host_address is not None and probe and policy.services:
             report["service_probe"] = probe_services(
-                runtime, deps.runner, report["host_address"], policy.services
+                runtime, deps.runner, host_address, policy.services
             )
     if strategy_error:
         report["strategy_error"] = strategy_error

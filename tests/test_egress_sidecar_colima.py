@@ -22,6 +22,13 @@ RUNTIME = colima_runtime("work")
 PRIVATE = Strategy(DOCKER_PRIVATE_NETWORK, net.ALIAS)
 
 
+def _state(lay) -> dict:
+    """``state.json`` of a sidecar the test has started."""
+    state = egress_sidecar.read_state(lay)
+    assert state is not None, "the sidecar wrote no state"
+    return state
+
+
 class ColimaFake(FakeRuntime):
     """FakeRuntime plus the profile's two networks and the sidecar's attachments."""
 
@@ -597,7 +604,7 @@ class InternalBindingTests(PrivateNetworkBase):
         self.ensure()
         conf = (self.root_layout().sidecar / egress_sidecar.CONF_NAME).read_text()
         self.assertIn(f"http_port {squid_config.BIND_PLACEHOLDER}:3128", conf)
-        self.assertTrue(egress_sidecar.read_state(self.root_layout())["bind_internal"])
+        self.assertTrue(_state(self.root_layout())["bind_internal"])
 
     def test_readiness_targets_the_internal_address_on_colima_only(self) -> None:
         colima = " ".join(egress_sidecar.readiness_argv(RUNTIME))
@@ -610,7 +617,7 @@ class InternalBindingTests(PrivateNetworkBase):
     def test_a_sidecar_started_before_the_binding_is_not_reloaded_with_it(self) -> None:
         self.ensure()
         lay = self.root_layout()
-        state = egress_sidecar.read_state(lay)
+        state = _state(lay)
         del state["bind_internal"]  # as written by an older version
         old_conf = egress_sidecar.render_squid_conf(
             _policy(self.tmp), copilot=state["copilot"], upstream=None
@@ -662,7 +669,7 @@ class HostAddressTests(PrivateNetworkBase):
 
     def test_the_address_is_recorded_and_fingerprinted(self) -> None:
         self.ensure()
-        state = egress_sidecar.read_state(self.root_layout())
+        state = _state(self.root_layout())
         self.assertEqual(state["host_address"], "192.168.5.2")
         self.assertEqual(state["restart_inputs"]["host_address"], "192.168.5.2")
         self.assertEqual(
@@ -741,7 +748,7 @@ class HostAddressTests(PrivateNetworkBase):
     def test_a_sidecar_without_a_recorded_address_is_left_alone(self) -> None:
         self.ensure()
         lay = self.root_layout()
-        state = egress_sidecar.read_state(lay)
+        state = _state(lay)
         del state["host_address"]  # as written before task 4.2
         del state["restart_inputs"]["host_address"]
         egress_sidecar.write_state(lay, state)

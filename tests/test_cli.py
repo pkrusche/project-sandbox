@@ -8651,6 +8651,12 @@ class ColimaSidecarServiceLaunchTests(TestCase):
     pinned sidecar address and services declared in egress.toml.
     """
 
+    # Set by the borrowed setUp.
+    root: Path
+    project: Path
+    state: Path
+    config: Path
+
     setUp = EgressSidecarLaunchTests.setUp
     tearDown = EgressSidecarLaunchTests.tearDown
     _policy = EgressSidecarLaunchTests._policy
