@@ -1120,3 +1120,42 @@ class AvailableCpusTests(TestCase):
             raise FileNotFoundError("docker")
 
         self.assertIsNone(available_cpus(DOCKER, run=missing))
+
+
+class FirewallCapabilityTests(TestCase):
+    """isolated-sidecar-network task 6.2: network capabilities only when it is on."""
+
+    def argv(self, **kwargs) -> list[str]:
+        root = Path("/inputs")
+        return build_run_argv(
+            runtime=DOCKER,
+            image="project-sandbox:test",
+            project_abs=Path("/workspace"),
+            claude_cfg=root / "claude/settings.json",
+            codex_cfg=root / "codex/config.toml",
+            codex_credentials_dir=None,
+            identity=GitIdentity(None, None),
+            memory="8g",
+            cpus=4,
+            extra_mounts=[],
+            agent="bash",
+            interactive=False,
+            **kwargs,
+        )
+
+    def caps(self, argv) -> list[str]:
+        return [argv[i + 1] for i, a in enumerate(argv) if a == "--cap-add"]
+
+    def test_capabilities_follow_the_firewall(self) -> None:
+        on = self.argv(firewall_enabled=True)
+        self.assertEqual(self.caps(on), ["NET_ADMIN", "NET_RAW"])
+        self.assertNotIn("PROJECT_SANDBOX_NO_FIREWALL=1", on)
+        skipped = self.argv(firewall_enabled=False)
+        self.assertEqual(self.caps(skipped), [])
+        self.assertIn("PROJECT_SANDBOX_NO_FIREWALL=1", skipped)
+
+    def test_a_colima_sandbox_without_its_firewall_keeps_the_step(self) -> None:
+        off = self.argv(firewall_enabled=True, firewall_capabilities=False)
+        self.assertEqual(self.caps(off), [])
+        # The step still runs, so it revokes its one-shot sudo rule.
+        self.assertNotIn("PROJECT_SANDBOX_NO_FIREWALL=1", off)

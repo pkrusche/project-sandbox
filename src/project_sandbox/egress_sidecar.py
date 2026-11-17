@@ -111,6 +111,9 @@ UPSTREAM_CA_NAME = "upstream-ca.pem"
 # same path; the firewall's sidecar block reads it (design.md Decision 8).
 SANDBOX_SUBDIR = "sandbox"
 SANDBOX_MOUNT = "/project-sandbox-egress"
+# The Colima sandbox firewall's on/off decision and service ports (design.md
+# D5), read by the firewall helper from the read-only SANDBOX_MOUNT.
+SANDBOX_FIREWALL_NAME = "sandbox-firewall"
 # 1 was the squid-sidecar line's internal-network state; it means "needs up".
 STATE_VERSION = 2
 
@@ -141,6 +144,12 @@ RESTART_FIELDS: dict[str, str] = {
     "log_options": "runtime log options",
     "host_address": f"Mac host address ({colima_network.HOST_NAME})",
 }
+# Runtimes whose sidecar-mode containment is enforced by the network and has
+# passed the end-to-end containment checks (isolated-sidecar-network design.md
+# D6). Their sandbox firewall defaults to off; elsewhere it stays on. Colima is
+# added only after scripts/e2e-colima.py's containment probes pass (task 7.2).
+VERIFIED_CONTAINMENT: frozenset[str] = frozenset()
+
 RESTART_HINT = (
     "Run `project-sandbox-egress restart` to apply; it interrupts every running "
     "sidecar-mode sandbox."
@@ -2071,16 +2080,45 @@ def sandbox_mount(directory: Path) -> str:
     return _mount_arg(MountSpec(directory, SANDBOX_MOUNT, readonly=True))
 
 
+@dataclass(frozen=True)
+class SandboxFirewall:
+    """The host's decision for a Colima sandbox's own firewall (design.md D5).
+
+    Written into the session's read-only inputs, never into the environment,
+    so the session command cannot choose it; ``ports`` are the declared
+    services the firewall admits on the sidecar's address besides 3128.
+    """
+
+    enabled: bool
+    ports: tuple[int, ...] = ()
+
+    def render(self) -> str:
+        for port in self.ports:
+            egress_policy.validate_service_port(
+                port, key="sandbox firewall port", source="the session input"
+            )
+        mode = "on" if self.enabled else "off"
+        ports = " ".join(str(p) for p in sorted(set(self.ports)))
+        return f"mode={mode}\nports={ports}\n"
+
+
+def sandbox_firewall_default(runtime: Runtime) -> bool:
+    """Whether the sandbox firewall is on unless a flag says otherwise (D6)."""
+    return runtime.name not in VERIFIED_CONTAINMENT
+
+
 def write_sandbox_inputs(
     directory: Path,
     *,
     ca: session_ca.SessionCA | None,
     upstream_ca: Path | None = None,
+    firewall: SandboxFirewall | None = None,
 ) -> Path:
-    """Write ``<session>/sandbox/{ca.pem,upstream-ca.pem}``.
+    """Write ``<session>/sandbox/{ca.pem,upstream-ca.pem,sandbox-firewall}``.
 
     ``ca.pem`` is copied only when the sidecar intercepts TLS, ``upstream-ca.pem``
     only when an upstream CA is configured; the key is never placed here.
+    ``sandbox-firewall`` is written only for a Colima sidecar session.
     """
     sandbox = directory / SANDBOX_SUBDIR
     sandbox.mkdir(mode=0o755)
@@ -2088,6 +2126,8 @@ def write_sandbox_inputs(
         (sandbox / session_ca.CERT_NAME).write_bytes(ca.cert_path.read_bytes())
     if upstream_ca is not None and upstream_ca.is_file():
         (sandbox / UPSTREAM_CA_NAME).write_bytes(upstream_ca.read_bytes())
+    if firewall is not None:
+        (sandbox / SANDBOX_FIREWALL_NAME).write_text(firewall.render())
     for path in sandbox.iterdir():
         path.chmod(0o644)
     return sandbox

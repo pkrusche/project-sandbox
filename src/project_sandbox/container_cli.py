@@ -509,7 +509,15 @@ def build_run_argv(
     network: str | None = None,
     shm_size: str | None = None,
     node_modules_tmpfs: bool = False,
+    firewall_capabilities: bool = True,
 ) -> list[str]:
+    """``docker run`` (or equivalent) argv for a sandbox.
+
+    ``firewall_enabled`` False skips the firewall step entirely (``--no-firewall``).
+    ``firewall_capabilities`` False keeps the step, so it still revokes its
+    one-shot privilege, but grants no network capabilities: a Colima sidecar
+    sandbox whose firewall is off (isolated-sidecar-network design.md D5).
+    """
     argv = [
         *runtime.argv(),
         "run",
@@ -534,7 +542,7 @@ def build_run_argv(
         argv += ["--name", container_name]
     if interactive:
         argv.append("-it")
-    if firewall_enabled:
+    if firewall_enabled and firewall_capabilities:
         argv += ["--cap-add", "NET_ADMIN", "--cap-add", "NET_RAW"]
     if network:
         argv += ["--network", network]

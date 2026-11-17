@@ -168,6 +168,49 @@ interfaces, and every Mac loopback service through the `host.docker.internal`
 alias (`203.0.113.113`). The sandbox firewall therefore stays the containment
 boundary there.
 
+### Containment by runtime
+
+| Runtime | Containment enforced by | Sandbox firewall | Sandboxes reach one another |
+|---|---|---|---|
+| Apple `container` | the sandbox firewall | always on | no: each firewall drops new connections both ways |
+| Colima | the network (`psbx-sandbox`, no VM address); the firewall is optional defense in depth | on until Colima's containment is verified; see below | yes, while their firewalls are off; and every declared service |
+| Docker Desktop | the sandbox firewall | always on | no |
+| Podman machine | the sandbox firewall | always on | no |
+| Docker Engine | the sandbox firewall | always on | no |
+| rootless Podman | the sandbox firewall | always on | no |
+
+Apple `container` stays firewall-level because a sandbox on its internal network
+still reaches the Mac (above). Closing that needs packet-filter rules on the Mac.
+
+### Sandbox firewall
+
+On Colima, sidecar-mode containment comes from the network: a sandbox on
+`psbx-sandbox` has no route to the Internet, the Mac, the VM or the metadata
+address, with or without its own firewall. The firewall adds defense in depth:
+default-deny, admitting only the sidecar's address on port 3128 and on each
+declared service port.
+
+```bash
+project-sandbox --runtime colima --egress sidecar --sandbox-firewall ...
+project-sandbox --runtime colima --egress sidecar --no-sandbox-firewall ...
+```
+
+- **Default.** The firewall stays on until Colima's containment has been
+  verified by the end-to-end containment checks; the launch says so.
+  `--no-sandbox-firewall` is refused until then. Once Colima is verified, the
+  default becomes off, and `--sandbox-firewall` turns it back on.
+- **Off.** The sandbox gets no `NET_ADMIN` or `NET_RAW`. The firewall step
+  still runs: it installs nothing, but revokes its one-shot `sudo` rule before
+  the agent starts, so the agent can never run it, or anything else, as root.
+- **Who decides.** The host writes the decision and the service ports into the
+  read-only per-session mount (`/project-sandbox-egress/sandbox-firewall`). The
+  firewall step reads only that file, never the environment, and aborts on a
+  missing or malformed one.
+- **No rebuild.** Both settings and every `service add` use the same image:
+  service ports reach the firewall through the session input.
+- The flags are accepted only with `--runtime colima --egress sidecar`. Every
+  other sidecar runtime always runs the sandbox firewall.
+
 ## Policy
 
 The policy is `$XDG_CONFIG_HOME/project-sandbox/egress.toml` (usually

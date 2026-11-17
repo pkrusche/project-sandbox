@@ -27,7 +27,15 @@ if [ -d /opt/node-project/node_modules ]; then
   fi
 fi
 
+{% if sandbox_firewall_switch -%}
+# Colima sidecar mode (isolated-sidecar-network design.md D5): the firewall
+# step always runs. It reads the host's on/off decision from the read-only
+# session input, never from this environment, and revokes its one-shot sudo
+# rule either way before the session command starts.
+if true; then
+{%- else -%}
 if [ "${PROJECT_SANDBOX_NO_FIREWALL:-0}" != "1" ]; then
+{%- endif %}
   if [ "${PROJECT_SANDBOX_QUIET:-0}" = "1" ]; then
     # Suppress the firewall banner, but capture output so a failure is still
     # visible (then abort, since the firewall is the sandbox boundary).

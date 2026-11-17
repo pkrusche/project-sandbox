@@ -902,3 +902,131 @@ class SidecarServiceLaunchTests(TestCase):
             config=self.SERVICES + '[egress.upstream]\nurl = "http://127.0.0.1:3128"\n',
         )
         self.assertIn("[egress.upstream]", message)
+
+
+class SandboxFirewallFlagTests(TestCase):
+    """isolated-sidecar-network task 6.1: --sandbox-firewall / --no-sandbox-firewall."""
+
+    SERVICES = "[egress.services]\nollama = { port = 11434 }\n"
+
+    def run_cli(self, *argv: str, verified=()) -> str:
+        import contextlib
+        import io
+        import os
+        import tempfile
+
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "project-sandbox").mkdir()
+            (Path(tmp) / "project-sandbox" / "egress.toml").write_text(self.SERVICES)
+            with (
+                patch.dict(os.environ, {"XDG_CONFIG_HOME": tmp, "XDG_STATE_HOME": tmp}),
+                patch.object(
+                    egress_sidecar, "VERIFIED_CONTAINMENT", frozenset(verified)
+                ),
+                contextlib.redirect_stdout(out),
+            ):
+                cli.main(
+                    ["--dry-run", *argv, "--agent", "bash", ".", "python:3.12-slim"]
+                )
+        return out.getvalue()
+
+    def refused(self, *argv: str, verified=()) -> str:
+        import contextlib
+        import io
+
+        with (
+            self.assertRaises(SystemExit) as ctx,
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            self.run_cli(*argv, verified=verified)
+        return str(ctx.exception)
+
+    def sandbox_line(self, output: str) -> str:
+        return next(
+            line
+            for line in output.splitlines()
+            if " run --rm " in line and "--name project-sandbox-2" in line
+        )
+
+    def test_flags_outside_colima_sidecar_mode_are_refused(self) -> None:
+        for flag in ("--sandbox-firewall", "--no-sandbox-firewall"):
+            for argv in (
+                ("--runtime", "docker", "--egress", "sidecar"),
+                ("--runtime", "apple-container", "--egress", "sidecar"),
+                ("--runtime", "colima"),
+                ("--runtime", "colima", "--egress", "firewall"),
+            ):
+                with self.subTest(flag=flag, argv=argv):
+                    message = self.refused(*argv, flag)
+                    self.assertIn(flag, message)
+                    self.assertIn("only to Colima sidecar mode", message)
+
+    def test_both_flags_are_a_usage_error_naming_the_conflict(self) -> None:
+        import contextlib
+        import io
+
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as ctx, contextlib.redirect_stderr(err):
+            cli.build_parser().parse_args(
+                ["--sandbox-firewall", "--no-sandbox-firewall", "."]
+            )
+        self.assertEqual(ctx.exception.code, 2)
+        self.assertIn("not allowed with argument", err.getvalue())
+
+    def test_turning_it_off_is_refused_while_unverified(self) -> None:
+        message = self.refused(
+            "--runtime", "colima", "--egress", "sidecar", "--no-sandbox-firewall"
+        )
+        self.assertIn("not been verified", message)
+
+    def test_unverified_default_is_on_and_says_why(self) -> None:
+        output = self.run_cli("--runtime", "colima", "--egress", "sidecar")
+        self.assertIn("Sandbox firewall: on (Colima's network containment", output)
+        self.assertIn(
+            "Would write the sandbox firewall input: on; service ports: 11434", output
+        )
+        self.assertIn(
+            "--cap-add NET_ADMIN --cap-add NET_RAW", self.sandbox_line(output)
+        )
+
+    def test_verified_default_is_off_without_capabilities(self) -> None:
+        output = self.run_cli(
+            "--runtime", "colima", "--egress", "sidecar", verified=("colima",)
+        )
+        self.assertNotIn("Sandbox firewall: on", output)
+        self.assertIn(
+            "Would write the sandbox firewall input: off; service ports: 11434; no "
+            "NET_ADMIN/NET_RAW",
+            output,
+        )
+        line = self.sandbox_line(output)
+        self.assertNotIn("--cap-add", line)
+        self.assertNotIn("PROJECT_SANDBOX_NO_FIREWALL", line)
+
+    def test_explicit_choices_on_a_verified_runtime(self) -> None:
+        on = self.run_cli(
+            "--runtime",
+            "colima",
+            "--egress",
+            "sidecar",
+            "--sandbox-firewall",
+            verified=("colima",),
+        )
+        self.assertIn("--cap-add NET_ADMIN", self.sandbox_line(on))
+        off = self.run_cli(
+            "--runtime",
+            "colima",
+            "--egress",
+            "sidecar",
+            "--no-sandbox-firewall",
+            verified=("colima",),
+        )
+        self.assertNotIn("--cap-add", self.sandbox_line(off))
+
+    def test_the_default_table_starts_without_colima(self) -> None:
+        self.assertNotIn("colima", egress_sidecar.VERIFIED_CONTAINMENT)
+        self.assertNotIn("apple-container", egress_sidecar.VERIFIED_CONTAINMENT)
+        self.assertTrue(
+            egress_sidecar.sandbox_firewall_default(colima_runtime("project-sandbox"))
+        )

@@ -220,8 +220,12 @@ a private Docker network instead of a published port:
   then started. It runs with `net.ipv4.ip_forward=0`, so it can't route between
   the networks, and Squid listens only on its `psbx-sandbox` address.
 - A sandbox joins `psbx-sandbox` only, with `egress` pinned to the sidecar's
-  address (`--add-host`), so its firewall admits that address on port 3128 and no
-  DNS. A process that ignores the proxy variables has no route out.
+  address (`--add-host`) and no usable DNS. A process that ignores the proxy
+  variables has no route out. Its own firewall, which admits only the
+  sidecar's address on 3128 and the declared service ports, is defense in
+  depth: on by default until Colima's containment is verified, and selected
+  with `--sandbox-firewall` / `--no-sandbox-firewall` (see
+  [Sandbox firewall](egress-sidecar.md#sandbox-firewall)).
 - Mac services reach the sandbox only as ports on the sidecar: local Ollama at
   `http://egress:11434/v1` and a loopback `--agent-proxy` at
   `http://egress:<port>/…`, each declared once with

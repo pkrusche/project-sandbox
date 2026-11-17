@@ -81,21 +81,21 @@ The spikes are scripted: `spikes/spike_colima.py` runs S1, S2 and S6, and `spike
 
 ## 6. Sandbox firewall switch
 
-- [ ] 6.1 Add `--sandbox-firewall` / `--no-sandbox-firewall`:
+- [x] 6.1 Add `--sandbox-firewall` / `--no-sandbox-firewall`:
   - mutually exclusive;
   - only valid in Colima sidecar mode;
   - `--no-sandbox-firewall` refused while Colima is unverified;
   - the default from the D6 table.
 
   Verify with CLI validation tests and the launch message while unverified.
-- [ ] 6.2 Write the firewall decision and the service ports into a root-owned session input file. Add `NET_ADMIN`/`NET_RAW` only when the firewall is on. Verify with session-input and run-argv tests.
-- [ ] 6.3 Extend `init-firewall.sh.j2` and `entrypoint.sh.j2` for Colima sidecar mode (D5):
+- [x] 6.2 Write the firewall decision and the service ports into a root-owned session input file. Add `NET_ADMIN`/`NET_RAW` only when the firewall is on. Verify with session-input and run-argv tests.
+- [x] 6.3 Extend `init-firewall.sh.j2` and `entrypoint.sh.j2` for Colima sidecar mode (D5):
   - **on:** default-deny with `egress` on 3128 plus the service ports from the session input, no DNS, IPv6 fail-closed;
   - **off:** take the run-once guard, revoke sudo, install nothing.
 
   Verify with rendered-template tests, and a test that the session input, not the environment, selects the mode.
-- [ ] 6.4 Regression test: adding a service and launching with `--no-build` doesn't rebuild, and the opt-in firewall admits the new port. Verify with a build-cache fingerprint test.
-- [ ] 6.5 Document the flag, the default and the containment matrix in `docs/egress-sidecar.md`. Document lateral reachability and the shared-service exposure in `docs/security.md`. Verify the matrix lists all six sidecar runtimes and gives Apple `container`'s reason.
+- [x] 6.4 Regression test: adding a service and launching with `--no-build` doesn't rebuild, and the opt-in firewall admits the new port. Verify with a build-cache fingerprint test.
+- [x] 6.5 Document the flag, the default and the containment matrix in `docs/egress-sidecar.md`. Document lateral reachability and the shared-service exposure in `docs/security.md`. Verify the matrix lists all six sidecar runtimes and gives Apple `container`'s reason.
 
 ## 7. End-to-end checks
 
@@ -116,7 +116,7 @@ The spikes are scripted: `spikes/spike_colima.py` runs S1, S2 and S6, and `spike
 ## 8. Roadmap
 
 - [x] 8.1 Add a ROADMAP entry "Namespace-owner gateway for Linux sidecar mode": a per-session privileged gateway container owns the network namespace and its nftables, and the sandbox joins with `--network container:` and no capabilities. It applies to Docker Engine, rootless Podman, Docker Desktop and Podman machine, and is not possible on Apple `container`. Also add "per-sandbox denial attribution from internal-network source IPs" under the existing sidecar follow-ups, citing S6. Verify that `ROADMAP.md` contains both entries.
-- [ ] 8.2 Add a ROADMAP entry "Isolated sidecar network on Apple `container`", citing S3–S5:
+- [x] 8.2 Add a ROADMAP entry "Isolated sidecar network on Apple `container`", citing S3–S5:
   - the host-only network reaches Mac services on all interfaces, and Mac loopback services through the `203.0.113.113` redirect;
   - `container run` has no `--add-host`;
   - addresses change on every restart;

@@ -1114,11 +1114,26 @@ def render_node_npm_dockerfile(
     return out
 
 
-def render_entrypoint(context_dir: Path, *, egress_sidecar: bool = False) -> Path:
+def render_entrypoint(
+    context_dir: Path,
+    *,
+    egress_sidecar: bool = False,
+    sandbox_firewall_switch: bool = False,
+) -> Path:
+    """``sandbox_firewall_switch``: a Colima sidecar image, whose firewall step
+    always runs and follows the session input (isolated-sidecar-network D5)."""
+    if sandbox_firewall_switch and not egress_sidecar:
+        raise ValueError("the sandbox firewall switch needs --egress sidecar")
     out = context_dir / "entrypoint.sh"
     tmpl = templating.get_template("entrypoint.sh.j2")
     generated_files.write_text(
-        out, tmpl.render(egress_sidecar=egress_sidecar) + "\n", mode=0o755
+        out,
+        tmpl.render(
+            egress_sidecar=egress_sidecar,
+            sandbox_firewall_switch=sandbox_firewall_switch,
+        )
+        + "\n",
+        mode=0o755,
     )
     return out
 

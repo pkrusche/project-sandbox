@@ -580,9 +580,9 @@ HTTP 407 does not trigger credential acquisition or direct fallback. See
 runtime that filters by hostname; see [Egress sidecar](egress-sidecar.md). The
 parts that matter for security:
 
-- **The sandbox firewall is the boundary.** A sidecar-mode sandbox runs on the
-  runtime's default network and has a route to the network, exactly like a
-  firewall-mode sandbox. What keeps it on the sidecar is its own firewall: the
+- **The sandbox firewall is the boundary** on every runtime except Colima
+  (below). A sidecar-mode sandbox runs on the runtime's default network and has
+  a route to the network, exactly like a firewall-mode sandbox. What keeps it on the sidecar is its own firewall: the
   `internet-proxy` policy of `init-firewall.sh`, run as root before the agent
   starts. It sets `INPUT`, `FORWARD` and `OUTPUT` to default `DROP`, admits new
   outbound TCP only to the sidecar endpoint (`host.docker.internal` on
@@ -590,11 +590,30 @@ parts that matter for security:
   or remote agent proxy, drops DNS, and fails closed when it cannot enforce
   IPv6. The agent runs without root, so it cannot change those rules, and
   `--no-firewall` is rejected in this mode.
-- **No routing isolation over firewall mode.** Sidecar mode filters by
-  hostname, but it does not add network isolation beyond firewall mode: if the
-  sandbox firewall failed, the sandbox could reach the network directly. Clients
-  that ignore the proxy variables fail closed instead of going around the
-  sidecar.
+- **No routing isolation over firewall mode** (except on Colima). Sidecar mode
+  filters by hostname, but it does not add network isolation beyond firewall
+  mode: if the sandbox firewall failed, the sandbox could reach the network
+  directly. Clients that ignore the proxy variables fail closed instead of
+  going around the sidecar.
+- **Colima: the network is the boundary.** A sandbox joins only
+  `psbx-sandbox`, an internal bridge on which the VM has no address. It has no
+  route to the Internet, the Mac, the VM's own listeners or the metadata
+  address, with or without its firewall. The sidecar is the only listener it
+  can reach, and it doesn't forward IP traffic. What this does not cover:
+  - **Lateral reachability.** Sandboxes on a profile share `psbx-sandbox`. Two
+    sandboxes without their firewall can connect to each other on any port; a
+    sandbox with its firewall on accepts no new inbound connection.
+  - **Shared services.** Every sandbox reaches every service in
+    `[egress.services]`, whichever launch needed it. The Mac sees each relayed
+    request as coming from `127.0.0.1`, so a service can't tell sandboxes, or
+    other clients in the VM, apart, and must authenticate on its own. Local
+    Ollama has no authentication. Use firewall mode when a session must reach
+    a service that other sandboxes must not.
+  - **The optional firewall.** With `--no-sandbox-firewall` (or the default,
+    once Colima's containment is verified) the sandbox gets no network
+    capabilities, and its firewall step only revokes the one-shot `sudo` rule.
+    The decision comes from the read-only session input written by the host,
+    never from the environment, so the agent cannot choose it.
 - **The port is open to the host.** The sidecar publishes its proxy on exactly
   one host address: `127.0.0.1`, or on Docker Engine the default bridge's
   gateway (for example `172.17.0.1`). Any process on the host can use it, and so

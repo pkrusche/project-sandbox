@@ -3567,3 +3567,87 @@ class SidecarSandboxRendererTests(TestCase):
             sidecar.index("project-sandbox-init-firewall"),
             sidecar.index("/project-sandbox-egress/ca.pem"),
         )
+
+
+class SandboxFirewallSwitchRenderTests(TestCase):
+    """isolated-sidecar-network task 6.3: the Colima switch in the baked scripts."""
+
+    def render(self, **kwargs) -> str:
+        from project_sandbox import firewall
+
+        with tempfile.TemporaryDirectory() as tmp:
+            return firewall.render(
+                Path(tmp),
+                extra_domains=[],
+                policy=firewall.INTERNET_PROXY,
+                egress_sidecar=True,
+                local_destinations=[
+                    firewall.TcpDestination(
+                        "Internet proxy", "egress", 3128, local=False
+                    )
+                ],
+                **kwargs,
+            ).read_text()
+
+    def test_switch_reads_the_session_input_before_touching_the_network(self) -> None:
+        script = self.render(sandbox_firewall_switch=True)
+        read = script.index(
+            "SANDBOX_FIREWALL_INPUT=/project-sandbox-egress/sandbox-firewall"
+        )
+        guard = script.index("mkdir -m 0700 /run/project-sandbox-firewall-init")
+        ca = script.index("update-ca-certificates")
+        off = script.index('if [ "$SANDBOX_FIREWALL" = "off" ]; then')
+        first_rule = script.index("iptables -F")
+        self.assertLess(guard, ca)
+        self.assertLess(ca, read)
+        self.assertLess(read, off)
+        self.assertLess(off, first_rule)
+        off_block = script[off : script.index("fi\n", off)]
+        self.assertIn("rm /etc/sudoers.d/agent-firewall", off_block)
+        self.assertIn("exit 0", off_block)
+        self.assertNotIn("iptables", off_block)
+        # The decision never comes from the environment.
+        self.assertNotIn("PROJECT_SANDBOX_NO_FIREWALL", script)
+        self.assertIn("10#$service_port == 3128", script)
+        self.assertIn('--dport "$service_port"', script)
+
+    def test_other_images_do_not_read_it(self) -> None:
+        script = self.render()
+        self.assertNotIn("SANDBOX_FIREWALL_INPUT", script)
+        self.assertNotIn("/project-sandbox-egress/sandbox-firewall", script)
+        self.assertNotIn("SERVICE_PORTS", script)
+
+    def test_the_switch_needs_the_sidecar(self) -> None:
+        from project_sandbox import dockerfile, firewall
+
+        with tempfile.TemporaryDirectory() as tmp, self.assertRaises(ValueError):
+            firewall.render(
+                Path(tmp),
+                extra_domains=[],
+                policy=firewall.INTERNET_PROXY,
+                sandbox_firewall_switch=True,
+                local_destinations=[
+                    firewall.TcpDestination("Internet proxy", "egress", 3128)
+                ],
+            )
+        with tempfile.TemporaryDirectory() as tmp, self.assertRaises(ValueError):
+            dockerfile.render_entrypoint(Path(tmp), sandbox_firewall_switch=True)
+
+    def test_the_entrypoint_always_runs_the_step_for_colima_sidecar_images(
+        self,
+    ) -> None:
+        from project_sandbox import dockerfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            switch = dockerfile.render_entrypoint(
+                Path(tmp), egress_sidecar=True, sandbox_firewall_switch=True
+            ).read_text()
+        with tempfile.TemporaryDirectory() as tmp:
+            plain = dockerfile.render_entrypoint(
+                Path(tmp), egress_sidecar=True
+            ).read_text()
+        self.assertNotIn("PROJECT_SANDBOX_NO_FIREWALL", switch)
+        self.assertIn('if true; then\n  if [ "${PROJECT_SANDBOX_QUIET', switch)
+        self.assertIn(
+            'if [ "${PROJECT_SANDBOX_NO_FIREWALL:-0}" != "1" ]; then\n  if', plain
+        )

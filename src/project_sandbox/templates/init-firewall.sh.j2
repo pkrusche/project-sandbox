@@ -36,6 +36,44 @@ if [ "$EGRESS_TRUST_CHANGED" = 1 ]; then
   update-ca-certificates >/dev/null 2>&1
 fi
 {%- endif %}
+{%- if sandbox_firewall_switch %}
+
+# Colima sidecar mode (isolated-sidecar-network design.md D5): the host decides
+# whether this sandbox installs its firewall, and which declared service ports
+# it admits on the sidecar's address, in the read-only session input. The
+# environment and arguments are never consulted; anything unexpected aborts.
+SANDBOX_FIREWALL_INPUT={{ egress_input_dir }}/sandbox-firewall
+fw_mode_line=""
+fw_ports_line=""
+if [ ! -f "$SANDBOX_FIREWALL_INPUT" ] || [ -L "$SANDBOX_FIREWALL_INPUT" ]; then
+  echo "ERROR: the sandbox firewall session input $SANDBOX_FIREWALL_INPUT is missing." >&2
+  exit 1
+fi
+{ IFS= read -r fw_mode_line || true; IFS= read -r fw_ports_line || true; } < "$SANDBOX_FIREWALL_INPUT"
+if [[ ! "$fw_mode_line" =~ ^mode=(on|off)$ ]]; then
+  echo "ERROR: the sandbox firewall session input has no valid mode." >&2
+  exit 1
+fi
+SANDBOX_FIREWALL="${BASH_REMATCH[1]}"
+if [[ ! "$fw_ports_line" =~ ^ports=([0-9]{4,5}( [0-9]{4,5})*)?$ ]]; then
+  echo "ERROR: the sandbox firewall session input has invalid service ports." >&2
+  exit 1
+fi
+read -r -a SERVICE_PORTS <<< "${fw_ports_line#ports=}"
+for service_port in "${SERVICE_PORTS[@]}"; do
+  if (( 10#$service_port < 1024 || 10#$service_port > 65535 || 10#$service_port == {{ sidecar_port }} )); then
+    echo "ERROR: the sandbox firewall session input names port $service_port." >&2
+    exit 1
+  fi
+done
+if [ "$SANDBOX_FIREWALL" = "off" ]; then
+  # The psbx-sandbox network is the boundary: install nothing, but revoke the
+  # one-shot privilege exactly as a completed firewall step does.
+  rm /etc/sudoers.d/agent-firewall
+  echo "Sandbox firewall: off (contained by the psbx-sandbox network; privilege revoked)."
+  exit 0
+fi
+{%- endif %}
 
 # Collect all IPv4 and IPv6 nameservers
 mapfile -t DNS4_LIST < <(awk '/^nameserver/ && $2 !~ /:/ {print $2}' /etc/resolv.conf)
@@ -248,6 +286,17 @@ for endpoint_ip in "${ENDPOINT_{{ endpoint_hosts.index(destination.hostname) }}[
   "$endpoint_tables" -A INPUT -s "$endpoint_ip" -p tcp --sport {{ destination.port }} -m conntrack --ctstate ESTABLISHED -j ACCEPT
 done
 {% endfor %}
+{%- if sandbox_firewall_switch %}
+# Declared sidecar services (session input): the sidecar's address only.
+for service_port in "${SERVICE_PORTS[@]}"; do
+  for endpoint_ip in "${ENDPOINT_{{ endpoint_hosts.index(sidecar_hostname) }}[@]}"; do
+    endpoint_tables=iptables
+    [[ "$endpoint_ip" == *:* ]] && endpoint_tables=ip6tables
+    "$endpoint_tables" -A OUTPUT -d "$endpoint_ip" -p tcp --dport "$service_port" -j ACCEPT
+    "$endpoint_tables" -A INPUT -s "$endpoint_ip" -p tcp --sport "$service_port" -m conntrack --ctstate ESTABLISHED -j ACCEPT
+  done
+done
+{%- endif %}
 
 {% if allow_host_network %}
 # ============================================================

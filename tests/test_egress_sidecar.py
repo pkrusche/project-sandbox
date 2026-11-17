@@ -1371,3 +1371,35 @@ class SandboxInputTests(TestCase):
             empty.mkdir()
             sandbox = egress_sidecar.write_sandbox_inputs(empty, ca=None)
             self.assertEqual(list(sandbox.iterdir()), [])
+
+
+class SandboxFirewallInputTests(TestCase):
+    """isolated-sidecar-network task 6.2: the firewall decision is a session input."""
+
+    def test_render(self) -> None:
+        SandboxFirewall = egress_sidecar.SandboxFirewall
+        self.assertEqual(
+            SandboxFirewall(True, (11434, 4000)).render(), "mode=on\nports=4000 11434\n"
+        )
+        self.assertEqual(SandboxFirewall(False).render(), "mode=off\nports=\n")
+        for bad in (3128, 80, 70000):
+            with self.subTest(port=bad), self.assertRaises(ValueError):
+                SandboxFirewall(True, (bad,)).render()
+
+    def test_written_only_when_given_and_read_only_mounted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "with"
+            session.mkdir()
+            sandbox = egress_sidecar.write_sandbox_inputs(
+                session,
+                ca=None,
+                firewall=egress_sidecar.SandboxFirewall(False, (4000,)),
+            )
+            path = sandbox / egress_sidecar.SANDBOX_FIREWALL_NAME
+            self.assertEqual(path.read_text(), "mode=off\nports=4000\n")
+            self.assertEqual(path.stat().st_mode & 0o777, 0o644)
+            self.assertIn("readonly", egress_sidecar.sandbox_mount(sandbox))
+            plain = Path(tmp) / "without"
+            plain.mkdir()
+            sandbox = egress_sidecar.write_sandbox_inputs(plain, ca=None)
+            self.assertFalse((sandbox / egress_sidecar.SANDBOX_FIREWALL_NAME).exists())

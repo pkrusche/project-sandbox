@@ -79,6 +79,7 @@ def render(
     devcontainer_destinations: list[LocalTcpDestination] | None = None,
     copilot_tenant_hosts: Sequence[str] = (),
     egress_sidecar: bool = False,
+    sandbox_firewall_switch: bool = False,
 ) -> Path:
     """Render the sandbox and devcontainer firewall scripts.
 
@@ -90,6 +91,13 @@ def render(
     ``devcontainer_destinations`` defaults to ``local_destinations``; it differs
     when the sandbox reaches an endpoint through a host relay that devcontainer
     tooling, which builds and runs outside project-sandbox, does not have.
+
+    ``sandbox_firewall_switch`` (Colima sidecar mode, isolated-sidecar-network
+    design.md D5) makes the script follow the session input: with ``off`` it
+    revokes its one-shot privilege and installs nothing; with ``on`` it also
+    admits each declared service port on the Internet proxy's (the sidecar's)
+    address. Service ports are never baked in, so declaring one needs no
+    rebuild.
 
     ``copilot_tenant_hosts`` are DNS-pinned GHE.com tenant hosts for
     ``--agent copilot --copilot-host <tenant>.ghe.com``. They go only into the
@@ -105,6 +113,9 @@ def render(
     if egress_sidecar and policy != INTERNET_PROXY:
         raise ValueError("--egress sidecar uses the Internet-proxy firewall policy")
     destinations = list(local_destinations or [])
+    sidecar = next((d for d in destinations if d.label == "Internet proxy"), None)
+    if sandbox_firewall_switch and (not egress_sidecar or sidecar is None):
+        raise ValueError("the sandbox firewall switch needs the sidecar destination")
     devcontainer = list(
         destinations if devcontainer_destinations is None else devcontainer_destinations
     )
@@ -134,6 +145,9 @@ def render(
         local_destinations=destinations,
         copilot_tenant_hosts=tenant_hosts,
         egress_sidecar=egress_sidecar,
+        sandbox_firewall_switch=sandbox_firewall_switch,
+        sidecar_hostname=sidecar.hostname if sidecar is not None else None,
+        sidecar_port=sidecar.port if sidecar is not None else None,
     )
     if egress_sidecar:
         return container
@@ -173,6 +187,9 @@ def _write(
     local_destinations: list[LocalTcpDestination],
     copilot_tenant_hosts: list[str],
     egress_sidecar: bool = False,
+    sandbox_firewall_switch: bool = False,
+    sidecar_hostname: str | None = None,
+    sidecar_port: int | None = None,
 ) -> Path:
     generated_files.write_text(
         out,
@@ -194,6 +211,9 @@ def _write(
             copilot_tenant_hosts=copilot_tenant_hosts,
             egress_sidecar=egress_sidecar,
             egress_input_dir=SIDECAR_INPUT_DIR,
+            sandbox_firewall_switch=sandbox_firewall_switch,
+            sidecar_hostname=sidecar_hostname,
+            sidecar_port=sidecar_port,
         )
         + "\n",
         mode=0o755,

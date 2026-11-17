@@ -8639,6 +8639,11 @@ class DefaultCpusTests(TestCase):
         probe.assert_not_called()
 
 
+from project_sandbox import egress_sidecar as _egress_sidecar_module
+
+_ORIGINAL_WRITE_SANDBOX_INPUTS = _egress_sidecar_module.write_sandbox_inputs
+
+
 class ColimaSidecarServiceLaunchTests(TestCase):
     """isolated-sidecar-network task 5.1: a real Colima sidecar-mode launch.
 
@@ -8655,7 +8660,7 @@ class ColimaSidecarServiceLaunchTests(TestCase):
 
     SERVICES = "[egress.services]\nagent-proxy = { port = 4000 }\n"
 
-    def launch_colima(self, *extra: str, agents=("bash",)):
+    def launch_colima(self, *extra: str, agents=("bash",), verified=()):
         from project_sandbox import colima_network, local_service_network
 
         runtime = container_cli.colima_runtime("work")
@@ -8677,11 +8682,31 @@ class ColimaSidecarServiceLaunchTests(TestCase):
             ),
             patch.object(cli.agent_proxy, "discover_models", return_value=["m"]),
             patch.object(cli.config_agents, "available_agents", return_value=agents),
+            patch.object(
+                cli.egress_sidecar, "VERIFIED_CONTAINMENT", frozenset(verified)
+            ),
+            patch.object(
+                cli.egress_sidecar,
+                "write_sandbox_inputs",
+                side_effect=self._capture_inputs,
+            ),
         )
         rc, events, out = self._launch(*extra, runtime=runtime, extra_patches=patches)
         self.assertEqual(rc, 0, out)
+        self.out = out
         (_, argv, env, _source, _exists) = next(e for e in events if e[0] == "run")
         return argv, env or {}
+
+    def _capture_inputs(self, directory, **kwargs):
+        """Write the inputs for real, keeping the firewall decision to assert on."""
+        written = _ORIGINAL_WRITE_SANDBOX_INPUTS(directory, **kwargs)
+        path = written / _egress_sidecar_module.SANDBOX_FIREWALL_NAME
+        self.firewall_input = path.read_text() if path.exists() else None
+        return written
+
+    def firewall_script(self) -> list[str]:
+        script = (self.project / ".project-sandbox" / "init-firewall.sh").read_text()
+        return [line for line in script.splitlines() if not line.startswith("#")]
 
     def test_a_loopback_gateway_is_reached_at_egress_only(self) -> None:
         self._policy(self.SERVICES)
@@ -8698,17 +8723,14 @@ class ColimaSidecarServiceLaunchTests(TestCase):
         self.assertEqual(env["HTTP_PROXY"], "http://egress:3128")
         self.assertIn("egress", env["NO_PROXY"].split(","))
         self.assertEqual(env["NO_PROXY"], env["no_proxy"])
-        firewall_script = (
-            self.project / ".project-sandbox" / "init-firewall.sh"
-        ).read_text()
-        code = [
-            line for line in firewall_script.splitlines() if not line.startswith("#")
-        ]
+        code = self.firewall_script()
         self.assertFalse([line for line in code if "host.docker.internal" in line])
-        self.assertIn('endpoints = ["egress", "egress"]', code)
-        self.assertIn("# Agent proxy: exact address/port pairs", firewall_script)
-        self.assertIn("--dport 4000", firewall_script)
-        self.assertIn("http://egress:4000/v1", firewall_script)
+        # Only the sidecar is baked in; service ports come from the session input.
+        self.assertIn('endpoints = ["egress"]', code)
+        self.assertFalse([line for line in code if "--dport 4000" in line])
+        self.assertIn('for service_port in "${SERVICE_PORTS[@]}"; do', code)
+        self.assertIn("  http://egress:4000/v1; then", code)
+        self.assertEqual(self.firewall_input, "mode=on\nports=4000\n")
 
     def test_a_remote_gateway_is_neither_admitted_nor_bypassed(self) -> None:
         self._policy('[egress]\nallow = ["gateway.corp.example"]\n')
@@ -8717,11 +8739,10 @@ class ColimaSidecarServiceLaunchTests(TestCase):
         )
         self.assertEqual(env["OPENAI_BASE_URL"], "https://gateway.corp.example:443/v1")
         self.assertNotIn("gateway.corp.example", env["NO_PROXY"])
-        firewall_script = (
-            self.project / ".project-sandbox" / "init-firewall.sh"
-        ).read_text()
-        self.assertNotIn("gateway.corp.example", firewall_script)
-        self.assertNotIn("Agent proxy is unreachable", firewall_script)
+        script = "\n".join(self.firewall_script())
+        self.assertNotIn("gateway.corp.example", script)
+        self.assertNotIn("Agent proxy is unreachable", script)
+        self.assertEqual(self.firewall_input, "mode=on\nports=\n")
 
     def test_pi_reaches_ollama_at_egress(self) -> None:
         self._policy("[egress.services]\nollama = { port = 11434 }\n")
@@ -8738,8 +8759,70 @@ class ColimaSidecarServiceLaunchTests(TestCase):
         self.assertNotIn("host.docker.internal", env["NO_PROXY"])
         hosts = [argv[i + 1] for i, a in enumerate(argv) if a == "--add-host"]
         self.assertEqual(hosts, ["egress:172.19.0.2"])
-        firewall_script = (
-            self.project / ".project-sandbox" / "init-firewall.sh"
-        ).read_text()
-        self.assertIn("# Ollama: exact address/port pairs", firewall_script)
-        self.assertIn('"http://egress:11434/api/tags"', firewall_script)
+        code = self.firewall_script()
+        self.assertIn('    "http://egress:11434/api/tags" >/dev/null; then', code)
+        self.assertEqual(self.firewall_input, "mode=on\nports=11434\n")
+
+    # --- 6.1/6.2 the sandbox firewall switch ------------------------------------
+
+    def caps(self, argv) -> list[str]:
+        return [argv[i + 1] for i, a in enumerate(argv) if a == "--cap-add"]
+
+    def test_unverified_default_is_on_with_capabilities_and_says_why(self) -> None:
+        self._policy(self.SERVICES)
+        argv, _env = self.launch_colima()
+        self.assertEqual(self.caps(argv), ["NET_ADMIN", "NET_RAW"])
+        self.assertEqual(self.firewall_input, "mode=on\nports=4000\n")
+        self.assertIn("Sandbox firewall: on (Colima's network containment", self.out)
+
+    def test_verified_default_is_off_without_capabilities(self) -> None:
+        self._policy(self.SERVICES)
+        argv, _env = self.launch_colima(verified=("colima",))
+        self.assertEqual(self.caps(argv), [])
+        self.assertEqual(self.firewall_input, "mode=off\nports=4000\n")
+        # The firewall step still runs (and revokes sudo): no skip variable.
+        self.assertNotIn("PROJECT_SANDBOX_NO_FIREWALL=1", argv)
+        self.assertNotIn("Sandbox firewall: on", self.out)
+        entrypoint = (self.project / ".project-sandbox" / "entrypoint.sh").read_text()
+        self.assertIn("if true; then", entrypoint)
+        self.assertNotIn("PROJECT_SANDBOX_NO_FIREWALL", entrypoint)
+
+    def test_opt_in_on_a_verified_runtime(self) -> None:
+        self._policy(self.SERVICES)
+        argv, _env = self.launch_colima("--sandbox-firewall", verified=("colima",))
+        self.assertEqual(self.caps(argv), ["NET_ADMIN", "NET_RAW"])
+        self.assertEqual(self.firewall_input, "mode=on\nports=4000\n")
+
+    def test_opt_out_on_a_verified_runtime(self) -> None:
+        self._policy(self.SERVICES)
+        argv, _env = self.launch_colima("--no-sandbox-firewall", verified=("colima",))
+        self.assertEqual(self.caps(argv), [])
+        self.assertEqual(self.firewall_input, "mode=off\nports=4000\n")
+
+    def test_one_image_serves_both_modes(self) -> None:
+        self._policy(self.SERVICES)
+        self.launch_colima(verified=("colima",))
+        off = (self.project / ".project-sandbox" / "init-firewall.sh").read_text()
+        self.launch_colima("--sandbox-firewall", verified=("colima",))
+        on = (self.project / ".project-sandbox" / "init-firewall.sh").read_text()
+        self.assertEqual(off, on)
+
+    # --- 6.4 services never rebuild the image -----------------------------------
+
+    def test_adding_a_service_needs_no_rebuild_and_the_firewall_admits_it(self) -> None:
+        from project_sandbox import build_cache
+
+        context = self.project / ".project-sandbox"
+        self._policy(self.SERVICES)
+        self.launch_colima("--sandbox-firewall")
+        before = build_cache.compute_fingerprint(context, extra={})
+        self.assertEqual(self.firewall_input, "mode=on\nports=4000\n")
+        self._policy(self.SERVICES + "ollama = { port = 11434 }\n")
+        argv, _env = self.launch_colima("--no-build", "--sandbox-firewall")
+        self.assertEqual(build_cache.compute_fingerprint(context, extra={}), before)
+        # The new port reaches the baked firewall through the session input.
+        self.assertEqual(self.firewall_input, "mode=on\nports=4000 11434\n")
+        self.assertIn(
+            'for service_port in "${SERVICE_PORTS[@]}"; do', self.firewall_script()
+        )
+        self.assertEqual(argv.count("NET_ADMIN"), 1)

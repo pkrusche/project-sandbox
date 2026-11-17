@@ -305,6 +305,30 @@ def build_parser() -> ArgumentParser:
             "project-sandbox-egress; see docs/egress-sidecar.md."
         ),
     )
+    sandbox_firewall = p.add_mutually_exclusive_group()
+    sandbox_firewall.add_argument(
+        "--sandbox-firewall",
+        dest="sandbox_firewall",
+        action="store_const",
+        const=True,
+        default=None,
+        help=(
+            "Colima sidecar mode only: also install the sandbox's own firewall, "
+            "admitting only the sidecar (defense in depth on top of the isolated "
+            "network)."
+        ),
+    )
+    sandbox_firewall.add_argument(
+        "--no-sandbox-firewall",
+        dest="sandbox_firewall",
+        action="store_const",
+        const=False,
+        help=(
+            "Colima sidecar mode only: rely on the isolated network alone, with no "
+            "sandbox firewall or network capabilities. Refused until Colima's "
+            "containment is verified."
+        ),
+    )
     p.add_argument(
         "--pi-ollama",
         action="store_true",
@@ -561,6 +585,7 @@ def _main_scoped(argv: list[str] | None, resources: contextlib.ExitStack) -> int
     args = build_parser().parse_args(raw_argv)
 
     _validate_egress_args(args)
+    sandbox_firewall = _sandbox_firewall(args)
     sidecar = args.egress == EGRESS_SIDECAR
     internet_proxy_config = _validate_internet_proxy_args(args)
 
@@ -762,6 +787,7 @@ def _main_scoped(argv: list[str] | None, resources: contextlib.ExitStack) -> int
             available_agents=available_agents,
             egress=egress,
             build_ca_certificates=build_ca_certificates,
+            sandbox_firewall=sandbox_firewall,
         )
 
     # Fail before model discovery, secret loading, filesystem rendering, image
@@ -966,7 +992,11 @@ def _main_scoped(argv: list[str] | None, resources: contextlib.ExitStack) -> int
         if not is_chroot and _synthesises_dockerfile(args):
             dockerfile.render_dockerignore(context_dir, build_context=build_context)
         if not is_chroot:
-            dockerfile.render_entrypoint(context_dir, egress_sidecar=sidecar)
+            dockerfile.render_entrypoint(
+                context_dir,
+                egress_sidecar=sidecar,
+                sandbox_firewall_switch=service_host is not None,
+            )
             dockerfile.render_devcontainer_entrypoint(context_dir)
             firewall.render(
                 context_dir,
@@ -1006,6 +1036,7 @@ def _main_scoped(argv: list[str] | None, resources: contextlib.ExitStack) -> int
                 ),
                 copilot_tenant_hosts=_copilot_tenant_hosts(run_agent, copilot_host),
                 egress_sidecar=sidecar,
+                sandbox_firewall_switch=service_host is not None,
             )
         else:
             chroot.render(context_dir)
@@ -1343,7 +1374,17 @@ def _main_scoped(argv: list[str] | None, resources: contextlib.ExitStack) -> int
                 build_ca_certificates=build_ca_certificates,
             )
             egress_mount = _egress_session_inputs(
-                egress_stack, egress_state, session_id=session_id
+                egress_stack,
+                egress_state,
+                session_id=session_id,
+                firewall=(
+                    egress_sidecar.SandboxFirewall(
+                        enabled=bool(sandbox_firewall),
+                        ports=tuple(s.port for s in egress.services),
+                    )
+                    if private_sidecar
+                    else None
+                ),
             )
             egress_started_at = egress_sidecar.sidecar_clock(
                 runtime, egress_sidecar.default_runner
@@ -1397,6 +1438,7 @@ def _main_scoped(argv: list[str] | None, resources: contextlib.ExitStack) -> int
             ),
             session_id=session_id,
             egress_mount=egress_mount,
+            sandbox_firewall=sandbox_firewall,
         )
         if runtime.context is not None:
             colima_mounts.check(runtime, colima_mounts.mount_sources(cmd))
@@ -1922,6 +1964,46 @@ def _validate_agent_proxy_args(args, run_agent: str | None) -> int | None:
     return port
 
 
+def _sandbox_firewall(args) -> bool | None:
+    """Whether a Colima sidecar sandbox installs its own firewall; ``None`` elsewhere.
+
+    The flags apply only to Colima sidecar mode. The default follows the
+    verified-containment table, and turning the firewall off is refused until
+    Colima is in it (isolated-sidecar-network design.md D5, D6).
+    """
+    requested = getattr(args, "sandbox_firewall", None)
+    colima_sidecar = (
+        args.egress == EGRESS_SIDECAR and args.runtime == container_cli.COLIMA_NAME
+    )
+    if not colima_sidecar:
+        if requested is not None:
+            flag = "--sandbox-firewall" if requested else "--no-sandbox-firewall"
+            raise SystemExit(
+                f"{flag} applies only to Colima sidecar mode (--runtime colima "
+                "--egress sidecar). Elsewhere the sandbox firewall is always "
+                "installed, except with --egress firewall --no-firewall."
+            )
+        return None
+    runtime = container_cli.colima_runtime(
+        args.colima_profile or container_cli.COLIMA_DEFAULT_PROFILE
+    )
+    unverified = egress_sidecar.sandbox_firewall_default(runtime)
+    if requested is False and unverified:
+        raise SystemExit(
+            "--no-sandbox-firewall is refused: Colima's network containment has "
+            "not been verified yet, so its sandbox firewall stays on. See "
+            "docs/egress-sidecar.md#sandbox-firewall."
+        )
+    if requested is None:
+        if unverified:
+            print(
+                "Sandbox firewall: on (Colima's network containment has not been "
+                "verified yet, so the sandbox also runs its own firewall)."
+            )
+        return unverified
+    return requested
+
+
 def _validate_egress_args(args) -> None:
     """Reject unsupported --egress sidecar combinations before any work is done.
 
@@ -2083,15 +2165,19 @@ def _egress_session_inputs(
     sidecar: egress_sidecar.Sidecar,
     *,
     session_id: str,
+    firewall: egress_sidecar.SandboxFirewall | None = None,
 ) -> str:
-    """Write ``sessions/<sid>/sandbox/`` (removed when the stack closes)."""
+    """Write ``sessions/<sid>/sandbox/`` (removed when the stack closes).
+
+    ``firewall`` is the Colima sandbox firewall decision (design.md D5).
+    """
     sessions = sidecar.layout.sessions
     session_ca_module.remove_stale(sessions)
     directory = stack.enter_context(
         session_ca_module.session_directory(session_id.lower(), root=sessions)
     )
     sandbox = egress_sidecar.write_sandbox_inputs(
-        directory, ca=sidecar.ca, upstream_ca=sidecar.upstream_ca
+        directory, ca=sidecar.ca, upstream_ca=sidecar.upstream_ca, firewall=firewall
     )
     return egress_sidecar.sandbox_mount(sandbox)
 
@@ -2245,31 +2331,15 @@ def _local_firewall_destinations(
     proxy_url: str | None = None,
     service_host: str | None = None,
 ) -> list[firewall.TcpDestination]:
-    """``service_host``: Colima sidecar mode, where services are sidecar ports
-    and a remote gateway is reached through the forward proxy."""
+    """``service_host``: Colima sidecar mode. Only the sidecar's proxy is baked
+    in: the firewall admits the declared service ports from the session input
+    (design.md D5), and a remote gateway is reached through the forward proxy."""
     destinations = []
     if config:
         destinations.append(
             firewall.TcpDestination.from_endpoint("Internet proxy", config.endpoint)
         )
     if service_host is not None:
-        if proxy_url and agent_proxy.parse(proxy_url).local:
-            endpoint = agent_proxy.parse(proxy_url)
-            destinations.append(
-                firewall.TcpDestination(
-                    "Agent proxy",
-                    service_host,
-                    endpoint.port,
-                    endpoint.scheme,
-                    endpoint.path,
-                )
-            )
-        if pi_ollama_enabled:
-            destinations.append(
-                firewall.TcpDestination(
-                    "Ollama", service_host, local_service_network.PORT
-                )
-            )
         return destinations
     if proxy_url:
         destinations.append(
@@ -2321,6 +2391,7 @@ def _dry_run(
     available_agents: tuple[str, ...],
     egress: egress_policy.PolicyFile | None = None,
     build_ca_certificates: tuple[bytes, ...] = (),
+    sandbox_firewall: bool | None = None,
 ) -> int:
     asset_project = (
         workspace if (args.python_uv or args.node_npm) and args.branch else project
@@ -2519,6 +2590,14 @@ def _dry_run(
         if egress is not None
         else None
     )
+    if private_sidecar:
+        assert egress is not None
+        ports = " ".join(str(s.port) for s in egress.services) or "none"
+        print(
+            "Would write the sandbox firewall input: "
+            f"{'on' if sandbox_firewall else 'off'}; service ports: {ports}"
+            + ("" if sandbox_firewall else "; no NET_ADMIN/NET_RAW")
+        )
     forwarding_plans = local_service_network.prepare_services(
         runtime,
         # Colima sidecar mode forwards nothing: services are sidecar ports.
@@ -2629,6 +2708,7 @@ def _dry_run(
             else local_service_network.network_argument(forwarding_plans)
         ),
         egress_mount=egress_mount,
+        sandbox_firewall=sandbox_firewall,
     )
     if unsupervised:
         assert log_path is not None
@@ -3771,6 +3851,7 @@ def _build_session_command(
     egress_mount: str | None = None,
     vcs_layout: vcs_access.Layout | None = None,
     vcs_mask_dir: Path | None = None,
+    sandbox_firewall: bool | None = None,
 ) -> tuple[list[str], Path | None, bool, list[str] | None]:
     inputs_dir = inputs_dir or context_dir
     try:
@@ -4052,6 +4133,9 @@ def _build_session_command(
             extra_mounts=extra_mounts,
             agent=run_mode_agent,
             firewall_enabled=not args.no_firewall,
+            # A Colima sidecar sandbox without its firewall gets no network
+            # capabilities; its firewall step still revokes the sudo rule.
+            firewall_capabilities=sandbox_firewall is not False,
             interactive=not unsupervised,
             extra_env=extra_env,
             env_file=staged_api_key_env_file if use_api_key_env_file else None,
