@@ -164,6 +164,16 @@ cross-runtime policy checks. It is omitted for chroot and `--no-build`. Known
 hardening gaps (XFAIL) and skipped prerequisites (SKIP) are listed in its log
 but do not fail it; `--strict-security-coverage` makes them fail, as detailed
 in [Security verification](security-verification.md).
+Two options are on by default here:
+
+- **`--incremental`:** suites that already passed on the current source and
+  configuration are skipped (see below). Pass `--no-incremental` for a full
+  run.
+- **`--replace-existing`:** the `egress-sidecar`, `copilot-egress`, `colima` and
+  `security` suites replace an existing global egress sidecar instead of refusing to
+  start, so running sidecar-mode sandboxes lose egress. Pass
+  `--no-replace-existing` to keep the refusal.
+
 Missing checkouts (suites skipped) and stopped services (suites still run) are
 reported as notes before and after the run. The billable
 Copilot suites (`copilot`, `copilot-egress`) run by default and need a Copilot
@@ -241,15 +251,16 @@ single one, pass `--only SUITE`; `--list` prints the accepted suite names:
 ./scripts/run-e2e-tests.sh --only git-workflow
 ```
 
-To resume a long run after fixing a failure, pass `--incremental` (to either
-`run-e2e-tests.sh` or `run_all_supported_e2e_tests.sh`). Every suite that
+To resume a long run after fixing a failure, pass `--incremental` to
+`run-e2e-tests.sh`; `run_all_supported_e2e_tests.sh` does this by default
+(`--no-incremental` turns it off). Every suite that
 passes is recorded in the gitignored `.e2e-state/` directory, keyed by the
 checkout's current file contents and the run's configuration. Later
 `--incremental` runs then report those suites as `PASS (cached)` instead of
 running them again:
 
 ```bash
-./scripts/run_all_supported_e2e_tests.sh --incremental
+./scripts/run-e2e-tests.sh --incremental --runtime docker
 ```
 
 - **Source:** the source is the jj working copy (or, without jj, the git
@@ -259,7 +270,8 @@ running them again:
 - **Configuration:** the configuration is the runtime plus the options that
   change how a suite behaves, such as `--base-image`, `--no-build`, fixture
   hosts, `--ca-cert` paths and the proxy checkout paths. Options that only
-  select suites (`--only`, `--with-*`, `--all-tests`) and `--keep` are not part
+  select suites (`--only`, `--with-*`, `--all-tests`), `--keep` and
+  `--replace-existing` are not part
   of it, so `--only SUITE --incremental` reuses results from a full run.
 - **What always runs:** failed and skipped suites always run again.
 - **Not covered:** the contents of the external checkouts and the state of host

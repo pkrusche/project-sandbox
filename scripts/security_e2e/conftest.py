@@ -59,6 +59,12 @@ def pytest_addoption(parser):
     parser.addoption(
         "--security-artifacts", help="Empty directory for retained logs and fixtures"
     )
+    parser.addoption(
+        "--replace-existing",
+        action="store_true",
+        help="Replace (remove) an existing global egress sidecar on the runtime "
+        "instead of refusing to run the sidecar checks",
+    )
 
 
 def pytest_configure(config):

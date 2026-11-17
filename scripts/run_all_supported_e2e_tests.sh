@@ -43,7 +43,7 @@
 #   scripts/run_all_supported_e2e_tests.sh [--runtimes LIST]
 #       [--internet-proxy-dir DIR] [--agentgateway-dir DIR]
 #       [--no-copilot] [--no-internet-proxy-isolation] [--no-build] [--keep]
-#       [--incremental] [--strict-security-coverage]
+#       [--no-replace-existing] [--no-incremental] [--strict-security-coverage]
 #       [--colima-profile NAME] [--no-colima]
 #       [--base-image IMAGE] [--dry-run] [-- RUN-E2E-TESTS-OPTIONS...]
 #
@@ -61,10 +61,17 @@
 #   --no-colima       skip the colima suite and never start a Colima profile
 #   --no-build        forwarded; also drops opt-in suites that require builds
 #   --keep            forwarded to run-e2e-tests.sh
+#   --no-replace-existing
+#                     refuse to replace an existing global egress sidecar. By
+#                     default --replace-existing is forwarded, so the
+#                     egress-sidecar, copilot-egress, colima and security suites replace
+#                     (and stop) a sidecar that is already running instead of
+#                     failing; running sidecar-mode sandboxes lose egress
 #   --strict-security-coverage
 #                     forwarded: fail security on known limitations and skips too
-#   --incremental     forwarded: skip suites that already passed on the current
-#                     source and configuration, per runtime (state in .e2e-state/)
+#   --no-incremental  rerun every suite. By default --incremental is forwarded:
+#                     suites that already passed on the current source and
+#                     configuration are skipped, per runtime (state in .e2e-state/)
 #   --base-image IMG  forwarded to run-e2e-tests.sh
 #   --dry-run         print the detected plan and commands without running them
 #   -- ...            pass the remaining options to every run-e2e-tests.sh run
@@ -95,6 +102,8 @@ COMMON_ARGS=()
 EXTRA_ARGS=()
 
 CLEANUP=1
+REPLACE_EXISTING=1
+INCREMENTAL=1
 
 usage() { sed -n '2,${/^#/!q;p;}' "$0"; }
 
@@ -109,7 +118,9 @@ while [ $# -gt 0 ]; do
     --no-internet-proxy-isolation) NO_INTERNET_ISOLATION=1; shift ;;
     --no-build) NO_BUILD=1; COMMON_ARGS+=(--no-build); shift ;;
     --keep) COMMON_ARGS+=(--keep); shift ;;
-    --incremental) COMMON_ARGS+=(--incremental); shift ;;
+    --no-replace-existing) REPLACE_EXISTING=0; shift ;;
+    --incremental) INCREMENTAL=1; shift ;;
+    --no-incremental) INCREMENTAL=0; shift ;;
     --strict-security-coverage) COMMON_ARGS+=(--strict-security-coverage); shift ;;
     --base-image) COMMON_ARGS+=(--base-image "${2:?--base-image needs a value}"); shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
@@ -121,6 +132,13 @@ while [ $# -gt 0 ]; do
 done
 
 command -v uv >/dev/null 2>&1 || { echo "ERROR: uv not found on PATH." >&2; exit 64; }
+
+if [ "$REPLACE_EXISTING" = 1 ]; then
+  COMMON_ARGS+=(--replace-existing)
+fi
+if [ "$INCREMENTAL" = 1 ]; then
+  COMMON_ARGS+=(--incremental)
+fi
 
 NOTES=()
 note() { NOTES+=("$1"); }

@@ -314,7 +314,12 @@ class RunAllSupportedE2ETests(unittest.TestCase):
             "--with-internet-proxy",
         ):
             self.assertNotIn(flag, docker)
-        self.assertTrue(chroot.endswith("run-e2e-tests.sh --runtime chroot"), chroot)
+        self.assertTrue(
+            chroot.endswith(
+                "run-e2e-tests.sh --runtime chroot --replace-existing --incremental"
+            ),
+            chroot,
+        )
         # Cleanup brackets the runs and covers container runtimes only.
         for cleanup in (before, after):
             self.assertTrue(
@@ -648,3 +653,109 @@ class RunE2EPlanTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DefaultForwardingTests(unittest.TestCase):
+    """--replace-existing and --incremental are on by default in run_all_supported."""
+
+    RUNNER = SCRIPT.parent / "run-e2e-tests.sh"
+    _run = RunAllSupportedE2ETests._run
+    _runs = staticmethod(RunAllSupportedE2ETests._runs)
+    PROXIES = (
+        "--internet-proxy-dir",
+        "/nonexistent/ipl",
+        "--agentgateway-dir",
+        "/nonexistent/agw",
+    )
+
+    def forwarded(self, *args: str) -> list[str]:
+        result = self._run(*args, *self.PROXIES)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        runs = self._runs(result)
+        self.assertEqual(len(runs), 2)
+        return runs
+
+    def test_both_are_forwarded_by_default(self) -> None:
+        for line in self.forwarded():
+            self.assertIn(" --replace-existing", line)
+            self.assertIn(" --incremental", line)
+
+    def test_each_can_be_turned_off(self) -> None:
+        for line in self.forwarded("--no-replace-existing"):
+            self.assertNotIn("--replace-existing", line)
+            self.assertIn(" --incremental", line)
+        for line in self.forwarded("--no-incremental"):
+            self.assertNotIn("--incremental", line)
+            self.assertIn(" --replace-existing", line)
+
+    def test_explicit_flags_are_not_forwarded_twice(self) -> None:
+        for line in self.forwarded("--incremental"):
+            self.assertEqual(line.count("--incremental"), 1)
+        for line in self.forwarded("--no-incremental", "--incremental"):
+            self.assertEqual(line.count("--incremental"), 1)
+
+    def runner_args(self, suite: str, *extra: str) -> list[str]:
+        """The arguments run-e2e-tests.sh passes to ``suite``'s script."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            log = root / "arguments"
+            fake_uv = root / "uv"
+            fake_uv.write_text(
+                '#!/bin/sh\nprintf "%s " "$@" >> "$E2E_ARGUMENT_LOG"\n'
+                'echo >> "$E2E_ARGUMENT_LOG"\n'
+            )
+            fake_uv.chmod(0o755)
+            result = subprocess.run(
+                [
+                    "bash",
+                    str(self.RUNNER),
+                    "--only",
+                    suite,
+                    "--runtime",
+                    "docker",
+                    *extra,
+                ],
+                env={
+                    **os.environ,
+                    "PATH": str(root) + os.pathsep + os.environ["PATH"],
+                    "E2E_ARGUMENT_LOG": str(log),
+                },
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=60,
+            )
+            lines = log.read_text().splitlines() if log.exists() else []
+        script = {
+            "egress-sidecar": "e2e-egress-sidecar.py",
+            "copilot-egress": "e2e-copilot-egress.py",
+            "colima": "e2e-colima.py",
+            "security": "security_e2e",
+        }[suite]
+        runs = [
+            line.split()
+            for line in lines
+            if script in line and "--check-available" not in line
+        ]
+        self.assertEqual(len(runs), 1, result.stdout + result.stderr + str(lines))
+        return runs[0]
+
+    def test_the_runner_forwards_replace_existing_only_when_asked(self) -> None:
+        for suite in ("egress-sidecar", "copilot-egress", "colima", "security"):
+            with self.subTest(suite=suite):
+                self.assertNotIn("--replace-existing", self.runner_args(suite))
+                self.assertIn(
+                    "--replace-existing",
+                    self.runner_args(suite, "--replace-existing"),
+                )
+
+    def test_the_security_suite_refuses_an_existing_sidecar_unless_asked(self) -> None:
+        source = (ROOT / "scripts/security_e2e/test_network.py").read_text()
+        fixture = source[source.index("def sidecar(sandbox, request):") :]
+        fixture = fixture[: fixture.index("def reached(")]
+        self.assertIn('getoption("--replace-existing")', fixture)
+        self.assertIn("assert existing is None or replace", fixture)
+        # The replacement is an explicit `down` before the first launch.
+        self.assertLess(fixture.index('cli("down"'), fixture.index("yield fixture"))
+        conftest = (ROOT / "scripts/security_e2e/conftest.py").read_text()
+        self.assertIn('"--replace-existing"', conftest)

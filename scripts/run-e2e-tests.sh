@@ -40,7 +40,7 @@
 # Usage:
 #   scripts/run-e2e-tests.sh [--runtime chroot|auto|apple-container|docker|podman]
 #                            [--base-image IMAGE] [--no-build] [--keep]
-#                            [--only SUITE] [--list] [--plan] [--all-tests]
+#                            [--replace-existing] [--only SUITE] [--list] [--plan] [--all-tests]
 #                            [--incremental] [--strict-security-coverage]
 #                            [--with-agent-proxy] [--with-internet-proxy]
 #                            [--with-proxy-endpoints --proxy-fixture-host IP]
@@ -59,6 +59,10 @@
 #   --no-build       forward --no-build to workflow scripts
 #   --keep           keep temporary directories on failure for debugging, and
 #                    keep the captured log of every suite, not just failures
+#   --replace-existing
+#                    let egress-sidecar, copilot-egress, colima and security
+#                    replace (and stop) an existing global egress sidecar instead
+#                    of refusing to start; not part of the --incremental key
 #   --only SUITE     run just one suite by name (default: run every available suite).
 #                    Naming an opt-in suite is itself the opt-in, so --only agent-proxy,
 #                    --only agent-proxy-isolation, --only internet-proxy-isolation,
@@ -187,6 +191,7 @@ RUNTIME="auto"
 BASE_IMAGE="python:3.12-slim"
 NO_BUILD=0
 KEEP=0
+REPLACE_EXISTING=0
 ONLY=""
 PLAN=0
 INCREMENTAL=0
@@ -229,6 +234,7 @@ while [ $# -gt 0 ]; do
     --base-image) BASE_IMAGE="${2:?--base-image needs a value}"; shift 2 ;;
     --no-build)   NO_BUILD=1; shift ;;
     --keep)       KEEP=1; shift ;;
+    --replace-existing) REPLACE_EXISTING=1; shift ;;
     --only)       ONLY="${2:?--only needs a value}"; shift 2 ;;
     --list)       printf '%s\n' "${SUITES[@]}"; exit 0 ;;
     --plan)       PLAN=1; shift ;;
@@ -714,6 +720,7 @@ if selected copilot-egress; then
       [ -n "$COPILOT_EGRESS_REPORT_DIR" ] && COPILOT_EGRESS_ARGS+=(--report-dir "$COPILOT_EGRESS_REPORT_DIR")
       # No --no-build: each run bakes a fresh fixture CA into the image.
       [ "$KEEP" = 1 ] && COPILOT_EGRESS_ARGS+=(--keep)
+      [ "$REPLACE_EXISTING" = 1 ] && COPILOT_EGRESS_ARGS+=(--replace-existing)
       run_suite "copilot-egress" uv run python "$ROOT/scripts/e2e-copilot-egress.py" "${COPILOT_EGRESS_ARGS[@]}"
     fi
   else
@@ -730,6 +737,7 @@ if selected egress-sidecar; then
       EGRESS_SIDECAR_ARGS=(--runtime "$CONTAINER_RUNTIME" --base-image "$BASE_IMAGE")
       [ "$NO_BUILD" = 1 ] && EGRESS_SIDECAR_ARGS+=(--no-build)
       [ "$KEEP" = 1 ] && EGRESS_SIDECAR_ARGS+=(--keep)
+      [ "$REPLACE_EXISTING" = 1 ] && EGRESS_SIDECAR_ARGS+=(--replace-existing)
       run_suite "egress-sidecar" uv run python "$ROOT/scripts/e2e-egress-sidecar.py" "${EGRESS_SIDECAR_ARGS[@]}"
     fi
   else
@@ -744,6 +752,7 @@ if selected colima; then
     if uv run python "$ROOT/scripts/e2e-colima.py" --colima-profile "$COLIMA_PROFILE" --check-available >/dev/null 2>&1; then
       COLIMA_ARGS=(--colima-profile "$COLIMA_PROFILE" --base-image "$BASE_IMAGE")
       [ "$KEEP" = 1 ] && COLIMA_ARGS+=(--keep)
+      [ "$REPLACE_EXISTING" = 1 ] && COLIMA_ARGS+=(--replace-existing)
       run_suite "colima" uv run python "$ROOT/scripts/e2e-colima.py" "${COLIMA_ARGS[@]}"
     else
       skip_suite "colima" "no running Colima profile '$COLIMA_PROFILE' (colima start --profile $COLIMA_PROFILE)"
@@ -766,6 +775,7 @@ if selected security; then
       [ -n "$SECURITY_PEER_RUNTIME" ] && SECURITY_ARGS+=(--peer-runtime "$SECURITY_PEER_RUNTIME")
       [ -n "$SECURITY_FIXTURE_HOST" ] && SECURITY_ARGS+=(--fixture-host "$SECURITY_FIXTURE_HOST")
       [ -n "$SECURITY_NAT64_ORIGIN" ] && SECURITY_ARGS+=(--nat64-origin "$SECURITY_NAT64_ORIGIN")
+      [ "$REPLACE_EXISTING" = 1 ] && SECURITY_ARGS+=(--replace-existing)
       run_suite "security" uv run pytest -ra -q "$ROOT/scripts/security_e2e" "${SECURITY_ARGS[@]}"
     fi
   else

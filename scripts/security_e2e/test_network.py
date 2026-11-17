@@ -155,13 +155,19 @@ class Sidecar:
 
 
 @pytest.fixture
-def sidecar(sandbox):
-    # Global container name: never replace somebody else's running sidecar.
-    assert (
-        egress_sidecar.inspect(sandbox.runtime, egress_sidecar.default_runner) is None
-    ), "stop your existing project-sandbox-egress sidecar before running this suite"
+def sidecar(sandbox, request):
+    # Global container name: never replace somebody else's sidecar unasked.
+    existing = egress_sidecar.inspect(sandbox.runtime, egress_sidecar.default_runner)
+    replace = request.config.getoption("--replace-existing")
+    assert existing is None or replace, (
+        "stop your existing project-sandbox-egress sidecar before running this "
+        "suite, or pass --replace-existing"
+    )
     with Origin(sandbox.directory) as origin:
         fixture = Sidecar(sandbox, origin)
+        if existing is not None:
+            # Running sidecar-mode sandboxes on this runtime lose egress.
+            fixture.cli("down", check=False)
         try:
             yield fixture
         finally:
