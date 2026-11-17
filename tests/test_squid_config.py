@@ -708,3 +708,171 @@ class InternalBindingTests(TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertEqual(result.stdout, "")
         self.assertIn("eth0", result.stderr)
+
+
+class ServiceRouteTests(TestCase):
+    """isolated-sidecar-network task 4.1: service routes in squid.conf (design.md D3).
+
+    The layout matches spike S1, checked again against the sidecar image's
+    Squid: an absolute URI on a service port is rewritten to the service,
+    CONNECT there gets 405, and forward-proxy requests for the host are denied.
+    """
+
+    HOST = "192.168.5.2"
+
+    def setUp(self) -> None:
+        from project_sandbox import egress_policy
+
+        self.egress_policy = egress_policy
+        self.services = (
+            egress_policy.Service("agent-proxy", 4000),
+            egress_policy.Service("ollama", 11434),
+        )
+
+    def _render(self, *, upstream=None, services=None) -> str:
+        return squid_config.render(
+            self.egress_policy.effective(
+                self.egress_policy.PolicyFile(allow=("pypi.org",))
+            ),
+            upstream=upstream,
+            internal_only=True,
+            services=self.services if services is None else services,
+            service_host=self.HOST,
+        )
+
+    @staticmethod
+    def _lines(conf: str) -> list[str]:
+        return [line for line in conf.splitlines() if line and not line.startswith("#")]
+
+    def test_no_services_leaves_the_config_unchanged(self) -> None:
+        bound = squid_config.render(
+            self.egress_policy.effective(
+                self.egress_policy.PolicyFile(allow=("pypi.org",))
+            ),
+            internal_only=True,
+        )
+        self.assertEqual(self._render(services=()), bound)
+        for token in ("name=fwd", "accel", "originserver", "myportname", "svc_"):
+            self.assertNotIn(token, bound)
+
+    def test_accel_ports_bound_to_the_internal_address(self) -> None:
+        lines = self._lines(self._render())
+        bind = squid_config.BIND_PLACEHOLDER
+        self.assertTrue(lines[0].startswith(f"http_port {bind}:3128 ssl-bump "))
+        self.assertTrue(lines[0].endswith(" name=fwd"), lines[0])
+        self.assertEqual(
+            lines[1:3],
+            [
+                (
+                    f"http_port {bind}:4000 accel defaultsite=agent-proxy.service "
+                    "no-vhost name=svc_agent-proxy"
+                ),
+                (
+                    f"http_port {bind}:11434 accel defaultsite=ollama.service "
+                    "no-vhost name=svc_ollama"
+                ),
+            ],
+        )
+        self.assertEqual(
+            [line for line in lines if line.startswith("http_port")], lines[:3]
+        )
+
+    def test_originserver_peers_at_the_host_address(self) -> None:
+        lines = self._lines(self._render())
+        for name, port in (("agent-proxy", 4000), ("ollama", 11434)):
+            self.assertIn(
+                f"cache_peer {self.HOST} parent {port} 0 no-query no-digest "
+                f"originserver forceddomain=localhost name=svc_{name}",
+                lines,
+            )
+            allow = lines.index(f"cache_peer_access svc_{name} allow svc_port_{name}")
+            self.assertEqual(lines[allow + 1], f"cache_peer_access svc_{name} deny all")
+            self.assertIn(f"acl svc_port_{name} myportname svc_{name}", lines)
+            self.assertIn(f"acl svc_site_{name} dstdomain {name}.service", lines)
+        self.assertIn("acl fwd_port myportname fwd", lines)
+        self.assertIn("acl svc_ports myportname svc_agent-proxy svc_ollama", lines)
+
+    def test_service_ports_never_go_direct_and_are_not_cached(self) -> None:
+        lines = self._lines(self._render())
+        self.assertIn("never_direct allow svc_ports", lines)
+        self.assertIn("cache deny svc_ports", lines)
+        self.assertIn("cache deny all", lines)
+        self.assertNotIn("never_direct allow all", lines)  # direct mode
+
+    def test_service_rules_precede_and_fence_off_the_forward_rules(self) -> None:
+        lines = self._lines(self._render())
+        access = [line for line in lines if line.startswith("http_access ")]
+        self.assertEqual(
+            access[:5],
+            [
+                "http_access deny svc_ports CONNECT reset",
+                "http_access allow svc_port_agent-proxy svc_site_agent-proxy",
+                "http_access allow svc_port_ollama svc_site_ollama",
+                "http_access deny svc_ports reset",
+                "http_access deny !fwd_port reset",
+            ],
+        )
+        # Every later rule only sees the forward port, so private_dst still
+        # denies the Mac's address (192.168.0.0/16) there.
+        self.assertIn("http_access deny CONNECT private_dst reset", access[5:])
+        self.assertIn("http_access deny private_dst page_private_address", access[5:])
+        self.assertFalse([a for a in access[5:] if "svc_" in a])
+
+    def test_service_denials_are_labelled(self) -> None:
+        lines = self._lines(self._render())
+        notes = [line for line in lines if line.startswith("note sbx_cause ")]
+        self.assertEqual(notes[0], "note sbx_cause service-route svc_ports")
+        self.assertIn("service-route", squid_config.CAUSES)
+        self.assertIsNone(squid_config.CAUSES["service-route"].page)
+
+    def test_upstream_never_receives_service_traffic(self) -> None:
+        lines = self._lines(
+            self._render(upstream=squid_config.Upstream("proxy.corp.example", 8080))
+        )
+        self.assertIn("never_direct allow all", lines)
+        deny = lines.index("cache_peer_access upstream deny svc_ports")
+        self.assertEqual(lines[deny + 1], "cache_peer_access upstream allow all")
+        # The upstream peer and every ACL are declared before their access lines.
+        self.assertLess(
+            next(i for i, line in enumerate(lines) if "name=upstream" in line), deny
+        )
+        self.assertLess(
+            lines.index("acl svc_ports myportname svc_agent-proxy svc_ollama"), deny
+        )
+
+    def test_direct_mode_has_no_upstream_access_lines(self) -> None:
+        self.assertNotIn("cache_peer_access upstream", self._render())
+
+    def test_refuses_unsafe_service_input(self) -> None:
+        effective = self.egress_policy.effective(self.egress_policy.PolicyFile())
+        Service = self.egress_policy.Service
+        cases = {
+            "not internal": {"internal_only": False, "service_host": self.HOST},
+            "no host": {"internal_only": True, "service_host": None},
+            "host name": {
+                "internal_only": True,
+                "service_host": "host.lima.internal",
+            },
+            "host injection": {
+                "internal_only": True,
+                "service_host": "192.168.5.2\nhttp_access allow all",
+            },
+        }
+        for label, kwargs in cases.items():
+            with self.subTest(label), self.assertRaises(ValueError):
+                squid_config.render(
+                    effective, services=(Service("ollama", 11434),), **kwargs
+                )
+        for label, services in {
+            "bad name": (Service("Ollama x", 11434),),
+            "reserved port": (Service("ollama", 3128),),
+            "low port": (Service("ollama", 80),),
+            "duplicate port": (Service("a", 4000), Service("b", 4000)),
+        }.items():
+            with self.subTest(label), self.assertRaises(ValueError):
+                squid_config.render(
+                    effective,
+                    services=services,
+                    internal_only=True,
+                    service_host=self.HOST,
+                )

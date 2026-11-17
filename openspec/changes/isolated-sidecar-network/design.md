@@ -68,7 +68,7 @@ Regardless of the network, Squid binds every listener (3128 and the service port
 
 Each `[egress.services]` entry renders as:
 - `http_port <internal-ip>:<port> accel defaultsite=<name>.service no-vhost name=svc_<name>`;
-- `cache_peer <host-address> parent <port> 0 no-query no-digest originserver name=svc_<name>`;
+- `cache_peer <host-address> parent <port> 0 no-query no-digest originserver forceddomain=localhost name=svc_<name>`. S1 showed that the host service otherwise receives `Host: <name>.service`. Ollama refuses unknown Host names while it listens on loopback, so the peer sends `localhost`, as a client on the Mac would. This was checked against the sidecar image's Squid during task 4.1;
 - `cache_peer_access svc_<name> allow svc_port_<name>` (a `myportname` ACL), and deny for everything else.
 
 The rule ordering keeps the two paths apart:

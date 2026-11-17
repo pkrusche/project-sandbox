@@ -104,6 +104,11 @@ CAUSES: dict[str, Cause] = {
             "the TLS SNI was missing or differed from the CONNECT host",
         ),
         Cause("non-tls-tunnel", None, "the tunnel did not carry TLS"),
+        Cause(
+            "service-route",
+            None,
+            "a service port serves only plain HTTP for its own service",
+        ),
     )
 }
 
@@ -209,13 +214,54 @@ def _validate_upstream(upstream: Upstream) -> None:
         raise ValueError(f"invalid upstream port {upstream.port}")
 
 
+def _validate_services(
+    services: tuple[egress_policy.Service, ...],
+    service_host: str | None,
+    *,
+    internal_only: bool,
+) -> None:
+    """Refuse service routes that are unsafe or meaningless to render."""
+    if not services:
+        return
+    if not internal_only:
+        # Services listen only on the internal network (design.md D2, D3).
+        raise ValueError("services are rendered only for an internal-only sidecar")
+    try:
+        ipaddress.ip_address(service_host or "")
+    except ValueError:
+        # Written into cache_peer as a literal (design.md D4).
+        raise ValueError(
+            f"refusing to render invalid service host address {service_host!r}"
+        ) from None
+    for service in services:
+        egress_policy.validate_service_name(service.name, source="squid.conf")
+        egress_policy.validate_service_port(
+            service.port,
+            key=f"egress.services.{service.name}.port",
+            source="squid.conf",
+        )
+    ports = [s.port for s in services]
+    if len(set(ports)) != len(ports) or LISTEN_PORT in ports:
+        raise ValueError(f"refusing to render overlapping service ports {ports}")
+
+
 def render(
     policy: egress_policy.EffectivePolicy,
     *,
     upstream: Upstream | None = None,
     api_paths: Iterable[str] = egress_policy.COPILOT_API_PATHS,
     internal_only: bool = False,
+    services: Iterable[egress_policy.Service] = (),
+    service_host: str | None = None,
 ) -> str:
+    """``squid.conf`` for ``policy``.
+
+    ``services`` adds one reverse-proxy port per declared service, relayed to
+    ``service_host`` (the Mac as the sidecar reaches it, design.md D3 and D4).
+    They need ``internal_only``: services exist only on the isolated strategy.
+    """
+    services = tuple(services)
+    _validate_services(services, service_host, internal_only=internal_only)
     allowed = [_squid_domain(h) for h in policy.allow]
     bumped = [_squid_domain(h) for h in policy.bump_set]
     paths = list(api_paths) if bumped else []
@@ -243,6 +289,8 @@ def render(
         paths=paths,
         ambiguous_paths=AMBIGUOUS_PATH_REGEXES,
         upstream=upstream,
+        services=services,
+        service_host=service_host,
         private_destinations=PRIVATE_DESTINATIONS,
         causes=CAUSES,
     )

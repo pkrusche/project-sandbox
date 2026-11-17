@@ -49,7 +49,7 @@ The spikes are scripted: `spikes/spike_colima.py` runs S1, S2 and S6, and `spike
 
 ## 4. Sidecar services
 
-- [ ] 4.1 Render service routes in `squid.conf.j2` (D3):
+- [x] 4.1 Render service routes in `squid.conf.j2` (D3):
   - `accel` ports;
   - `originserver` peers at the recorded host address;
   - `myportname` ACLs;

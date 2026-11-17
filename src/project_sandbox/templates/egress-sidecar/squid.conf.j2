@@ -1,7 +1,14 @@
 # Rendered by project_sandbox.squid_config for the global --egress sidecar.
 # Applied live by sbx-reload (squid -k reconfigure); see design.md Decision 9.
 # Policy: design.md Decisions 2 (pipeline), 5 (Copilot) and 7 (parent proxy).
-http_port {% if bind_placeholder %}{{ bind_placeholder }}:{% endif %}{{ listen_port }} ssl-bump tls-cert={{ ca_cert }} tls-key={{ ca_key }} generate-host-certificates=on dynamic_cert_mem_cache_size=4MB
+http_port {% if bind_placeholder %}{{ bind_placeholder }}:{% endif %}{{ listen_port }} ssl-bump tls-cert={{ ca_cert }} tls-key={{ ca_key }} generate-host-certificates=on dynamic_cert_mem_cache_size=4MB{% if services %} name=fwd{% endif %}
+
+{% if services %}
+# Service ports (design.md D3): plain HTTP, relayed to the Mac's loopback port.
+{% endif %}
+{% for service in services %}
+http_port {{ bind_placeholder }}:{{ service.port }} accel defaultsite={{ service.name }}.service no-vhost name=svc_{{ service.name }}
+{% endfor %}
 sslcrtd_program /usr/lib/squid/security_file_certgen -s {{ ssl_db }} -M 4MB
 sslcrtd_children 4
 # squid -k reconfigure (sbx-reload) finds the running Squid through this file.
@@ -26,6 +33,14 @@ cache_peer {{ upstream.host }} parent {{ upstream.port }} 0 no-query no-digest d
 
 never_direct allow all
 {% endif %}
+{% if services %}
+# Service peers: the Mac's loopback through the recorded host address (D4).
+# forceddomain: the host service sees Host: localhost, as from a client on the
+# Mac (Ollama refuses other names while it listens on loopback).
+{% endif %}
+{% for service in services %}
+cache_peer {{ service_host }} parent {{ service.port }} 0 no-query no-digest originserver forceddomain=localhost name=svc_{{ service.name }}
+{% endfor %}
 {% if upstream and upstream.ca_file %}
 # Trust the parent's interception CA for re-originated (bumped) TLS too.
 tls_outgoing_options cafile={{ upstream_ca }}
@@ -51,6 +66,26 @@ acl ambiguous_paths urlpath_regex -i {{ ambiguous_paths | join(" ") }}
 {% endif %}
 acl step1 at_step SslBump1
 acl step2 at_step SslBump2
+{% if services %}
+
+# --- Service routes (design.md D3): each port reaches only its own peer ------
+acl fwd_port myportname fwd
+acl svc_ports myportname{% for service in services %} svc_{{ service.name }}{% endfor %}
+
+{% for service in services %}
+acl svc_port_{{ service.name }} myportname svc_{{ service.name }}
+acl svc_site_{{ service.name }} dstdomain {{ service.name }}.service
+cache_peer_access svc_{{ service.name }} allow svc_port_{{ service.name }}
+cache_peer_access svc_{{ service.name }} deny all
+{% endfor %}
+{% if upstream %}
+# never_direct allow all must not send service traffic to the parent.
+cache_peer_access upstream deny svc_ports
+cache_peer_access upstream allow all
+{% endif %}
+never_direct allow svc_ports
+cache deny svc_ports
+{% endif %}
 # Always-true markers: deny_info binds a page to the last ACL on a deny line.
 acl reset src all
 {% for cause in causes.values() if cause.page %}
@@ -58,6 +93,9 @@ acl page_{{ cause.label | replace("-", "_") }} src all
 {% endfor %}
 
 # --- Cause annotations (first match wins; logged as cause=) -----------------
+{% if services %}
+note sbx_cause service-route svc_ports
+{% endif %}
 note sbx_cause port-not-allowed CONNECT !tls_port
 note sbx_cause port-not-allowed plain_http !http_port80
 note sbx_cause ip-literal ip_literal
@@ -73,6 +111,18 @@ note sbx_cause path-not-allowed !CONNECT intercepted !intercepted_paths
 
 # --- CONNECT: deny before any 200, as a reset ------------------------------
 deny_info TCP_RESET reset
+{% if services %}
+# Service ports: plain HTTP for their own site only. no-vhost rewrites an
+# absolute URI to the service (spike S1); the site check refuses it should a
+# Squid release honour it. Squid itself answers CONNECT on accel ports with 405.
+http_access deny svc_ports CONNECT reset
+{% for service in services %}
+http_access allow svc_port_{{ service.name }} svc_site_{{ service.name }}
+{% endfor %}
+http_access deny svc_ports reset
+# Everything below applies to the forward proxy port only.
+http_access deny !fwd_port reset
+{% endif %}
 http_access deny CONNECT !tls_port reset
 http_access deny CONNECT ip_literal reset
 http_access deny CONNECT !allowed reset
