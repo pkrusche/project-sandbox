@@ -15,6 +15,8 @@
 #   4. Asserts the rendered Pi config and both output files landed on the host.
 #   5. Prints the selected Ollama forwarding strategy so the runtime mode under
 #      test is recorded explicitly (native mapping, bridge-socat, or probe-gated).
+#   6. Runs a second session whose prompt is exactly `--help` and asserts Pi
+#      answered it as a prompt (JSON events) instead of parsing it as a flag.
 #
 # Usage:
 #   scripts/e2e-pi-ollama.sh [--runtime auto|apple-container|docker|podman]
@@ -60,6 +62,7 @@ esac
 
 command -v uv >/dev/null 2>&1 || { echo "ERROR: uv not found on PATH." >&2; exit 64; }
 command -v curl >/dev/null 2>&1 || { echo "ERROR: curl not found on PATH." >&2; exit 64; }
+command -v python3 >/dev/null 2>&1 || { echo "ERROR: python3 not found on PATH." >&2; exit 64; }
 
 REQUESTED_RUNTIME="$RUNTIME"
 if [ "$RUNTIME" = auto ]; then
@@ -200,6 +203,47 @@ assert_file_contains "$NETWORK_CHECK_OUT" '"models"'
 assert_file_contains "$AGENT_CHECK_OUT" "$AGENT_CHECK_MARKER"
 
 rm -f "$RUN_LOG"
+
+# A headless prompt starting with "-" must reach the model as a prompt, not be
+# parsed as a Pi option (`pi -p --help` would print usage and emit no JSON).
+# The host prefixes such prompts with one space before staging them.
+echo
+echo "Running pi with a prompt that looks like a flag (--help)"
+DASH_LOG="$TMP_PROJECT.dash-prompt.log"
+dash_cmd=(
+  uv run project-sandbox
+  --runtime "$RUNTIME"
+  --agent pi
+  --pi-ollama
+  --ollama-model "$OLLAMA_MODEL"
+  --prompt-text "--help"
+  --log "$DASH_LOG"
+  --no-forward-credentials
+  --timeout "$TIMEOUT"
+  --no-build
+  "$TMP_PROJECT" "$BASE_IMAGE"
+)
+if (cd "$ROOT" && "${dash_cmd[@]}") >/dev/null 2>&1; then
+  ok "session with a '--help' prompt completed"
+else
+  bad "session with a '--help' prompt failed (see $DASH_LOG)"
+fi
+if [ -f "$DASH_LOG" ] && python3 - "$DASH_LOG" <<'PY'
+import json, sys
+records = 0
+for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
+    try:
+        records += isinstance(json.loads(line), dict)
+    except ValueError:
+        pass
+sys.exit(0 if records else 1)
+PY
+then
+  ok "'--help' prompt reached the model (JSON events in $DASH_LOG)"
+  rm -f "$DASH_LOG" "${DASH_LOG%.log}.md"
+else
+  bad "'--help' prompt produced no JSON events; it was likely parsed as a flag (see $DASH_LOG)"
+fi
 
 echo
 if [ "$fail" = 0 ]; then

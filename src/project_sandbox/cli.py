@@ -3516,6 +3516,19 @@ def _refuse_unsupported_path(path: Path, *, what: str) -> None:
         )
 
 
+def _shield_leading_dash(prompt: bytes) -> bytes:
+    """Keep agent CLIs from parsing a headless prompt as an option.
+
+    The entrypoint passes the prompt as one argv element (``codex exec``,
+    ``opencode run`` positionally; Claude, Pi and Copilot via ``-p``), so a
+    prompt starting with ``-`` could be read as a flag. One leading space stops
+    every parser from treating it as an option without relying on per-CLI
+    ``--`` handling. The rest of the prompt is not touched, so prompts such as
+    a Markdown list (``- fix X``) keep their meaning.
+    """
+    return b" " + prompt if prompt.startswith(b"-") else prompt
+
+
 def _validate_session_inputs(args) -> None:
     """Validate fatal session inputs before any worktree is created.
 
@@ -4024,7 +4037,9 @@ def _build_session_command(
                 generated_files.remove(prompt_staging, recursive=True)
                 ensure_dir(prompt_staging)
                 generated_files.write_bytes(
-                    prompt_file, source_prompt.read_bytes(), mode=0o600
+                    prompt_file,
+                    _shield_leading_dash(source_prompt.read_bytes()),
+                    mode=0o600,
                 )
             else:
                 print(f"Would stage prompt to: {prompt_file}")
@@ -4042,7 +4057,11 @@ def _build_session_command(
                 # above: mount the directory, but clear it first.
                 generated_files.remove(prompts_dir, recursive=True)
                 ensure_dir(prompts_dir)
-                generated_files.write_text(prompt_file, args.prompt_text, mode=0o600)
+                generated_files.write_bytes(
+                    prompt_file,
+                    _shield_leading_dash(args.prompt_text.encode("utf-8")),
+                    mode=0o600,
+                )
             else:
                 print(f"Would write prompt to: {prompt_file}")
             extra_mounts.append(

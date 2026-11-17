@@ -2162,6 +2162,67 @@ class CliTests(TestCase):
                 cmd,
             )
 
+    def test_headless_prompt_starting_with_dash_gets_leading_space(self) -> None:
+        # The entrypoint passes the prompt as one argv element, so a leading "-"
+        # would be parsed as an agent CLI option. Only the first character is
+        # guarded; the prompt is otherwise staged unchanged.
+        import argparse
+
+        cases = {
+            "--help": " --help",
+            "- fix X\n- fix Y\n": " - fix X\n- fix Y\n",
+            "-": " -",
+            "fix --dry-run": "fix --dry-run",
+            " --already-spaced": " --already-spaced",
+            "resume": "resume",
+        }
+        for source in ("text", "file"):
+            for prompt, expected in cases.items():
+                with (
+                    self.subTest(source=source, prompt=prompt),
+                    tempfile.TemporaryDirectory() as tmp,
+                ):
+                    project = Path(tmp)
+                    context_dir = project / ".project-sandbox"
+                    prompt_path = project / "task.md"
+                    prompt_path.write_text(prompt, encoding="utf-8")
+                    args = argparse.Namespace(
+                        branch=None,
+                        cpus=4,
+                        extra_mounts=[],
+                        image_tag="project-sandbox:test",
+                        log=None,
+                        memory="8g",
+                        no_firewall=True,
+                        prompt=str(prompt_path) if source == "file" else None,
+                        prompt_text=prompt if source == "text" else None,
+                        verbose=False,
+                    )
+
+                    cli._build_session_command(
+                        args,
+                        project=project,
+                        context_dir=context_dir,
+                        workspace=project,
+                        worktree=None,
+                        identity=GitIdentity(None, None),
+                        run_agent="claude",
+                        claude_cfg=context_dir / "claude" / "settings.json",
+                        credential_dirs={"claude": context_dir / "claude-secrets"},
+                        codex_cfg=context_dir / "codex" / "config.toml",
+                        runtime=cli.container_cli.DOCKER,
+                        create_prompt_files=True,
+                    )
+
+                    staged = (
+                        context_dir / "prompts" / "prompt.txt"
+                        if source == "text"
+                        else context_dir / "prompt" / "task.md"
+                    )
+                    self.assertEqual(staged.read_text(encoding="utf-8"), expected)
+                    # The user's own prompt file is never modified.
+                    self.assertEqual(prompt_path.read_text(encoding="utf-8"), prompt)
+
     def test_interactive_session_mounts_history_files(self) -> None:
         import argparse
 

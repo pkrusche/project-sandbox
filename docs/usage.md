@@ -604,6 +604,10 @@ uv run project-sandbox \
 - `--prompt-text "..."` writes the prompt in a private per-session directory,
   bind-mounts that directory read-only, and reads it from
   `/project-sandbox-prompt/prompt.txt`.
+- A prompt that starts with `-` (such as `--help` or a Markdown list) is staged
+  with one leading space added, so that agent CLIs treat it as the prompt and
+  not as an option. The rest of the prompt and your `--prompt` file are left
+  unchanged.
 - `--agent {claude,codex,opencode,pi,copilot,bash}` selects which agent to run.
   If omitted, the CLI only initializes generated config files unless a prompt
   is supplied. Claude, Codex, OpenCode, and Pi require their host config

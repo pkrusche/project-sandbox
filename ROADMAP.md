@@ -189,24 +189,12 @@ Items still to be considered:
   problem; check whether Colima-backed devcontainers (home-only exports) can see
   `/tmp` masks at all today.
 
-## Decided, not yet implemented (2026-11-16)
-
-- **Headless prompts that start with `-`.** The entrypoint passes the prompt as
-  one argv element (`codex exec`, `opencode run` positionally; Claude, Pi and
-  Copilot via `-p "$PROMPT"`), so a prompt beginning with `-` can be parsed as a
-  flag. Decision: on the host, before staging the prompt file, prepend a single
-  space when the prompt starts with `-`. The text reaches the model unchanged
-  in meaning, and no CLI parser treats it as an option, so no reliance on
-  per-parser `--` handling. Don't trim: prompts like a Markdown list
-  (`- fix X`) or `--dry-run is broken` would lose meaning. Unit-test in
-  `tests/test_cli.py`; add an e2e smoke test with a `--help` prompt. The
-  subcommand case (`codex exec resume`) only applies to a prompt that is
-  exactly a subcommand name, since the prompt is a single argument.
-
 ## Known issues
 
-- **Live markdown view for headless jobs shows only JSON lines.** Reported, not
-  yet investigated.
+- **Headless prompt that is exactly a subcommand name.** Prompts starting with
+  `-` are staged with a leading space (implemented 2026-11-17), but a prompt
+  that is exactly a subcommand name, such as `resume` for `codex exec`, is
+  still parsed as that subcommand.
 
 ## Podman machine shared-folder staleness
 
