@@ -32,6 +32,8 @@ class ColimaFake(FakeRuntime):
         self.probe_ok = True
         self.sandbox_ip = "172.19.0.2"
         self.engine = "29.5.2"
+        # host.lima.internal as getent reports it (None: the lookup fails).
+        self.host_address: str | None = "192.168.5.2"
 
     def kind(self, argv) -> str:
         # Drop `--context <name>` so the parent's argv classification applies.
@@ -59,6 +61,15 @@ class ColimaFake(FakeRuntime):
 
     def __call__(self, argv):
         argv = list(argv)
+        if "getent" in argv:  # the host-address lookup (design.md D4)
+            self.calls.append(argv)
+            if self.host_address is None:
+                return _done(argv, 2)
+            return _done(
+                argv,
+                out=f"{self.host_address}     STREAM {net.HOST_NAME}\n"
+                f"{self.host_address}     DGRAM  {net.HOST_NAME}\n",
+            )
         if "--entrypoint" in argv:  # the sandbox-network probe
             self.calls.append(argv)
             return _done(argv, 0 if self.probe_ok else 1)
@@ -194,7 +205,12 @@ class EnsureTests(PrivateNetworkBase):
         self.assertLess(kinds.index("create"), kinds.index("network-connect"))
         self.assertLess(kinds.index("network-connect"), kinds.index("start"))
         self.assertLess(kinds.index("start"), kinds.index("probe"))
-        self.assertNotIn("run", kinds[: kinds.index("start")])
+        # The sidecar itself is created, never run; the only run before it is
+        # the throwaway host-address lookup (design.md D4).
+        runs = [c for c in self.fake.calls[: kinds.index("start")] if c[3] == "run"]
+        self.assertEqual(len(runs), 1)
+        self.assertIn("getent", runs[0])
+        self.assertIn("--rm", runs[0])
         self.assertNotIn("--publish", self.runs()[0])
         self.assertEqual(sidecar.endpoint, "egress:3128")
         self.assertEqual(sidecar.strategy, PRIVATE)
@@ -218,7 +234,7 @@ class EnsureTests(PrivateNetworkBase):
 
     def test_the_private_path_is_checked_from_the_sandbox_network(self) -> None:
         self.ensure()
-        probe = next(c for c in self.fake.calls if "--entrypoint" in c)
+        probe = next(c for c in self.fake.calls if "--entrypoint" in c and "nc" in c)
         self.assertIn(net.SANDBOX_NETWORK, probe)
         self.assertNotIn(net.UPLINK_NETWORK, probe)
         self.assertEqual(probe[probe.index("--entrypoint") + 1], "nc")
@@ -601,6 +617,171 @@ class InternalBindingTests(PrivateNetworkBase):
         self.assertNotIn(
             "reload", [self.fake.kind(c) for c in self.fake.calls[before:]]
         )
+
+    def root_layout(self):
+        return egress_sidecar.layout(RUNTIME, self.root)
+
+
+class HostAddressTests(PrivateNetworkBase):
+    """isolated-sidecar-network task 4.2: the Mac's address is a restart input (D4)."""
+
+    SERVICES = "[egress.services]\nollama = { port = 11434 }\n"
+
+    def lookups(self, calls=None) -> list[list[str]]:
+        return [c for c in (calls or self.fake.calls) if "getent" in c]
+
+    def test_cold_start_resolves_on_the_uplink_before_the_sidecar_exists(self) -> None:
+        self.ensure()
+        kinds = self.fake.kinds()
+        lookup = self.lookups()[0]
+        self.assertEqual(
+            lookup[3:],
+            [
+                "run",
+                "--rm",
+                "--network",
+                net.UPLINK_NETWORK,
+                "--entrypoint",
+                "getent",
+                IMAGE,
+                "ahostsv4",
+                net.HOST_NAME,
+            ],
+        )
+        self.assertLess(self.fake.calls.index(lookup), kinds.index("create"))
+        # After the networks exist: the lookup runs on the uplink.
+        self.assertLess(
+            max(i for i, k in enumerate(kinds) if k == "network-create"),
+            self.fake.calls.index(lookup),
+        )
+
+    def test_the_address_is_recorded_and_fingerprinted(self) -> None:
+        self.ensure()
+        state = egress_sidecar.read_state(self.root_layout())
+        self.assertEqual(state["host_address"], "192.168.5.2")
+        self.assertEqual(state["restart_inputs"]["host_address"], "192.168.5.2")
+        self.assertEqual(
+            self.fake.labels[egress_sidecar.FINGERPRINT_LABEL],
+            egress_sidecar.fingerprint(state["restart_inputs"]),
+        )
+
+    def test_services_are_rendered_against_the_recorded_address(self) -> None:
+        self.ensure(_policy(self.tmp, self.SERVICES))
+        conf = (self.root_layout().sidecar / egress_sidecar.CONF_NAME).read_text()
+        self.assertIn(
+            "cache_peer 192.168.5.2 parent 11434 0 no-query no-digest originserver",
+            conf,
+        )
+        self.assertIn(f"http_port {squid_config.BIND_PLACEHOLDER}:11434 accel", conf)
+
+    def test_an_unresolvable_host_stops_the_start_before_the_sidecar(self) -> None:
+        self.fake.host_address = None
+        with self.assertRaises(SidecarError) as ctx:
+            self.ensure()
+        self.assertIn(net.HOST_NAME, str(ctx.exception))
+        self.assertIn("project-sandbox-egress restart", str(ctx.exception))
+        self.assertNotIn("create", self.fake.kinds())
+
+    def test_a_moved_host_is_restart_drift_not_a_restart(self) -> None:
+        self.ensure(_policy(self.tmp, self.SERVICES))
+        self.fake.host_address = "192.168.5.9"
+        before = len(self.fake.calls)
+        sidecar = self.ensure(_policy(self.tmp, self.SERVICES))
+        new = self.fake.calls[before:]
+        # Resolved inside the running sidecar, which keeps its address.
+        self.assertEqual(
+            self.lookups(new),
+            [egress_sidecar.exec_argv(RUNTIME, "getent", "ahostsv4", net.HOST_NAME)],
+        )
+        self.assertFalse(sidecar.started)
+        kinds = {self.fake.kind(c) for c in new}
+        self.assertFalse(kinds & {"create", "rm", "reload"})
+        warning = "\n".join(sidecar.messages)
+        self.assertIn(f"Mac host address ({net.HOST_NAME})", warning)
+        self.assertIn("project-sandbox-egress restart", warning)
+        conf = (self.root_layout().sidecar / egress_sidecar.CONF_NAME).read_text()
+        self.assertIn("cache_peer 192.168.5.2 ", conf)
+        self.assertNotIn("192.168.5.9", conf)
+
+    def test_status_names_the_restart(self) -> None:
+        self.ensure()
+        self.fake.host_address = "192.168.5.9"
+        before = len(self.fake.calls)
+        report = egress_sidecar.status(
+            RUNTIME, _policy(self.tmp), image=IMAGE, root=self.root, deps=self.deps()
+        )
+        self.assertEqual(
+            report["drift"]["restart"], [f"Mac host address ({net.HOST_NAME})"]
+        )
+        text = "\n".join(egress_sidecar.status_lines(report))
+        self.assertIn(
+            f"Drift (restart needed): Mac host address ({net.HOST_NAME})", text
+        )
+        # Status only reads: the lookup is an exec into the running sidecar.
+        self.assertFalse(
+            [c for c in self.lookups(self.fake.calls[before:]) if "run" in c[3:4]]
+        )
+
+    def test_an_unchanged_address_is_no_drift(self) -> None:
+        self.ensure()
+        sidecar = self.ensure()
+        self.assertEqual(sidecar.messages, [])
+
+    def test_a_failed_lookup_against_a_running_sidecar_is_not_drift(self) -> None:
+        self.ensure()
+        self.fake.host_address = None
+        sidecar = self.ensure()
+        self.assertEqual(sidecar.messages, [])
+
+    def test_a_sidecar_without_a_recorded_address_is_left_alone(self) -> None:
+        self.ensure()
+        lay = self.root_layout()
+        state = egress_sidecar.read_state(lay)
+        del state["host_address"]  # as written before task 4.2
+        del state["restart_inputs"]["host_address"]
+        egress_sidecar.write_state(lay, state)
+        self.fake.labels[egress_sidecar.FINGERPRINT_LABEL] = egress_sidecar.fingerprint(
+            state["restart_inputs"]
+        )
+        before = len(self.fake.calls)
+        sidecar = self.ensure(_policy(self.tmp, self.SERVICES))
+        self.assertEqual(self.lookups(self.fake.calls[before:]), [])
+        self.assertEqual(sidecar.messages, [])
+        conf = (lay.sidecar / egress_sidecar.CONF_NAME).read_text()
+        self.assertNotIn("accel", conf)  # no services without a host address
+
+    def test_other_runtimes_never_resolve_it(self) -> None:
+        from test_egress_sidecar import FakeRuntime as Plain
+
+        fake = Plain(DOCKER)
+        egress_sidecar.ensure(
+            DOCKER,
+            _policy(self.tmp, self.SERVICES),
+            image=IMAGE,
+            root=self.tmp / "docker",
+            deps=super(PrivateNetworkBase, self).deps(
+                runner=fake, strategy=lambda _rt: Strategy()
+            ),
+        )
+        self.assertFalse([c for c in fake.calls if "getent" in c])
+        conf = (
+            egress_sidecar.layout(DOCKER, self.tmp / "docker").sidecar
+            / egress_sidecar.CONF_NAME
+        ).read_text()
+        self.assertNotIn("accel", conf)
+        self.assertNotIn(
+            "host_address",
+            egress_sidecar.restart_inputs(DOCKER, _policy(self.tmp), image=IMAGE),
+        )
+
+    def test_parse_takes_the_first_ipv4_address(self) -> None:
+        parse = egress_sidecar.parse_host_address
+        self.assertEqual(
+            parse("192.168.5.2     STREAM host.lima.internal\n"), "192.168.5.2"
+        )
+        self.assertEqual(parse("::1 x\n10.0.0.1 x\n"), "10.0.0.1")
+        self.assertIsNone(parse(""))
+        self.assertIsNone(parse("192.168.5.2;rm STREAM x\n"))
 
     def root_layout(self):
         return egress_sidecar.layout(RUNTIME, self.root)

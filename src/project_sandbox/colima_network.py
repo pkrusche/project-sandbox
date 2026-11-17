@@ -29,6 +29,8 @@ Runner = Callable[[Sequence[str]], subprocess.CompletedProcess]
 UPLINK_NETWORK = "psbx-egress-uplink"
 SANDBOX_NETWORK = "psbx-sandbox"
 ALIAS = "egress"
+# The Mac as containers in the VM reach it (Lima; isolated-sidecar-network S1).
+HOST_NAME = "host.lima.internal"
 PROXY_PORT = 3128  # squid_config.LISTEN_PORT; fixed and never published
 
 OWNER_LABEL = "project-sandbox.owner"

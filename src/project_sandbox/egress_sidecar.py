@@ -43,6 +43,7 @@ import contextlib
 import dataclasses
 import datetime as dt
 import hashlib
+import ipaddress
 import json
 import os
 import shutil
@@ -138,6 +139,7 @@ RESTART_FIELDS: dict[str, str] = {
     "memory": "[egress.sidecar] memory",
     "cpus": "[egress.sidecar] cpus",
     "log_options": "runtime log options",
+    "host_address": f"Mac host address ({colima_network.HOST_NAME})",
 }
 RESTART_HINT = (
     "Run `project-sandbox-egress restart` to apply; it interrupts every running "
@@ -393,14 +395,19 @@ def restart_inputs(
     *,
     image: str,
     address: str = PUBLISH_ADDRESS,
+    host_address: str | None = None,
 ) -> dict:
     """What only a restart can change in a running sidecar.
 
     ``address`` is recorded only when it is not host loopback (Docker Engine's
-    gateway), so loopback sidecars keep their fingerprint.
+    gateway), so loopback sidecars keep their fingerprint. ``host_address`` is
+    the Mac as the Colima sidecar reaches it, written into its service peers
+    (design.md D4); it is recorded only when given.
     """
     ca = policy.upstream_ca_bytes() if policy.upstream_url else b""
     extra = {} if address == PUBLISH_ADDRESS else {"address": address}
+    if host_address is not None:
+        extra["host_address"] = host_address
     inputs = {
         "image": image,
         "copilot": policy.copilot,
@@ -477,6 +484,7 @@ def render_squid_conf(
     copilot: bool,
     upstream: squid_config.Upstream | None,
     internal_only: bool = False,
+    host_address: str | None = None,
 ) -> str:
     """``squid.conf`` from ``policy``'s allowlist, with ``copilot`` and ``upstream``.
 
@@ -485,10 +493,18 @@ def render_squid_conf(
     ``internal_only`` binds Squid to the internal network (Colima, design.md D2);
     a sidecar started by an older version has no binding recorded and keeps its
     config until a restart replaces it.
+
+    ``policy``'s services are rendered only with both ``internal_only`` and the
+    running sidecar's ``host_address`` (design.md D3, D4); they are reloadable.
     """
     effective = egress_policy.effective(dataclasses.replace(policy, copilot=copilot))
+    routed = internal_only and host_address is not None
     return squid_config.render(
-        effective, upstream=upstream, internal_only=internal_only
+        effective,
+        upstream=upstream,
+        internal_only=internal_only,
+        services=policy.services if routed else (),
+        service_host=host_address if routed else None,
     )
 
 
@@ -634,6 +650,49 @@ def reload_argv(runtime: Runtime) -> list[str]:
 
 def clock_argv(runtime: Runtime) -> list[str]:
     return exec_argv(runtime, "date", "+%s")
+
+
+def host_address_argv(runtime: Runtime, *, image: str | None = None) -> list[str]:
+    """Resolve the Mac's address as the Colima sidecar sees it (design.md D4).
+
+    With ``image``, a throwaway container on the uplink network (the sidecar's
+    own resolver path) answers before the sidecar exists; otherwise the running
+    sidecar does.
+    """
+    lookup = ("ahostsv4", colima_network.HOST_NAME)
+    if image is None:
+        return exec_argv(runtime, "getent", *lookup)
+    return runtime.argv(
+        "run",
+        "--rm",
+        "--network",
+        colima_network.UPLINK_NETWORK,
+        "--entrypoint",
+        "getent",
+        image,
+        *lookup,
+    )
+
+
+def parse_host_address(output: str) -> str | None:
+    """The first IPv4 address in ``getent ahostsv4`` output."""
+    for line in output.splitlines():
+        token = (line.split() or [""])[0]
+        try:
+            return str(ipaddress.IPv4Address(token))
+        except ValueError:
+            continue
+    return None
+
+
+def resolve_host_address(
+    runtime: Runtime, runner: Runner, *, image: str | None = None
+) -> str | None:
+    """The Mac's current address from the VM (``host.lima.internal``), or ``None``."""
+    result = runner(host_address_argv(runtime, image=image))
+    if result.returncode != 0:
+        return None
+    return parse_host_address(result.stdout or "")
 
 
 def logs_argv(
@@ -1139,6 +1198,21 @@ def _cold_start(
             colima_network.ensure(runtime, runner, owned=(CONTAINER,))
         except colima_network.NetworkError as exc:
             raise SidecarError(str(exc)) from None
+        # Service peers reach the Mac at this literal; it is a restart input,
+        # so it is resolved before the sidecar's fingerprint is (design.md D4).
+        host_address = resolve_host_address(runtime, runner, image=image)
+        if host_address is None:
+            raise SidecarError(
+                f"could not resolve {colima_network.HOST_NAME} from the "
+                f"{colima_network.UPLINK_NETWORK} network, so the egress sidecar "
+                "cannot reach services on the Mac. Check that the Colima profile "
+                "is running, then run `project-sandbox-egress restart`."
+            )
+        desired = restart_inputs(
+            runtime, policy, image=image, address=address, host_address=host_address
+        )
+    else:
+        host_address = None
 
     # Also clears a stopped one (after a reboot) or a leftover one whose state
     # does not match; its published port is released before the check below.
@@ -1212,6 +1286,7 @@ def _cold_start(
             copilot=policy.copilot,
             upstream=upstream,
             internal_only=_private(strategy),
+            host_address=host_address,
         ), upstream
 
     conf, upstream = render(relay_port)
@@ -1302,6 +1377,7 @@ def _cold_start(
         "restart_inputs": desired,
         "reload_fingerprint": reload_fingerprint(conf),
         "bind_internal": _private(strategy),
+        "host_address": host_address,
         "copilot": policy.copilot,
         "upstream_url": policy.upstream_url,
         "upstream": dataclasses.asdict(upstream) if upstream else None,
@@ -1328,6 +1404,17 @@ def _sidecar_ip(runtime: Runtime, runner: Runner) -> str:
 
 def _private(strategy: Strategy) -> bool:
     return strategy.kind == DOCKER_PRIVATE_NETWORK
+
+
+def current_host_address(runtime: Runtime, runner: Runner, state: dict) -> str | None:
+    """The Mac's address now, for drift against a running sidecar (design.md D4).
+
+    Only a sidecar that recorded one is compared; when the lookup fails the
+    recorded value stands, so a transient failure is not reported as drift.
+    """
+    if runtime.name != COLIMA_NAME or "host_address" not in state:
+        return None
+    return resolve_host_address(runtime, runner) or state["host_address"]
 
 
 def _attached(info: ContainerInfo | None) -> bool:
@@ -1526,6 +1613,7 @@ def _reconcile(
         copilot=state["copilot"],
         upstream=upstream,
         internal_only=state.get("bind_internal", False),
+        host_address=state.get("host_address"),
     )
     fp = reload_fingerprint(conf)
     if fp != state["reload_fingerprint"]:
@@ -1549,7 +1637,11 @@ def _reconcile(
     # Restart-only drift: warn, keep using the running sidecar.
     try:
         desired = restart_inputs(
-            runtime, policy, image=image, address=(strategy or running).address
+            runtime,
+            policy,
+            image=image,
+            address=(strategy or running).address,
+            host_address=current_host_address(runtime, runner, state),
         )
     except egress_policy.EgressPolicyError as exc:
         raise SidecarError(str(exc)) from None
@@ -1761,11 +1853,18 @@ def status(
                 copilot=state["copilot"],
                 upstream=_running_upstream(state),
                 internal_only=state.get("bind_internal", False),
+                host_address=state.get("host_address"),
             )
             drift["reload"] = reload_fingerprint(conf) != state["reload_fingerprint"]
             drift["restart"] = restart_drift(
                 state,
-                restart_inputs(runtime, policy, image=image, address=current.address),
+                restart_inputs(
+                    runtime,
+                    policy,
+                    image=image,
+                    address=current.address,
+                    host_address=current_host_address(runtime, deps.runner, state),
+                ),
                 info.labels.get(FINGERPRINT_LABEL),
             )
         except egress_policy.EgressPolicyError as exc:
