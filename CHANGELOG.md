@@ -2,7 +2,7 @@
 
 Notable changes to `project-sandbox` are documented here.
 
-## [Unreleased]
+## [0.4.1]
 
 ### Added
 
@@ -14,8 +14,18 @@ Notable changes to `project-sandbox` are documented here.
 - `--egress sidecar` on Colima reaches Squid at `egress:3128` over a private
   in-VM network (`psbx-egress-uplink` and an `--internal` `psbx-sandbox`)
   with no published port; `project-sandbox-egress` accepts `--runtime colima` and
-  `--colima-profile`. Features that need a path to macOS (Ollama, a loopback
-  gateway or proxy) are refused on Colima.
+  `--colima-profile`. The internal network is created with an isolated gateway
+  mode, so a sandbox cannot reach the VM's own listeners; this needs Docker
+  Engine 28 or later in the VM. Squid also denies Apple's localhost alias range.
+- Colima sidecar services: `project-sandbox-egress service add|remove|list`
+  declares Mac loopback HTTP services (local Ollama, a loopback `--agent-proxy`)
+  in `[egress.services]`. The sidecar relays each one on `egress:<port>`, with
+  live reload and no restart, and `status` and `doctor` probe them from inside
+  the sidecar. A launch that needs an undeclared service fails early and prints
+  the command. See [egress sidecar](docs/egress-sidecar.md#colima-services-through-the-sidecar).
+- `--sandbox-firewall` turns on the sandbox's own firewall for Colima sidecar
+  sessions; it is off by default because the isolated network already contains
+  the sandbox. See [sandbox firewall](docs/egress-sidecar.md#sandbox-firewall).
 - `project-sandbox doctor` reports a Colima profile (context, VM size, mount
   visibility, networks, sidecar); `--colima-profile NAME` selects it.
 - `project-sandbox colima init --workspace-root PATH` creates a dedicated Colima
@@ -29,6 +39,8 @@ Notable changes to `project-sandbox` are documented here.
 
 ### Changed
 
+- The default `--cpus` is capped to the CPUs a Docker VM has.
+- Refreshed pinned build inputs: uv, Ruff and ty, along with the lockfile.
 - Host lock files moved from the shared system temp dir to the private
   `$XDG_STATE_HOME/project-sandbox/locks` (default
   `~/.local/state/project-sandbox/locks`), so another local user can no longer
@@ -52,6 +64,10 @@ Notable changes to `project-sandbox` are documented here.
   unsafe existing parent is refused.
 - Failing to remove hidden-VCS mask sources no longer replaces the session's
   exit code with an exception.
+- Generated build stages declare the build-proxy `ARG`s in every stage, so
+  `--build-proxy` applies to all of them.
+- Racing launches no longer fail with a spurious `ENOENT` when creating a host
+  lock file.
 
 ## [0.4.0]
 
@@ -409,7 +425,8 @@ Initial public release.
 - Build caching, dry-run support, timeout teardown, end-to-end tests, and CI.
 - Ruff, pytest, and release preflight checks.
 
-[0.4.0]: https://github.com/pkrusche/project-sandbox/compare/v0.3.1...HEAD
+[0.4.1]: https://github.com/pkrusche/project-sandbox/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/pkrusche/project-sandbox/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/pkrusche/project-sandbox/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/pkrusche/project-sandbox/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/pkrusche/project-sandbox/compare/v0.2.1...v0.2.2

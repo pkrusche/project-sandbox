@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "project-sandbox"
-version = "0.4.0"
+version = "0.4.1"
 description = "Sandbox coding agents inside isolated container runtimes."
 readme = "README.md"
 license = { text = "MIT" }
@@ -18,8 +18,8 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest==9.2.0",
-    "ruff==0.17.4",
-    "ty==0.0.99",
+    "ruff==0.17.5",
+    "ty==0.0.104",
     "pytest-xdist>=3.8.0",
 ]
 

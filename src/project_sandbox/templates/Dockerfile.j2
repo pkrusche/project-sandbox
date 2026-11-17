@@ -24,13 +24,13 @@ RUN set -eux; \
 # and replace both per-architecture checksums with the values published in
 # https://nodejs.org/dist/${NODE_VERSION}/SHASUMS256.txt.
 RUN set -euxo pipefail; \
-    NODE_VERSION="v26.13.0"; \
+    NODE_VERSION="v26.13.1"; \
     NODE_ARCH="$(uname -m)"; \
     case "$NODE_ARCH" in \
         x86_64) NODE_ARCH="x64"; \
-            NODE_SHA256="d28a96af6c38596f6d9d97c0ee531c13d238d757742387d1928de822d959e997" ;; \
+            NODE_SHA256="5c063e46bab0fbc1c17cc445d7ff129cbdcd0471be6ed83b6ab864f8143bc864" ;; \
         aarch64|arm64) NODE_ARCH="arm64"; \
-            NODE_SHA256="406fe3fbde1c054adff8b297c16fdb5af6659db327c1ac8acd46b56ef1af9a92" ;; \
+            NODE_SHA256="89e1853138db51e8b82d3e98ba9c0d3f2956a28e5e55ea1b7e12d25aae92d5dd" ;; \
         *) echo "Unsupported architecture for Node.js: $NODE_ARCH" >&2; exit 1 ;; \
     esac; \
     node_tmp="$(mktemp -d)"; \
@@ -70,23 +70,23 @@ RUN set -euxo pipefail; \
 # Global npm tooling is pinned to exact versions (never a floating tag) so a
 # compromised or broken upstream release cannot silently land in an image that
 # later receives workspace and agent credentials. Bump these deliberately.
-RUN npm install -g @fission-ai/openspec@1.16.1
+RUN npm install -g @fission-ai/openspec@2.0.0
 
 {% if install_claude %}
-RUN npm install -g @anthropic-ai/claude-code@2.1.319
+RUN npm install -g @anthropic-ai/claude-code@2.1.325
 {% endif %}
 {% if install_codex %}
-RUN npm install -g @openai/codex@0.167.0
+RUN npm install -g @openai/codex@0.169.0
 {% endif %}
 {% if install_opencode %}
 RUN npm install -g opencode-ai@1.19.5
-RUN npm install -g @ai-sdk/openai@4.0.111
+RUN npm install -g @ai-sdk/openai@4.0.118
 {% endif %}
 {% if install_pi %}
-RUN npm install -g @earendil-works/pi-coding-agent@1.5.0
+RUN npm install -g @earendil-works/pi-coding-agent@1.5.2
 {% endif %}
 {% if install_copilot %}
-RUN npm install -g @github/copilot@1.0.107
+RUN npm install -g @github/copilot@1.0.112
 {% endif %}
 
 {% if source_after_dependencies -%}
