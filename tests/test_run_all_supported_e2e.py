@@ -77,11 +77,23 @@ os.execv({sys.executable!r}, [{sys.executable!r}, *args[i + 1:]])
 # (one JSON object per line, as colima does); start/stop succeed. With
 # FAKE_COLIMA_ACTIVATES=1, start switches the fake Docker context to the
 # profile's, as `colima start` does without --activate=false.
+# FAKE_COLIMA_START=fail|hang makes start exit 1 or sleep; FAKE_COLIMA_DNS=fail
+# makes `ssh` (the in-VM DNS probe) fail like a VM with a dead nameserver.
 FAKE_COLIMA = """#!/usr/bin/env bash
 [ -n "${FAKE_COLIMA_LOG:-}" ] && echo "colima $*" >>"$FAKE_COLIMA_LOG"
 if [ "$1" = list ]; then printf '%s' "${FAKE_COLIMA_LIST:-}"; fi
-if [ "$1" = start ] && [ "${FAKE_COLIMA_ACTIVATES:-0}" = 1 ]; then
-  echo "colima-$3" >"$FAKE_DOCKER_CONTEXT_FILE"
+if [ "$1" = start ]; then
+  case "${FAKE_COLIMA_START:-}" in
+    fail) exit 1 ;;
+    hang) sleep 30 ;;
+  esac
+  if [ "${FAKE_COLIMA_ACTIVATES:-0}" = 1 ]; then
+    echo "colima-$3" >"$FAKE_DOCKER_CONTEXT_FILE"
+  fi
+fi
+if [ "$1" = ssh ]; then
+  if [ "${FAKE_COLIMA_DNS:-ok}" = fail ]; then echo "nameserver 192.168.5.6"; exit 1; fi
+  echo "54.208.54.220 registry-1.docker.io"
 fi
 exit 0
 """
@@ -184,7 +196,10 @@ class RunAllSupportedE2ETests(unittest.TestCase):
         self.assertNotIn("--with-colima", chroot)
         self.assertNotIn("+ colima start", result.stdout)
         self.assertNotIn("+ colima stop", result.stdout)
-        self.assertEqual(log, ["colima list --json"])
+        # Listing, then the read-only in-VM DNS probe of the preflight.
+        self.assertEqual(log[0], "colima list --json")
+        self.assertEqual(len(log), 2, log)
+        self.assertTrue(log[1].startswith("colima ssh --profile project-sandbox --"))
 
     def test_stopped_colima_profile_is_started_and_stopped(self) -> None:
         log: list[str] = []
@@ -218,6 +233,13 @@ class RunAllSupportedE2ETests(unittest.TestCase):
         self.assertTrue(all("--with-colima" not in line for line in self._runs(result)))
         self.assertEqual(log, ["colima list --json"])
 
+    def test_colima_start_timeout_must_be_positive(self) -> None:
+        for value in ("0", "-1", "ten"):
+            with self.subTest(value=value):
+                result = self._run("--colima-start-timeout", value)
+                self.assertEqual(result.returncode, 64)
+                self.assertIn("positive number of seconds", result.stderr)
+
     def test_docker_runtime_on_a_colima_context_is_refused(self) -> None:
         for context, host in (
             ("colima-project-sandbox", ""),
@@ -225,10 +247,8 @@ class RunAllSupportedE2ETests(unittest.TestCase):
             ("default", "unix:///Users/me/.colima/work/docker.sock"),
         ):
             with self.subTest(context=context):
-                result = self._run(
-                    docker_context=context,
-                    **({"FAKE_DOCKER_HOST": host} if host else {}),
-                )
+                # An empty FAKE_DOCKER_HOST falls back to the context's socket.
+                result = self._run(docker_context=context, FAKE_DOCKER_HOST=host)
                 self.assertEqual(result.returncode, 64, result.stdout)
                 self.assertIn(f"active Docker context is {context}", result.stderr)
                 self.assertIn("would test that Colima VM", result.stderr)
@@ -645,7 +665,11 @@ echo "  SKIP security  (pass --with-security)"
 
 class RunAllSupportedE2ETablesTests(unittest.TestCase):
     def _execute(
-        self, colima_list: str = "", docker_context: str = "", **extra_env: str
+        self,
+        colima_list: str = "",
+        docker_context: str = "",
+        args: tuple[str, ...] = (),
+        **extra_env: str,
     ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
         """Really run the script against FAKE_RUNNER, a fake uv and a fake colima."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -688,6 +712,7 @@ class RunAllSupportedE2ETablesTests(unittest.TestCase):
                     "/nonexistent",
                     "--agentgateway-dir",
                     "/nonexistent",
+                    *args,
                 ],
                 env=env,
                 capture_output=True,
@@ -702,8 +727,11 @@ class RunAllSupportedE2ETablesTests(unittest.TestCase):
             _colima_list(("project-sandbox", "Stopped")), FAKE_COLIMA_ROWS="1"
         )
         out = result.stdout
+        probes = [c for c in calls if c.startswith("colima ssh")]
+        self.assertEqual(len(probes), 1, calls)
+        self.assertIn("getent hosts registry-1.docker.io", probes[0])
         self.assertEqual(
-            calls,
+            [c for c in calls if not c.startswith("colima ssh")],
             [
                 "colima list --json",
                 (
@@ -744,6 +772,10 @@ class RunAllSupportedE2ETablesTests(unittest.TestCase):
             "context colima-project-sandbox",
             preflight,
         )
+        self.assertIn(
+            "OK    colima (project-sandbox) DNS: registry-1.docker.io resolves",
+            preflight,
+        )
         self.assertRegex(out[out.index("Outcome") :], r"colima\s+PASS\s+SKIP")
 
     def test_context_switched_by_colima_start_stops_the_run(self) -> None:
@@ -758,6 +790,53 @@ class RunAllSupportedE2ETablesTests(unittest.TestCase):
         self.assertFalse(any(c.startswith("runner") for c in calls), calls)
         # The profile this run started is stopped again.
         self.assertEqual(calls[-1], "colima stop --profile project-sandbox")
+
+    def test_failed_colima_start_still_stops_the_profile(self) -> None:
+        result, calls = self._execute(
+            _colima_list(("project-sandbox", "Stopped")),
+            docker_context="desktop-linux",
+            FAKE_COLIMA_START="fail",
+            FAKE_COLIMA_ROWS="1",
+        )
+        self.assertEqual(result.returncode, 1)
+        # A failed start can leave the VM half-booted; this run stops it.
+        self.assertEqual(calls[-1], "colima stop --profile project-sandbox")
+        self.assertFalse(any(c.startswith("colima ssh") for c in calls), calls)
+        outcome = result.stdout[result.stdout.index("Outcome") :]
+        self.assertIn("FAIL colima-start  (exit 1)", outcome)
+        self.assertRegex(outcome, r"colima\s+SKIP\s+SKIP")
+
+    def test_stuck_colima_start_times_out_and_is_stopped(self) -> None:
+        result, calls = self._execute(
+            _colima_list(("project-sandbox", "Stopped")),
+            docker_context="desktop-linux",
+            args=("--colima-start-timeout", "1"),
+            FAKE_COLIMA_START="hang",
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("timed out after 1s", result.stderr)
+        self.assertIn("did not start within 1s", result.stdout)
+        self.assertIn("FAIL colima-start  (exit 124)", result.stdout)
+        self.assertEqual(calls[-1], "colima stop --profile project-sandbox")
+
+    def test_vm_without_dns_drops_the_colima_suite(self) -> None:
+        result, _ = self._execute(
+            _colima_list(("project-sandbox", "Running")),
+            docker_context="desktop-linux",
+            FAKE_COLIMA_DNS="fail",
+            FAKE_COLIMA_ROWS="1",
+        )
+        out = result.stdout
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(
+            "FAIL  colima (project-sandbox) DNS: the VM cannot resolve "
+            "registry-1.docker.io",
+            out,
+        )
+        self.assertIn("nameserver 192.168.5.6", out)
+        outcome = out[out.index("Outcome") :]
+        self.assertIn("FAIL colima-preflight", outcome)
+        self.assertRegex(outcome, r"colima\s+SKIP\s+SKIP")
 
     def test_unhealthy_colima_profile_drops_the_colima_suite(self) -> None:
         result, calls = self._execute(

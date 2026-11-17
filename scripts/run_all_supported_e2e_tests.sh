@@ -46,8 +46,9 @@
 #   Colima profile    the profile must use Colima's docker runtime, and
 #                     `project-sandbox doctor --colima-profile NAME` must confirm
 #                     its context (colima-NAME) is that profile's Docker socket and
-#                     its engine answers. Otherwise the colima suite is not run and
-#                     the check is reported as FAIL colima-preflight.
+#                     its engine answers, and the VM must resolve a public name
+#                     (registry-1.docker.io) within 45s. Otherwise the colima suite
+#                     is not run and the check is reported as FAIL colima-preflight.
 # A missing checkout skips its suites; a checkout whose service is not listening
 # still runs them. Both cases are reported as notes before and after the run.
 # The chroot runtime only runs the suites run-e2e-tests.sh supports without a
@@ -62,7 +63,8 @@
 #       [--internet-proxy-dir DIR] [--agentgateway-dir DIR]
 #       [--no-copilot] [--no-internet-proxy-isolation] [--no-build] [--keep]
 #       [--no-replace-existing] [--no-incremental] [--strict-security-coverage]
-#       [--colima-profile NAME] [--no-colima] [--security-peer-runtime NAME]
+#       [--colima-profile NAME] [--colima-start-timeout SECONDS] [--no-colima]
+#       [--security-peer-runtime NAME]
 #       [--base-image IMAGE] [--dry-run] [-- RUN-E2E-TESTS-OPTIONS...]
 #
 #   --runtimes LIST   comma-separated subset of detected runtimes to run
@@ -76,6 +78,9 @@
 #                     never run the destructive two-service isolation audit
 #   --colima-profile NAME
 #                     Colima profile for the colima suite (default: project-sandbox)
+#   --colima-start-timeout SECONDS
+#                     give up on starting a stopped profile after this long
+#                     (default 600); the half-started profile is stopped again
 #   --no-colima       skip the colima suite and never start a Colima profile
 #   --security-peer-runtime NAME
 #                     a second detected container runtime for the security suite's
@@ -119,6 +124,7 @@ AGENTGATEWAY_DIR="$ROOT/../agentgateway-locally"
 WITH_COPILOT=1
 WITH_COLIMA=1
 COLIMA_PROFILE="project-sandbox"
+COLIMA_START_TIMEOUT=600
 SECURITY_PEER=""
 NO_INTERNET_ISOLATION=0
 NO_BUILD=0
@@ -140,6 +146,12 @@ while [ $# -gt 0 ]; do
     --no-copilot) WITH_COPILOT=0; shift ;;
     --no-colima) WITH_COLIMA=0; shift ;;
     --colima-profile) COLIMA_PROFILE="${2:?--colima-profile needs a value}"; shift 2 ;;
+    --colima-start-timeout)
+      COLIMA_START_TIMEOUT="${2:?--colima-start-timeout needs a value}"; shift 2
+      case "$COLIMA_START_TIMEOUT" in
+        ''|*[!0-9]*|0) echo "ERROR: --colima-start-timeout needs a positive number of seconds." >&2; exit 64 ;;
+      esac
+      ;;
     --security-peer-runtime) SECURITY_PEER="${2:?--security-peer-runtime needs a value}"; shift 2 ;;
     --no-internet-proxy-isolation) NO_INTERNET_ISOLATION=1; shift ;;
     --no-build) NO_BUILD=1; COMMON_ARGS+=(--no-build); shift ;;
@@ -175,6 +187,23 @@ resolve_dir() { (cd "$1" 2>/dev/null && pwd) || true; }
 # True when something accepts TCP connections on HOST PORT. Loopback refusals
 # return immediately, so no timeout helper is needed.
 port_open() { (exec 3<>"/dev/tcp/$1/$2") >/dev/null 2>&1; }
+
+# Runs "$@" in the foreground (Ctrl-C still reaches it) and kills it after $1
+# seconds; exits 124 on timeout, like coreutils timeout (absent on macOS).
+run_with_timeout() {
+  local secs="$1"
+  shift
+  uv run --no-project python -I -c '
+import subprocess, sys
+try:
+    sys.exit(subprocess.run(sys.argv[2:], timeout=float(sys.argv[1])).returncode)
+except subprocess.TimeoutExpired:
+    print("timed out after " + sys.argv[1] + "s: " + " ".join(sys.argv[2:]), file=sys.stderr)
+    sys.exit(124)
+except KeyboardInterrupt:
+    sys.exit(130)
+' "$secs" "$@"
+}
 
 # --- Runtime detection ------------------------------------------------------
 if ! DOCTOR_JSON="$(cd "$ROOT" && uv run project-sandbox doctor --json 2>/dev/null)"; then
@@ -464,15 +493,22 @@ start_colima() {
     return 0
   fi
   local rc=0
-  colima start --profile "$COLIMA_PROFILE" "${COLIMA_START_FLAGS[@]}" || rc=$?
+  # Owned from here on: a failed, timed-out or interrupted start can leave the
+  # VM half-booted, and stop_colima (also the EXIT trap) must stop it again.
+  COLIMA_STARTED=1
+  run_with_timeout "$COLIMA_START_TIMEOUT" \
+    colima start --profile "$COLIMA_PROFILE" "${COLIMA_START_FLAGS[@]}" || rc=$?
   RESULT_RT+=("colima-start")
   RESULT_RC+=("$rc")
   if [ "$rc" = 0 ]; then
-    COLIMA_STARTED=1
     COLIMA_STATE=running
   else
     COLIMA_STATE=error
-    note "colima profile '$COLIMA_PROFILE' did not start; skipping colima"
+    if [ "$rc" = 124 ]; then
+      note "colima profile '$COLIMA_PROFILE' did not start within ${COLIMA_START_TIMEOUT}s; skipping colima. A start stuck at 'boot scripts must have finished' usually means the VM cannot resolve names (see the DNS section of docs/development.md)"
+    else
+      note "colima profile '$COLIMA_PROFILE' did not start (exit $rc); skipping colima"
+    fi
     overall=1
   fi
   echo
@@ -504,6 +540,23 @@ sys.exit(0 if ok and not any(c.get("status") == "fail" for c in checks) else 1)
 ' "$COLIMA_PROFILE"
 }
 
+# Fails unless the profile's VM resolves a public name. Lima's boot scripts,
+# image pulls and builds all need it; a dead resolver makes them hang or time
+# out (i/o timeout on the nameserver) instead of failing clearly.
+check_colima_dns() {
+  local out rc=0
+  out="$(run_with_timeout 45 colima ssh --profile "$COLIMA_PROFILE" -- \
+    sh -c 'getent hosts registry-1.docker.io || { grep "^nameserver" /etc/resolv.conf; exit 1; }' 2>&1)" || rc=$?
+  if [ "$rc" = 0 ]; then
+    echo "  OK    colima ($COLIMA_PROFILE) DNS: registry-1.docker.io resolves in the VM"
+    return 0
+  fi
+  echo "  FAIL  colima ($COLIMA_PROFILE) DNS: the VM cannot resolve registry-1.docker.io (exit $rc)"
+  printf '%s\n' "$out" | sed -n '1,5s/^/          /p'
+  echo "          -> Lima's resolver is the gateway (192.168.5.2); see the DNS section of docs/development.md"
+  return 1
+}
+
 # Checks, before any suite runs, that starting Colima left the active Docker
 # context alone and that the Colima profile is the engine the suite expects.
 preflight() {
@@ -526,7 +579,7 @@ preflight() {
     echo "Colima profile:   $COLIMA_PROFILE (context colima-$COLIMA_PROFILE)"
     if [ "$COLIMA_STATE" != running ]; then
       echo "+ uv run project-sandbox doctor --json --colima-profile $COLIMA_PROFILE  (after the start)"
-    elif check_colima_doctor; then
+    elif check_colima_doctor && check_colima_dns; then
       :
     else
       COLIMA_STATE=error
