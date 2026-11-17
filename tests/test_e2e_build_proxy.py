@@ -98,11 +98,17 @@ class BuildProxyHarnessTests(TestCase):
                     "run_logged",
                     return_value=subprocess.CompletedProcess([], 0),
                 ) as run,
+                patch.object(
+                    module.local_service_network,
+                    "uses_local_pasta",
+                    return_value=False,
+                ),
             ):
                 tag = module.build_sidecar(
                     container_cli.DOCKER, env["http_proxy"], CERTIFICATE, root, {}, 60
                 )
             command = run.call_args.args[0]
+            self.assertNotIn("--network", command)
             self.assertIn("--no-cache", command)
             self.assertIn("http_proxy=http://proxy.example:3128", command)
             self.assertEqual(command[command.index("-t") + 1], tag)
@@ -112,6 +118,42 @@ class BuildProxyHarnessTests(TestCase):
             self.assertIn(
                 "apk add --no-cache",
                 (run.call_args.kwargs["cwd"] / "Dockerfile").read_text(),
+            )
+
+    def test_podman_sidecar_build_uses_the_cli_pasta_network(self):
+        # Default pasta copies the host's LAN address into the builder, so a
+        # proxy on that address refused the sidecar build's connections.
+        module = checker()
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch.object(
+                    module.cli,
+                    "_build_proxy_session",
+                    return_value=contextlib.nullcontext({}),
+                ),
+                patch.object(
+                    module,
+                    "run_logged",
+                    return_value=subprocess.CompletedProcess([], 0),
+                ) as run,
+                patch.object(
+                    module.local_service_network,
+                    "uses_local_pasta",
+                    return_value=True,
+                ),
+            ):
+                module.build_sidecar(
+                    container_cli.PODMAN,
+                    "http://192.0.2.1:3128",
+                    CERTIFICATE,
+                    Path(tmp),
+                    {},
+                    60,
+                )
+            command = run.call_args.args[0]
+            self.assertEqual(
+                command[command.index("--network") + 1],
+                "pasta:-a,198.18.0.2,-n,24,-g,198.18.0.1",
             )
 
     def test_addresses_and_environment_cannot_reuse_an_existing_instance(self):

@@ -8196,8 +8196,18 @@ class EgressSidecarLaunchTests(TestCase):
         for runtime in (container_cli.DOCKER, container_cli.PODMAN):
             with self.subTest(runtime=runtime.name):
                 observed = []
+                networks = []
 
-                def build(*, context_dir, build_args, observed=observed, **_kwargs):
+                def build(
+                    *,
+                    context_dir,
+                    build_args,
+                    network=None,
+                    observed=observed,
+                    networks=networks,
+                    **_kwargs,
+                ):
+                    networks.append(network)
                     observed.append(
                         dict(
                             arg.split("=", 1)
@@ -8232,6 +8242,13 @@ class EgressSidecarLaunchTests(TestCase):
                     }
                     if runtime == container_cli.PODMAN
                     else None,
+                    extra_patches=(
+                        patch.object(
+                            cli.local_service_network,
+                            "uses_local_pasta",
+                            return_value=runtime == container_cli.PODMAN,
+                        ),
+                    ),
                 )
                 self.assertEqual(rc, 0)
                 self.assertEqual(
@@ -8240,6 +8257,16 @@ class EgressSidecarLaunchTests(TestCase):
                         cli.build_network.environment(
                             "http://proxy.example:3128", ("mirror.corp",)
                         )
+                    ],
+                )
+                # Regression: default pasta copies the host's LAN address into
+                # the builder, so a build proxy there refused the connection.
+                self.assertEqual(
+                    networks,
+                    [
+                        "pasta:-a,198.18.0.2,-n,24,-g,198.18.0.1"
+                        if runtime == container_cli.PODMAN
+                        else None
                     ],
                 )
 

@@ -41,6 +41,7 @@ from project_sandbox import (
     container_cli,
     fixture_network,
     internet_proxy,
+    local_service_network,
     sidecar_image,
 )
 
@@ -258,6 +259,12 @@ def build_sidecar(
         command = [runtime.binary, "build", "--no-cache", "-t", tag, "-f", "Dockerfile"]
         if runtime == container_cli.PODMAN:
             command += ["--format", "docker"]
+        # The CLI's network: default pasta hides the host's LAN address.
+        network = local_service_network.network_argument(
+            [], pasta=local_service_network.uses_local_pasta(runtime)
+        )
+        if network:
+            command += ["--network", network]
         command += [*build_network.build_args(proxy_env or {}), "."]
         result = run_logged(
             command, root / "sidecar-build.log", cwd=context, env=env, timeout=timeout

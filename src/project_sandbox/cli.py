@@ -1350,6 +1350,9 @@ def _main_scoped(argv: list[str] | None, resources: contextlib.ExitStack) -> int
             def build_sidecar_image(**kwargs) -> int:
                 # ensure_image calls this only on a cache miss. The Apple
                 # forwarder must cover the sidecar build too, then close.
+                # Like the project build, it uses the shared pasta address:
+                # pasta's default copies the host's LAN address into the
+                # builder, so a build proxy there would point back at it.
                 with _build_proxy_session(
                     args,
                     build_proxy,
@@ -1360,6 +1363,9 @@ def _main_scoped(argv: list[str] | None, resources: contextlib.ExitStack) -> int
                     return container_cli.build_image(
                         **kwargs,
                         build_args=build_network.build_args(proxy_environment or {}),
+                        network=local_service_network.network_argument(
+                            [], pasta=podman_pasta
+                        ),
                         verbose=args.verbose,
                     )
 
