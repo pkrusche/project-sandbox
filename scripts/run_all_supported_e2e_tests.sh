@@ -28,10 +28,26 @@
 #                                     project-sandbox) exists; runs once, with the
 #                                     first container runtime. A stopped profile is
 #                                     started before the plan (`colima start
-#                                     --profile NAME`, its stored configuration) and
+#                                     --profile NAME --activate=false
+#                                     --ssh-config=false`, its stored configuration,
+#                                     leaving the active Docker context alone) and
 #                                     stopped again afterwards. A missing profile is
 #                                     never created: create it with `project-sandbox
 #                                     colima init`. Pass --no-colima to leave it out
+#
+# Preflight, before any suite runs:
+#   Docker context    the active context (and DOCKER_HOST/DOCKER_CONTEXT) is shown.
+#                     The docker runtime and plain `docker` calls use it, so the
+#                     run is refused when the docker runtime is selected and the
+#                     context is a Colima one (colima, colima-*, or an endpoint
+#                     under ~/.colima): it would test a Colima VM, not Docker.
+#                     Starting the Colima profile must not change it; if it does,
+#                     the run stops.
+#   Colima profile    the profile must use Colima's docker runtime, and
+#                     `project-sandbox doctor --colima-profile NAME` must confirm
+#                     its context (colima-NAME) is that profile's Docker socket and
+#                     its engine answers. Otherwise the colima suite is not run and
+#                     the check is reported as FAIL colima-preflight.
 # A missing checkout skips its suites; a checkout whose service is not listening
 # still runs them. Both cases are reported as notes before and after the run.
 # The chroot runtime only runs the suites run-e2e-tests.sh supports without a
@@ -223,6 +239,56 @@ if [ ${#RUNTIMES[@]} -eq 0 ]; then
   exit 1
 fi
 
+# --- Docker context ----------------------------------------------------------
+# The docker runtime (and every plain `docker` call of the suites) targets the
+# active Docker context; only the colima suite names its own (colima-PROFILE).
+DOCKER_CTX=""
+DOCKER_CTX_HOST=""
+
+# The active context's name, or empty when docker is missing or cannot tell.
+docker_context_name() {
+  command -v docker >/dev/null 2>&1 || return 0
+  docker context show 2>/dev/null || true
+}
+
+# The active context's Docker endpoint (DOCKER_HOST when that is set).
+docker_context_host() {
+  command -v docker >/dev/null 2>&1 || return 0
+  docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null || true
+}
+
+# True when context $1 / endpoint $2 is a Colima profile's engine.
+is_colima_context() {
+  case "$1" in colima|colima-*) return 0 ;; esac
+  case "$2" in */.colima/*) return 0 ;; esac
+  return 1
+}
+
+describe_docker_context() {
+  local text="${DOCKER_CTX:-unknown}"
+  [ -n "$DOCKER_CTX_HOST" ] && text="$text ($DOCKER_CTX_HOST)"
+  [ -n "${DOCKER_HOST:-}" ] && text="$text; DOCKER_HOST is set"
+  [ -n "${DOCKER_CONTEXT:-}" ] && text="$text; DOCKER_CONTEXT=$DOCKER_CONTEXT"
+  printf '%s' "$text"
+}
+
+DOCKER_CTX="$(docker_context_name)"
+DOCKER_CTX_HOST="$(docker_context_host)"
+if [ -n "$DOCKER_CTX$DOCKER_CTX_HOST" ] && is_colima_context "$DOCKER_CTX" "$DOCKER_CTX_HOST"; then
+  docker_selected=0
+  for rt in "${RUNTIMES[@]}"; do
+    [ "$rt" = docker ] && docker_selected=1
+  done
+  if [ "$docker_selected" = 1 ]; then
+    echo "ERROR: the active Docker context is $(describe_docker_context), a Colima engine." >&2
+    echo "  The docker runtime would test that Colima VM instead of Docker. Switch back" >&2
+    echo "  (for example 'docker context use desktop-linux', and unset DOCKER_HOST /" >&2
+    echo "  DOCKER_CONTEXT), or leave docker out with --runtimes." >&2
+    exit 64
+  fi
+  note "the active Docker context is $(describe_docker_context), a Colima engine; plain docker calls go to that VM"
+fi
+
 # --- Proxy service detection ------------------------------------------------
 IPL_DIR="$(resolve_dir "$INTERNET_PROXY_DIR")"
 GW_DIR="$(resolve_dir "$AGENTGATEWAY_DIR")"
@@ -269,7 +335,8 @@ for rt in "${RUNTIMES[@]}"; do
 done
 [ -n "$COLIMA_RT" ] || COLIMA_RT="${RUNTIMES[0]}"
 
-# Prints the profile's lowercased status from `colima list --json`, or "missing".
+# Prints the profile's lowercased status and its Colima runtime (tab-separated)
+# from `colima list --json`, or "missing".
 colima_profile_status() {
   printf '%s' "$1" | uv run --no-project python -I -c '
 import json, sys
@@ -281,7 +348,8 @@ for line in sys.stdin:
         continue
     for entry in item if isinstance(item, list) else [item]:
         if isinstance(entry, dict) and entry.get("name") == want:
-            print(str(entry.get("status") or "unknown").lower())
+            status = str(entry.get("status") or "unknown").lower()
+            print(status + "\t" + str(entry.get("runtime") or "unknown"))
             sys.exit(0)
 print("missing")
 ' "$COLIMA_PROFILE"
@@ -297,8 +365,18 @@ elif [ "$NO_BUILD" = 0 ]; then
     COLIMA_STATE=error
     note "colima not available: 'colima list --json' failed: ${COLIMA_LIST:-no output}; skipping colima"
   else
-    case "$(colima_profile_status "$COLIMA_LIST")" in
+    IFS="$(printf '\t')" read -r colima_status colima_runtime <<<"$(colima_profile_status "$COLIMA_LIST")"
+    # Only a reported runtime other than docker disqualifies the profile.
+    if [ "$colima_status" != missing ] && [ "${colima_runtime:-unknown}" != unknown ] \
+      && [ "$colima_runtime" != docker ]; then
+      colima_status=wrong-runtime
+    fi
+    case "$colima_status" in
       running) COLIMA_STATE=running ;;
+      wrong-runtime)
+        COLIMA_STATE=error
+        note "colima profile '$COLIMA_PROFILE' uses Colima's ${colima_runtime:-unknown} runtime, not docker; skipping colima. Create a project-sandbox profile with: uv run project-sandbox colima init --colima-profile NAME"
+        ;;
       missing)
         COLIMA_STATE=missing
         note "colima profile '$COLIMA_PROFILE' does not exist; skipping colima. Create it with: uv run project-sandbox colima init --colima-profile $COLIMA_PROFILE --workspace-root $(dirname "$ROOT")"
@@ -369,6 +447,10 @@ RESULT_RT=()
 RESULT_RC=()
 overall=0
 
+# The flags project-sandbox passes on every start (colima_profile.PROTECTIVE_FLAGS):
+# keep the active Docker context and ~/.ssh/config as they are.
+COLIMA_START_FLAGS=(--activate=false --ssh-config=false)
+
 # Starts a stopped Colima profile so the colima suite is not skipped. Run
 # before planning: run-e2e-tests.sh decides the suite by asking the profile.
 start_colima() {
@@ -376,19 +458,83 @@ start_colima() {
   echo "========================================"
   echo "Colima start ($COLIMA_PROFILE)"
   echo "========================================"
-  echo "+ colima start --profile $COLIMA_PROFILE"
+  echo "+ colima start --profile $COLIMA_PROFILE ${COLIMA_START_FLAGS[*]}"
   if [ "$DRY_RUN" = 1 ]; then
     echo
     return 0
   fi
   local rc=0
-  colima start --profile "$COLIMA_PROFILE" || rc=$?
+  colima start --profile "$COLIMA_PROFILE" "${COLIMA_START_FLAGS[@]}" || rc=$?
   RESULT_RT+=("colima-start")
   RESULT_RC+=("$rc")
   if [ "$rc" = 0 ]; then
     COLIMA_STARTED=1
+    COLIMA_STATE=running
   else
+    COLIMA_STATE=error
+    note "colima profile '$COLIMA_PROFILE' did not start; skipping colima"
     overall=1
+  fi
+  echo
+}
+
+# Prints the colima section of `doctor --json --colima-profile NAME` and fails
+# unless the profile's own check is ok and no colima check failed.
+check_colima_doctor() {
+  local json
+  json="$(cd "$ROOT" && uv run project-sandbox doctor --json --colima-profile "$COLIMA_PROFILE" 2>/dev/null)" || true
+  printf '%s' "$json" | uv run --no-project python -I -c '
+import json, sys
+want = "colima (" + sys.argv[1] + ")"
+try:
+    checks = json.load(sys.stdin).get("checks", [])
+except ValueError:
+    print("  FAIL  project-sandbox doctor --json gave no usable output")
+    sys.exit(1)
+checks = [c for c in checks if c.get("section") == "colima"]
+for c in checks:
+    hint = " -> " + c["hint"] if c.get("hint") else ""
+    status = (c.get("status") or "?").upper()
+    print("  %-5s %s: %s%s" % (status, c.get("name"), c.get("detail"), hint))
+own = [c for c in checks if c.get("name") == want]
+if not own:
+    print("  FAIL  doctor reported no " + want + " check")
+ok = bool(own) and own[0].get("status") == "ok"
+sys.exit(0 if ok and not any(c.get("status") == "fail" for c in checks) else 1)
+' "$COLIMA_PROFILE"
+}
+
+# Checks, before any suite runs, that starting Colima left the active Docker
+# context alone and that the Colima profile is the engine the suite expects.
+preflight() {
+  echo "========================================"
+  echo "Preflight"
+  echo "========================================"
+  echo "Docker context:   $(describe_docker_context)"
+  if [ "$DRY_RUN" = 0 ] && [ -n "$DOCKER_CTX$DOCKER_CTX_HOST" ]; then
+    local now now_host
+    now="$(docker_context_name)"
+    now_host="$(docker_context_host)"
+    if [ "$now" != "$DOCKER_CTX" ] || [ "$now_host" != "$DOCKER_CTX_HOST" ]; then
+      echo "ERROR: the active Docker context changed from ${DOCKER_CTX:-?} ($DOCKER_CTX_HOST)" >&2
+      echo "  to ${now:-?} ($now_host) while preparing the run. Restore it with" >&2
+      echo "  'docker context use ${DOCKER_CTX:-default}' and retry." >&2
+      exit 1
+    fi
+  fi
+  if colima_selected; then
+    echo "Colima profile:   $COLIMA_PROFILE (context colima-$COLIMA_PROFILE)"
+    if [ "$COLIMA_STATE" != running ]; then
+      echo "+ uv run project-sandbox doctor --json --colima-profile $COLIMA_PROFILE  (after the start)"
+    elif check_colima_doctor; then
+      :
+    else
+      COLIMA_STATE=error
+      RESULT_RT+=("colima-preflight")
+      RESULT_RC+=(1)
+      overall=1
+      note "colima profile '$COLIMA_PROFILE' failed the preflight check; skipping colima (see Preflight)"
+    fi
   fi
   echo
 }
@@ -520,8 +666,10 @@ echo "Runtimes to test: ${RUNTIMES[*]}"
 echo "Internet proxy:   ${IPL_DIR:-not found} ($([ "$IPL_UP" = 1 ] && echo up || echo down))"
 echo "Agent proxy:      ${GW_DIR:-not found} ($([ "$GW_UP" = 1 ] && echo up || echo down))"
 echo "Colima profile:   $COLIMA_PROFILE ($COLIMA_STATE)"
+echo "Docker context:   $(describe_docker_context)"
 echo
 start_colima
+preflight
 PLAN_SPECS=()
 for rt in "${RUNTIMES[@]}"; do
   build_cmd "$rt"

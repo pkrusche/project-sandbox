@@ -52,27 +52,54 @@ DOCTOR = {
 
 # Fake uv: answers `doctor --json` from a file and runs `uv run ... python ARGS`
 # with the real interpreter, so the script's JSON parsing is exercised as is.
+# `doctor --colima-profile NAME` adds that profile's check, with the status in
+# $FAKE_COLIMA_DOCTOR (default ok).
 FAKE_UV = f"""#!{sys.executable}
-import os, sys
+import json, os, sys
 args = sys.argv[1:]
 if "doctor" in args:
-    sys.stdout.write(open(os.environ["FAKE_DOCTOR"]).read())
+    report = json.load(open(os.environ["FAKE_DOCTOR"]))
+    if "--colima-profile" in args:
+        profile = args[args.index("--colima-profile") + 1]
+        report["checks"].append({{
+            "section": "colima",
+            "name": f"colima ({{profile}})",
+            "status": os.environ.get("FAKE_COLIMA_DOCTOR", "ok"),
+            "detail": f"profile running, context colima-{{profile}}",
+        }})
+    json.dump(report, sys.stdout)
     sys.exit(0)
 i = args.index("python")
 os.execv({sys.executable!r}, [{sys.executable!r}, *args[i + 1:]])
 """
 
 # Fake colima: logs every invocation; `list --json` prints $FAKE_COLIMA_LIST
-# (one JSON object per line, as colima does); start/stop succeed.
+# (one JSON object per line, as colima does); start/stop succeed. With
+# FAKE_COLIMA_ACTIVATES=1, start switches the fake Docker context to the
+# profile's, as `colima start` does without --activate=false.
 FAKE_COLIMA = """#!/usr/bin/env bash
 [ -n "${FAKE_COLIMA_LOG:-}" ] && echo "colima $*" >>"$FAKE_COLIMA_LOG"
 if [ "$1" = list ]; then printf '%s' "${FAKE_COLIMA_LIST:-}"; fi
+if [ "$1" = start ] && [ "${FAKE_COLIMA_ACTIVATES:-0}" = 1 ]; then
+  echo "colima-$3" >"$FAKE_DOCKER_CONTEXT_FILE"
+fi
 exit 0
 """
 
-# Fake docker for colima tests: no context exists, so the real run-e2e-tests.sh
-# plan decides the colima suite without reaching a real engine.
-FAKE_DOCKER = "#!/usr/bin/env bash\nexit 1\n"
+# Fake docker: the active context is the content of $FAKE_DOCKER_CONTEXT_FILE
+# (none when it is missing or empty) and its endpoint is $FAKE_DOCKER_HOST or a
+# socket named after it. Every other call fails, so no named context (such as
+# colima-PROFILE) exists and the real run-e2e-tests.sh plan decides the colima
+# suite without reaching a real engine.
+FAKE_DOCKER = """#!/usr/bin/env bash
+ctx="$(cat "${FAKE_DOCKER_CONTEXT_FILE:-/nonexistent}" 2>/dev/null || true)"
+[ -n "$ctx" ] || exit 1
+if [ "$1 $2" = "context show" ]; then echo "$ctx"; exit 0; fi
+if [ "$1 $2 $3" = "context inspect --format" ]; then
+  echo "${FAKE_DOCKER_HOST:-unix:///fake/$ctx.sock}"; exit 0
+fi
+exit 1
+"""
 
 
 def _install(bindir: Path, name: str, text: str) -> None:
@@ -83,7 +110,8 @@ def _install(bindir: Path, name: str, text: str) -> None:
 
 def _colima_list(*profiles: tuple[str, str]) -> str:
     return "".join(
-        json.dumps({"name": name, "status": status}) + "\n" for name, status in profiles
+        json.dumps({"name": name, "status": status, "runtime": "docker"}) + "\n"
+        for name, status in profiles
     )
 
 
@@ -94,6 +122,8 @@ class RunAllSupportedE2ETests(unittest.TestCase):
         doctor: dict | None = None,
         colima_list: str = "",
         colima_log: list[str] | None = None,
+        docker_context: str = "",
+        **extra_env: str,
     ) -> subprocess.CompletedProcess[str]:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -105,12 +135,20 @@ class RunAllSupportedE2ETests(unittest.TestCase):
             doctor_path = tmp_path / "doctor.json"
             doctor_path.write_text(json.dumps(DOCTOR if doctor is None else doctor))
             log = tmp_path / "colima.log"
+            context_file = tmp_path / "docker-context"
+            context_file.write_text(docker_context)
             env = {
-                **os.environ,
+                **{
+                    k: v
+                    for k, v in os.environ.items()
+                    if k not in ("DOCKER_HOST", "DOCKER_CONTEXT")
+                },
                 "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
                 "FAKE_DOCTOR": str(doctor_path),
                 "FAKE_COLIMA_LIST": colima_list,
                 "FAKE_COLIMA_LOG": str(log),
+                "FAKE_DOCKER_CONTEXT_FILE": str(context_file),
+                **extra_env,
             }
             result = subprocess.run(
                 ["bash", str(SCRIPT), "--dry-run", *args],
@@ -180,6 +218,75 @@ class RunAllSupportedE2ETests(unittest.TestCase):
         self.assertTrue(all("--with-colima" not in line for line in self._runs(result)))
         self.assertEqual(log, ["colima list --json"])
 
+    def test_docker_runtime_on_a_colima_context_is_refused(self) -> None:
+        for context, host in (
+            ("colima-project-sandbox", ""),
+            ("colima", ""),
+            ("default", "unix:///Users/me/.colima/work/docker.sock"),
+        ):
+            with self.subTest(context=context):
+                result = self._run(
+                    docker_context=context,
+                    **({"FAKE_DOCKER_HOST": host} if host else {}),
+                )
+                self.assertEqual(result.returncode, 64, result.stdout)
+                self.assertIn(f"active Docker context is {context}", result.stderr)
+                self.assertIn("would test that Colima VM", result.stderr)
+                self.assertEqual(self._runs(result), [])
+
+    def test_colima_context_without_docker_runtime_is_noted(self) -> None:
+        result = self._run(
+            "--runtimes", "chroot", docker_context="colima-project-sandbox"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            "the active Docker context is colima-project-sandbox "
+            "(unix:///fake/colima-project-sandbox.sock), a Colima engine",
+            result.stdout,
+        )
+
+    def test_docker_context_is_reported(self) -> None:
+        result = self._run(docker_context="desktop-linux")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            "Docker context:   desktop-linux (unix:///fake/desktop-linux.sock)",
+            result.stdout,
+        )
+
+    def test_dry_run_checks_a_running_colima_profile(self) -> None:
+        result = self._run(
+            colima_list=_colima_list(("project-sandbox", "Running")),
+            FAKE_COLIMA_DOCTOR="warn",
+        )
+        self.assertIn("WARN  colima (project-sandbox)", result.stdout)
+        self.assertIn("failed the preflight check; skipping colima", result.stdout)
+        self.assertTrue(all("--with-colima" not in line for line in self._runs(result)))
+
+    def test_dry_run_defers_the_check_of_a_stopped_profile(self) -> None:
+        result = self._run(colima_list=_colima_list(("project-sandbox", "Stopped")))
+        self.assertIn(
+            "+ uv run project-sandbox doctor --json --colima-profile "
+            "project-sandbox  (after the start)",
+            result.stdout,
+        )
+
+    def test_colima_profile_without_the_docker_runtime_is_skipped(self) -> None:
+        log: list[str] = []
+        result = self._run(
+            colima_list=json.dumps(
+                {
+                    "name": "project-sandbox",
+                    "status": "Stopped",
+                    "runtime": "containerd",
+                }
+            )
+            + "\n",
+            colima_log=log,
+        )
+        self.assertIn("uses Colima's containerd runtime, not docker", result.stdout)
+        self.assertNotIn("+ colima start", result.stdout)
+        self.assertTrue(all("--with-colima" not in line for line in self._runs(result)))
+
     def test_colima_profile_option_selects_the_profile(self) -> None:
         result = self._run(
             "--colima-profile",
@@ -189,7 +296,10 @@ class RunAllSupportedE2ETests(unittest.TestCase):
             ),
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("+ colima start --profile work", result.stdout)
+        self.assertIn(
+            "+ colima start --profile work --activate=false --ssh-config=false",
+            result.stdout,
+        )
         self.assertIn("--with-colima --colima-profile work", self._runs(result)[0])
 
     def test_colima_runs_with_the_first_container_runtime(self) -> None:
@@ -535,7 +645,7 @@ echo "  SKIP security  (pass --with-security)"
 
 class RunAllSupportedE2ETablesTests(unittest.TestCase):
     def _execute(
-        self, colima_list: str = "", **extra_env: str
+        self, colima_list: str = "", docker_context: str = "", **extra_env: str
     ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
         """Really run the script against FAKE_RUNNER, a fake uv and a fake colima."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -550,15 +660,23 @@ class RunAllSupportedE2ETablesTests(unittest.TestCase):
             bindir.mkdir()
             _install(bindir, "uv", FAKE_UV)
             _install(bindir, "colima", FAKE_COLIMA)
+            _install(bindir, "docker", FAKE_DOCKER)
             doctor = tmp_path / "doctor.json"
             doctor.write_text(json.dumps(DOCTOR))
             log = tmp_path / "calls.log"
+            context_file = tmp_path / "docker-context"
+            context_file.write_text(docker_context)
             env = {
-                **os.environ,
+                **{
+                    k: v
+                    for k, v in os.environ.items()
+                    if k not in ("DOCKER_HOST", "DOCKER_CONTEXT")
+                },
                 "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
                 "FAKE_DOCTOR": str(doctor),
                 "FAKE_COLIMA_LIST": colima_list,
                 "FAKE_COLIMA_LOG": str(log),
+                "FAKE_DOCKER_CONTEXT_FILE": str(context_file),
                 "TMPDIR": str(tmp_path),
                 **extra_env,
             }
@@ -588,7 +706,10 @@ class RunAllSupportedE2ETablesTests(unittest.TestCase):
             calls,
             [
                 "colima list --json",
-                "colima start --profile project-sandbox",
+                (
+                    "colima start --profile project-sandbox"
+                    " --activate=false --ssh-config=false"
+                ),
                 "runner docker plan=1",
                 "runner chroot plan=1",
                 "runner docker plan=0",
@@ -606,8 +727,53 @@ class RunAllSupportedE2ETablesTests(unittest.TestCase):
 
     def test_already_running_colima_profile_is_left_running(self) -> None:
         _, calls = self._execute(_colima_list(("project-sandbox", "Running")))
-        self.assertNotIn("colima start --profile project-sandbox", calls)
-        self.assertNotIn("colima stop --profile project-sandbox", calls)
+        self.assertFalse(any(c.startswith("colima start") for c in calls))
+        self.assertFalse(any(c.startswith("colima stop") for c in calls))
+
+    def test_preflight_checks_the_started_profile(self) -> None:
+        result, _ = self._execute(
+            _colima_list(("project-sandbox", "Stopped")),
+            docker_context="desktop-linux",
+            FAKE_COLIMA_ROWS="1",
+        )
+        out = result.stdout
+        preflight = out[out.index("Preflight") : out.index("Test plan")]
+        self.assertIn("Docker context:   desktop-linux", preflight)
+        self.assertIn(
+            "OK    colima (project-sandbox): profile running, "
+            "context colima-project-sandbox",
+            preflight,
+        )
+        self.assertRegex(out[out.index("Outcome") :], r"colima\s+PASS\s+SKIP")
+
+    def test_context_switched_by_colima_start_stops_the_run(self) -> None:
+        result, calls = self._execute(
+            _colima_list(("project-sandbox", "Stopped")),
+            docker_context="desktop-linux",
+            FAKE_COLIMA_ACTIVATES="1",
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("active Docker context changed from desktop-linux", result.stderr)
+        self.assertIn("docker context use desktop-linux", result.stderr)
+        self.assertFalse(any(c.startswith("runner") for c in calls), calls)
+        # The profile this run started is stopped again.
+        self.assertEqual(calls[-1], "colima stop --profile project-sandbox")
+
+    def test_unhealthy_colima_profile_drops_the_colima_suite(self) -> None:
+        result, calls = self._execute(
+            _colima_list(("project-sandbox", "Running")),
+            docker_context="desktop-linux",
+            FAKE_COLIMA_DOCTOR="warn",
+            FAKE_COLIMA_ROWS="1",
+        )
+        out = result.stdout
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("WARN  colima (project-sandbox)", out)
+        outcome = out[out.index("Outcome") :]
+        self.assertIn("FAIL colima-preflight", outcome)
+        self.assertRegex(outcome, r"colima\s+SKIP\s+SKIP")
+        self.assertIn("failed the preflight check; skipping colima", outcome)
+        self.assertIn("runner docker plan=0", calls)
 
     def test_plan_and_outcome_tables(self) -> None:
         result, _ = self._execute()

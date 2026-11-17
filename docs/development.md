@@ -180,10 +180,26 @@ Copilot suites (`copilot`, `copilot-egress`) run by default and need a Copilot
 token; pass `--no-copilot` to skip them. When `colima` is on `PATH` and the
 profile (`project-sandbox`, or `--colima-profile NAME`) exists, the `colima`
 suite runs once, with the first selected container runtime. A stopped profile
-is started with `colima start --profile NAME` before the plan and stopped again
-afterwards; a profile that was already running is left running. A missing
-profile is never created; the notes print the `project-sandbox colima init`
-command instead. `--no-colima` and `--no-build` leave Colima alone.
+is started with `colima start --profile NAME --activate=false --ssh-config=false`
+before the plan and stopped again afterwards, so the active Docker context is
+not switched to Colima. A profile that was already running is left running. A
+missing profile is never created; the notes print the `project-sandbox colima
+init` command instead. `--no-colima` and `--no-build` leave Colima alone.
+
+A preflight runs before the test plan:
+
+- **Docker context.** The active Docker context, its endpoint, and any
+  `DOCKER_HOST`/`DOCKER_CONTEXT` are printed. The `docker` runtime uses that
+  context, so the run is refused (exit 64) when `docker` is selected and the
+  context is a Colima engine (`colima`, `colima-*`, or an endpoint under
+  `~/.colima`). Switch back with `docker context use desktop-linux`, or leave
+  `docker` out with `--runtimes`. If starting the profile changes the context,
+  the run stops and prints the `docker context use` command that restores it.
+- **Colima profile.** A profile whose Colima runtime is not `docker` is
+  skipped. A running profile must pass `project-sandbox doctor --colima-profile
+  NAME`: its `colima-NAME` context must point at that profile's Docker socket
+  and its engine must answer. Otherwise the `colima` suite is dropped and the
+  outcome reports `FAIL colima-preflight`.
 `scripts/e2e-cleanup.py` sweeps the
 detected container runtimes before the first and after the last run; a failed
 cleanup fails the overall result. Before anything runs, the script prints a
