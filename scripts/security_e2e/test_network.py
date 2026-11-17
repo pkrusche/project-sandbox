@@ -457,11 +457,16 @@ Path('tunnel-result.json').write_text(json.dumps({'survived': survived}))
         )
 
 
-def test_launch_waiting_for_image_lock_cannot_restore_revoked_policy(sidecar):
+def test_launch_waiting_for_image_lock_cannot_restore_revoked_policy(
+    sidecar, monkeypatch
+):
     from conftest import wait_for
 
     from project_sandbox import build_cache
 
+    # Host locks live under $XDG_STATE_HOME, and the launched CLI has the
+    # sandbox's private state root. Lock that root's file, not this process's.
+    monkeypatch.setenv("XDG_STATE_HOME", sidecar.sandbox.env["XDG_STATE_HOME"])
     sidecar.policy()
     assert reached(sidecar.probe([{}])[0])
     (sidecar.project / "probe-config.json").write_text(json.dumps([{}]))
