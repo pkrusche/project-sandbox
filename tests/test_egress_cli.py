@@ -362,3 +362,223 @@ class CommandTests(TestCase):
         self.assertIn("--follow", seen["argv"])
         self.assertTrue(seen["terminated"])
         self.assertEqual(len(self.lines), 2)
+
+
+class ServiceCommandTests(TestCase):
+    """isolated-sidecar-network task 4.3: `service add|remove|list`, applied live."""
+
+    def setUp(self) -> None:
+        from test_egress_sidecar_colima import PRIVATE, RUNTIME, ColimaFake
+
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name).resolve()
+        self.config = self.tmp / "config"
+        self.policy_path = self.config / "project-sandbox" / "egress.toml"
+        self.policy_path.parent.mkdir(parents=True)
+        self.policy_path.write_text('# mine\n[egress]\nallow = ["pypi.org"] # py\n')
+        self._env = patch.dict(
+            os.environ,
+            {
+                "XDG_CONFIG_HOME": str(self.config),
+                "XDG_STATE_HOME": str(self.tmp / "state"),
+            },
+        )
+        self._env.start()
+        self.colima = RUNTIME
+        self.private = PRIVATE
+        self.fake = ColimaFake()
+        self.docker = FakeRuntime(DOCKER)
+        self.lines: list[str] = []
+
+    def tearDown(self) -> None:
+        self._env.stop()
+        self._tmp.cleanup()
+
+    def context(self, runtime):
+        colima = runtime.name == "colima"
+        deps = egress_sidecar.Collaborators(
+            runner=self.fake if colima else self.docker,
+            relay=FakeRelay(),
+            now=lambda: NOW,
+            sleep=lambda _s: None,
+            readiness_timeout=0.0,
+            port_free=lambda _port, _address: True,
+            port_release_timeout=0.0,
+            host_probe=lambda _port, _address: True,
+            strategy=lambda _rt: self.private if colima else egress_sidecar.Strategy(),
+            mount_check=lambda _rt, _paths: None,
+        )
+        return egress_cli.Context(
+            runtime,
+            deps=deps,
+            root=self.tmp / "egress",
+            out=self.lines.append,
+            build_image=lambda _rt: IMAGE,
+            installed_image=IMAGE,
+        )
+
+    def run_cli(self, *argv: str, runtime=None) -> tuple[int, str, str]:
+        self.lines.clear()
+        err = io.StringIO()
+        with (
+            patch.object(
+                egress_cli.container_cli,
+                "select_runtime",
+                return_value=runtime or self.colima,
+            ),
+            patch.object(egress_cli.container_cli, "verify_colima_profile"),
+            contextlib.redirect_stderr(err),
+        ):
+            rc = egress_cli.main(list(argv), context=self.context)
+        return rc, "\n".join(self.lines), err.getvalue()
+
+    def conf(self) -> str:
+        lay = egress_sidecar.layout(self.colima, self.tmp / "egress")
+        return (lay.sidecar / egress_sidecar.CONF_NAME).read_text()
+
+    def mutating(self) -> list[list[str]]:
+        return [c for c in self.fake.calls if self.fake.kind(c) in MUTATING]
+
+    def test_parser_takes_the_service_actions(self) -> None:
+        parse = egress_cli.build_parser().parse_args
+        args = parse(["service", "add", "ollama", "11434", "--runtime", "colima"])
+        self.assertEqual((args.action, args.name, args.port), ("add", "ollama", 11434))
+        self.assertEqual(parse(["service", "remove", "ollama"]).name, "ollama")
+        self.assertEqual(parse(["service", "list"]).runtime, "auto")
+        self.assertIn("    service ", egress_cli.build_parser().format_help())
+        for argv in (
+            ["service"],
+            ["service", "add", "ollama"],
+            ["service", "add", "x", "y"],
+        ):
+            with self.subTest(argv=argv), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as ctx:
+                    parse(argv)
+                self.assertEqual(ctx.exception.code, 2)
+
+    def test_add_reloads_the_running_sidecar_without_a_restart(self) -> None:
+        self.run_cli("up")
+        self.fake.calls.clear()
+        rc, out, _ = self.run_cli("service", "add", "ollama", "11434")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("Declared service ollama on port 11434.", out)
+        self.assertIn("reloaded, no restart", out)
+        self.assertEqual(
+            self.mutating(),
+            [egress_sidecar.reload_argv(self.colima)],
+        )
+        self.assertNotIn("create", self.fake.kinds())
+        self.assertIn("parent 11434 0 no-query no-digest originserver", self.conf())
+        text = self.policy_path.read_text()
+        self.assertIn("# mine", text)
+        self.assertIn("# py", text)
+        self.assertIn("ollama", text)
+
+    def test_remove_reloads_and_warns_about_requests_in_flight(self) -> None:
+        self.run_cli("service", "add", "ollama", "11434")
+        self.run_cli("up")
+        self.fake.calls.clear()
+        rc, out, _ = self.run_cli("service", "remove", "ollama")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("Removed service ollama (port 11434)", out)
+        self.assertIn("Requests already in flight may complete", out)
+        self.assertEqual(self.mutating(), [egress_sidecar.reload_argv(self.colima)])
+        self.assertNotIn("accel", self.conf())
+
+    def test_add_when_not_running_only_edits(self) -> None:
+        rc, out, _ = self.run_cli("service", "add", "ollama", "11434")
+        self.assertEqual(rc, 0)
+        self.assertIn("applies when it next starts", out)
+        self.assertEqual(self.mutating(), [])
+
+    def test_repeated_and_moved_declarations(self) -> None:
+        self.run_cli("service", "add", "ollama", "11434")
+        _, out, _ = self.run_cli("service", "add", "ollama", "11434")
+        self.assertIn("already declared on port 11434", out)
+        _, out, _ = self.run_cli("service", "add", "ollama", "11435")
+        self.assertIn("Moved service ollama from port 11434 to 11435", out)
+
+    def test_an_invalid_edit_exits_1_and_leaves_the_file_byte_identical(self) -> None:
+        self.run_cli("service", "add", "ollama", "11434")
+        before = self.policy_path.read_bytes()
+        for argv, message in (
+            (("service", "add", "other", "3128"), "reserved"),
+            (("service", "add", "other", "11434"), "unique"),
+            (("service", "add", "Bad_Name", "4000"), "Invalid service name"),
+            (("service", "add", "low", "80"), "out of range"),
+            (("service", "remove", "missing"), "not declared"),
+        ):
+            with self.subTest(argv=argv):
+                rc, _, err = self.run_cli(*argv)
+                self.assertEqual(rc, 1)
+                self.assertIn(message, err)
+                self.assertEqual(self.policy_path.read_bytes(), before)
+
+    def test_list_on_colima_names_the_sidecar_urls(self) -> None:
+        self.run_cli("service", "add", "ollama", "11434")
+        self.run_cli("service", "add", "agent-proxy", "4000")
+        rc, out, _ = self.run_cli("service", "list")
+        self.assertEqual(rc, 0)
+        self.assertIn("agent-proxy 4000  (http://egress:4000/)", out)
+        self.assertIn("ollama 11434  (http://egress:11434/)", out)
+        self.assertLess(out.index("agent-proxy"), out.index("ollama"))
+        self.assertNotIn("exposed only", out)
+        self.assertIn(f"# policy: {self.policy_path}", out)
+
+    def test_list_on_a_runtime_without_services_says_where_they_apply(self) -> None:
+        self.run_cli("service", "add", "ollama", "11434")
+        rc, out, _ = self.run_cli("service", "list", runtime=DOCKER)
+        self.assertEqual(rc, 0)
+        self.assertIn("ollama 11434", out)
+        self.assertNotIn("egress:11434", out)
+        self.assertIn("exposed only in Colima sidecar mode", out)
+
+    def test_an_edit_on_another_runtime_does_not_touch_its_sidecar(self) -> None:
+        rc, out, _ = self.run_cli("service", "add", "ollama", "11434", runtime=DOCKER)
+        self.assertEqual(rc, 0)
+        self.assertIn("exposed only in Colima sidecar mode", out)
+        self.assertIn("reload --runtime colima", out)
+        self.assertEqual(self.docker.calls, [])
+
+    def test_empty_list(self) -> None:
+        rc, out, _ = self.run_cli("service", "list")
+        self.assertEqual(rc, 0)
+        self.assertIn("No services declared.", out)
+
+    def test_status_reports_services_and_the_internal_address(self) -> None:
+        self.run_cli("service", "add", "ollama", "11434")
+        self.run_cli("up")
+        rc, out, _ = self.run_cli("status")
+        self.assertEqual(rc, 0)
+        self.assertIn(
+            "Networks: psbx-egress-uplink (outbound), psbx-sandbox (internal, as "
+            "egress at 172.19.0.2)",
+            out,
+        )
+        self.assertIn("Proxy: egress:3128 on psbx-sandbox (no published port)", out)
+        self.assertIn("Services: ollama on egress:11434", out)
+        self.assertIn("Mac host address: 192.168.5.2 (host.lima.internal)", out)
+        self.assertNotIn("Endpoint:", out)
+        rc, out, _ = self.run_cli("status", "--json")
+        report = json.loads(out)
+        self.assertEqual(report["services"], [{"name": "ollama", "port": 11434}])
+        self.assertTrue(report["services_exposed"])
+        self.assertEqual(report["internal_address"], "172.19.0.2")
+        self.assertEqual(
+            report["networks"],
+            {"uplink": "psbx-egress-uplink", "sandbox": "psbx-sandbox"},
+        )
+        self.assertEqual(report["host_address"], "192.168.5.2")
+
+    def test_status_elsewhere_lists_services_as_colima_only(self) -> None:
+        self.run_cli("service", "add", "ollama", "11434")
+        rc, out, _ = self.run_cli("status", runtime=DOCKER)
+        self.assertEqual(rc, 0)
+        self.assertIn(
+            "Services: ollama (11434); exposed only in Colima sidecar mode", out
+        )
+        rc, out, _ = self.run_cli("status", "--json", runtime=DOCKER)
+        report = json.loads(out)
+        self.assertEqual(report["services"], [{"name": "ollama", "port": 11434}])
+        self.assertFalse(report["services_exposed"])
+        self.assertNotIn("internal_address", report)

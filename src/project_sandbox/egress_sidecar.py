@@ -1406,6 +1406,15 @@ def _private(strategy: Strategy) -> bool:
     return strategy.kind == DOCKER_PRIVATE_NETWORK
 
 
+def _internal_address(info: ContainerInfo) -> str | None:
+    """The sidecar's address on the sandbox network, or ``None`` when detached."""
+    try:
+        attached = colima_network.attachment(_first(json.loads(info.raw)))
+    except (ValueError, SidecarError):
+        return None
+    return attached.address if attached is not None else None
+
+
 def current_host_address(runtime: Runtime, runner: Runner, state: dict) -> str | None:
     """The Mac's address now, for drift against a running sidecar (design.md D4).
 
@@ -1630,7 +1639,7 @@ def _reconcile(
         )
         state["reload_fingerprint"] = fp
         messages.append(
-            f"Applied the egress allowlist from {policy.path or 'built-in defaults'} "
+            f"Applied the egress allowlist and services from {policy.path or 'built-in defaults'} "
             "to the running sidecar (reloaded, no restart)."
         )
 
@@ -1645,6 +1654,15 @@ def _reconcile(
         )
     except egress_policy.EgressPolicyError as exc:
         raise SidecarError(str(exc)) from None
+    if (
+        state.get("bind_internal")
+        and policy.services
+        and state.get("host_address") is None
+    ):
+        messages.append(
+            "[W] The running egress sidecar predates [egress.services], so it "
+            f"exposes none of them. {RESTART_HINT}"
+        )
     fields = restart_drift(state, desired, info.labels.get(FINGERPRINT_LABEL))
     if fields:
         messages.append(
@@ -1799,11 +1817,23 @@ def status(
         "strategy": current.kind,
         "would": "reuse" if healthy else "start",
     }
+    # Declared in egress.toml; exposed only by a Colima sidecar (design.md D3).
+    report["services"] = [{"name": s.name, "port": s.port} for s in policy.services]
+    report["services_exposed"] = False
     if runtime.name == COLIMA_NAME:
         report["attached"] = running and _attached(info)
         report["network_legacy"] = colima_network.is_legacy(runtime, deps.runner)
         if report["network_legacy"]:
             report["would"] = "start"  # the cold start replaces the network
+        report["networks"] = {
+            "uplink": colima_network.UPLINK_NETWORK,
+            "sandbox": colima_network.SANDBOX_NETWORK,
+        }
+        report["internal_address"] = (
+            _internal_address(info) if running and info is not None else None
+        )
+        report["host_address"] = (state or {}).get("host_address")
+        report["services_exposed"] = running and report["host_address"] is not None
     if strategy_error:
         report["strategy_error"] = strategy_error
     ca = session_ca.load(lay.sidecar)
@@ -1895,11 +1925,30 @@ def status_lines(report: dict) -> list[str]:
             "next `project-sandbox-egress restart` (or sidecar-mode launch) once no "
             "sandbox is attached"
         )
-    if "endpoint" in report:
+    networks = report.get("networks")
+    if networks:
+        internal = report.get("internal_address")
+        on_sandbox = f" at {internal}" if internal else ""
         lines.append(
-            f"  Endpoint: {report['endpoint']} "
-            f"({describe_address(report.get('address', PUBLISH_ADDRESS))})"
+            f"  Networks: {networks['uplink']} (outbound), {networks['sandbox']} "
+            f"(internal, as {colima_network.ALIAS}{on_sandbox})"
         )
+    if "endpoint" in report and networks:
+        lines.append(
+            f"  Proxy: {report['endpoint']} on {networks['sandbox']} "
+            "(no published port)"
+        )
+    if report.get("host_address"):
+        lines.append(
+            f"  Mac host address: {report['host_address']} ({colima_network.HOST_NAME})"
+        )
+    lines.extend(service_lines(report))
+    if "endpoint" in report:
+        if not networks:
+            lines.append(
+                f"  Endpoint: {report['endpoint']} "
+                f"({describe_address(report.get('address', PUBLISH_ADDRESS))})"
+            )
         current = "current" if report["image_current"] else "STALE (restart to upgrade)"
         lines.append(f"  Image: {report['image']} ({current})")
         lines.append(f"  Copilot profile: {'on' if report['copilot'] else 'off'}")
@@ -1950,6 +1999,27 @@ def status_lines(report: dict) -> list[str]:
     exists = "" if report["policy_exists"] else " (missing: built-in defaults)"
     lines.append(f"  Policy: {report['policy_path']}{exists}")
     return lines
+
+
+def service_lines(report: dict) -> list[str]:
+    """The declared services, and where (if anywhere) the sidecar exposes them."""
+    services = report.get("services") or []
+    if not services:
+        return []
+    if report.get("networks"):
+        listed = ", ".join(
+            f"{s['name']} on {colima_network.ALIAS}:{s['port']}" for s in services
+        )
+        note = "" if report.get("services_exposed") else " (once started)"
+        return [f"  Services: {listed}{note}"]
+    listed = ", ".join(f"{s['name']} ({s['port']})" for s in services)
+    return [f"  Services: {listed}; {SERVICES_COLIMA_ONLY}"]
+
+
+SERVICES_COLIMA_ONLY = (
+    "exposed only in Colima sidecar mode (elsewhere sandboxes reach host "
+    "services as in firewall mode)"
+)
 
 
 # --------------------------------------------------------------------------

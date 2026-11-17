@@ -1,7 +1,8 @@
 """``project-sandbox-egress``: manage the global egress sidecar of each runtime.
 
 Subcommands (egress-sidecar-macos, design.md Decision 14): ``up``, ``down``,
-``restart``, ``status``, ``reload``, ``allow list|add|remove`` and ``log``.
+``restart``, ``status``, ``reload``, ``allow list|add|remove``,
+``service list|add|remove`` (isolated-sidecar-network) and ``log``.
 Each takes ``--runtime`` and defaults to the runtime ``project-sandbox``
 selects. Exit codes: 0 success, 1 operational failure, 2 usage.
 
@@ -20,6 +21,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from . import (
+    colima_network,
     container_cli,
     egress_log,
     egress_policy,
@@ -104,6 +106,31 @@ def build_parser() -> argparse.ArgumentParser:
         )
         sub.add_argument("hosts", nargs="+", metavar="HOST")
 
+    service = command(
+        "service",
+        "List or edit the host-loopback HTTP services that Colima sidecar-mode "
+        "sandboxes reach at egress:PORT.",
+    )
+    service_actions = service.add_subparsers(
+        dest="action", metavar="ACTION", required=True
+    )
+    service_actions.add_parser(
+        "list", help="Print the declared services.", parents=[nested_runtime]
+    )
+    service_add = service_actions.add_parser(
+        "add",
+        help="Declare a service on a Mac loopback port, applied live.",
+        parents=[nested_runtime],
+    )
+    service_add.add_argument("name", metavar="NAME")
+    service_add.add_argument("port", metavar="PORT", type=_port)
+    service_remove = service_actions.add_parser(
+        "remove",
+        help="Remove a declared service, applied live.",
+        parents=[nested_runtime],
+    )
+    service_remove.add_argument("name", metavar="NAME")
+
     log = command("log", "Print the sidecar's access log.")
     log.add_argument("--follow", "-f", action="store_true", help="Keep printing.")
     log.add_argument(
@@ -117,6 +144,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="ISO 8601 time (local unless it has an offset) or a duration (10m, 2h).",
     )
     return parser
+
+
+def _port(value: str) -> int:
+    try:
+        return int(value, 10)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"invalid port {value!r}") from None
 
 
 class Context:
@@ -320,6 +354,49 @@ def cmd_allow(ctx: Context, args) -> int:
     return 0
 
 
+def cmd_service(ctx: Context, args) -> int:
+    path = ctx.policy_path()
+    colima = ctx.runtime.name == container_cli.COLIMA_NAME
+    if args.action == "list":
+        policy = ctx.policy()
+        for service in policy.services:
+            where = (
+                f"  (http://{colima_network.ALIAS}:{service.port}/)" if colima else ""
+            )
+            ctx.out(f"{service.name} {service.port}{where}")
+        if not policy.services:
+            ctx.out("No services declared.")
+        if not colima:
+            ctx.out(
+                f"# {ctx.runtime.key}: services are {egress_sidecar.SERVICES_COLIMA_ONLY}."
+            )
+        ctx.out(f"# policy: {policy.path or str(path) + ' (missing: defaults)'}")
+        return 0
+    if args.action == "add":
+        policy, previous = egress_policy.add_service(path, args.name, args.port)
+        if previous == args.port:
+            ctx.out(f"{args.name} is already declared on port {args.port}.")
+        elif previous is None:
+            ctx.out(f"Declared service {args.name} on port {args.port}.")
+        else:
+            ctx.out(f"Moved service {args.name} from port {previous} to {args.port}.")
+    else:
+        policy, port = egress_policy.remove_service(path, args.name)
+        on = f" (port {port})" if port is not None else ""
+        ctx.out(
+            f"Removed service {args.name}{on}. Requests already in flight may complete."
+        )
+    if colima:
+        _apply_live(ctx, policy)
+    else:
+        ctx.out(
+            f"Services are {egress_sidecar.SERVICES_COLIMA_ONLY}; the "
+            f"{ctx.runtime.key} sidecar is unchanged. Colima sidecars apply it at "
+            "their next launch or `project-sandbox-egress reload --runtime colima`."
+        )
+    return 0
+
+
 def _log_filter(args, *, since: float | None, upstream: bool):
     def keep(line: str) -> str | None:
         ts = egress_log.line_time(line)
@@ -390,6 +467,7 @@ COMMANDS = {
     "status": cmd_status,
     "reload": cmd_reload,
     "allow": cmd_allow,
+    "service": cmd_service,
     "log": cmd_log,
 }
 

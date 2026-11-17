@@ -746,7 +746,11 @@ class HostAddressTests(PrivateNetworkBase):
         before = len(self.fake.calls)
         sidecar = self.ensure(_policy(self.tmp, self.SERVICES))
         self.assertEqual(self.lookups(self.fake.calls[before:]), [])
-        self.assertEqual(sidecar.messages, [])
+        # Not restart drift (nothing it was started with changed), but the
+        # declared services need a restart to be exposed.
+        self.assertEqual(len(sidecar.messages), 1)
+        self.assertIn("predates [egress.services]", sidecar.messages[0])
+        self.assertIn("project-sandbox-egress restart", sidecar.messages[0])
         conf = (lay.sidecar / egress_sidecar.CONF_NAME).read_text()
         self.assertNotIn("accel", conf)  # no services without a host address
 
