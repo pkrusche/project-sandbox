@@ -36,11 +36,26 @@ Notable changes to `project-sandbox` are documented here.
   `docs/runtimes.md`.
 - `scripts/e2e-colima.py` (`run-e2e-tests.sh --only colima`): an opt-in
   end-to-end suite against a running Colima profile.
+- Sidecar image builds launched by `project-sandbox --egress sidecar` use
+  `--build-proxy`, `--build-no-proxy` and `--build-ca-cert`. The sidecar
+  installs build CA certificates before downloading packages. See
+  [build networking](docs/build-network.md).
 
 ### Changed
 
 - The default `--cpus` is capped to the CPUs a Docker VM has.
-- Refreshed pinned build inputs: uv, Ruff and ty, along with the lockfile.
+- Updated pins for Node.js, uv, OpenSpec, Claude Code, Codex CLI, OpenCode's
+  OpenAI provider, Pi, GitHub Copilot CLI, the Alpine sidecar base image,
+  Ruff and ty. Refreshed the Python lockfile.
+- The all-runtime end-to-end runner skips suites that already passed for the
+  same source and configuration and replaces existing global egress sidecars
+  by default. Replacing a sidecar interrupts egress for active sessions.
+  Use `--no-incremental` to rerun suites and `--no-replace-existing` to
+  preserve running sidecars. The cross-runtime security test requires
+  `--security-peer-runtime NAME`.
+- The all-runtime end-to-end runner checks the Docker context and Colima
+  profile before running suites, bounds Colima startup with
+  `--colima-start-timeout`, and checks DNS inside the VM.
 - Host lock files moved from the shared system temp dir to the private
   `$XDG_STATE_HOME/project-sandbox/locks` (default
   `~/.local/state/project-sandbox/locks`), so another local user can no longer
@@ -52,6 +67,14 @@ Notable changes to `project-sandbox` are documented here.
 
 ### Fixed
 
+- Headless prompts beginning with `-` are staged with a leading space so agents
+  receive them as prompt text. Pass inline values as `--prompt-text=VALUE`.
+  See [usage](docs/usage.md).
+- Host-side Git branch finalization disables `core.fsmonitor` to prevent
+  repository-configured fsmonitor programs from running on the host. See
+  [security](docs/security.md).
+- Rootless Podman sidecar builds use the shared pasta network to reach
+  a host-loopback build proxy.
 - `--branch` and `--branch-start-at` values that start with `-` (which git and
   jj would parse as options) or are invalid ref names are refused, and so is a
   worktree path (`--worktree-dir`) that mounts cannot encode.
