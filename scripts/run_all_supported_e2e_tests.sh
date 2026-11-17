@@ -8,8 +8,10 @@
 # Opt-in suites are enabled per container runtime when they can work here:
 #   proxy-endpoints, egress-sidecar   always (non-billable; need network + builds)
 #   security                         always with builds; XFAIL/SKIP pass unless
-#                                     --strict-security-coverage is given; uses
-#                                     another selected container runtime as peer when available
+#                                     --strict-security-coverage is given. Its
+#                                     cross-runtime policy-edit test needs a second
+#                                     live runtime and runs only with
+#                                     --security-peer-runtime NAME (skipped otherwise)
 #   build-proxy                       internet-proxy-locally sources found
 #                                     (Podman additionally needs Docker for the fixture)
 #   agent-proxy-isolation, agent-proxy
@@ -44,7 +46,7 @@
 #       [--internet-proxy-dir DIR] [--agentgateway-dir DIR]
 #       [--no-copilot] [--no-internet-proxy-isolation] [--no-build] [--keep]
 #       [--no-replace-existing] [--no-incremental] [--strict-security-coverage]
-#       [--colima-profile NAME] [--no-colima]
+#       [--colima-profile NAME] [--no-colima] [--security-peer-runtime NAME]
 #       [--base-image IMAGE] [--dry-run] [-- RUN-E2E-TESTS-OPTIONS...]
 #
 #   --runtimes LIST   comma-separated subset of detected runtimes to run
@@ -59,6 +61,12 @@
 #   --colima-profile NAME
 #                     Colima profile for the colima suite (default: project-sandbox)
 #   --no-colima       skip the colima suite and never start a Colima profile
+#   --security-peer-runtime NAME
+#                     a second detected container runtime for the security suite's
+#                     cross-runtime policy-edit test, forwarded to every other
+#                     runtime's run. Off by default: the test then skips. Both
+#                     runtimes start a global sidecar, so NAME must be usable on
+#                     its own (for docker, check the active Docker context)
 #   --no-build        forwarded; also drops opt-in suites that require builds
 #   --keep            forwarded to run-e2e-tests.sh
 #   --no-replace-existing
@@ -95,6 +103,7 @@ AGENTGATEWAY_DIR="$ROOT/../agentgateway-locally"
 WITH_COPILOT=1
 WITH_COLIMA=1
 COLIMA_PROFILE="project-sandbox"
+SECURITY_PEER=""
 NO_INTERNET_ISOLATION=0
 NO_BUILD=0
 DRY_RUN=0
@@ -115,6 +124,7 @@ while [ $# -gt 0 ]; do
     --no-copilot) WITH_COPILOT=0; shift ;;
     --no-colima) WITH_COLIMA=0; shift ;;
     --colima-profile) COLIMA_PROFILE="${2:?--colima-profile needs a value}"; shift 2 ;;
+    --security-peer-runtime) SECURITY_PEER="${2:?--security-peer-runtime needs a value}"; shift 2 ;;
     --no-internet-proxy-isolation) NO_INTERNET_ISOLATION=1; shift ;;
     --no-build) NO_BUILD=1; COMMON_ARGS+=(--no-build); shift ;;
     --keep) COMMON_ARGS+=(--keep); shift ;;
@@ -178,6 +188,17 @@ while IFS="$(printf '\t')" read -r status name detail; do
 done <<EOF
 $DETECTED
 EOF
+
+if [ -n "$SECURITY_PEER" ]; then
+  peer_ok=0
+  for have in ${RUNTIMES[@]+"${RUNTIMES[@]}"}; do
+    [ "$have" = "$SECURITY_PEER" ] && [ "$have" != chroot ] && peer_ok=1
+  done
+  if [ "$peer_ok" = 0 ]; then
+    echo "ERROR: --security-peer-runtime '$SECURITY_PEER' is not an available container runtime on this host." >&2
+    exit 64
+  fi
+fi
 
 if [ -n "$RUNTIMES_FILTER" ]; then
   FILTERED=()
@@ -294,22 +315,9 @@ fi
 colima_selected() { [ "$COLIMA_STATE" = running ] || [ "$COLIMA_STATE" = stopped ]; }
 
 # --- Per-runtime argument assembly -----------------------------------------
-# Select only from the requested/detected runtimes, never an excluded backend.
-security_peer() {
-  local candidate
-  for candidate in "${RUNTIMES[@]}"; do
-    if [ "$candidate" != chroot ] && [ "$candidate" != "$1" ]; then
-      printf '%s\n' "$candidate"
-      return 0
-    fi
-  done
-  return 0
-}
-
 # Prints one argument per line for the run-e2e-tests.sh invocation of $1.
 runtime_args() {
   local rt="$1"
-  local peer
   printf '%s\n' --runtime "$rt"
   if [ "$rt" = "$COLIMA_RT" ] && colima_selected; then
     printf '%s\n' --with-colima --colima-profile "$COLIMA_PROFILE"
@@ -319,8 +327,10 @@ runtime_args() {
   [ -n "$GW_DIR" ] && printf '%s\n' --agentgateway-dir "$GW_DIR"
   if [ "$NO_BUILD" = 0 ]; then
     printf '%s\n' --with-proxy-endpoints --with-egress-sidecar --with-security
-    peer="$(security_peer "$rt")"
-    [ -n "$peer" ] && printf '%s\n' --security-peer-runtime "$peer"
+    # Opt-in: the peer runs its own sidecar, and is pointless on itself.
+    if [ -n "$SECURITY_PEER" ] && [ "$SECURITY_PEER" != "$rt" ]; then
+      printf '%s\n' --security-peer-runtime "$SECURITY_PEER"
+    fi
     if [ -n "$IPL_DIR" ] && { [ "$rt" != podman ] || command -v docker >/dev/null 2>&1; }; then
       printf '%s\n' --with-build-proxy
     fi
@@ -338,10 +348,10 @@ runtime_args() {
   return 0
 }
 
+if [ "$NO_BUILD" = 0 ] && [ -z "$SECURITY_PEER" ]; then
+  note "security: the cross-runtime policy-edit test skips; pass --security-peer-runtime NAME to run it"
+fi
 for rt in "${RUNTIMES[@]}"; do
-  if [ "$rt" != chroot ] && [ "$NO_BUILD" = 0 ] && [ -z "$(security_peer "$rt")" ]; then
-    note "security on $rt: no second selected container runtime; cross-runtime coverage needs an explicit --security-peer-runtime or will be incomplete"
-  fi
   if [ "$rt" = podman ] && [ -n "$IPL_DIR" ] && [ "$NO_BUILD" = 0 ] && ! command -v docker >/dev/null 2>&1; then
     note "build-proxy skipped on podman: its Squid fixture needs Docker"
   fi

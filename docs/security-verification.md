@@ -35,13 +35,15 @@ scripts/run-e2e-tests.sh --only security --runtime apple-container --plan
 ```
 
 `scripts/run_all_supported_e2e_tests.sh` includes the security suite by default on each
-selected container runtime when builds are enabled. It automatically chooses
-another selected container runtime as the policy-edit peer; chroot and runtimes
-excluded by `--runtimes` are never chosen. With only one container runtime,
-cross-runtime coverage remains incomplete unless you explicitly supply a peer.
-Use `-- --security-peer-runtime NAME` to override the automatic choice (the
-same override applies to every selected runtime), or forward fixture settings
-such as `-- --security-fixture-host IP --security-nat64-origin HOST`.
+selected container runtime when builds are enabled. Only one test needs a second
+runtime: `test_concurrent_cross_runtime_edits_and_delayed_launch`, which edits
+the policy on two live sidecars at once. project-sandbox is normally used with
+one runtime at a time, so that peer is opt-in: pass `--security-peer-runtime
+NAME` (a detected container runtime; it is forwarded to every other runtime's
+run), and otherwise the test skips. The peer starts its own global sidecar, so
+it must work on its own; for `docker`, check that the active Docker context is
+the engine you mean, not a Colima VM. Forward fixture settings such as
+`-- --security-fixture-host IP --security-nat64-origin HOST`.
 
 The single-runtime `run-e2e-tests.sh` enables the suite with `--with-security`,
 `--only security`, or `--all-tests`. The all-runtime runner skips it with
@@ -96,7 +98,7 @@ Names below are pytest function names; parametrization covers the listed cases.
 | --- | --- |
 | Cargo literal COPY paths | `test_cargo_literal_paths`: build a Cargo workspace with spaces, both quotes, dollars, wildcards, brackets, semicolons and shell-substitution-shaped directory names; fetch during image build and check offline inside the container. |
 | Firewall one-time setup, revocation, import shadowing | `test_existing_mount_and_firewall_audits[firewall]`: two fresh containers, root-owned one-time guard, removed sudo grant, denied sudo replay, hostile workspace Python modules that leave a marker if imported. |
-| Concurrent cross-runtime policy edits | `test_concurrent_cross_runtime_edits_and_delayed_launch`: two live runtimes edit one private policy through real CLI commands; both edits persist and removal is observed by a later sandbox. Requires `--peer-runtime`. |
+| Concurrent cross-runtime policy edits | `test_concurrent_cross_runtime_edits_and_delayed_launch`: two live runtimes edit one private policy through real CLI commands; both edits persist and removal is observed by a later sandbox. Opt-in: requires `--peer-runtime` (`--security-peer-runtime` in the e2e runners). |
 | Launch delayed across revocation | `test_launch_waiting_for_image_lock_cannot_restore_revoked_policy`: hold the real image lock, wait for generation by the delayed CLI, revoke access, release the lock, and require denial through live Squid. |
 | Concurrent builds and image identity | `test_concurrent_builds_same_tag_use_their_own_image`: two projects build different canaries under the same tag; each agent must see its own image. `test_concurrent_sessions_private_inputs_and_image_identity` inspects actual container image references. |
 | Private inputs and concurrent provisioning | The concurrent-session case requires two private input trees, checks a prompt remains unchanged throughout each session, exits one while the other remains active, and checks both normal cleanups. |

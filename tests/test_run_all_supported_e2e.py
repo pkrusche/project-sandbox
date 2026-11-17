@@ -305,7 +305,7 @@ class RunAllSupportedE2ETests(unittest.TestCase):
         self.assertIn("--with-security", docker)
         self.assertNotIn("--security-peer-runtime", docker)
         self.assertRegex(out, r"security\s+RUN\s+SKIP")
-        self.assertIn("no second selected container runtime", out)
+        self.assertIn("pass --security-peer-runtime NAME to run it", out)
         self.assertIn("--with-copilot", docker)
         self.assertIn("--with-copilot-egress", docker)
         for flag in (
@@ -326,43 +326,45 @@ class RunAllSupportedE2ETests(unittest.TestCase):
                 cleanup.endswith("e2e-cleanup.py --runtime docker"), cleanup
             )
 
-    def test_security_chooses_distinct_selected_container_peers(self) -> None:
+    def test_security_peer_is_opt_in(self) -> None:
         doctor = json.loads(json.dumps(DOCTOR))
         for check in doctor["checks"]:
             if check["name"] in ("apple-container", "podman"):
                 check["status"] = "ok"
-        result = self._run(doctor=doctor)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        commands = [
-            line
-            for line in result.stdout.splitlines()
-            if line.startswith("+ ") and "run-e2e-tests.sh" in line
-        ]
-        for runtime, peer in (
-            ("apple-container", "docker"),
-            ("docker", "apple-container"),
-            ("podman", "apple-container"),
-        ):
-            command = next(line for line in commands if f"--runtime {runtime}" in line)
-            self.assertIn("--with-security", command)
-            self.assertIn(f"--security-peer-runtime {peer}", command)
-        chroot = next(line for line in commands if "--runtime chroot" in line)
-        self.assertNotIn("--with-security", chroot)
-        self.assertNotIn("--security-peer-runtime", chroot)
 
-        # Filtering the matrix must also filter automatic peer selection.
-        filtered = self._run("--runtimes", "docker,podman", doctor=doctor)
-        self.assertEqual(filtered.returncode, 0, filtered.stderr)
-        self.assertIn("--security-peer-runtime podman", filtered.stdout)
-        self.assertIn("--security-peer-runtime docker", filtered.stdout)
-        self.assertNotIn("--security-peer-runtime apple-container", filtered.stdout)
-        single = self._run("--runtimes", "docker", doctor=doctor)
-        command = next(
-            line
-            for line in single.stdout.splitlines()
-            if line.startswith("+ ") and "run-e2e-tests.sh" in line
-        )
-        self.assertNotIn("--security-peer-runtime", command)
+        def commands(result):
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return {
+                runtime: next(
+                    line
+                    for line in result.stdout.splitlines()
+                    if line.startswith("+ ")
+                    and "run-e2e-tests.sh" in line
+                    and f"--runtime {runtime}" in line
+                )
+                for runtime in ("apple-container", "docker", "podman", "chroot")
+            }
+
+        # Never chosen automatically, even with several container runtimes.
+        default = self._run(doctor=doctor)
+        for runtime, command in commands(default).items():
+            self.assertNotIn("--security-peer-runtime", command, runtime)
+            if runtime != "chroot":
+                self.assertIn("--with-security", command)
+        self.assertIn("pass --security-peer-runtime NAME to run it", default.stdout)
+
+        chosen = commands(self._run("--security-peer-runtime", "podman", doctor=doctor))
+        for runtime in ("apple-container", "docker"):
+            self.assertIn("--security-peer-runtime podman", chosen[runtime])
+        self.assertNotIn("--security-peer-runtime", chosen["podman"])
+        self.assertNotIn("--security-peer-runtime", chosen["chroot"])
+
+    def test_security_peer_must_be_an_available_container_runtime(self) -> None:
+        for peer in ("podman", "chroot", "colima"):
+            with self.subTest(peer=peer):
+                result = self._run("--security-peer-runtime", peer)
+                self.assertEqual(result.returncode, 64)
+                self.assertIn("not an available container runtime", result.stderr)
 
     def test_no_build_omits_security_and_peer_selection(self) -> None:
         result = self._run("--no-build")
