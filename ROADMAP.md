@@ -68,13 +68,14 @@ See [VCS security](docs/security.md#vcs-metadata-access) and
   per-session identity on the proxy connection, for example a per-session
   listener or proxy credential.
 - **Per-sandbox denial attribution from internal-network source IPs**
-  (isolated-sidecar-network). On the isolated strategy (Colima, Apple
-  `container`) sandboxes reach Squid directly over the internal network, so
-  each connection carries the sandbox's own address and no port forwarder sits
-  in between. Spike S6 (`spikes.md` in that change) records whether Squid's
-  access log shows distinct per-sandbox addresses. If it does, the launch can
-  record the sandbox's internal address and the session-end summary can filter
-  denials by it, with no per-session listener or credential.
+  (isolated-sidecar-network). On Colima's isolated network, sandboxes reach
+  Squid directly, so each connection carries the sandbox's own address and no
+  port forwarder sits in between. Spike S6 (`spikes.md` in that change) found
+  distinct per-sandbox addresses in Squid's access log on both Colima and
+  Apple `container`'s internal network. Sequential sandboxes reuse addresses,
+  though, so the launch must record the sandbox's internal address *and* the
+  session's time window. The session-end summary can then filter denials by
+  both, with no per-session listener or credential.
 - **Upstream proxy authentication** (egress-sidecar-macos). Basic, NTLM or
   Kerberos to the `[egress.upstream]` parent. Today a 407 from the parent fails
   the request.
@@ -88,7 +89,7 @@ See [VCS security](docs/security.md#vcs-metadata-access) and
 ## Namespace-owner gateway for Linux sidecar mode
 
 Deferred by `isolated-sidecar-network`, which makes the container network the
-containment boundary only on Colima and Apple `container`. On Docker Engine,
+containment boundary only on Colima. On Docker Engine,
 rootless Podman, Docker Desktop and Podman machine, sidecar-mode sandboxes
 still hold `NET_ADMIN`/`NET_RAW` and contain themselves with their own
 firewall.
@@ -102,6 +103,23 @@ firewall.
 - The gateway does nothing after setup and is removed with the session.
 - This isn't possible on Apple `container`: each container is its own VM, and
   there is no way to share a network namespace between containers.
+
+## Isolated sidecar network on Apple `container`
+
+Dropped from `isolated-sidecar-network` after its spikes (S3–S5 in that change's
+`spikes.md`). Apple `container` keeps the published endpoint, and its sandbox
+firewall stays the containment boundary, because:
+
+- its `--internal` network is host-only: a sandbox on it reaches every Mac
+  service that listens on all interfaces, and every Mac loopback service through
+  the `203.0.113.113` redirect behind `host.docker.internal`, which the sidecar
+  itself needs;
+- `container run` has no `--add-host`, so `egress` can't be pinned without DNS;
+- a container's address changes on every stop/start and recreation.
+
+It becomes possible with packet-filter rules on the Mac for the host-only
+network (administrator rights, which project-sandbox never uses), or with a
+future `container` network mode that has no host path.
 
 ## GitHub Copilot agent follow-ups
 
