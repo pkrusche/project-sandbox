@@ -754,3 +754,98 @@ class ColimaExportsTests(TestCase):
             "project-sandbox colima add-root /somewhere/else", check.hint or ""
         )
         self.assertNotIn("colima start", check.hint or "")
+
+
+class ColimaServiceProbeTests(TestCase):
+    """isolated-sidecar-network task 4.4: doctor names a service that is down."""
+
+    def setUp(self) -> None:
+        import os
+        import tempfile
+
+        from project_sandbox import container_cli, egress_sidecar
+
+        self._tmp = tempfile.TemporaryDirectory()
+        tmp = Path(self._tmp.name)
+        policy = tmp / "config" / "project-sandbox" / "egress.toml"
+        policy.parent.mkdir(parents=True)
+        policy.write_text(
+            "[egress.services]\nollama = { port = 11434 }\nagent-proxy = { port = 4000 }\n"
+        )
+        self._env = patch.dict(
+            os.environ,
+            {
+                "XDG_CONFIG_HOME": str(tmp / "config"),
+                "XDG_STATE_HOME": str(tmp / "state"),
+            },
+        )
+        self._env.start()
+        self.runtime = container_cli.colima_runtime("project-sandbox")
+        self.lay = egress_sidecar.layout(self.runtime)
+        self.lay.root.mkdir(parents=True)
+        self.lay.state_file.write_text(json.dumps({"host_address": "192.168.5.2"}))
+        self.read_state = patch.object(
+            egress_sidecar,
+            "read_state",
+            side_effect=lambda lay: json.loads(lay.state_file.read_text()),
+        )
+        self.read_state.start()
+
+    def tearDown(self) -> None:
+        self.read_state.stop()
+        self._env.stop()
+        self._tmp.cleanup()
+
+    def checks(self, mac_ports: set[int], *, attached: bool = True):
+        nc = (
+            *CTX,
+            "exec",
+            "project-sandbox-egress",
+            "nc",
+            "-z",
+            "-w",
+            "2",
+            "192.168.5.2",
+        )
+        host = colima_host(
+            {
+                (*CTX, "inspect", "project-sandbox-egress"): _sidecar(
+                    attached=attached
+                ),
+                (*nc, "4000"): ok() if 4000 in mac_ports else Probe(1, "", ""),
+                (*nc, "11434"): ok() if 11434 in mac_ports else Probe(1, "", ""),
+            }
+        )
+        with host.active("darwin"):
+            return by_name(doctor.run_checks("project-sandbox")), host
+
+    def test_a_service_whose_mac_port_is_closed_warns_by_name(self) -> None:
+        checks, _ = self.checks({4000})
+        self.assertEqual(checks["service agent-proxy"].status, OK)
+        self.assertIn("egress:4000", checks["service agent-proxy"].detail)
+        down = checks["service ollama"]
+        self.assertEqual(down.status, WARN)
+        self.assertIn("nothing answers on the Mac's port 11434", down.detail)
+        self.assertIn("192.168.5.2", down.detail)
+        self.assertEqual(
+            down.hint,
+            "Start it there, or run `project-sandbox-egress service remove ollama`",
+        )
+
+    def test_probes_run_inside_the_sidecar_and_stay_read_only(self) -> None:
+        _, host = self.checks({4000, 11434})
+        probes = [c for c in host.calls if "-z" in c]
+        self.assertEqual(len(probes), 2)
+        for argv in probes:
+            self.assertEqual(argv[3:5], ["exec", "project-sandbox-egress"])
+
+    def test_no_probe_for_a_detached_sidecar(self) -> None:
+        checks, host = self.checks(set(), attached=False)
+        self.assertNotIn("service ollama", checks)
+        self.assertFalse([c for c in host.calls if "-z" in c])
+
+    def test_no_probe_without_a_recorded_host_address(self) -> None:
+        self.lay.state_file.write_text("{}")
+        checks, host = self.checks(set())
+        self.assertNotIn("service ollama", checks)
+        self.assertFalse([c for c in host.calls if "-z" in c])

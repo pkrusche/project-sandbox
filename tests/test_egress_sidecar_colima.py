@@ -34,6 +34,8 @@ class ColimaFake(FakeRuntime):
         self.engine = "29.5.2"
         # host.lima.internal as getent reports it (None: the lookup fails).
         self.host_address: str | None = "192.168.5.2"
+        # Mac loopback ports that answer the sidecar's service probe.
+        self.mac_ports: set[int] = set()
 
     def kind(self, argv) -> str:
         # Drop `--context <name>` so the parent's argv classification applies.
@@ -70,6 +72,9 @@ class ColimaFake(FakeRuntime):
                 out=f"{self.host_address}     STREAM {net.HOST_NAME}\n"
                 f"{self.host_address}     DGRAM  {net.HOST_NAME}\n",
             )
+        if argv[3:4] == ["exec"] and "-z" in argv:  # service probe (D4)
+            self.calls.append(argv)
+            return _done(argv, 0 if int(argv[-1]) in self.mac_ports else 1)
         if "--entrypoint" in argv:  # the sandbox-network probe
             self.calls.append(argv)
             return _done(argv, 0 if self.probe_ok else 1)
@@ -789,3 +794,85 @@ class HostAddressTests(PrivateNetworkBase):
 
     def root_layout(self):
         return egress_sidecar.layout(RUNTIME, self.root)
+
+
+class ServiceProbeTests(PrivateNetworkBase):
+    """isolated-sidecar-network task 4.4: status names a service that is down."""
+
+    SERVICES = (
+        "[egress.services]\nollama = { port = 11434 }\nagent-proxy = { port = 4000 }\n"
+    )
+
+    def report(self) -> dict:
+        return egress_sidecar.status(
+            RUNTIME,
+            _policy(self.tmp, self.SERVICES),
+            image=IMAGE,
+            root=self.root,
+            deps=self.deps(),
+        )
+
+    def probes(self, calls) -> list[list[str]]:
+        return [c for c in calls if c[3:4] == ["exec"] and "-z" in c]
+
+    def test_each_service_is_probed_from_inside_the_sidecar(self) -> None:
+        self.ensure(_policy(self.tmp, self.SERVICES))
+        before = len(self.fake.calls)
+        self.report()
+        self.assertEqual(
+            self.probes(self.fake.calls[before:]),
+            [
+                egress_sidecar.service_probe_argv(RUNTIME, "192.168.5.2", 4000),
+                egress_sidecar.service_probe_argv(RUNTIME, "192.168.5.2", 11434),
+            ],
+        )
+        self.assertEqual(
+            egress_sidecar.service_probe_argv(RUNTIME, "192.168.5.2", 4000)[-7:],
+            [CONTAINER, "nc", "-z", "-w", "2", "192.168.5.2", "4000"],
+        )
+
+    def test_a_service_whose_mac_port_is_closed_is_named(self) -> None:
+        self.fake.mac_ports = {4000}
+        self.ensure(_policy(self.tmp, self.SERVICES))
+        report = self.report()
+        self.assertEqual(
+            report["service_probe"], {"agent-proxy": True, "ollama": False}
+        )
+        text = "\n".join(egress_sidecar.status_lines(report))
+        self.assertIn(
+            "Service down: ollama: nothing answers on the Mac's port 11434 "
+            "(host.lima.internal, 192.168.5.2)",
+            text,
+        )
+        self.assertIn("project-sandbox-egress service remove ollama", text)
+        self.assertNotIn("Service down: agent-proxy", text)
+
+    def test_all_services_up_adds_no_warning(self) -> None:
+        self.fake.mac_ports = {4000, 11434}
+        self.ensure(_policy(self.tmp, self.SERVICES))
+        text = "\n".join(egress_sidecar.status_lines(self.report()))
+        self.assertNotIn("Service down", text)
+
+    def test_nothing_is_probed_without_a_running_sidecar_or_services(self) -> None:
+        report = self.report()
+        self.assertNotIn("service_probe", report)
+        self.ensure()
+        before = len(self.fake.calls)
+        egress_sidecar.status(
+            RUNTIME, _policy(self.tmp), image=IMAGE, root=self.root, deps=self.deps()
+        )
+        self.assertEqual(self.probes(self.fake.calls[before:]), [])
+
+    def test_status_without_probes_skips_them(self) -> None:
+        self.ensure(_policy(self.tmp, self.SERVICES))
+        before = len(self.fake.calls)
+        report = egress_sidecar.status(
+            RUNTIME,
+            _policy(self.tmp, self.SERVICES),
+            image=IMAGE,
+            root=self.root,
+            deps=self.deps(),
+            probe=False,
+        )
+        self.assertNotIn("service_probe", report)
+        self.assertEqual(self.probes(self.fake.calls[before:]), [])

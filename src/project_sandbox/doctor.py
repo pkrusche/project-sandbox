@@ -22,6 +22,7 @@ from . import (
     colima_network,
     colima_profile,
     container_cli,
+    egress_policy,
     egress_sidecar,
     local_service_network,
 )
@@ -682,7 +683,41 @@ def check_colima(profile: str) -> list[Check]:
             f"{egress_sidecar.CONTAINER} running on "
             f"{colima_network.ALIAS}:{colima_network.PROXY_PORT}",
         )
+        return [*checks, sidecar, *_colima_services(runtime)]
     return [*checks, sidecar]
+
+
+def _colima_services(runtime: container_cli.Runtime) -> list[Check]:
+    """Each declared service, probed from inside the running sidecar (read-only)."""
+    state = egress_sidecar.read_state(egress_sidecar.layout(runtime)) or {}
+    host_address = state.get("host_address")
+    try:
+        services = egress_policy.load_global().services
+    except egress_policy.EgressPolicyError as exc:
+        return [Check("egress", "services", WARN, str(exc))]
+    if not services or host_address is None:
+        return []
+    answered = egress_sidecar.probe_services(
+        runtime, _completed, host_address, services
+    )
+    checks = []
+    for service in services:
+        name = f"service {service.name}"
+        if answered[service.name]:
+            detail = (
+                f"egress:{service.port} -> the Mac's port {service.port} "
+                f"({colima_network.HOST_NAME})"
+            )
+            checks.append(Check("egress", name, OK, detail))
+        else:
+            message = egress_sidecar.service_down_message(
+                service.name, service.port, host_address
+            )
+            detail, _, hint = message.removeprefix(f"{name}: ").partition("; ")
+            checks.append(
+                Check("egress", name, WARN, detail, hint[:1].upper() + hint[1:])
+            )
+    return checks
 
 
 def run_checks(colima_profile: str | None = None) -> list[Check]:

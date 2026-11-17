@@ -674,6 +674,33 @@ def host_address_argv(runtime: Runtime, *, image: str | None = None) -> list[str
     )
 
 
+def service_probe_argv(runtime: Runtime, host_address: str, port: int) -> list[str]:
+    """From inside the sidecar, the TCP path its service peer takes to the Mac."""
+    return exec_argv(runtime, "nc", "-z", "-w", "2", host_address, str(port))
+
+
+def probe_services(
+    runtime: Runtime,
+    runner: Runner,
+    host_address: str,
+    services: Sequence[egress_policy.Service],
+) -> dict[str, bool]:
+    """Whether each service's Mac port answers the running sidecar (design.md D4)."""
+    return {
+        s.name: runner(service_probe_argv(runtime, host_address, s.port)).returncode
+        == 0
+        for s in services
+    }
+
+
+def service_down_message(name: str, port: int, host_address: str) -> str:
+    return (
+        f"service {name}: nothing answers on the Mac's port {port} "
+        f"({colima_network.HOST_NAME}, {host_address}) from the sidecar; start it "
+        f"there, or run `project-sandbox-egress service remove {name}`"
+    )
+
+
 def parse_host_address(output: str) -> str | None:
     """The first IPv4 address in ``getent ahostsv4`` output."""
     for line in output.splitlines():
@@ -1834,6 +1861,10 @@ def status(
         )
         report["host_address"] = (state or {}).get("host_address")
         report["services_exposed"] = running and report["host_address"] is not None
+        if report["services_exposed"] and probe and policy.services:
+            report["service_probe"] = probe_services(
+                runtime, deps.runner, report["host_address"], policy.services
+            )
     if strategy_error:
         report["strategy_error"] = strategy_error
     ca = session_ca.load(lay.sidecar)
@@ -2011,7 +2042,15 @@ def service_lines(report: dict) -> list[str]:
             f"{s['name']} on {colima_network.ALIAS}:{s['port']}" for s in services
         )
         note = "" if report.get("services_exposed") else " (once started)"
-        return [f"  Services: {listed}{note}"]
+        lines = [f"  Services: {listed}{note}"]
+        answered = report.get("service_probe") or {}
+        for s in services:
+            if answered.get(s["name"]) is False:
+                message = service_down_message(
+                    s["name"], s["port"], report["host_address"]
+                )
+                lines.append(f"  Service down: {message.removeprefix('service ')}")
+        return lines
     listed = ", ".join(f"{s['name']} ({s['port']})" for s in services)
     return [f"  Services: {listed}; {SERVICES_COLIMA_ONLY}"]
 
