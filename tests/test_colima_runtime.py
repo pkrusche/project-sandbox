@@ -734,6 +734,12 @@ class SidecarServiceLaunchTests(TestCase):
                 (Path(tmp) / "project-sandbox" / "egress.toml").write_text(config)
             with (
                 patch.dict(os.environ, {"XDG_CONFIG_HOME": tmp, "XDG_STATE_HOME": tmp}),
+                # Independent of which agents this host has installed.
+                patch.object(
+                    cli.config_agents,
+                    "available_agents",
+                    return_value=cli.SUPPORTED_AGENTS,
+                ),
                 contextlib.redirect_stdout(out),
             ):
                 cli.main(

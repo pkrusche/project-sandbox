@@ -232,6 +232,11 @@ class RunAllSupportedE2ETests(unittest.TestCase):
             bindir = tmp_path / "bin"
             bindir.mkdir()
             _install(bindir, "uv", FAKE_UV)
+            # --incremental fingerprints the checkout with jj or git, which may
+            # live outside the system directories (e.g. ~/.cargo/bin/jj).
+            for vcs in ("jj", "git"):
+                if found := shutil.which(vcs):
+                    (bindir / vcs).symlink_to(found)
             doctor_path = tmp_path / "doctor.json"
             doctor_path.write_text(json.dumps(DOCTOR))
             # System directories only, so a Homebrew/user colima stays invisible.
