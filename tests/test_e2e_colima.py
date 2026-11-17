@@ -321,3 +321,103 @@ class HardenedGraderTests(TestCase):
             self.assertEqual(
                 e2e.main(["--checks", "hardened,launch", "--check-available"]), 2
             )
+
+
+def _stream(marker: str = "psbx-e2e-mac-service") -> dict:
+    return {
+        "status_line": "HTTP/1.1 200 OK",
+        "body": f'{{"response": "{marker} 3"}}',
+        "stamps": [0.5, 1.0, 1.5, 2.0],
+    }
+
+
+GOOD_ISOLATED: dict[str, Any] = {
+    "no_proxy": "localhost,127.0.0.1,::1,egress",
+    "net_admin": False,
+    "net_raw": True,
+    "sudo_firewall": 1,
+    "sudo_true": 1,
+    "allowed_https": 404,
+    "public_tcp": False,
+    "public_ipv6_tcp": False,
+    "public_dns_udp": False,
+    "resolves_public_name": False,
+    "metadata_tcp": False,
+    "mac_tcp": {"22": False, "80": False, "11434": False, "50000": False},
+    "vm_tcp": {"172.17.0.1:22": False, "192.168.5.15:18080": False},
+    "undeclared_tcp": {"22": False, "50001": False},
+    "service": [200, '{"marker": "psbx-e2e-mac-service"}'],
+    "ndjson": _stream(),
+    "sse": _stream(),
+    "pivot_get": {"status_line": "HTTP/1.1 200 OK", "body": "psbx-e2e-mac-service"},
+    "pivot_connect": {"status_line": "HTTP/1.1 405 Method Not Allowed"},
+    "forward_to_mac": 403,
+    "forward_to_mac_name": 403,
+}
+
+
+class GradeIsolatedTests(TestCase):
+    """isolated-sidecar-network task 7.1."""
+
+    def test_a_contained_probe_passes(self) -> None:
+        self.assertEqual(failed(e2e.grade_isolated(GOOD_ISOLATED, firewall=False)), [])
+        self.assertEqual(failed(e2e.grade_isolated(GOOD_ISOLATED, firewall=True)), [])
+
+    def test_any_reachable_destination_fails_containment(self) -> None:
+        for key, value in (
+            ("public_tcp", True),
+            ("metadata_tcp", True),
+            ("mac_tcp", {"22": True}),
+            ("vm_tcp", {"172.17.0.1:22": True}),
+            ("vm_tcp", {}),
+            ("undeclared_tcp", {"22": True}),
+        ):
+            with self.subTest(key=key, value=value):
+                probe = {**GOOD_ISOLATED, key: value}
+                self.assertIn(
+                    "isolated:no-route-out-but-the-sidecar",
+                    failed(e2e.grade_isolated(probe, firewall=False)),
+                )
+
+    def test_the_firewall_off_sandbox_must_lack_net_admin_and_sudo(self) -> None:
+        for key, value, check in (
+            ("net_admin", True, "isolated:no-net-admin"),
+            ("sudo_firewall", 0, "isolated:sudo-revoked"),
+            ("sudo_true", 0, "isolated:sudo-revoked"),
+        ):
+            with self.subTest(key=key):
+                probe = {**GOOD_ISOLATED, key: value}
+                self.assertIn(check, failed(e2e.grade_isolated(probe, firewall=False)))
+
+    def test_buffered_streams_and_pivots_fail(self) -> None:
+        buffered = {**_stream(), "stamps": [2.0]}
+        for key, value, check in (
+            ("ndjson", buffered, "isolated:ndjson-streams-through-the-service"),
+            (
+                "sse",
+                {**_stream(), "body": "x"},
+                "isolated:sse-streams-through-the-service",
+            ),
+            (
+                "pivot_get",
+                {"status_line": "HTTP/1.1 200 OK", "body": "Example Domain"},
+                "isolated:absolute-uri-on-a-service-port-stays-on-the-service",
+            ),
+            (
+                "pivot_connect",
+                {"status_line": "HTTP/1.1 200 Connection established"},
+                "isolated:connect-on-a-service-port-refused",
+            ),
+            ("forward_to_mac", 200, "isolated:forward_to_mac-denied"),
+            ("service", [502, ""], "isolated:declared-service-reached"),
+            ("no_proxy", "localhost", "isolated:no-proxy-lists-egress"),
+        ):
+            with self.subTest(key=key):
+                probe = {**GOOD_ISOLATED, key: value}
+                self.assertIn(check, failed(e2e.grade_isolated(probe, firewall=False)))
+
+    def test_the_isolated_probe_is_valid_python(self) -> None:
+        compile(e2e.isolated_probe_source({"service_port": 1}), "probe", "exec")
+        self.assertIn("isolated", e2e.CHECKS)
+        self.assertIn("legacy", e2e.CHECKS)
+        self.assertIn("VERIFIED_CONTAINMENT", e2e.VERIFIED_WRAPPER)

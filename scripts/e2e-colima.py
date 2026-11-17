@@ -17,8 +17,24 @@ Checks (default: all):
   recover     `restart` and a sidecar detached behind its back both recover on
               the next launch; `down` keeps both networks and a later launch
               starts the sidecar again.
+  isolated    (isolated-sidecar-network task 7.1) with the sandbox firewall off
+              and no network capabilities: no route to the Internet, the Mac
+              (192.168.5.2 on 22, 80, 11434 and the service port), the VM's own
+              listeners (sshd and a port another container publishes, on every
+              VM address) or the metadata address; an allowed request through
+              egress:3128; NDJSON and SSE streamed through a declared service
+              that sees Host: localhost; no pivot through the service port; the
+              Mac's address denied through the forward proxy; undeclared ports
+              refused; sudo revoked. `service add` applies without restarting
+              the sidecar, and the opt-in firewall admits the service port.
+  legacy      a psbx-sandbox without the isolated gateway mode is reported by
+              `status` and replaced by `up`.
   firewall    --egress firewall on Colima: the default bridge, an extra domain
               reachable, an unlisted host not, and none of the private pieces.
+
+The isolated check needs the firewall off before Colima's containment is
+verified, so it launches through a test-only wrapper that marks Colima as
+verified inside that one process; the CLI itself has no such switch.
 
   hardened    (opt-in, not in the default set) `colima init` a throwaway profile,
               run the launch and recover checks against it, assert the VM cannot
@@ -41,6 +57,8 @@ Example: uv run python scripts/e2e-colima.py --colima-profile default
 from __future__ import annotations
 
 import argparse
+import dataclasses
+import http.server
 import json
 import os
 import shutil
@@ -60,10 +78,23 @@ from project_sandbox import colima_network, container_cli, egress_sidecar
 ALLOWED_HOST = "api.anthropic.com"  # an agent provider host, always allowed
 DENIED_HOST = "example.com"
 FIREWALL_DOMAIN = "pypi.org"
-CHECKS = ("launch", "concurrent", "recover", "firewall")
+CHECKS = ("launch", "isolated", "concurrent", "recover", "legacy", "firewall")
 OPT_IN_CHECKS = ("hardened",)
 HARDENED_PROFILE = "psbx-hardened-e2e"
 PROXY = f"http://{colima_network.ALIAS}:{colima_network.PROXY_PORT}"
+# The Mac as Colima containers see it (spike S1).
+MAC_ADDRESS = "192.168.5.2"
+SERVICE_MARKER = "psbx-e2e-mac-service"
+PUBLISHER = "psbx-e2e-publisher"
+# Test-only: run the CLI as if Colima's containment were verified (task 7.2
+# comes after this suite), so --no-sandbox-firewall is accepted. It changes the
+# table only inside this one process.
+VERIFIED_WRAPPER = (
+    "import sys\n"
+    "from project_sandbox import cli, egress_sidecar\n"
+    "egress_sidecar.VERIFIED_CONTAINMENT = frozenset({'colima'})\n"
+    "sys.exit(cli.main(sys.argv[1:]))\n"
+)
 
 
 @dataclass
@@ -141,6 +172,280 @@ open("egress-probe.json", "w").write(json.dumps(out))
 
 def probe_source(config: dict) -> str:
     return PROBE_SOURCE.replace("__CONFIG__", repr(config))
+
+
+ISOLATED_PROBE_SOURCE = r"""
+import json, os, socket, struct, subprocess, time, urllib.error, urllib.request
+
+cfg = __CONFIG__
+out = {}
+
+def tcp(host, port, family=socket.AF_INET, timeout=3):
+    try:
+        with socket.socket(family, socket.SOCK_STREAM) as s:
+            s.settimeout(timeout)
+            s.connect((host, port))
+        return True
+    except OSError:
+        return False
+
+def fetch(url, proxy):
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({"http": proxy, "https": proxy} if proxy else {})
+    )
+    try:
+        with opener.open(url, timeout=15) as r:
+            return [r.status, r.read(2000).decode(errors="replace")]
+    except urllib.error.HTTPError as e:
+        return [e.code, ""]
+    except Exception as e:
+        return [type(e).__name__, ""]
+
+def raw(port, request, timeout=10):
+    try:
+        s = socket.create_connection(("egress", port), timeout=timeout)
+    except OSError as e:
+        return {"error": type(e).__name__, "status_line": "", "body": "", "stamps": []}
+    s.sendall(request.encode())
+    s.settimeout(timeout)
+    data, stamps, start = b"", [], time.monotonic()
+    try:
+        while True:
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            stamps.append(round(time.monotonic() - start, 3))
+            data += chunk
+    except OSError:
+        pass
+    s.close()
+    text = data.decode(errors="replace")
+    return {"status_line": text.split("\r\n", 1)[0], "body": text[-600:], "stamps": stamps}
+
+out["no_proxy"] = os.environ.get("NO_PROXY", "")
+caps = dict(line.split(":	", 1) for line in open("/proc/self/status").read().splitlines() if ":	" in line)
+bounding = int(caps.get("CapBnd", "0").strip(), 16)
+out["net_admin"] = bool(bounding & (1 << 12))
+out["net_raw"] = bool(bounding & (1 << 13))
+for key, argv in (("sudo_firewall", ["sudo", "-n", "/usr/local/bin/project-sandbox-init-firewall"]), ("sudo_true", ["sudo", "-n", "true"])):
+    try:
+        out[key] = subprocess.run(argv, capture_output=True, timeout=10).returncode
+    except Exception as e:
+        out[key] = type(e).__name__
+
+proxy = cfg["proxy"]
+out["allowed_https"] = fetch("https://" + cfg["allowed"] + "/", proxy)[0]
+out["public_tcp"] = tcp("1.1.1.1", 443)
+out["public_ipv6_tcp"] = tcp("2606:4700:4700::1111", 443, socket.AF_INET6)
+try:
+    query = struct.pack(">HHHHHH", 1, 0x0100, 1, 0, 0, 0) + b"\x07example\x03com\x00\x00\x01\x00\x01"
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        s.settimeout(4)
+        s.sendto(query, ("1.1.1.1", 53))
+        s.recvfrom(512)
+    out["public_dns_udp"] = True
+except OSError:
+    out["public_dns_udp"] = False
+try:
+    socket.gethostbyname(cfg["denied"])
+    out["resolves_public_name"] = True
+except OSError:
+    out["resolves_public_name"] = False
+out["metadata_tcp"] = tcp("169.254.169.254", 80)
+out["mac_tcp"] = {str(p): tcp(cfg["mac"], p) for p in cfg["mac_ports"]}
+out["vm_tcp"] = {f"{a}:{p}": tcp(a, p) for a in cfg["vm_addresses"] for p in (22, cfg["published_port"])}
+out["undeclared_tcp"] = {str(p): tcp("egress", p) for p in (22, cfg["undeclared_port"])}
+
+port = cfg["service_port"]
+out["service"] = fetch(f"http://egress:{port}/api/tags", None)
+out["ndjson"] = raw(port, "POST /api/generate HTTP/1.1\r\nHost: egress\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+out["sse"] = raw(port, "GET /sse HTTP/1.1\r\nHost: egress\r\nAccept: text/event-stream\r\nConnection: close\r\n\r\n")
+out["pivot_get"] = raw(port, "GET http://example.com/ HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
+out["pivot_connect"] = raw(port, "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n", timeout=5)
+out["forward_to_mac"] = fetch(f"http://{cfg['mac']}:{port}/", proxy)[0]
+out["forward_to_mac_name"] = fetch(f"http://host.lima.internal:{port}/", proxy)[0]
+
+open("egress-probe.json", "w").write(json.dumps(out))
+"""
+
+
+def isolated_probe_source(config: dict) -> str:
+    return ISOLATED_PROBE_SOURCE.replace("__CONFIG__", repr(config))
+
+
+def _streamed(reply: dict, marker: str) -> tuple[bool, str]:
+    """Several chunks spread over time, the service's marker among them."""
+    stamps = reply.get("stamps") or []
+    spread = stamps[-1] - stamps[0] if stamps else 0.0
+    ok = (
+        " 200 " in (reply.get("status_line") or "")
+        and marker in (reply.get("body") or "")
+        and len(stamps) >= 3
+        and spread >= 1.0
+    )
+    return ok, f"{reply.get('status_line')!r} chunks={len(stamps)} spread={spread:.2f}s"
+
+
+def grade_isolated(probe: dict, *, firewall: bool) -> list[Result]:
+    """Grade a Colima sidecar sandbox's isolated-network probe (pure).
+
+    ``firewall`` says whether the sandbox ran its own firewall: without it the
+    network alone must contain it, with no NET_ADMIN and sudo revoked.
+    """
+    tag = "isolated-fw" if firewall else "isolated"
+    results = []
+    reached = []
+    for key in (
+        "public_tcp",
+        "public_ipv6_tcp",
+        "public_dns_udp",
+        "resolves_public_name",
+        "metadata_tcp",
+    ):
+        if probe.get(key) is not False:
+            reached.append(f"{key}={probe.get(key)}")
+    for group in ("mac_tcp", "vm_tcp", "undeclared_tcp"):
+        values = probe.get(group)
+        if not isinstance(values, dict) or not values:
+            reached.append(f"{group}=missing")
+            continue
+        reached += [f"{group}[{k}]" for k, v in values.items() if v is not False]
+    results.append(
+        Result(f"{tag}:no-route-out-but-the-sidecar", not reached, ", ".join(reached))
+    )
+    results.append(
+        Result(
+            f"{tag}:allowed-request-through-egress-3128",
+            _is_status(probe.get("allowed_https")),
+            str(probe.get("allowed_https")),
+        )
+    )
+    service = probe.get("service") or [None, ""]
+    results.append(
+        Result(
+            f"{tag}:declared-service-reached",
+            service[0] == 200 and SERVICE_MARKER in (service[1] or ""),
+            str(service)[:200],
+        )
+    )
+    results.append(
+        Result(
+            f"{tag}:no-proxy-lists-egress",
+            "egress" in (probe.get("no_proxy") or "").split(","),
+            str(probe.get("no_proxy")),
+        )
+    )
+    results.append(
+        Result(
+            f"{tag}:sudo-revoked",
+            probe.get("sudo_firewall") not in (0, None)
+            and probe.get("sudo_true") not in (0, None),
+            f"firewall={probe.get('sudo_firewall')} true={probe.get('sudo_true')}",
+        )
+    )
+    if firewall:
+        return results
+    results.append(
+        Result(
+            "isolated:no-net-admin",
+            probe.get("net_admin") is False,
+            f"net_admin={probe.get('net_admin')} net_raw={probe.get('net_raw')}",
+        )
+    )
+    for key in ("ndjson", "sse"):
+        ok, detail = _streamed(probe.get(key) or {}, SERVICE_MARKER)
+        results.append(
+            Result(f"isolated:{key}-streams-through-the-service", ok, detail)
+        )
+    pivot = probe.get("pivot_get") or {}
+    body = pivot.get("body") or ""
+    results.append(
+        Result(
+            "isolated:absolute-uri-on-a-service-port-stays-on-the-service",
+            "Example Domain" not in body
+            and (
+                SERVICE_MARKER in body
+                or " 2" not in (pivot.get("status_line") or "")[8:12]
+            ),
+            str(pivot.get("status_line")),
+        )
+    )
+    connect = probe.get("pivot_connect") or {}
+    results.append(
+        Result(
+            "isolated:connect-on-a-service-port-refused",
+            " 200 " not in (connect.get("status_line") or ""),
+            str(connect.get("status_line") or connect.get("error")),
+        )
+    )
+    for key in ("forward_to_mac", "forward_to_mac_name"):
+        results.append(
+            Result(f"isolated:{key}-denied", probe.get(key) == 403, str(probe.get(key)))
+        )
+    return results
+
+
+class MacServices:
+    """Plain-HTTP services on the Mac's loopback, standing in for Ollama and an
+    SSE server. Records the Host headers they receive."""
+
+    def __init__(self) -> None:
+        hosts: list[str] = []
+        self.hosts = hosts
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.0"
+
+            def log_message(self, *_args) -> None:
+                pass
+
+            def _stream(self, content_type: str, lines: list[str]) -> None:
+                hosts.append(self.headers.get("Host", ""))
+                self.send_response(200)
+                self.send_header("Content-Type", content_type)
+                self.end_headers()
+                for line in lines:
+                    self.wfile.write(line.encode())
+                    self.wfile.flush()
+                    time.sleep(0.5)
+
+            def do_GET(self) -> None:
+                if self.path.startswith("/sse"):
+                    events = [f"data: {SERVICE_MARKER} {i}\n\n" for i in range(4)]
+                    return self._stream("text/event-stream", events)
+                body = json.dumps({"marker": SERVICE_MARKER, "path": self.path})
+                hosts.append(self.headers.get("Host", ""))
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body.encode())
+
+            def do_POST(self) -> None:
+                length = int(self.headers.get("Content-Length") or 0)
+                self.rfile.read(length)
+                lines = [
+                    json.dumps({"response": f"{SERVICE_MARKER} {i}", "done": i == 3})
+                    + "\n"
+                    for i in range(4)
+                ]
+                self._stream("application/x-ndjson", lines)
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.port = self.server.server_address[1]
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+
+
+def _free_port() -> int:
+    import socket
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
 
 
 def _is_status(value) -> bool:
@@ -360,13 +665,15 @@ class Suite:
         (path / "probe.py").write_text(probe_source(config))
         return path
 
-    def launch(self, project: Path, prompt: str, *extra: str, egress="sidecar"):
+    def launch(
+        self, project: Path, prompt: str, *extra: str, egress="sidecar", verified=False
+    ):
         args = self.args
         cpus, memory = self.vm_limits()
+        entry = ["-c", VERIFIED_WRAPPER] if verified else ["-m", "project_sandbox"]
         command = [
             sys.executable,
-            "-m",
-            "project_sandbox",
+            *entry,
             "--cpus",
             str(cpus),
             "--memory",
@@ -666,6 +973,170 @@ class Suite:
             )
         )
         results.append(self._sidecar_launch_ok("launch-after-down"))
+        self.record(results)
+
+    def vm_addresses(self, image: str) -> list[str]:
+        """Every IPv4 address the VM itself holds (its listeners answer there)."""
+        proc = self.docker(
+            "run", "--rm", "--network", "host", "--entrypoint", "ip", image,
+            "-4", "-o", "addr", "show",
+        )  # fmt: skip
+        addresses = []
+        for line in proc.stdout.splitlines():
+            parts = line.split()
+            if "inet" in parts:
+                address = parts[parts.index("inet") + 1].split("/")[0]
+                if not address.startswith("127."):
+                    addresses.append(address)
+        return addresses
+
+    def control_reachable(self, image: str, address: str, port: int) -> bool:
+        """From the default bridge, so a refused probe means something."""
+        proc = self.docker(
+            "run", "--rm", "--entrypoint", "nc", image, "-z", "-w", "3",
+            address, str(port),
+        )  # fmt: skip
+        return proc.returncode == 0
+
+    def sidecar_started_at(self) -> str:
+        return (self.inspect_sidecar().get("State") or {}).get("StartedAt", "")
+
+    def check_isolated(self) -> None:
+        mac = MacServices()
+        published = _free_port()
+        try:
+            self._check_isolated(mac, published)
+        finally:
+            mac.close()
+            self.docker("rm", "-f", PUBLISHER)
+
+    def _check_isolated(self, mac: MacServices, published: int) -> None:
+        up = self.egress("up")
+        results = [Result("isolated:sidecar-up", up.returncode == 0, up.stderr[-300:])]
+        if up.returncode != 0:
+            return self.record(results)
+        started = self.sidecar_started_at()
+        add = self.egress("service", "add", "e2e-stream", str(mac.port))
+        results.append(
+            Result(
+                "isolated:service-add-applied-live",
+                add.returncode == 0
+                and "reloaded, no restart" in add.stdout
+                and self.sidecar_started_at() == started,
+                (add.stdout + add.stderr)[-300:],
+            )
+        )
+        image = self.inspect_sidecar().get("Config", {}).get("Image", "")
+        run = self.docker(
+            "run", "-d", "--rm", "--name", PUBLISHER, "-p",
+            f"0.0.0.0:{published}:8000", "--entrypoint", "nc", image,
+            "-lk", "-p", "8000",
+        )  # fmt: skip
+        vm = self.vm_addresses(image)
+        gateway = self.bridge_gateway() or "172.17.0.1"
+        results.append(
+            Result(
+                "isolated:control-vm-listeners-answer-the-default-bridge",
+                run.returncode == 0
+                and bool(vm)
+                and self.control_reachable(image, gateway, 22)
+                and self.control_reachable(image, gateway, published),
+                f"publisher={run.returncode} vm={vm}",
+            )
+        )
+        config = {
+            "proxy": PROXY,
+            "allowed": ALLOWED_HOST,
+            "denied": DENIED_HOST,
+            "mac": MAC_ADDRESS,
+            "mac_ports": [22, 80, 11434, mac.port],
+            "vm_addresses": vm,
+            "published_port": published,
+            "undeclared_port": _free_port(),
+            "service_port": mac.port,
+        }
+        for firewall in (False, True):
+            name = "isolated-fw" if firewall else "isolated"
+            project = self.work / name
+            project.mkdir()
+            (project / "README.md").write_text(f"# colima e2e {name}\n")
+            (project / "probe.py").write_text(isolated_probe_source(config))
+            run = self.launch(
+                project,
+                "python3 probe.py",
+                "--sandbox-firewall" if firewall else "--no-sandbox-firewall",
+                verified=not firewall,
+            )
+            results.append(
+                Result(
+                    f"{name}:exit-code",
+                    run.returncode == 0,
+                    (run.stdout + run.stderr)[-300:],
+                )
+            )
+            results += grade_isolated(self.read_probe(project), firewall=firewall)
+        results.append(
+            Result(
+                "isolated:service-sees-host-localhost",
+                bool(mac.hosts)
+                and all(h.split(":")[0] == "localhost" for h in mac.hosts),
+                str(sorted(set(mac.hosts))),
+            )
+        )
+        self.record(results)
+
+    def check_legacy(self) -> None:
+        sandbox = next(
+            s for s in colima_network.SPECS if s.name == colima_network.SANDBOX_NETWORK
+        )
+        down = self.egress("down")
+        removed = self.docker("network", "rm", colima_network.SANDBOX_NETWORK)
+        legacy = subprocess.run(
+            colima_network.create_argv(
+                self.runtime, dataclasses.replace(sandbox, options=())
+            ),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        results = [
+            Result(
+                "legacy:old-network-created",
+                down.returncode == 0
+                and removed.returncode == 0
+                and legacy.returncode == 0,
+                (removed.stderr + legacy.stderr)[-300:],
+            )
+        ]
+        status = self.egress("status").stdout
+        results.append(
+            Result(
+                "legacy:status-reports-it",
+                "predates the isolated gateway" in status,
+                status[-300:],
+            )
+        )
+        up = self.egress("up")
+        record = (
+            colima_network.inspect(
+                self.runtime,
+                lambda argv: subprocess.run(
+                    argv, capture_output=True, text=True, check=False
+                ),
+                colima_network.SANDBOX_NETWORK,
+            )
+            or {}
+        )
+        options = record.get("Options") or {}
+        results.append(
+            Result(
+                "legacy:up-replaces-it-with-the-gateway-mode",
+                up.returncode == 0
+                and options.get(colima_network.GATEWAY_MODE_OPTION)
+                == colima_network.GATEWAY_MODE,
+                f"rc={up.returncode} options={options} {up.stderr[-200:]}",
+            )
+        )
         self.record(results)
 
     def check_firewall(self) -> None:

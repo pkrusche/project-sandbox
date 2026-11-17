@@ -99,7 +99,7 @@ The spikes are scripted: `spikes/spike_colima.py` runs S1, S2 and S6, and `spike
 
 ## 7. End-to-end checks
 
-- [ ] 7.1 Extend `scripts/e2e-colima.py`:
+- [x] 7.1 Extend `scripts/e2e-colima.py`:
   - repeat S2's containment probes without the sandbox firewall, including the VM's own listeners (sshd) and a port another container publishes on the VM;
   - an allowed request through `egress:3128`;
   - Ollama and SSE through a declared service;
