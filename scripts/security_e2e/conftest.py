@@ -284,9 +284,9 @@ class Sandbox:
             )
         self.children.append(proc)
         # Bookkeeping read back by finish(); Popen has no such attributes.
-        proc.audit_log = log  # ty: ignore[unresolved-attribute]
+        proc.audit_log = log  # ty: ignore[missing-attribute]
         launch = self.launches.pop(id(argv), None)
-        proc.shared_launch = (  # ty: ignore[unresolved-attribute]
+        proc.shared_launch = (  # ty: ignore[missing-attribute]
             launch[1:] if launch and launch[0] is argv else None
         )
         return proc
