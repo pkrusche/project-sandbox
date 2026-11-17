@@ -96,6 +96,10 @@ Or start a profile yourself (default name `project-sandbox`):
 rejected with any other runtime. Check the setup with
 `project-sandbox doctor --colima-profile NAME` ([doctor](doctor.md)).
 
+Behind a corporate proxy, `--python-uv` and egress sidecar builds can fail
+with DNS errors when `--build-proxy` names a hostname; see
+[proxy hostnames and musl-based tools](build-network.md#proxy-hostnames-and-musl-based-tools).
+
 A default Colima VM has 2 CPUs and Docker refuses a CPU limit above the VM's.
 Without `--cpus`, a sandbox asks for 4 CPUs, capped to the CPUs the Docker
 engine reports (`docker info`), and says so when it caps. For more, start the

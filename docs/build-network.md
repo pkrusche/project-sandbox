@@ -99,6 +99,53 @@ Docker and Podman use the URL verbatim: `127.0.0.1` identifies the builder's own
 loopback. Supply an address reachable from the builder or configure its host
 networking separately.
 
+### Proxy hostnames and musl-based tools
+
+A proxy hostname is resolved inside the build container by each tool that uses
+it. Tools linked against musl resolve names differently from glibc: musl asks
+all nameservers in `resolv.conf` at once and takes the first answer, and does
+not use `nsswitch.conf`. Under some VM and VPN DNS setups, notably Colima on a
+corporate network, musl tools then fail to resolve a proxy hostname that glibc
+tools in the same build resolve without trouble. Affected steps include:
+
+- `uv sync` in `--python-uv` builds (the pinned uv binary is statically linked
+  against musl),
+- `apk` in the Alpine `--egress sidecar` image build,
+- any Alpine-based stage of a `--dockerfile` build.
+
+The error is a DNS failure that names the download target rather than the proxy,
+for example uv's `error sending request for url (https://pypi.org/...)` caused
+by `dns error: failed to lookup address information`. Debian steps such as
+`apt-get`, `curl`, and `npm` earlier in the same build succeed.
+
+To confirm, compare both resolvers in a build on the same engine:
+
+```bash
+cat > dns-check.Dockerfile <<'EOF'
+FROM python:3.12-slim AS glibc
+RUN cat /etc/resolv.conf; getent hosts proxy.corp.example || echo "glibc FAILED"
+FROM alpine:3.20
+RUN getent hosts proxy.corp.example || echo "musl FAILED"
+EOF
+docker --context colima-project-sandbox build --no-cache --progress=plain \
+  -f dns-check.Dockerfile .
+```
+
+Workaround: pass the proxy as an IP address, which needs no lookup:
+
+```bash
+project-sandbox --runtime colima --python-uv \
+  --build-proxy http://192.0.2.10:3128 .
+```
+
+For an HTTPS proxy this only works if its certificate lists that IP address;
+otherwise use an HTTP proxy endpoint or fix the builder's DNS configuration.
+
+project-sandbox does not work around this itself. A possible future fix is to
+resolve the proxy hostname on the host and pass `--add-host <host>:<ip>` to
+Docker and Podman builds. musl reads `/etc/hosts` before DNS, and the URL would
+keep its hostname, so TLS verification of an HTTPS proxy still works.
+
 ### Apple container: host-loopback forwarder
 
 Apple builds reach the proxy through a temporary host-loopback forwarder, so
