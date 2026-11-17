@@ -173,7 +173,7 @@ boundary there.
 | Runtime | Containment enforced by | Sandbox firewall | Sandboxes reach one another |
 |---|---|---|---|
 | Apple `container` | the sandbox firewall | always on | no: each firewall drops new connections both ways |
-| Colima | the network (`psbx-sandbox`, no VM address); the firewall is optional defense in depth | on until Colima's containment is verified; see below | yes, while their firewalls are off; and every declared service |
+| Colima | the network (`psbx-sandbox`, no VM address); the firewall is optional defense in depth | off by default (containment verified); `--sandbox-firewall` turns it on | yes, while their firewalls are off; and every declared service |
 | Docker Desktop | the sandbox firewall | always on | no |
 | Podman machine | the sandbox firewall | always on | no |
 | Docker Engine | the sandbox firewall | always on | no |
@@ -195,10 +195,11 @@ project-sandbox --runtime colima --egress sidecar --sandbox-firewall ...
 project-sandbox --runtime colima --egress sidecar --no-sandbox-firewall ...
 ```
 
-- **Default.** The firewall stays on until Colima's containment has been
-  verified by the end-to-end containment checks; the launch says so.
-  `--no-sandbox-firewall` is refused until then. Once Colima is verified, the
-  default becomes off, and `--sandbox-firewall` turns it back on.
+- **Default.** Off: Colima's containment is verified by the isolated check of
+  `scripts/e2e-colima.py`, which every run of that suite repeats.
+  `--sandbox-firewall` turns the firewall on for a session. A runtime whose
+  containment isn't verified keeps the firewall on, says so at launch, and
+  refuses `--no-sandbox-firewall`.
 - **Off.** The sandbox gets no `NET_ADMIN` or `NET_RAW`. The firewall step
   still runs: it installs nothing, but revokes its one-shot `sudo` rule before
   the agent starts, so the agent can never run it, or anything else, as root.

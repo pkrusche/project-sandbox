@@ -110,8 +110,8 @@ The spikes are scripted: `spikes/spike_colima.py` runs S1, S2 and S6, and `spike
   - a legacy `psbx-sandbox` replaced by `up`.
 
   Verify: the suite passes on Colima.
-- [ ] 7.2 After 7.1 passes, add Colima to the D6 verified-containment table so its default becomes off. Verify with a unit test of the table and a re-run of the Colima suite.
-- [ ] 7.3 Run `uv run python -m compileall src tests` and `uv run pytest -q`. Verify both pass.
+- [x] 7.2 After 7.1 passes, add Colima to the D6 verified-containment table so its default becomes off. Verify with a unit test of the table and a re-run of the Colima suite.
+- [x] 7.3 Run `uv run python -m compileall src tests` and `uv run pytest -q`. Verify both pass.
 
 ## 8. Roadmap
 

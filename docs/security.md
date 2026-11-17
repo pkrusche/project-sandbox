@@ -609,8 +609,8 @@ parts that matter for security:
     other clients in the VM, apart, and must authenticate on its own. Local
     Ollama has no authentication. Use firewall mode when a session must reach
     a service that other sandboxes must not.
-  - **The optional firewall.** With `--no-sandbox-firewall` (or the default,
-    once Colima's containment is verified) the sandbox gets no network
+  - **The optional firewall.** By default (Colima's containment is verified
+    by `scripts/e2e-colima.py`) the sandbox gets no network
     capabilities, and its firewall step only revokes the one-shot `sudo` rule.
     The decision comes from the read-only session input written by the host,
     never from the environment, so the agent cannot choose it.

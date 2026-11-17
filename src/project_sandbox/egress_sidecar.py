@@ -146,9 +146,11 @@ RESTART_FIELDS: dict[str, str] = {
 }
 # Runtimes whose sidecar-mode containment is enforced by the network and has
 # passed the end-to-end containment checks (isolated-sidecar-network design.md
-# D6). Their sandbox firewall defaults to off; elsewhere it stays on. Colima is
-# added only after scripts/e2e-colima.py's containment probes pass (task 7.2).
-VERIFIED_CONTAINMENT: frozenset[str] = frozenset()
+# D6). Their sandbox firewall defaults to off; elsewhere it stays on. Colima
+# passed scripts/e2e-colima.py's isolated check (task 7.1); that suite keeps
+# running the same probes, so a regression shows up there. Apple `container`
+# never joins: it doesn't use the isolated network.
+VERIFIED_CONTAINMENT: frozenset[str] = frozenset({COLIMA_NAME})
 
 RESTART_HINT = (
     "Run `project-sandbox-egress restart` to apply; it interrupts every running "

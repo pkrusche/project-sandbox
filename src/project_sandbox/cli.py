@@ -325,8 +325,8 @@ def build_parser() -> ArgumentParser:
         const=False,
         help=(
             "Colima sidecar mode only: rely on the isolated network alone, with no "
-            "sandbox firewall or network capabilities. Refused until Colima's "
-            "containment is verified."
+            "sandbox firewall or network capabilities (the default once "
+            "Colima's containment is verified, as it is)."
         ),
     )
     p.add_argument(

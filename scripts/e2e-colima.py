@@ -86,9 +86,9 @@ PROXY = f"http://{colima_network.ALIAS}:{colima_network.PROXY_PORT}"
 MAC_ADDRESS = "192.168.5.2"
 SERVICE_MARKER = "psbx-e2e-mac-service"
 PUBLISHER = "psbx-e2e-publisher"
-# Test-only: run the CLI as if Colima's containment were verified (task 7.2
-# comes after this suite), so --no-sandbox-firewall is accepted. It changes the
-# table only inside this one process.
+# Test-only: run the CLI with Colima in the verified table whatever the shipped
+# table says, so the firewall-off probes keep running if Colima is ever taken
+# out of it. It changes the table only inside this one process.
 VERIFIED_WRAPPER = (
     "import sys\n"
     "from project_sandbox import cli, egress_sidecar\n"

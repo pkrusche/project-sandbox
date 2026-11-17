@@ -1024,9 +1024,23 @@ class SandboxFirewallFlagTests(TestCase):
         )
         self.assertNotIn("--cap-add", self.sandbox_line(off))
 
-    def test_the_default_table_starts_without_colima(self) -> None:
-        self.assertNotIn("colima", egress_sidecar.VERIFIED_CONTAINMENT)
-        self.assertNotIn("apple-container", egress_sidecar.VERIFIED_CONTAINMENT)
-        self.assertTrue(
-            egress_sidecar.sandbox_firewall_default(colima_runtime("project-sandbox"))
+    def test_the_verified_table(self) -> None:
+        """Task 7.2: Colima joined after scripts/e2e-colima.py's isolated check."""
+        self.assertEqual(egress_sidecar.VERIFIED_CONTAINMENT, frozenset({"colima"}))
+        for profile in ("project-sandbox", "default", "work"):
+            self.assertFalse(
+                egress_sidecar.sandbox_firewall_default(colima_runtime(profile))
+            )
+        for runtime in (APPLE_CONTAINER, DOCKER, PODMAN):
+            self.assertTrue(egress_sidecar.sandbox_firewall_default(runtime))
+
+    def test_the_shipped_default_launches_without_the_firewall(self) -> None:
+        output = self.run_cli(
+            "--runtime",
+            "colima",
+            "--egress",
+            "sidecar",
+            verified=egress_sidecar.VERIFIED_CONTAINMENT,
         )
+        self.assertIn("sandbox firewall input: off", output)
+        self.assertNotIn("--cap-add", self.sandbox_line(output))
