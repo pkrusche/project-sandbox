@@ -48,11 +48,10 @@ accepted for this release and need future work:
 
   Per-call `-c` overrides cannot close this. They cannot enumerate arbitrary
   `filter.<name>.*` keys, and `core.hooksPath=/dev/null` also disables the
-  user's own hooks and signing hooks. `-c core.fsmonitor=false` is a cheap
-  interim step with no user-visible cost (decided 2026-11-16, not yet
-  implemented): pass it in `worktree._git()`, which every `worktree.finalize`
-  call goes through, and add a regression test that asserts the argv. Hooks,
-  filters and signing stay open. The real fix is private VCS stores with sandbox-side
+  user's own hooks and signing hooks. As a cheap interim step,
+  `worktree._git()` passes `-c core.fsmonitor=false` on every call
+  (implemented 2026-11-17). Hooks, filters and signing stay open. The real fix
+  is private VCS stores with sandbox-side
   capture and trusted object import, alongside the separate-clone work above.
   Audit hooks, filters, fsmonitor, signing and other executable configuration
   surfaces, and verify with inert marker hooks/helpers that no agent-controlled
@@ -203,8 +202,6 @@ Items still to be considered:
   `tests/test_cli.py`; add an e2e smoke test with a `--help` prompt. The
   subcommand case (`codex exec resume`) only applies to a prompt that is
   exactly a subcommand name, since the prompt is a single argument.
-- **Disable fsmonitor in host-side Git calls**: see
-  [VCS defaults and isolated host capture](#vcs-defaults-and-isolated-host-capture).
 
 ## Known issues
 

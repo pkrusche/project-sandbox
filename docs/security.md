@@ -275,6 +275,10 @@ code. Restricted metadata therefore does not establish a complete host-execution
 boundary. Without `--branch`, no automatic capture occurs; review these changes
 before running host VCS commands.
 
+Branch finalization runs every Git call with `-c core.fsmonitor=false`, so a
+`core.fsmonitor` program set in the repository config does not run on the host.
+Hooks, filter drivers and signing programs are not disabled.
+
 Changing the full-access default and isolating host capture/import are deferred
 in the [VCS roadmap](../ROADMAP.md#vcs-defaults-and-isolated-host-capture).
 

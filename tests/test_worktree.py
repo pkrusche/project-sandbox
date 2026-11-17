@@ -284,6 +284,36 @@ class WorktreeTeardownTests(TestCase):
         self.assertTrue(self.wt.path.is_dir(), "worktree kept so work is not lost")
         self.assertIn("could not commit", out.getvalue())
 
+    def test_git_helper_disables_fsmonitor(self) -> None:
+        with patch.object(worktree_mod.subprocess, "run") as run:
+            run.return_value = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+            worktree_mod._git(self.repo, ["status", "--porcelain"], capture=True)
+
+        argv = run.call_args.args[0]
+        self.assertEqual(
+            argv[:5], ["git", "-c", "core.fsmonitor=false", "-C", str(self.repo)]
+        )
+        self.assertEqual(argv[5:], ["status", "--porcelain"])
+
+    def test_finalize_does_not_run_agent_configured_fsmonitor(self) -> None:
+        # An agent with writable metadata can point core.fsmonitor at a program;
+        # host-side finalization must not execute it.
+        marker = Path(self._td.name) / "fsmonitor-ran"
+        hook = Path(self._td.name) / "fsmonitor-hook.sh"
+        hook.write_text(f"#!/bin/sh\ntouch '{marker}'\nexit 1\n", encoding="utf-8")
+        hook.chmod(0o755)
+        subprocess.run(
+            ["git", "-C", str(self.repo), "config", "core.fsmonitor", str(hook)],
+            check=True,
+            capture_output=True,
+        )
+        (self.wt.path / "uncommitted.txt").write_text("later\n", encoding="utf-8")
+
+        self._finalize()
+
+        self.assertFalse(marker.exists(), "host executed the agent's fsmonitor hook")
+        self.assertIn("msg", self._branch_log())
+
     def test_finalize_keep_workspace_leaves_worktree(self) -> None:
         out = io.StringIO()
         with contextlib.redirect_stdout(out):

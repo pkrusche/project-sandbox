@@ -217,8 +217,12 @@ def _is_dirty(wt: Worktree) -> bool:
 
 
 def _git(repo: Path, args: list[str], capture: bool = False) -> str:
+    # The agent can write the repository's config, so ``core.fsmonitor`` could
+    # name a program for the host to run during ``status``/``add``. Disabling it
+    # per call costs nothing. Hooks, filters and signing stay open; see
+    # ROADMAP.md "VCS defaults and isolated host capture".
     result = subprocess.run(
-        ["git", "-C", str(repo)] + args,
+        ["git", "-c", "core.fsmonitor=false", "-C", str(repo)] + args,
         capture_output=capture,
         text=True,
         check=True,
