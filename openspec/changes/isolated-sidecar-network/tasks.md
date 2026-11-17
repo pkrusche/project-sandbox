@@ -66,7 +66,7 @@ The spikes are scripted: `spikes/spike_colima.py` runs S1, S2 and S6, and `spike
 
 ## 5. Sandbox launch on Colima
 
-- [ ] 5.1 Build the Colima sidecar-mode sandbox plan:
+- [x] 5.1 Build the Colima sidecar-mode sandbox plan:
   - attach to `psbx-sandbox` only;
   - pin `egress` with `--add-host` (D7);
   - proxy variables `http://egress:3128`;
@@ -75,9 +75,9 @@ The spikes are scripted: `spikes/spike_colima.py` runs S1, S2 and S6, and `spike
   - no `host.docker.internal` or `host.lima.internal` anywhere.
 
   Verify with argv and environment tests for Colima, and equality tests for Docker Desktop and Apple `container`.
-- [ ] 5.2 Require service declarations for `--pi-ollama` and loopback `--agent-proxy` in Colima sidecar mode, failing before container work with the exact `service add` command. Allow remote agent proxies through the forward proxy. Verify with CLI tests for each case.
-- [ ] 5.3 Relax the Colima host-feature rejection in sidecar mode only, and name `--egress sidecar` in the firewall-mode error. Verify with tests for firewall mode, sidecar mode and a loopback parent.
-- [ ] 5.4 Update `docs/runtimes.md` (the Colima feature matrix and the "Not supported on Colima" list). Verify that the matrix matches the CLI's rejections.
+- [x] 5.2 Require service declarations for `--pi-ollama` and loopback `--agent-proxy` in Colima sidecar mode, failing before container work with the exact `service add` command. Allow remote agent proxies through the forward proxy. Verify with CLI tests for each case.
+- [x] 5.3 Relax the Colima host-feature rejection in sidecar mode only, and name `--egress sidecar` in the firewall-mode error. Verify with tests for firewall mode, sidecar mode and a loopback parent.
+- [x] 5.4 Update `docs/runtimes.md` (the Colima feature matrix and the "Not supported on Colima" list). Verify that the matrix matches the CLI's rejections.
 
 ## 6. Sandbox firewall switch
 

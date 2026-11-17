@@ -26,7 +26,7 @@ project-sandbox --runtime docker --agent bash /path/to/repo python:3.12-slim
 |---|---|---|---|---|---|
 | Firewall egress (default) | yes | yes | yes | yes | no |
 | `--egress sidecar` | yes (1.4.1+) | yes; not rootless Docker | yes | yes (private network) | no |
-| Local Ollama, loopback `--agent-proxy` | host alias needed | yes | yes | no | no |
+| Local Ollama, loopback `--agent-proxy` | host alias needed | yes | yes | `--egress sidecar` only, as a declared service | no |
 | Proxy on the host's loopback (`--internet-proxy`, `--build-proxy`, `[egress.upstream]`) | yes | yes | yes | no; a proxy the VM can reach works | no |
 
 Details of each row live with the feature: [egress sidecar](egress-sidecar.md),
@@ -222,6 +222,15 @@ a private Docker network instead of a published port:
 - A sandbox joins `psbx-sandbox` only, with `egress` pinned to the sidecar's
   address (`--add-host`), so its firewall admits that address on port 3128 and no
   DNS. A process that ignores the proxy variables has no route out.
+- Mac services reach the sandbox only as ports on the sidecar: local Ollama at
+  `http://egress:11434/v1` and a loopback `--agent-proxy` at
+  `http://egress:<port>/…`, each declared once with
+  `project-sandbox-egress service add` (see
+  [Colima services](egress-sidecar.md#colima-services-through-the-sidecar)). A
+  launch that needs an undeclared one fails before any container work and
+  prints the command. A remote `--agent-proxy` goes through the forward proxy,
+  so its host must be allowlisted and use port 443 (HTTPS) or 80 (HTTP). The
+  sandbox gets no `host.docker.internal` or `host.lima.internal`.
 - The listener is always `egress:3128`; a non-default `[egress.sidecar] port` is an
   error.
 
@@ -258,11 +267,15 @@ Each profile has its own sidecar, CA, state directory
 
 Anything needing a path from the sandbox to macOS is refused before any container
 work, naming the feature. Nothing is emulated by opening the sandbox's network:
-local Ollama (`--pi-ollama`); `--agent-proxy`, `--internet-proxy`,
-`[egress.upstream] url` and `--build-proxy` on the Mac's loopback (a remote or
-VM-reachable address works); `--egress sidecar` with a non-default
-`[egress.sidecar] port`. `colima start/stop/delete`, removing a root and reset are
-yours to run.
+
+- in firewall mode: local Ollama (`--pi-ollama`) and `--agent-proxy` on the Mac's
+  loopback (the error names `--egress sidecar`, which supports both), and
+  `--internet-proxy` on the Mac's loopback;
+- in every mode: `[egress.upstream] url` and `--build-proxy` on the Mac's
+  loopback (a remote or VM-reachable address works);
+- `--egress sidecar` with a non-default `[egress.sidecar] port`.
+
+`colima start/stop/delete`, removing a root and reset are yours to run.
 
 The measurements behind these choices are kept with the archived change
 `openspec/changes/archive/2026-11-15-add-colima-hardened-profile/spikes.md`.

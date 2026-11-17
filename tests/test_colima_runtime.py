@@ -561,18 +561,19 @@ class HostDependentFeatureTests(TestCase):
 
     def test_every_unsupported_feature_is_listed_at_once(self) -> None:
         message = self.refused(
-            "--egress",
-            "sidecar",
             "--agent",
             "bash",
             "--model",
             "test-model",
             "--agent-proxy",
             "http://localhost:8080/v1",
-            config='[egress.upstream]\nurl = "http://127.0.0.1:3128"\n',
+            "--internet-proxy",
+            "http://127.0.0.1:3128",
+            "--build-proxy",
+            "http://127.0.0.1:3128",
         )
-        self.assertIn("--agent-proxy", message)
-        self.assertIn("[egress.upstream]", message)
+        for feature in ("--agent-proxy", "--internet-proxy", "--build-proxy"):
+            self.assertIn(feature, message)
 
     def test_a_network_reachable_parent_proxy_is_supported(self) -> None:
         output = self.run_cli(
@@ -708,3 +709,196 @@ class NoHostRelayTests(TestCase):
                 self.assertFalse(
                     cli._needs_internet_proxy_relay(*args, private_sidecar=False)
                 )
+
+
+class SidecarServiceLaunchTests(TestCase):
+    """isolated-sidecar-network tasks 5.1-5.3: Mac services through the sidecar."""
+
+    SERVICES = (
+        '[egress]\nallow = ["gateway.corp.example"]\n'
+        "[egress.services]\nollama = { port = 11434 }\nagent-proxy = { port = 4000 }\n"
+    )
+    PI = ("--agent", "pi", "--pi-ollama")
+    PROXY = ("--agent", "bash", "--model", "test-model", "--agent-proxy")
+
+    def run_cli(self, *extra: str, runtime="colima", config: str | None = None) -> str:
+        import contextlib
+        import io
+        import os
+        import tempfile
+
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            if config is not None:
+                (Path(tmp) / "project-sandbox").mkdir()
+                (Path(tmp) / "project-sandbox" / "egress.toml").write_text(config)
+            with (
+                patch.dict(os.environ, {"XDG_CONFIG_HOME": tmp, "XDG_STATE_HOME": tmp}),
+                contextlib.redirect_stdout(out),
+            ):
+                cli.main(
+                    [
+                        "--dry-run",
+                        "--runtime",
+                        runtime,
+                        "--egress",
+                        "sidecar",
+                        *extra,
+                        ".",
+                        "python:3.12-slim",
+                    ]
+                )
+        return out.getvalue().replace(tmp, "<tmp>")
+
+    def refused(self, *extra: str, config: str | None = None, runtime="colima") -> str:
+        with self.assertRaises(SystemExit) as ctx:
+            self.run_cli(*extra, config=config, runtime=runtime)
+        return str(ctx.exception)
+
+    def no_proxy(self, output: str) -> list[str]:
+        line = next(
+            line for line in output.splitlines() if "Would inject proxy" in line
+        )
+        return line.split("NO_PROXY=", 1)[1].split(", ", 1)[0].split(",")
+
+    def assert_no_host_alias(self, output: str) -> None:
+        self.assertNotIn("host.docker.internal", output)
+        self.assertNotIn("host.lima.internal", output)
+        self.assertNotIn("203.0.113.113", output)
+
+    # --- 5.1 plan -------------------------------------------------------------
+
+    def test_ollama_reaches_the_sandbox_only_through_the_sidecar(self) -> None:
+        output = self.run_cli(*self.PI, config=self.SERVICES)
+        self.assert_no_host_alias(output)
+        self.assertIn("egress", self.no_proxy(output))
+        for name in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+            self.assertIn(f"{name}=http://egress:3128", output)
+        sandbox = next(
+            line
+            for line in output.splitlines()
+            if " run --rm " in line and "--name project-sandbox-2" in line
+        )
+        self.assertIn("--network psbx-sandbox", sandbox)
+        self.assertEqual(sandbox.count("--add-host"), 1)
+        self.assertIn("--add-host 'egress:<sidecar address>'", sandbox)
+        plans = [line for line in output.splitlines() if line.startswith("Would use ")]
+        self.assertFalse([p for p in plans if "Ollama" in p], plans)
+
+    def test_a_loopback_gateway_is_the_sidecar_service(self) -> None:
+        output = self.run_cli(
+            *self.PROXY, "http://127.0.0.1:4000/v1", config=self.SERVICES
+        )
+        self.assert_no_host_alias(output)
+        self.assertIn(
+            "Would use agent proxy: http://egress:4000/v1 (sidecar service on port "
+            "4000)",
+            output,
+        )
+        self.assertIn("egress", self.no_proxy(output))
+
+    def test_a_remote_gateway_goes_through_the_forward_proxy(self) -> None:
+        output = self.run_cli(
+            *self.PROXY, "https://gateway.corp.example/v1", config=self.SERVICES
+        )
+        self.assertIn(
+            "Would use agent proxy: https://gateway.corp.example:443/v1 (through the "
+            "egress sidecar's forward proxy)",
+            output,
+        )
+        self.assertNotIn("gateway.corp.example", self.no_proxy(output))
+        self.assertIn("egress", self.no_proxy(output))
+
+    def test_other_runtimes_ignore_declared_services(self) -> None:
+        for runtime in ("docker", "apple-container"):
+            with self.subTest(runtime=runtime):
+                plain = self.run_cli(*self.PI, runtime=runtime, config="")
+                declared = self.run_cli(
+                    *self.PI,
+                    runtime=runtime,
+                    config="[egress.services]\nollama = { port = 11434 }\n",
+                )
+                import re
+
+                session = re.compile(r"\d{8}t\d{6}-[0-9a-f]{12}")
+                self.assertEqual(
+                    session.sub("<session>", plain), session.sub("<session>", declared)
+                )
+                self.assertIn("host.docker.internal", declared)
+                self.assertNotIn("egress:11434", declared)
+
+    # --- 5.2 declarations required --------------------------------------------
+
+    def test_undeclared_ollama_names_the_command(self) -> None:
+        message = self.refused(*self.PI, config="")
+        self.assertIn("project-sandbox-egress service add ollama 11434", message)
+
+    def test_undeclared_gateway_port_names_the_command(self) -> None:
+        message = self.refused(
+            *self.PROXY, "http://127.0.0.1:4001/v1", config=self.SERVICES
+        )
+        self.assertIn("project-sandbox-egress service add agent-proxy 4001", message)
+
+    def test_a_loopback_https_gateway_is_refused(self) -> None:
+        message = self.refused(
+            *self.PROXY, "https://127.0.0.1:4000/v1", config=self.SERVICES
+        )
+        self.assertIn("HTTPS loopback endpoints are unsupported", message)
+
+    def test_a_remote_gateway_must_be_allowlisted(self) -> None:
+        message = self.refused(
+            *self.PROXY, "https://other.corp.example/v1", config=self.SERVICES
+        )
+        self.assertIn("project-sandbox-egress allow add other.corp.example", message)
+
+    def test_a_remote_gateway_on_another_port_is_refused(self) -> None:
+        message = self.refused(
+            *self.PROXY, "https://gateway.corp.example:8443/v1", config=self.SERVICES
+        )
+        self.assertIn("allows https only on port 443", message)
+
+    def test_a_wildcard_allows_the_remote_gateway(self) -> None:
+        self.run_cli(
+            *self.PROXY,
+            "https://gateway.corp.example/v1",
+            config='[egress]\nallow = ["*.corp.example"]\n',
+        )
+
+    def test_services_are_not_required_on_other_runtimes(self) -> None:
+        self.run_cli(*self.PI, runtime="docker", config="")
+
+    # --- 5.3 the rejection is relaxed in sidecar mode only --------------------
+
+    def test_firewall_mode_still_refuses_and_names_sidecar_mode(self) -> None:
+        import contextlib
+        import io
+
+        for extra in (
+            self.PI,
+            (*self.PROXY, "http://127.0.0.1:4000/v1"),
+        ):
+            with (
+                self.subTest(extra=extra),
+                self.assertRaises(SystemExit) as ctx,
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                cli.main(
+                    [
+                        "--dry-run",
+                        "--runtime",
+                        "colima",
+                        *extra,
+                        ".",
+                        "python:3.12-slim",
+                    ]
+                )
+            message = str(ctx.exception)
+            self.assertIn("Not supported with --runtime colima", message)
+            self.assertIn("--egress sidecar", message)
+
+    def test_a_loopback_parent_stays_refused_in_sidecar_mode(self) -> None:
+        message = self.refused(
+            *self.PI,
+            config=self.SERVICES + '[egress.upstream]\nurl = "http://127.0.0.1:3128"\n',
+        )
+        self.assertIn("[egress.upstream]", message)

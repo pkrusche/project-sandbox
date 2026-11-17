@@ -649,13 +649,19 @@ def _main_scoped(argv: list[str] | None, resources: contextlib.ExitStack) -> int
             except egress_sidecar.SidecarError as exc:
                 raise SystemExit(f"[E] {exc}") from None
     if args.runtime == container_cli.COLIMA_NAME:
+        # In sidecar mode Ollama and a loopback gateway are served by the
+        # sidecar (sidecar-local-services); firewall mode has no path to the Mac.
         _reject_colima_host_features(
-            ollama=pi_ollama_enabled,
-            agent_proxy_endpoint=proxy_endpoint,
+            ollama=pi_ollama_enabled and not sidecar,
+            agent_proxy_endpoint=None if sidecar else proxy_endpoint,
             internet_proxy_config=None if sidecar else internet_proxy_config,
             upstream_url=egress.upstream_url if egress is not None else None,
             build_proxy_endpoint=build_proxy,
         )
+        if egress is not None:
+            _require_colima_services(
+                egress, pi_ollama=pi_ollama_enabled, agent_proxy_endpoint=proxy_endpoint
+            )
     identity = read_identity()
     available_agents = config_agents.available_agents()
     # --no-forward-credentials promises to start unauthenticated and let the
@@ -782,6 +788,12 @@ def _main_scoped(argv: list[str] | None, resources: contextlib.ExitStack) -> int
         else local_service_network.HOSTNAME
     )
     ollama_hostname = local_service_network.HOSTNAME
+    # Colima sidecar mode: Mac services are the sidecar's declared ports.
+    service_host = colima_network.ALIAS if private_sidecar else None
+    if service_host is not None:
+        ollama_hostname = service_host
+        if proxy_endpoint is not None and proxy_endpoint.local:
+            proxy_hostname = service_host
     ollama_base_url = f"http://{ollama_hostname}:{local_service_network.PORT}/v1"
     if args.agent_proxy:
         proxy_key, key_source = agent_proxy.resolve_key(
@@ -962,7 +974,16 @@ def _main_scoped(argv: list[str] | None, resources: contextlib.ExitStack) -> int
                 allow_github=allow_github,
                 pi_ollama=pi_ollama_enabled,
                 ollama_hostname=ollama_hostname,
-                agent_proxy_port=proxy_port,
+                # A remote gateway on Colima is reached through the forward
+                # proxy, never directly, so the firewall neither admits nor
+                # probes it.
+                agent_proxy_port=(
+                    None
+                    if service_host is not None
+                    and proxy_endpoint is not None
+                    and not proxy_endpoint.local
+                    else proxy_port
+                ),
                 agent_proxy_hostname=proxy_hostname,
                 agent_proxy_url=proxy_base_url,
                 policy=(
@@ -975,6 +996,7 @@ def _main_scoped(argv: list[str] | None, resources: contextlib.ExitStack) -> int
                     proxy_port=proxy_port,
                     proxy_url=args.agent_proxy,
                     pi_ollama_enabled=pi_ollama_enabled,
+                    service_host=service_host,
                 ),
                 devcontainer_destinations=_local_firewall_destinations(
                     internet_proxy_config,
@@ -1233,19 +1255,24 @@ def _main_scoped(argv: list[str] | None, resources: contextlib.ExitStack) -> int
                 ),
             }
 
-        services = _local_services(
-            sandbox_proxy_config,
-            proxy_port=(
-                proxy_port
-                if not args.agent_proxy or agent_proxy.parse(args.agent_proxy).local
-                else None
-            ),
-            proxy_loopback_host=(
-                agent_proxy.loopback_host(args.agent_proxy)
-                if args.agent_proxy
-                else None
-            ),
-            pi_ollama_enabled=pi_ollama_enabled,
+        # Colima sidecar mode forwards nothing: services are sidecar ports.
+        services = (
+            []
+            if private_sidecar
+            else _local_services(
+                sandbox_proxy_config,
+                proxy_port=(
+                    proxy_port
+                    if not args.agent_proxy or agent_proxy.parse(args.agent_proxy).local
+                    else None
+                ),
+                proxy_loopback_host=(
+                    agent_proxy.loopback_host(args.agent_proxy)
+                    if args.agent_proxy
+                    else None
+                ),
+                pi_ollama_enabled=pi_ollama_enabled,
+            )
         )
         sidecar_plan = (
             egress_sidecar.sandbox_plan(egress_strategy, sandbox_proxy_config.port)
@@ -1277,8 +1304,8 @@ def _main_scoped(argv: list[str] | None, resources: contextlib.ExitStack) -> int
             api_key_values = internet_proxy.merge_environment(
                 api_key_values,
                 sandbox_proxy_config,
-                bypass_local_services=pi_ollama_enabled,
-                bypass_hosts=(proxy_endpoint.sandbox_host,) if proxy_endpoint else (),
+                bypass_local_services=pi_ollama_enabled and service_host is None,
+                bypass_hosts=_sandbox_bypass_hosts(proxy_endpoint, service_host),
             )
 
         session_id = observability.new_session_id()
@@ -1753,12 +1780,14 @@ def _reject_colima_host_features(
     problems = []
     if ollama:
         problems.append(
-            "Ollama (--pi-ollama) reaches a model server on the Mac's loopback"
+            "Ollama (--pi-ollama) reaches a model server on the Mac's loopback; "
+            "--egress sidecar serves it through the sidecar"
         )
     if agent_proxy_endpoint is not None and agent_proxy_endpoint.local:
         problems.append(
-            "--agent-proxy to a gateway on the Mac's loopback; use a gateway "
-            "address the VM can reach"
+            "--agent-proxy to a gateway on the Mac's loopback; --egress sidecar "
+            "serves it through the sidecar, or use a gateway address the VM can "
+            "reach"
         )
     if internet_proxy_config is not None and internet_proxy_config.endpoint.local:
         problems.append(
@@ -1783,6 +1812,66 @@ def _reject_colima_host_features(
             "Not supported with --runtime colima (the sandbox has no path to the "
             "Mac):\n" + "\n".join(f"  - {p}" for p in problems)
         )
+
+
+def _require_colima_services(
+    egress: egress_policy.PolicyFile, *, pi_ollama: bool, agent_proxy_endpoint
+) -> None:
+    """Colima sidecar mode: each Mac service a launch needs must be declared.
+
+    The sandbox reaches the Mac only through the sidecar's declared services
+    (sidecar-local-services), and a remote gateway only through the forward
+    proxy, so both are checked before any container work.
+    """
+    ports = {service.port for service in egress.services}
+    problems = []
+    if pi_ollama and local_service_network.PORT not in ports:
+        problems.append(
+            f"Ollama (--pi-ollama) needs a service on port {local_service_network.PORT}."
+            " Run: project-sandbox-egress service add ollama "
+            f"{local_service_network.PORT}"
+        )
+    if agent_proxy_endpoint is not None and agent_proxy_endpoint.local:
+        # Loopback gateways are plain HTTP (agent_proxy validation), as are
+        # sidecar services.
+        port = agent_proxy_endpoint.port
+        if port not in ports:
+            problems.append(
+                f"--agent-proxy on the Mac's port {port} needs a service on that "
+                f"port. Run: project-sandbox-egress service add agent-proxy {port}"
+            )
+    elif agent_proxy_endpoint is not None:
+        host, port = agent_proxy_endpoint.host, agent_proxy_endpoint.port
+        expected = 443 if agent_proxy_endpoint.scheme == "https" else 80
+        if port != expected:
+            problems.append(
+                f"--agent-proxy {agent_proxy_endpoint.url()} is reached through the "
+                f"egress sidecar, which allows {agent_proxy_endpoint.scheme} only on "
+                f"port {expected}"
+            )
+        elif not egress_policy.allows(egress_policy.effective(egress), host):
+            problems.append(
+                f"--agent-proxy host {host} is reached through the egress sidecar "
+                f"but is not on its allowlist. Run: project-sandbox-egress allow add "
+                f"{host}"
+            )
+    if problems:
+        raise SystemExit(
+            "--egress sidecar on Colima reaches the Mac's services through the "
+            "sidecar, and the Internet through its allowlist:\n"
+            + "\n".join(f"  - {p}" for p in problems)
+        )
+
+
+def _sandbox_bypass_hosts(proxy_endpoint, service_host: str | None) -> tuple[str, ...]:
+    """``NO_PROXY`` additions for a session's gateway or sidecar services.
+
+    On Colima sidecar mode services are reached at ``egress`` without the
+    forward proxy, and a remote gateway goes through it (so it is not listed).
+    """
+    if service_host is not None:
+        return (service_host,)
+    return (proxy_endpoint.sandbox_host,) if proxy_endpoint else ()
 
 
 def _pi_ollama_enabled(args, run_agent: str | None) -> bool:
@@ -2154,12 +2243,34 @@ def _local_firewall_destinations(
     proxy_port: int | None,
     pi_ollama_enabled: bool,
     proxy_url: str | None = None,
+    service_host: str | None = None,
 ) -> list[firewall.TcpDestination]:
+    """``service_host``: Colima sidecar mode, where services are sidecar ports
+    and a remote gateway is reached through the forward proxy."""
     destinations = []
     if config:
         destinations.append(
             firewall.TcpDestination.from_endpoint("Internet proxy", config.endpoint)
         )
+    if service_host is not None:
+        if proxy_url and agent_proxy.parse(proxy_url).local:
+            endpoint = agent_proxy.parse(proxy_url)
+            destinations.append(
+                firewall.TcpDestination(
+                    "Agent proxy",
+                    service_host,
+                    endpoint.port,
+                    endpoint.scheme,
+                    endpoint.path,
+                )
+            )
+        if pi_ollama_enabled:
+            destinations.append(
+                firewall.TcpDestination(
+                    "Ollama", service_host, local_service_network.PORT
+                )
+            )
+        return destinations
     if proxy_url:
         destinations.append(
             firewall.TcpDestination.from_endpoint(
@@ -2239,12 +2350,27 @@ def _dry_run(
     _warn_pi_ollama_no_firewall(args, pi_ollama_enabled)
     if args.runtime == container_cli.CHROOT.name:
         _validate_chroot_session(run_agent)
+    # Colima sidecar mode: Mac services are the sidecar's declared ports.
+    service_host = (
+        colima_network.ALIAS
+        if egress is not None and args.runtime == container_cli.COLIMA_NAME
+        else None
+    )
 
     print("DRY RUN: no files, worktrees, images, or containers will be created.")
     if run_agent == "copilot":
         assert copilot_host is not None
         _print_copilot_dry_run(args, inputs_dir=inputs_dir, host=copilot_host)
-    if args.agent_proxy:
+    if args.agent_proxy and service_host is not None:
+        endpoint = agent_proxy.parse(args.agent_proxy)
+        how = (
+            f"sidecar service on port {endpoint.port}"
+            if endpoint.local
+            else "through the egress sidecar's forward proxy"
+        )
+        url = endpoint.url(sandbox=True, hostname=service_host)
+        print(f"Would use agent proxy: {url} ({how})")
+    elif args.agent_proxy:
         endpoint = agent_proxy.parse(args.agent_proxy)
         print(
             f"Would use agent proxy: {endpoint.sandbox_url} ({'forwarded' if endpoint.local else 'direct'})"
@@ -2395,7 +2521,10 @@ def _dry_run(
     )
     forwarding_plans = local_service_network.prepare_services(
         runtime,
-        _local_services(
+        # Colima sidecar mode forwards nothing: services are sidecar ports.
+        []
+        if service_host is not None
+        else _local_services(
             proxy_config,
             proxy_port=(
                 proxy_port
@@ -2456,20 +2585,20 @@ def _dry_run(
         print(
             "Would defer DNS, TCP/TLS preflight; firewall admits only each endpoint address/port."
         )
+        bypass_hosts = _sandbox_bypass_hosts(
+            agent_proxy.parse(args.agent_proxy) if args.agent_proxy else None,
+            service_host,
+        )
         proxy_env = internet_proxy.environment(
             proxy_config,
-            bypass_local_services=pi_ollama_enabled,
-            bypass_hosts=(agent_proxy.parse(args.agent_proxy).sandbox_host,)
-            if args.agent_proxy
-            else (),
+            bypass_local_services=pi_ollama_enabled and service_host is None,
+            bypass_hosts=bypass_hosts,
         )
         preview_api_key_values = internet_proxy.merge_environment(
             preview_api_key_values,
             proxy_config,
-            bypass_local_services=pi_ollama_enabled,
-            bypass_hosts=(agent_proxy.parse(args.agent_proxy).sandbox_host,)
-            if args.agent_proxy
-            else (),
+            bypass_local_services=pi_ollama_enabled and service_host is None,
+            bypass_hosts=bypass_hosts,
         )
         print(
             "Would inject proxy environment: "

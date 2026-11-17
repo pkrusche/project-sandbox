@@ -474,6 +474,23 @@ def _services(value: object, path: Path) -> tuple[Service, ...]:
 # --------------------------------------------------------------------------
 
 
+def allows(effective_policy: EffectivePolicy, host: str) -> bool:
+    """Whether the sidecar's hostname allowlist admits ``host``.
+
+    Mirrors Squid's ``dstdomain``: ``*.example.com`` (rendered ``.example.com``)
+    also admits ``example.com``. IP literals are never admitted.
+    """
+    host = host.lower().rstrip(".")
+    for entry in effective_policy.allow:
+        if entry.startswith("*."):
+            base = entry[2:]
+            if host == base or host.endswith("." + base):
+                return True
+        elif host == entry:
+            return True
+    return False
+
+
 def effective(policy: PolicyFile) -> EffectivePolicy:
     """The allowlist the global sidecar enforces (design.md Decision 6).
 

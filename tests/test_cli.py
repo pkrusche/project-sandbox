@@ -8637,3 +8637,109 @@ class DefaultCpusTests(TestCase):
         with patch.object(container_cli, "available_cpus") as probe:
             self.assertEqual(cli._default_cpus(None), container_cli.DEFAULT_CPUS)
         probe.assert_not_called()
+
+
+class ColimaSidecarServiceLaunchTests(TestCase):
+    """isolated-sidecar-network task 5.1: a real Colima sidecar-mode launch.
+
+    Reuses the published-sidecar launch harness with the Colima runtime, a
+    pinned sidecar address and services declared in egress.toml.
+    """
+
+    setUp = EgressSidecarLaunchTests.setUp
+    tearDown = EgressSidecarLaunchTests.tearDown
+    _policy = EgressSidecarLaunchTests._policy
+    _patches = EgressSidecarLaunchTests._patches
+    _launch = EgressSidecarLaunchTests._launch
+    DESKTOP = EgressSidecarLaunchTests.DESKTOP
+
+    SERVICES = "[egress.services]\nagent-proxy = { port = 4000 }\n"
+
+    def launch_colima(self, *extra: str, agents=("bash",)):
+        from project_sandbox import colima_network, local_service_network
+
+        runtime = container_cli.colima_runtime("work")
+        pinned = local_service_network.ForwardingPlan(
+            "colima-private-network",
+            endpoint="172.19.0.2",
+            add_host=f"{colima_network.ALIAS}:172.19.0.2",
+            hostname=colima_network.ALIAS,
+            port=colima_network.PROXY_PORT,
+            label="Egress sidecar",
+        )
+        patches = (
+            patch.object(cli.container_cli, "verify_colima_profile"),
+            patch.object(cli, "_default_cpus", return_value=4),
+            patch.object(cli.colima_mounts, "check"),
+            patch.object(cli.egress_sidecar, "private_plan", return_value=pinned),
+            patch.object(
+                cli.agent_proxy, "resolve_key", return_value=("key", "environment")
+            ),
+            patch.object(cli.agent_proxy, "discover_models", return_value=["m"]),
+            patch.object(cli.config_agents, "available_agents", return_value=agents),
+        )
+        rc, events, out = self._launch(*extra, runtime=runtime, extra_patches=patches)
+        self.assertEqual(rc, 0, out)
+        (_, argv, env, _source, _exists) = next(e for e in events if e[0] == "run")
+        return argv, env or {}
+
+    def test_a_loopback_gateway_is_reached_at_egress_only(self) -> None:
+        self._policy(self.SERVICES)
+        argv, env = self.launch_colima(
+            "--model", "m", "--agent-proxy", "http://127.0.0.1:4000/v1"
+        )
+        joined = " ".join(argv) + " " + " ".join(f"{k}={v}" for k, v in env.items())
+        for alias in ("host.docker.internal", "host.lima.internal", "203.0.113.113"):
+            self.assertNotIn(alias, joined)
+        self.assertEqual(argv[argv.index("--network") + 1], "psbx-sandbox")
+        hosts = [argv[i + 1] for i, a in enumerate(argv) if a == "--add-host"]
+        self.assertEqual(hosts, ["egress:172.19.0.2"])
+        self.assertEqual(env["OPENAI_BASE_URL"], "http://egress:4000/v1")
+        self.assertEqual(env["HTTP_PROXY"], "http://egress:3128")
+        self.assertIn("egress", env["NO_PROXY"].split(","))
+        self.assertEqual(env["NO_PROXY"], env["no_proxy"])
+        firewall_script = (
+            self.project / ".project-sandbox" / "init-firewall.sh"
+        ).read_text()
+        code = [
+            line for line in firewall_script.splitlines() if not line.startswith("#")
+        ]
+        self.assertFalse([line for line in code if "host.docker.internal" in line])
+        self.assertIn('endpoints = ["egress", "egress"]', code)
+        self.assertIn("# Agent proxy: exact address/port pairs", firewall_script)
+        self.assertIn("--dport 4000", firewall_script)
+        self.assertIn("http://egress:4000/v1", firewall_script)
+
+    def test_a_remote_gateway_is_neither_admitted_nor_bypassed(self) -> None:
+        self._policy('[egress]\nallow = ["gateway.corp.example"]\n')
+        _argv, env = self.launch_colima(
+            "--model", "m", "--agent-proxy", "https://gateway.corp.example/v1"
+        )
+        self.assertEqual(env["OPENAI_BASE_URL"], "https://gateway.corp.example:443/v1")
+        self.assertNotIn("gateway.corp.example", env["NO_PROXY"])
+        firewall_script = (
+            self.project / ".project-sandbox" / "init-firewall.sh"
+        ).read_text()
+        self.assertNotIn("gateway.corp.example", firewall_script)
+        self.assertNotIn("Agent proxy is unreachable", firewall_script)
+
+    def test_pi_reaches_ollama_at_egress(self) -> None:
+        self._policy("[egress.services]\nollama = { port = 11434 }\n")
+        argv, env = self.launch_colima(
+            "--agent", "pi", "--pi-ollama", agents=("bash", "pi")
+        )
+        models = json.loads(
+            (self.project / ".project-sandbox" / "pi" / "models.json").read_text()
+        )
+        self.assertEqual(
+            models["providers"]["ollama"]["baseUrl"], "http://egress:11434/v1"
+        )
+        self.assertIn("egress", env["NO_PROXY"].split(","))
+        self.assertNotIn("host.docker.internal", env["NO_PROXY"])
+        hosts = [argv[i + 1] for i, a in enumerate(argv) if a == "--add-host"]
+        self.assertEqual(hosts, ["egress:172.19.0.2"])
+        firewall_script = (
+            self.project / ".project-sandbox" / "init-firewall.sh"
+        ).read_text()
+        self.assertIn("# Ollama: exact address/port pairs", firewall_script)
+        self.assertIn('"http://egress:11434/api/tags"', firewall_script)
