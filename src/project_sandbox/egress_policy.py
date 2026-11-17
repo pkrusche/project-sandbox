@@ -83,8 +83,9 @@ PROVIDER_HOSTS: tuple[str, ...] = (
 # individual-plan session using api.individual.* for models and chat; the
 # business and enterprise hosts are its plan counterparts (not yet captured).
 # Telemetry is blocked on purpose: the CLI also posts to
-# telemetry.<plan>.githubcopilot.com, which is deliberately not admitted (no
-# telemetry leaves the sandbox; the CLI works without it). The IDE-extension
+# telemetry.<plan>.githubcopilot.com and (since CLI 1.0.112) fetches experiment
+# assignments from exp.<plan>.githubcopilot.com; neither is admitted (no
+# telemetry leaves the sandbox; the CLI works without them). The IDE-extension
 # hosts on GitHub's published allowlist (copilot-proxy/origin-tracker/
 # copilot-telemetry.githubusercontent.com, collector.github.com,
 # default.exp-tas.com) were unused and are left out.

@@ -210,23 +210,29 @@ rm -f "$RUN_LOG"
 echo
 echo "Running pi with a prompt that looks like a flag (--help)"
 DASH_LOG="$TMP_PROJECT.dash-prompt.log"
+DASH_OUT="$TMP_PROJECT.dash-prompt.out"
+# `--prompt-text=--help`, not `--prompt-text --help`: project-sandbox's own
+# argparse rejects an option value that looks like a flag unless it is
+# attached with `=`.
 dash_cmd=(
   uv run project-sandbox
   --runtime "$RUNTIME"
   --agent pi
   --pi-ollama
   --ollama-model "$OLLAMA_MODEL"
-  --prompt-text "--help"
+  --prompt-text=--help
   --log "$DASH_LOG"
   --no-forward-credentials
   --timeout "$TIMEOUT"
   --no-build
   "$TMP_PROJECT" "$BASE_IMAGE"
 )
-if (cd "$ROOT" && "${dash_cmd[@]}") >/dev/null 2>&1; then
+if (cd "$ROOT" && "${dash_cmd[@]}") >"$DASH_OUT" 2>&1; then
   ok "session with a '--help' prompt completed"
+  rm -f "$DASH_OUT"
 else
-  bad "session with a '--help' prompt failed (see $DASH_LOG)"
+  bad "session with a '--help' prompt failed (see $DASH_LOG, $DASH_OUT)"
+  tail -n 20 "$DASH_OUT" | sed 's/^/        | /'
 fi
 if [ -f "$DASH_LOG" ] && python3 - "$DASH_LOG" <<'PY'
 import json, sys

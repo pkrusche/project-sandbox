@@ -234,6 +234,17 @@ class LogAndReportTests(unittest.TestCase):
                 {**telemetry, "host": "api.individual.githubcopilot.com"}
             )
         )
+        experiments = {
+            "method": "CONNECT",
+            "host": "exp.individual.githubcopilot.com",
+            "path": "",
+        }
+        self.assertTrue(self.script.is_expected_denial(experiments))
+        self.assertFalse(
+            self.script.is_expected_denial(
+                {**experiments, "host": "exp.individual.githubcopilot.com.evil"}
+            )
+        )
 
     def test_github_leaks(self) -> None:
         leaks = self.script.github_leaks(self.entries)

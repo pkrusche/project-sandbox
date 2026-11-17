@@ -81,11 +81,13 @@ PERSONAL_HOST = copilot_auth.DEFAULT_HOST
 OK_MARKER = "COPILOT_EGRESS_OK_7C2E"
 FIXTURE_PORT = 3128
 # Denials the Copilot CLI tolerates, blocked on purpose (design.md Decision 5):
-# its update check is repository API, and no telemetry may leave the sandbox.
-# (method, host regex, path regex); reported, but not a failure.
+# its update check is repository API, and no telemetry or experiment-assignment
+# traffic (exp.<plan>.githubcopilot.com, seen since CLI 1.0.112) may leave the
+# sandbox. (method, host regex, path regex); reported, but not a failure.
 EXPECTED_DENIALS: tuple[tuple[str, str, str], ...] = (
     ("GET", r"^api\.github\.com$", r"^/repos/github/copilot-cli/releases"),
     ("CONNECT", r"^telemetry\.[a-z0-9-]+\.githubcopilot\.com$", r"^$"),
+    ("CONNECT", r"^exp\.[a-z0-9-]+\.githubcopilot\.com$", r"^$"),
 )
 GITHUB_REPO_HOSTS = (
     "github.com",

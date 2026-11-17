@@ -384,9 +384,10 @@ measured with the `copilot-egress` e2e suite (see below):
   `project-sandbox-egress: path-not-allowed` 403. The CLI fails without this
   host, so it cannot simply be left out.
 
-The CLI's update check (`/repos/github/copilot-cli/releases`) and its telemetry
-(`telemetry.<plan>.githubcopilot.com`) are blocked on purpose. Copilot works
-without them. `--copilot-host` tenants (`<tenant>.ghe.com`) are not supported
+The CLI's update check (`/repos/github/copilot-cli/releases`), its telemetry
+(`telemetry.<plan>.githubcopilot.com`) and its experiment assignments
+(`exp.<plan>.githubcopilot.com`) are blocked on purpose. Copilot works without
+them. `--copilot-host` tenants (`<tenant>.ghe.com`) are not supported
 in sidecar mode.
 
 ### The sidecar CA

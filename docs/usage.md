@@ -607,7 +607,9 @@ uv run project-sandbox \
 - A prompt that starts with `-` (such as `--help` or a Markdown list) is staged
   with one leading space added, so that agent CLIs treat it as the prompt and
   not as an option. The rest of the prompt and your `--prompt` file are left
-  unchanged.
+  unchanged. On the command line, attach such a prompt with `=`
+  (`--prompt-text=--help`); `--prompt-text --help` is rejected with
+  `expected one argument`.
 - `--agent {claude,codex,opencode,pi,copilot,bash}` selects which agent to run.
   If omitted, the CLI only initializes generated config files unless a prompt
   is supplied. Claude, Codex, OpenCode, and Pi require their host config
