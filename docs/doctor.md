@@ -34,6 +34,7 @@ reported rather than blocking the command.
 | | Networks: `psbx-egress-uplink` and `psbx-sandbox` exist with project-sandbox's labels | info if not created yet, warn for a same-named foreign network |
 | | Exports: a profile that exports `$HOME` or an ancestor read-write; for a profile made by `colima init`, whether its exports are exactly its roots plus the four state subtrees (the same read-only `colima ssh` probe) | warn, naming `project-sandbox colima init` for a home export, and each unexpected or missing path for a drifted profile; a read-only home export is not a warning |
 | | The profile's sidecar (see [Colima runtime](runtimes.md#colima)): running, and attached to `psbx-sandbox` as `egress` | info, warn if it is running but detached |
+| | Each service in `[egress.services]` (see [Colima services](egress-sidecar.md#colima-services-through-the-sidecar)), probed from inside the running sidecar with one `nc -z` to the Mac's port | ok, warn naming a service whose Mac port doesn't answer, with `project-sandbox-egress service remove NAME` |
 
 `--runtime auto` picks the first runtime found on `PATH` (Apple `container`,
 then Docker, then Podman on macOS; Docker, then Podman on Linux) without

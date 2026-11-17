@@ -62,7 +62,7 @@ The spikes are scripted: `spikes/spike_colima.py` runs S1, S2 and S6, and `spike
 - [x] 4.2 Resolve and record the Colima host address (`host.lima.internal`) at `up`, as a restart input with drift reporting (D4). Verify with runner tests for the address changing, and with `status` naming the restart.
 - [x] 4.3 Implement `project-sandbox-egress service add|remove|list` with live reload, and add services and the internal address to `status` and `status --json`. Verify with CLI tests, including the message on runtimes without services and that a reload runs without `rm`/`run`.
 - [x] 4.4 Add a sidecar-side service probe to `status` and `doctor`, naming a service whose host port doesn't answer. Verify with runner tests.
-- [ ] 4.5 Document services in `docs/egress-sidecar.md`: declaration, shared access across sandboxes, the Mac seeing every request from `127.0.0.1`, Ollama's lack of authentication, firewall mode as the per-session alternative. Verify the documented commands run as written in `--dry-run`.
+- [x] 4.5 Document services in `docs/egress-sidecar.md`: declaration, shared access across sandboxes, the Mac seeing every request from `127.0.0.1`, Ollama's lack of authentication, firewall mode as the per-session alternative. Verify the documented commands run as written in `--dry-run`.
 
 ## 5. Sandbox launch on Colima
 

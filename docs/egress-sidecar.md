@@ -195,6 +195,10 @@ lifetime_days = 7          # 1 to 30
 port = 3129                # published on 127.0.0.1 only; 1024 to 65535
 memory = "256M"
 cpus = 1
+
+[egress.services]          # Colima only: Mac loopback HTTP services
+ollama = { port = 11434 }  # name: lowercase, digits, inner hyphens
+agent-proxy = { port = 4000 }   # 1024 to 65535, unique, not 3128
 ```
 
 - **Effective allowlist:** `allow`, plus the provider hosts of every supported
@@ -259,6 +263,9 @@ project-sandbox-egress status --json
 project-sandbox-egress allow list              # effective allowlist, providers marked
 project-sandbox-egress allow add pypi.org '*.npmjs.org'
 project-sandbox-egress allow remove pypi.org
+project-sandbox-egress service list            # declared services (Colima)
+project-sandbox-egress service add ollama 11434
+project-sandbox-egress service remove ollama
 project-sandbox-egress reload                  # apply a hand-edited egress.toml
 project-sandbox-egress log --denied --since 10m
 project-sandbox-egress log --denied --since 2026-11-06T10:42:13
@@ -268,10 +275,10 @@ project-sandbox-egress restart --new-ca        # also rotate the CA
 project-sandbox-egress down                    # stop it and delete its CA
 ```
 
-- `allow add` and `allow remove` edit `egress.toml` and keep comments and other
-  keys. They re-validate the whole file before replacing it, and apply the
-  change to a running sidecar without a restart. An invalid edit leaves the
-  file unchanged.
+- `allow add|remove` and `service add|remove` edit `egress.toml` and keep
+  comments and other keys. They re-validate the whole file before replacing
+  it, and apply the change to a running sidecar without a restart. An invalid
+  edit leaves the file unchanged.
 - `up` fails before creating anything when the configured port is taken on
   the host, and names `[egress.sidecar] port`.
 - `down` and `restart` do not check for users. Running sidecar-mode sandboxes
@@ -378,7 +385,8 @@ client at it:
 
 ## Local services
 
-Local services work as in firewall mode, and the sidecar is not involved:
+On every runtime except Colima, local services work as in firewall mode, and
+the sidecar is not involved:
 
 - A loopback `--agent-proxy` and Ollama (`--agent pi --pi-ollama`) are forwarded
   into the sandbox with the runtime's local-service strategy, at
@@ -387,6 +395,50 @@ Local services work as in firewall mode, and the sidecar is not involved:
 - A remote `--agent-proxy` is admitted as in firewall mode with
   `--internet-proxy`: a direct, port-scoped firewall destination. Model traffic
   does not pass through the sidecar.
+
+### Colima: services through the sidecar
+
+A Colima sandbox has no path to the Mac, so the sidecar serves the Mac's
+loopback HTTP services. Declare each one once, in `[egress.services]`:
+
+```bash
+project-sandbox-egress service add ollama 11434 --runtime colima
+project-sandbox-egress service list --runtime colima
+```
+
+- **Routing.** The sidecar listens on `egress:<port>` on the internal network
+  and relays every request on that port to the same port on the Mac, through
+  `host.lima.internal`. It is a Squid reverse proxy for that one service:
+  - plain HTTP only;
+  - `CONNECT` is refused, and an absolute URI is served by the service, never
+    forwarded elsewhere;
+  - responses stream (model tokens, server-sent events) and are never cached;
+  - the service sees `Host: localhost`.
+
+  Proxy-aware clients reach it directly too, because `NO_PROXY` lists `egress`.
+  The forward proxy (`egress:3128`) still denies the Mac's address.
+- **Live changes.** `service add` and `service remove` reload a running
+  sidecar without a restart. After a removal, requests already in flight may
+  complete.
+- **Shared by every sandbox.** Every Colima sidecar-mode sandbox on the profile
+  reaches every declared service, whichever launch needed it.
+- **The Mac sees `127.0.0.1`.** Every relayed request arrives from the Mac's
+  own loopback, so a service can't tell sandboxes, or other clients in the VM,
+  apart. It must rely on its own authentication.
+- **Ollama has no authentication.** Once `ollama` is declared, any sidecar
+  sandbox on the profile can use the Mac's models.
+- **Per-session access.** Use `--egress firewall` (or another runtime) when a
+  session must reach a service that other sandboxes must not.
+- **Health.** `project-sandbox-egress status` and `project-sandbox doctor`
+  probe each service from inside the sidecar, and name any whose Mac port
+  doesn't answer.
+- **The Mac's address** (`host.lima.internal`, usually `192.168.5.2`) is read
+  when the sidecar starts. If it changes, `status` reports it as needing
+  `project-sandbox-egress restart`.
+
+On other runtimes, `[egress.services]` is accepted and ignored:
+`service list --runtime docker` says the services apply only in Colima sidecar
+mode.
 
 ## Parent proxy
 
