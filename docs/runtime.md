@@ -7,9 +7,13 @@ Given `project-sandbox /path/to/repo python:3.12-slim`:
 1. Read host `git config --global` identity.
 2. Render `<project>/.project-sandbox/` with generated Dockerfiles, entrypoint,
    firewall scripts, sanitized agent configs, a local `.gitignore` safeguard, and
-   a devcontainer post-start init script. Agent credentials are staged separately
-   under `/tmp` with private directory permissions to reduce the chance of
-   accidentally committing them.
+   a devcontainer post-start init script. Agent credentials for the
+   devcontainer are staged outside the checkout, in
+   `/tmp/project-sandbox-<uid>/<digest>/<agent>` (directories mode 0700, files
+   0600), so they are not accidentally committed. `<digest>` is the first 16 hex
+   digits of the SHA-256 of the project's resolved `.project-sandbox/` path.
+   This staging persists between runs. CLI runs (`--agent`, below) do not use
+   it; they stage into [private session inputs](security.md#private-session-inputs).
 3. Render `<project>/.devcontainer/` with symlinks back into
    `.project-sandbox/` so the Dockerfile and firewall script remain a single
    source of truth.

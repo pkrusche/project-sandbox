@@ -203,11 +203,6 @@ Items still to be considered:
   `tests/test_cli.py`; add an e2e smoke test with a `--help` prompt. The
   subcommand case (`codex exec resume`) only applies to a prompt that is
   exactly a subcommand name, since the prompt is a single argument.
-- **Colima workspace roots: document, don't extend the deny list.**
-  `colima_profile.CREDENTIAL_DIRS` stays as is. In the Colima docs, recommend a
-  dedicated workspace directory and name roots to avoid because they would be
-  exported read-write: `~/Library` (Keychains, browser cookies), `~/.colima` /
-  `~/.lima` (the VM's own config and SSH keys), `~/.kube`, and `~/.config`.
 - **Disable fsmonitor in host-side Git calls**: see
   [VCS defaults and isolated host capture](#vcs-defaults-and-isolated-host-capture).
 
@@ -215,14 +210,6 @@ Items still to be considered:
 
 - **Live markdown view for headless jobs shows only JSON lines.** Reported, not
   yet investigated.
-- **`docs/runtime.md` step 2 of "End-to-End Flow" is vague about staging.** It
-  says agent credentials are staged "under `/tmp`". That step is the
-  render-only flow, whose persistent devcontainer staging really is
-  `/tmp/project-sandbox-<uid>/<digest>/<agent>` (`config_agents.py`), so the
-  location is right but vague. Name the exact path, and add that CLI runs stage
-  into [private session inputs](docs/security.md#private-session-inputs)
-  instead (the `--agent` flow's step 2 already says so). Found while checking
-  Colima mount visibility.
 
 ## Podman machine shared-folder staleness
 

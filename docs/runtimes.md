@@ -173,6 +173,19 @@ directory, or contains `:` or `,`. A symlinked `XDG_STATE_HOME` is refused becau
 the export and the mount source would differ; `init` names the resolved directory
 to use. Symlinks inside a root that point outside it do not resolve in the VM.
 
+**Use a dedicated workspace directory**, such as `~/src`, holding only the
+projects you sandbox. Every root is exported read-write to the VM, and the
+checks above only refuse home, system and credential locations. Some roots pass
+them but should still not be exported:
+
+- `~/Library`: Keychains, browser cookies and application data.
+- `~/.colima` and `~/.lima`: the VM's own configuration and SSH keys.
+- `~/.kube`: cluster credentials.
+- `~/.config`: configuration and tokens for many tools.
+
+Directories inside them, such as `~/Library/Mobile Documents`, should not be
+exported either.
+
 Roots are recorded, paths only, in
 `$XDG_STATE_HOME/project-sandbox/colima-profiles/<profile>.json` (mode 0600, never
 exported) so `doctor` can tell expected exports from unexpected ones.
