@@ -466,8 +466,8 @@ above. The script verifies the proxy-policy denial separately
 from firewall failures; direct curl, unset-proxy, raw TCP, UDP, and DNS bypasses;
 a real AI completion; cross-service routing; independent failure; fail-closed
 proxy loss; and stable endpoint recovery through `uv run ipl restart`. The
-Internet proxy control defaults to `uv run ipl {action}`, while Agentgateway
-continues to use `./run.py {action}`. Both can be overridden on the standalone
+Internet proxy control defaults to `uv run ipl {action}` and Agentgateway
+control to `uv run agw {action}`. Both can be overridden on the standalone
 script when an installation uses a different lifecycle command; by default we
 assume the internetproxy-locally and agentgateway-locally examples.
 

@@ -308,8 +308,8 @@ class InternetProxyEndToEndScriptTests(TestCase):
                 phases = [
                     call(["uv", "run", "ipl", "down"], cwd=root, check=True),
                     call(["uv", "run", "ipl", "restart"], cwd=root, check=True),
-                    call(["./run.py", "down"], cwd=root, check=True),
-                    call(["./run.py", "restart"], cwd=root, check=True),
+                    call(["uv", "run", "agw", "down"], cwd=root, check=True),
+                    call(["uv", "run", "agw", "restart"], cwd=root, check=True),
                 ]
                 if not proxy_was_up:
                     # Started before the preflight, stopped again at the end.
@@ -366,7 +366,7 @@ class InternetProxyEndToEndScriptTests(TestCase):
         )
 
         self.assertEqual(args.internet_proxy_control, "uv run ipl {action}")
-        self.assertEqual(args.agentgateway_control, "./run.py {action}")
+        self.assertEqual(args.agentgateway_control, "uv run agw {action}")
         self.assertEqual(
             args.ca_cert,
             ["/tmp/proxy-ca.pem", "/tmp/proxy-intermediate.pem"],

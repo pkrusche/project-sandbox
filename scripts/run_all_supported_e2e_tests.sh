@@ -333,13 +333,13 @@ else
   note "internet proxy not up: nothing listening on $INTERNET_PROXY_HOST:$INTERNET_PROXY_PORT; internet-proxy-isolation will start it and stop it afterwards"
 fi
 
-if [ -z "$GW_DIR" ] || [ ! -f "$GW_DIR/run.py" ]; then
+if [ -z "$GW_DIR" ] || [ ! -f "$GW_DIR/pyproject.toml" ]; then
   GW_DIR=""
   note "agent proxy not available: no agentgateway-locally checkout at $AGENTGATEWAY_DIR; skipping agent-proxy-isolation, agent-proxy and internet-proxy-isolation"
 elif port_open "$AGENT_PROXY_HOST" "$AGENT_PROXY_PORT"; then
   GW_UP=1
 else
-  note "agent proxy not up: nothing listening on $AGENT_PROXY_HOST:$AGENT_PROXY_PORT; agent-proxy-isolation, agent-proxy and internet-proxy-isolation still run and will fail unless you start it ('./run.py up' in $GW_DIR)"
+  note "agent proxy not up: nothing listening on $AGENT_PROXY_HOST:$AGENT_PROXY_PORT; agent-proxy-isolation, agent-proxy and internet-proxy-isolation still run and will fail unless you start it ('uv run agw up' in $GW_DIR)"
 fi
 
 if [ "$NO_INTERNET_ISOLATION" = 1 ] && [ -n "$IPL_DIR" ] && [ -n "$GW_DIR" ]; then

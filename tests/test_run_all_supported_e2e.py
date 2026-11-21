@@ -555,7 +555,7 @@ class RunAllSupportedE2ETests(unittest.TestCase):
             ipl.mkdir()
             agw.mkdir()
             (ipl / "pyproject.toml").write_text("")
-            (agw / "run.py").write_text("")
+            (agw / "pyproject.toml").write_text("")
             result = self._run(
                 "--runtimes",
                 "docker",
@@ -592,6 +592,29 @@ class RunAllSupportedE2ETests(unittest.TestCase):
         self.assertIn(f"--internet-proxy-dir {ipl}", docker)
         self.assertIn(f"--agentgateway-dir {agw}", docker)
 
+    def test_legacy_run_py_gateway_checkout_is_not_detected(self) -> None:
+        # agentgateway-locally is a uv package now: pyproject.toml marks the
+        # checkout, and a bare run.py from the old layout is not enough.
+        with tempfile.TemporaryDirectory() as tmp:
+            agw = Path(tmp) / "agw"
+            agw.mkdir()
+            (agw / "run.py").write_text("")
+            result = self._run(
+                "--runtimes",
+                "docker",
+                "--internet-proxy-dir",
+                "/nonexistent/ipl",
+                "--agentgateway-dir",
+                str(agw),
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("agent proxy not available", result.stdout)
+        docker = next(
+            line for line in result.stdout.splitlines() if "run-e2e-tests.sh" in line
+        )
+        self.assertNotIn("--agentgateway-dir", docker)
+        self.assertNotIn("--with-agent-proxy", docker)
+
     def test_no_internet_proxy_isolation_keeps_agent_proxy(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             ipl = Path(tmp) / "ipl"
@@ -599,7 +622,7 @@ class RunAllSupportedE2ETests(unittest.TestCase):
             ipl.mkdir()
             agw.mkdir()
             (ipl / "pyproject.toml").write_text("")
-            (agw / "run.py").write_text("")
+            (agw / "pyproject.toml").write_text("")
             result = self._run(
                 "--runtimes",
                 "docker",

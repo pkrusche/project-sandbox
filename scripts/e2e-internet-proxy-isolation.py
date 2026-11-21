@@ -219,7 +219,7 @@ def parser() -> argparse.ArgumentParser:
         default="setup,up",
         help="Comma-separated control actions that start a stopped proxy.",
     )
-    p.add_argument("--agentgateway-control", default="./run.py {action}")
+    p.add_argument("--agentgateway-control", default="uv run agw {action}")
     p.add_argument(
         "--stop-order", choices=("proxy-first", "gateway-first"), default="proxy-first"
     )
