@@ -155,7 +155,7 @@ injection without writing files or starting containers.
 
 The `internet-proxy-isolation` E2E suite sends a small Responses API request
 through Agentgateway, matching Pi and OpenCode, before and after stopping the
-Internet proxy. It defaults to `gpt-5-mini`; set `AGENT_PROXY_TEST_MODEL` to select
+Internet proxy. It defaults to `gpt-6-luna`; set `AGENT_PROXY_TEST_MODEL` to select
 another gateway model.
 The probe uses `max_output_tokens` to bound output and reasoning tokens. It
 accepts a completed response or one marked incomplete solely because it reached

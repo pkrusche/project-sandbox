@@ -680,7 +680,7 @@ class AgentProxyTests(unittest.TestCase):
                 return_value=("secret", "environment"),
             ),
             patch.object(
-                checker.agent_proxy, "discover_models", return_value=["gpt-5-mini"]
+                checker.agent_proxy, "discover_models", return_value=["gpt-6-luna"]
             ),
             patch.object(checker, "run_agent", side_effect=[True, True]) as run,
         ):
@@ -695,7 +695,7 @@ class AgentProxyTests(unittest.TestCase):
                 return_value=("secret", "environment"),
             ),
             patch.object(
-                checker.agent_proxy, "discover_models", return_value=["gpt-5-mini"]
+                checker.agent_proxy, "discover_models", return_value=["gpt-6-luna"]
             ),
             patch.object(checker, "run_agent", side_effect=[True, False]),
         ):

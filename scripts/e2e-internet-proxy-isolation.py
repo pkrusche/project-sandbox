@@ -204,7 +204,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--gateway", default="http://127.0.0.1:4000/v1")
     p.add_argument("--key-env", default=agent_proxy.DEFAULT_KEY_ENV)
     p.add_argument(
-        "--model", default=os.environ.get("AGENT_PROXY_TEST_MODEL", "gpt-5-mini")
+        "--model", default=os.environ.get("AGENT_PROXY_TEST_MODEL", "gpt-6-luna")
     )
     p.add_argument("--allowed-url", default="https://github.com/")
     p.add_argument("--blocked-url", default="https://example.com")

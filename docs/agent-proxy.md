@@ -15,13 +15,13 @@ the wrong path and they will fail. With the gateway running:
 
 ```bash
 project-sandbox . python:3.14 --agent pi --agent-proxy http://127.0.0.1:4000/v1 \
-  --model gpt-5-mini --prompt-text 'Reply with OK'
+  --model gpt-6-luna --prompt-text 'Reply with OK'
 project-sandbox . python:3.14 --agent opencode --agent-proxy http://127.0.0.1:4000/v1 \
-  --model agent-proxy/gpt-5-mini --prompt-text 'Reply with OK'
+  --model agent-proxy/gpt-6-luna --prompt-text 'Reply with OK'
 project-sandbox . python:3.14 --agent bash --agent-proxy http://127.0.0.1:4000/v1 \
-  --model gpt-5-mini
+  --model gpt-6-luna
 project-sandbox . python:3.14 --agent bash --agent-proxy http://127.0.0.1:4000/v1 \
-  --model gpt-5-mini --prompt-text 'python scripts/use_openai_client.py'
+  --model gpt-6-luna --prompt-text 'python scripts/use_openai_client.py'
 ```
 
 Bash receives `OPENAI_BASE_URL`, `OPENAI_API_KEY`, and `OPENAI_MODEL`. The same

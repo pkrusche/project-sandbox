@@ -16,7 +16,7 @@ from project_sandbox import agent_proxy
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser()
     p.add_argument("--proxy", default="http://127.0.0.1:4000/v1")
-    default = os.environ.get("AGENT_PROXY_TEST_MODEL", "gpt-5-mini")
+    default = os.environ.get("AGENT_PROXY_TEST_MODEL", "gpt-6-luna")
     p.add_argument("--pi-model", default=default)
     p.add_argument("--opencode-model", default=default)
     p.add_argument("--key-env", default=agent_proxy.DEFAULT_KEY_ENV)

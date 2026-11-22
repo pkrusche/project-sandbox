@@ -387,7 +387,7 @@ class GatewayCompletionProbeTests(TestCase):
                 "--agentgateway-dir",
                 "/tmp/agentgateway",
                 "--model",
-                "gpt-5-mini",
+                "gpt-6-luna",
             ]
         )
         source = checker.render_audit(args, "http://gateway.test:4000/v1")
@@ -421,7 +421,7 @@ class GatewayCompletionProbeTests(TestCase):
         self.assertEqual(
             request.get_header("Authorization"), "Bearer test-gateway-secret"
         )
-        self.assertEqual(body["model"], "gpt-5-mini")
+        self.assertEqual(body["model"], "gpt-6-luna")
         self.assertEqual(body["max_output_tokens"], 16)
         self.assertEqual(body["input"], "Reply with only OK")
         self.assertNotIn("messages", body)

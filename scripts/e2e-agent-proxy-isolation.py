@@ -128,7 +128,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--base-image", default="python:3.12-slim")
     p.add_argument("--proxy", default="http://127.0.0.1:4000/v1")
     p.add_argument(
-        "--model", default=os.environ.get("AGENT_PROXY_TEST_MODEL", "gpt-5-mini")
+        "--model", default=os.environ.get("AGENT_PROXY_TEST_MODEL", "gpt-6-luna")
     )
     p.add_argument("--key-env", default=agent_proxy.DEFAULT_KEY_ENV)
     p.add_argument("--key", help="Unsafe last-resort key; argv/history may expose it")
