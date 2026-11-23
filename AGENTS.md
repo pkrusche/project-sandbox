@@ -42,3 +42,12 @@ Treat generated container config and firewall behavior as security-sensitive. Av
 ## Documentation guidelines
 
 Document features via the `docs` subfolder. Keep README.md minimal. Add left-over or future tasks to TODO.md. Longer planning documentation / technical specifications go to ROADMAP.md.
+
+
+<!-- sbx-tui feedback:start -->
+When launched with sbx feedback context, follow the `sbx-run-feedback` skill and
+publish progress and a final task outcome. In a sandbox, read
+`/run/sbx-feedback/skill/SKILL.md` and `/run/sbx-feedback/context.json`.
+For host runs, use the skill and context in `$SBX_FEEDBACK_DIR`.
+Without reporting context, no feedback report is required.
+<!-- sbx-tui feedback:end -->
