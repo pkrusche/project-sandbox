@@ -51,7 +51,7 @@ change it. `--json` prints:
 ```json
 {
   "ok": true,
-  "version": "0.3.0",
+  "version": "0.4.2",
   "platform": "linux",
   "checks": [
     {"section": "runtimes", "name": "docker", "status": "ok",

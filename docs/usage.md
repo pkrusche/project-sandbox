@@ -251,7 +251,7 @@ FROM python:3.11-slim
 ARG AGENT_UID=1000
 ARG AGENT_GID=1000
 
-COPY --from=ghcr.io/astral-sh/uv:0.11.23@sha256:d0a0a753ab981624b49c97abc98821c1c09f4ca69d1ef5cee69c501be3d88479 /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.13.8@sha256:5cc1805e2426484abca4ad46ea783bab281fdb225fd82d8ce6d66a81254bac85 /uv /usr/local/bin/uv
 
 ENV UV_CACHE_DIR=/opt/uv-cache
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv
@@ -291,9 +291,9 @@ Key points:
   runs `uv sync` again (without `--no-install-project`) to build and install
   the local project itself. This layer rebuilds on every source edit, but
   reuses the dependency cache the first layer already populated.
-- The `chown -R 1000:1000` gives the sandbox's `agent` user, created by the
-  layers that follow, full access to the pre-warmed cache, virtual environment,
-  and managed Python directory.
+- The `chown -R "${AGENT_UID}:${AGENT_GID}"` gives the sandbox's `agent` user,
+  created by the layers that follow, full access to the pre-warmed cache,
+  virtual environment, and managed Python directory.
 - `ENV UV_CACHE_DIR=/opt/uv-cache` persists into the running container so the
   agent's `uv sync` reads from the cache instead of PyPI.
 

@@ -88,6 +88,8 @@ project-sandbox --node-npm --agent claude /absolute/path/to/repo
 
 ## Documentation
 
+Browse the [full documentation index](docs/README.md), or jump directly to:
+
 - [Usage guide](docs/usage.md)
 - [Agent proxy setup and security](docs/agent-proxy.md)
 - [Egress sidecar and `project-sandbox-egress`](docs/egress-sidecar.md)

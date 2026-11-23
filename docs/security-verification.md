@@ -1,8 +1,8 @@
 # Security verification
 
 The cases in `scripts/security_e2e/` exercise real CLI subprocesses, containers,
-Git processes, kernel locks, and Squid. They cover the verification bullets and
-hardening probes in [TODO.md](../TODO.md). Tests for proposed protections record
+Git processes, kernel locks, and Squid. They cover the open verification items and
+hardening probes tracked in [ROADMAP.md](../ROADMAP.md). Tests for proposed protections record
 known limitations separately; they do not implement those protections.
 
 ## Running

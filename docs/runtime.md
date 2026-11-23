@@ -17,9 +17,10 @@ Given `project-sandbox /path/to/repo python:3.12-slim`:
 3. Render `<project>/.devcontainer/` with symlinks back into
    `.project-sandbox/` so the Dockerfile and firewall script remain a single
    source of truth.
-4. Detect available host agent configs (`~/.claude`, `~/.codex`,
-   `~/.config/opencode`, `~/.pi/agent`) and install only those agent CLIs into
-   the generated Dockerfile. OpenSpec and Bash are always available.
+4. Detect available host agent markers (`~/.claude`, `~/.codex`,
+   `~/.config/opencode`, `~/.pi/agent`, `~/.copilot`) and install only those
+   agent CLIs into the generated Dockerfile. OpenSpec and Bash are always
+   available.
 5. Append `.project-sandbox/` and `.devcontainer/` to `<project>/.gitignore`
    idempotently.
 
@@ -67,8 +68,14 @@ Linux-only `chroot` layout check) is described in [Runtimes](runtimes.md).
 |-- .gitignore                         # appended idempotently
 |-- .project-sandbox/
 |   |-- .gitignore                     # local safeguard
+|   |-- .build-state.json              # cached build fingerprint (default flow)
 |   |-- Dockerfile                     # generated for direct CLI runs
 |   |-- Dockerfile.devcontainer        # generated for devcontainer build
+|   |-- Dockerfile.python-uv           # only with --python-uv
+|   |-- Dockerfile.rust-cargo          # only with --rust-cargo
+|   |-- Dockerfile.node-npm            # only with --node-npm
+|   |-- Dockerfile.dockerignore        # generated build flows without root .dockerignore
+|   |-- Dockerfile.devcontainer.dockerignore
 |   |-- entrypoint.sh                  # container PID 1
 |   |-- init-firewall.sh               # CLI firewall variant
 |   |-- init-firewall-devcontainer.sh  # devcontainer firewall variant

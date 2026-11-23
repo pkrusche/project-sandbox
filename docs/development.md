@@ -10,6 +10,7 @@ uv run project-sandbox --help
 uv run python -m compileall src tests
 uv run pytest -q
 ./scripts/check-ruff.sh
+uv run ty check
 ```
 
 `uv sync` installs dependencies from `pyproject.toml` / `uv.lock`. The compile
@@ -26,9 +27,9 @@ The repository TUI's `:test` command runs pytest in parallel with
 the relay session tests share a fixed host port.
 
 `scripts/check-ruff.sh` verifies that Python files have Ruff formatting applied
-and contain no Ruff lint violations. For behavior previews, use
-`uv run project-sandbox --dry-run ...`; dry-run must not write files or start
-containers.
+and contain no Ruff lint violations, and `uv run ty check` runs static type
+checks. For behavior previews, use `uv run project-sandbox --dry-run ...`;
+dry-run must not write files or start containers.
 
 ## Image build cache
 
@@ -36,9 +37,9 @@ containers.
 fingerprint plus image tag in `.project-sandbox/.build-state.json`. `cli.py`
 skips the build when the fingerprint matches and `container_cli.image_exists()`
 confirms the image is present; auto-skip is limited to the default flow where the
-build context equals the generated `.project-sandbox` dir. `dockerfile.render_dockerignore()` writes a scoped `Dockerfile.dockerignore`
-(BuildKit's per-Dockerfile ignore convention) for the `--python-uv` flow only —
-the one whole-project context whose Dockerfile we generate — so it doesn't tar
+build context equals the generated `.project-sandbox` dir. `dockerfile.render_dockerignore()` writes scoped `Dockerfile.dockerignore` and `Dockerfile.devcontainer.dockerignore` files
+(BuildKit's per-Dockerfile ignore convention) for the synthesized whole-project flows
+(`--python-uv`, `--rust-cargo`, and `--node-npm`) so they don't tar
 virtualenvs/caches to the daemon. It is skipped for user-supplied `--dockerfile`
 builds (which may copy those paths) and when the project has its own root
 `.dockerignore` (left authoritative). All of this degrades safely: any mismatch
@@ -684,7 +685,7 @@ On 2026-10-14 the client transport checks passed with Python 3.11, curl 8.14.1
 Node's test uses `NODE_EXTRA_CA_CERTS` for an isolated fixture trust file; images
 install the CA into OS trust and use `NODE_USE_SYSTEM_CA=1`. Proxy-aware Node
 fetch requires `NODE_USE_ENV_PROXY=1` (or a client-specific proxy dispatcher).
-This does not certify every bundled SDK: the image pins Node v26.11.1, and actual
+This does not certify every bundled SDK: the image pins Node v26.13.1, and actual
 Pi/OpenCode client execution still needs the runtime matrix below. Public-CA
 live service checks were not run; normal system trust remains enabled and the
 fixture tests confirm that an unknown private CA is rejected.
@@ -935,12 +936,12 @@ recorded forwarder processes and listeners on port 11434 every second.
   probes. The forwarder stopped 1 s after the survivor ended. The killed
   session's container stayed running as an orphan but did not keep the
   forwarder alive. Killing the only session, and then attaching a fresh session,
-  was not run (see TODO.md).
+  was not run manually (automated in [Security verification](security-verification.md)).
 
 Pre-build with `--build-only --pi-ollama`: this installs Pi and includes the
 Ollama firewall rule. The automated sole-owner SIGKILL/re-attach fixture is
 documented in [Security verification](security-verification.md).
 
 The [security verification suite](security-verification.md) maps the remaining
-TODO verification and hardening probes to executable tests, with an optional
+hardening probes and verification items to executable tests, with an optional
 strict coverage gate and per-runtime prerequisites. It is separate from the default unit suite.

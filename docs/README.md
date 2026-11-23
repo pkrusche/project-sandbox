@@ -7,6 +7,8 @@ This directory contains the detailed project-sandbox documentation.
 - [Usage guide](usage.md) - installation, quick start, custom Dockerfiles,
   devcontainer setup, unsupervised sessions, runtime selection, and dependency
   pin updates.
+- [Agent proxy](agent-proxy.md) - routing Pi, OpenCode, and Bash through a
+  local or remote authenticated LLM gateway.
 - [Host prerequisite checks](doctor.md) - `project-sandbox doctor` checks
   container runtimes, git/jj, and networking tools before a first run.
 - [Headless browser testing](headless-browser-testing.md) - Playwright setup,
@@ -16,11 +18,13 @@ This directory contains the detailed project-sandbox documentation.
 - [Generated files and runtime behavior](runtime.md) - end-to-end flow, file
   layout, generated image tags, OpenSpec, credential staging, and workspace
   masking.
+- [Concurrent builds and image selection](concurrent-builds.md) - host build
+  locks, session image aliasing, cache reuse, and branch workspace leases.
 - [Generated Rust builds](cargo-builds.md) - Cargo workspace path handling and
   validation of generated build inputs.
-- [proxied build networking](build-network.md) - early proxy and CA setup,
+- [Proxied build networking](build-network.md) - early proxy and CA setup,
   build/runtime separation, and the Squid acceptance test.
-- See [Internet proxy](internet-proxy.md) for routing traffic through an externally 
+- [Internet proxy](internet-proxy.md) - routing traffic through an externally
   managed filtering proxy.
 - [Egress sidecar](egress-sidecar.md) - `--egress sidecar`: one global Squid
   sidecar per runtime that filters by hostname, `project-sandbox-egress`, GitHub
@@ -29,6 +33,8 @@ This directory contains the detailed project-sandbox documentation.
   verified TLS, and independent gateway and Internet routing.
 - [Security model](security.md) - firewall behavior, OAuth token lifetime,
   threat model, troubleshooting, and limitations.
+- [Security verification](security-verification.md) - executable probes and
+  hardening coverage in `scripts/security_e2e/`.
 - [VCS access](vcs-access.md) - read-only or hidden Git/jj metadata, host-side
   branch capture, runtime support, and tracked-configuration risks.
 - [Development guide](development.md) - local setup, verification commands, test
