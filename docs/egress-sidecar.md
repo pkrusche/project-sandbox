@@ -22,6 +22,13 @@ cannot express wildcards. Sidecar mode avoids those problems:
 
 The mode is opt-in. Firewall mode is unchanged and remains the default.
 
+- [Choosing an egress mode](#choosing-an-egress-mode) · [How it works](#how-it-works)
+- [Linux hosts](#linux-hosts) · [Colima](#colima)
+- [Policy](#policy) · [Extra mount validation](#extra-mount-validation) · [Managing the sidecar](#managing-the-sidecar)
+- [GitHub repository access is blocked](#github-repository-access-is-blocked) · [Copilot profile](#copilot-profile)
+- [Local services](#local-services) · [Parent proxy](#parent-proxy)
+- [Troubleshooting denials](#troubleshooting-denials) · [Verification](#verification)
+
 ```bash
 project-sandbox-egress allow add pypi.org      # once, for every sidecar sandbox
 project-sandbox --agent claude --egress sidecar .

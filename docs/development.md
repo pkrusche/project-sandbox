@@ -1,5 +1,16 @@
 # Development Guide
 
+- [Local Setup](#local-setup)
+- [Image build cache](#image-build-cache)
+- [Tests](#tests)
+- [Agent proxy model limits](#agent-proxy-model-limits)
+- [Releasing](#releasing)
+- [Proxy endpoint verification](#proxy-endpoint-verification)
+- [Squid build-network verification](#squid-build-network-verification)
+- [Egress sidecar verification](#egress-sidecar-verification)
+- [Colima verification](#colima-verification)
+- [Shared local-service forwarder verification](#shared-local-service-forwarder-verification)
+
 ## Local Setup
 
 Use uv for the local environment:

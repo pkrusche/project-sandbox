@@ -6,6 +6,16 @@ does not establish live runtime coverage. The security release gate treats
 skips and known limitations as incomplete coverage; the documented limitations
 below remain until their fixes and live verification are complete.
 
+## Contents
+
+- [Generated files](#generated-files) and [Implicit history and mask mounts](#implicit-history-and-mask-mounts)
+- [Credential Isolation](#credential-isolation), [Private session inputs](#private-session-inputs), and [Host locks](#host-locks)
+- [GitHub Copilot token](#github-copilot-token), [Unsupervised session history](#unsupervised-session-history), and [OAuth Token Lifetime](#oauth-token-lifetime)
+- [Generated build inputs](#generated-build-inputs) and [VCS metadata access](#vcs-metadata-access)
+- [Network Firewall](#network-firewall) and [Node.js + npm images (`--node-npm`)](#nodejs--npm-images---node-npm)
+- [Threat Model](#threat-model), [Troubleshooting](#troubleshooting), and [Limitations](#limitations)
+- [Agent gateway boundary](#agent-gateway-boundary) (including [Remote proxy endpoints](#remote-proxy-endpoints) and [Egress sidecar](#egress-sidecar))
+
 ## Generated files
 
 Repository contents are untrusted when the host generates sandbox files. Before

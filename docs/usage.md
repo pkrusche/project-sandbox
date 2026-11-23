@@ -1,5 +1,19 @@
 # Usage Guide
 
+- [Install](#install)
+- [Quick Start](#quick-start)
+- [API Key Injection](#api-key-injection)
+- [GitHub Copilot](#github-copilot)
+- [Python + uv Projects](#python--uv-projects)
+- [Rust + Cargo Projects](#rust--cargo-projects)
+- [Node.js + npm Projects](#nodejs--npm-projects)
+- [Session observability and image warm-up](#session-observability-and-image-warm-up)
+- [Devcontainer Flow](#devcontainer-flow)
+- [Image Builds](#image-builds)
+- [Branch Mode](#branch-mode)
+- [Unsupervised Sessions](#unsupervised-sessions)
+- [Updating Pinned Dependencies](#updating-pinned-dependencies)
+
 ## Install
 
 Install the command from PyPI with uv:
@@ -240,10 +254,28 @@ receives a Copilot token. Use `--agent copilot --prompt-text '…'` instead.
 
 ## Python + uv Projects
 
-For a Python project managed with uv, create a `Dockerfile` at the project root
-that installs uv and pre-populates the package cache so the agent can run
-`uv sync` / `uv run` inside the sandbox without reaching PyPI, which the firewall
-blocks at runtime:
+For a Python project managed with uv, `--python-uv` synthesizes a base
+Dockerfile (`.project-sandbox/Dockerfile.python-uv`) instead of requiring you to
+write one or pass a positional base image:
+
+```bash
+uv run project-sandbox --python-uv --agent claude /absolute/path/to/repo
+uv run project-sandbox --python-uv --python 3.12 --agent bash /absolute/path/to/repo
+```
+
+`--python VERSION` picks the `python:<VERSION>-slim` base image (default:
+`3.11`). The generated build installs a pinned `uv` binary, configures
+`UV_CACHE_DIR=/opt/uv-cache`, `UV_PROJECT_ENVIRONMENT=/opt/venv`, and
+`UV_PYTHON_INSTALL_DIR=/opt/uv-python` (keeping container environments separate
+from the host's `.venv`), and pre-populates dependencies from `pyproject.toml`
+and `uv.lock` in two cached layers when both files exist. With
+`--python-uv --branch`, the image builds from the resolved Git worktree or jj
+workspace so dependencies match that branch.
+
+If you need additional system packages or custom build steps beyond
+`--python-uv`, create a `Dockerfile` at the project root that installs uv and
+pre-populates the package cache so the agent can run `uv sync` / `uv run` inside
+the sandbox without reaching PyPI, which the firewall blocks at runtime:
 
 ```dockerfile
 FROM python:3.11-slim
@@ -322,6 +354,26 @@ Then run:
 ```bash
 uv run project-sandbox /absolute/path/to/repo --dockerfile /absolute/path/to/repo/Dockerfile
 ```
+
+## Rust + Cargo Projects
+
+For a Rust project managed with Cargo, `--rust-cargo` synthesizes a base
+Dockerfile (`.project-sandbox/Dockerfile.rust-cargo`) instead of requiring a
+custom `Dockerfile` or positional base image:
+
+```bash
+uv run project-sandbox --rust-cargo --agent claude /absolute/path/to/repo
+uv run project-sandbox --rust-cargo --rust 1.87 --agent bash /absolute/path/to/repo
+```
+
+`--rust VERSION` selects `rust:<VERSION>-slim` (default: `rust:slim`). When
+both `Cargo.toml` and `Cargo.lock` are present, the build pre-fetches
+dependencies into `CARGO_HOME` and runs a best-effort `cargo build` into a
+container-local `CARGO_TARGET_DIR` (outside `/workspace`) so offline builds
+inside the sandbox reuse cached crates and compiled dependency artifacts. Cargo
+workspace member manifests are copied into the fetch layer when present; see
+[Generated Rust builds](cargo-builds.md) for path validation and workspace
+details.
 
 ## Node.js + npm Projects
 
@@ -520,15 +572,22 @@ rebuilt and the build duration is reported (`Built image in 12.3s`).
   as the build context, so they always invoke the build and rely on the
   runtime's layer cache instead.
 - For the generated `--python-uv`, `--rust-cargo`, and `--node-npm` flows only,
-  a generated `.project-sandbox/Dockerfile.dockerignore`
-  trims virtualenvs, `node_modules`, and tool caches from the context (it does
-  not exclude `.git` — git version backends read it during the in-image install
-  — nor `.project-sandbox/`, whose scripts are copied into the image). It is not
+  generated `.project-sandbox/Dockerfile.dockerignore` and
+  `.project-sandbox/Dockerfile.devcontainer.dockerignore` files trim virtualenvs,
+  `node_modules`, and tool caches from the context (they do not exclude `.git`
+  — git version backends read it during the in-image install — nor
+  `.project-sandbox/`, whose scripts are copied into the image). They are not
   generated for user-supplied `--dockerfile` builds, which may legitimately copy
   those paths. If the project already has a root `.dockerignore`, it is left
-  authoritative and no per-Dockerfile file is generated.
+  authoritative and no per-Dockerfile ignore files are generated.
+- `--image-tag TAG` overrides the generated per-project image tag (see
+  [Image tags](runtime.md#image-tags-and-openspec)).
 - `--force-build` rebuilds even when the cache is valid.
 - `--no-build` skips the build entirely, assuming the image already exists.
+- `--no-verify-dockerfile` skips the `--dockerfile` tamper-detection prompt when
+  you have intentionally edited a project Dockerfile (see
+  [Project Dockerfile tamper detection](runtime.md#project-dockerfile-tamper-detection));
+  a real build still updates the stored baseline for subsequent runs.
 
 ## Branch Mode
 
@@ -611,10 +670,16 @@ uv run project-sandbox \
   (`--prompt-text=--help`); `--prompt-text --help` is rejected with
   `expected one argument`.
 - `--agent {claude,codex,opencode,pi,copilot,bash}` selects which agent to run.
-  If omitted, the CLI only initializes generated config files unless a prompt
-  is supplied. Claude, Codex, OpenCode, and Pi require their host config
+  If omitted, the CLI only initializes generated config files — unless
+  `--prompt` or `--prompt-text` is supplied, in which case it defaults to
+  `claude`. Claude, Codex, OpenCode, and Pi require their host config
   directories; Copilot needs a token from pass or `gh` (see
   [GitHub Copilot](#github-copilot)); Bash is always available.
+
+### Agent, model, and runtime options
+
+These options apply across interactive and unsupervised sessions unless noted:
+
 - `--model MODEL_ID` selects the agent model and `--effort {low,medium,high,xhigh,max}`
   selects the reasoning effort. Both apply to interactive and headless runs: the
   CLI forwards them as `PROJECT_SANDBOX_MODEL` / `PROJECT_SANDBOX_EFFORT`, and the
@@ -725,6 +790,7 @@ uv run project-sandbox \
   mode for Claude/Codex) before launch. The entrypoint echoes those values and
   the exact agent argv from inside the container; a blank model/effort/fast
   value means the env var did not arrive.
+- `--version` prints the installed `project-sandbox` version and exits.
 - The agent's exit code is propagated, so CI pipelines can detect failures. Pi's
   JSON output mode always exits 0, so a headless Pi run whose last assistant
   message ended in `error`/`aborted` is reported as exit `1` (or `75` when the

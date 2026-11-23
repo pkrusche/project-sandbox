@@ -4,6 +4,11 @@
 best-effort project build. When both `Cargo.toml` and `Cargo.lock` exist, workspace
 member manifests are copied before source files to preserve the dependency cache.
 
+```bash
+project-sandbox --rust-cargo --agent claude /absolute/path/to/repo
+project-sandbox --rust-cargo --rust 1.87 --agent bash /absolute/path/to/repo
+```
+
 Member paths are treated as literal filenames in generated shell commands and
 Dockerfile `COPY` instructions. Spaces, quotes, dollar signs, semicolons, leading
 hyphens, and literal wildcard characters are supported. Workspace member glob
