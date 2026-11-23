@@ -14,10 +14,11 @@
 #                                     --security-peer-runtime NAME (skipped otherwise)
 #   build-proxy                       internet-proxy-locally sources found
 #                                     (Podman additionally needs Docker for the fixture)
-#   agent-proxy-isolation, agent-proxy
+#   agent-proxy-isolation, agent-proxy, pi-agent-proxy-models
 #                                     agentgateway-locally found; they need it listening
 #                                     on 127.0.0.1:4000 and fail otherwise
-#                                     (agent-proxy makes two billable requests)
+#                                     (agent-proxy makes two billable requests,
+#                                     pi-agent-proxy-models three)
 #   internet-proxy-isolation          both checkouts found. DESTRUCTIVE: stops and
 #                                     restarts both services; billable. Starts a stopped
 #                                     Internet proxy (127.0.0.1:18080) itself and stops it
@@ -335,11 +336,11 @@ fi
 
 if [ -z "$GW_DIR" ] || [ ! -f "$GW_DIR/pyproject.toml" ]; then
   GW_DIR=""
-  note "agent proxy not available: no agentgateway-locally checkout at $AGENTGATEWAY_DIR; skipping agent-proxy-isolation, agent-proxy and internet-proxy-isolation"
+  note "agent proxy not available: no agentgateway-locally checkout at $AGENTGATEWAY_DIR; skipping agent-proxy-isolation, agent-proxy, pi-agent-proxy-models and internet-proxy-isolation"
 elif port_open "$AGENT_PROXY_HOST" "$AGENT_PROXY_PORT"; then
   GW_UP=1
 else
-  note "agent proxy not up: nothing listening on $AGENT_PROXY_HOST:$AGENT_PROXY_PORT; agent-proxy-isolation, agent-proxy and internet-proxy-isolation still run and will fail unless you start it ('uv run agw up' in $GW_DIR)"
+  note "agent proxy not up: nothing listening on $AGENT_PROXY_HOST:$AGENT_PROXY_PORT; agent-proxy-isolation, agent-proxy, pi-agent-proxy-models and internet-proxy-isolation still run and will fail unless you start it ('uv run agw up' in $GW_DIR)"
 fi
 
 if [ "$NO_INTERNET_ISOLATION" = 1 ] && [ -n "$IPL_DIR" ] && [ -n "$GW_DIR" ]; then

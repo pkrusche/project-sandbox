@@ -2,6 +2,7 @@ import getpass
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -105,7 +106,64 @@ DEFAULT_OLLAMA_MODELS: tuple[str, ...] = (
 
 # Keep in sync with the pi-coding-agent npm pin in templates/Dockerfile.j2.
 _PI_NPM_VERSION_PIN = "1.5.2"
-_PROXY_CONTEXT_WINDOW = 262_144
+
+# Gateway model IDs are client-facing aliases, so limits are matched by model
+# family. Values follow pi's built-in catalog (models.dev) for the native
+# provider. Where a family varies, the smaller value is used: understating
+# makes the agent compact earlier, while overstating lets requests overflow
+# the model. Unmatched models omit limits and get each agent's defaults.
+_PROXY_MODEL_LIMITS: tuple[tuple[re.Pattern[str], int, int], ...] = tuple(
+    (re.compile(pattern), context_window, max_tokens)
+    for pattern, context_window, max_tokens in (
+        (r"gpt-6(\.\d+)?-cyber", 1_050_000, 128_000),
+        (r"gpt-6(\.\d+)?(-.+)?", 272_000, 128_000),
+        (r"gpt-5\.[4-9](-(luna|sol|terra))?", 272_000, 128_000),
+        (r"claude-(opus|sonnet|haiku|fable)-5(-\d+)*", 1_000_000, 128_000),
+        (r"claude-(opus|sonnet)-4-[6-9]", 1_000_000, 128_000),
+        (r"claude-.+", 200_000, 64_000),
+        (r"gemini-4-(hydrogen|neon)", 1_048_576, 65_536),
+        (r"gemini-.+", 1_048_576, 32_768),
+    )
+)
+
+# agentgateway serves OpenAI models natively on /v1/responses but does not
+# translate Responses for Anthropic, and its Responses-to-Gemini translation
+# returns empty text to the client. Chat completions is the translated path it
+# documents for both, so those families use a chat-completions client.
+_PROXY_CHAT_COMPLETIONS_FAMILY = re.compile(r"(claude|gemini)-.*")
+
+
+def _proxy_model_profile(model: str) -> tuple[bool, tuple[int, int] | None]:
+    """Return (uses chat completions, (context window, max output) or None)."""
+    # Accept provider-qualified aliases such as "google/gemini-4-argon".
+    family_id = model.rsplit("/", 1)[-1].lower()
+    chat_completions = bool(_PROXY_CHAT_COMPLETIONS_FAMILY.fullmatch(family_id))
+    for pattern, context_window, max_tokens in _PROXY_MODEL_LIMITS:
+        if pattern.fullmatch(family_id):
+            return chat_completions, (context_window, max_tokens)
+    return chat_completions, None
+
+
+def _pi_proxy_model_entry(model: str) -> dict:
+    chat_completions, limits = _proxy_model_profile(model)
+    entry: dict = {"id": model}
+    if chat_completions:
+        entry["api"] = "openai-completions"
+    if limits:
+        entry["contextWindow"], entry["maxTokens"] = limits
+    return entry
+
+
+def _opencode_proxy_model_entry(model: str) -> dict:
+    chat_completions, limits = _proxy_model_profile(model)
+    entry: dict = {"name": model}
+    if not chat_completions:
+        # @ai-sdk/openai-compatible (the provider's npm) uses chat completions;
+        # @ai-sdk/openai uses the Responses API that OpenAI models need.
+        entry["provider"] = {"npm": "@ai-sdk/openai"}
+    if limits:
+        entry["limit"] = {"context": limits[0], "output": limits[1]}
+    return entry
 
 
 def _agent_host_paths(home: Path) -> dict[str, Path]:
@@ -400,10 +458,7 @@ def _pi_proxy_models_json(base_url: str, models: list[str], key: str) -> str:
                         "baseUrl": base_url,
                         "api": "openai-responses",
                         "apiKey": key,
-                        "models": [
-                            {"id": model, "contextWindow": _PROXY_CONTEXT_WINDOW}
-                            for model in models
-                        ],
+                        "models": [_pi_proxy_model_entry(model) for model in models],
                     }
                 }
             },
@@ -440,13 +495,7 @@ def _opencode_proxy_json(
                 "name": "Agent Proxy",
                 "options": {"baseURL": base_url, "apiKey": key},
                 "models": {
-                    model: {
-                        "name": model,
-                        # OpenAI's SDK uses the Responses API, while
-                        # @ai-sdk/openai-compatible defaults to chat completions.
-                        "provider": {"npm": "@ai-sdk/openai"},
-                    }
-                    for model in models
+                    model: _opencode_proxy_model_entry(model) for model in models
                 },
             },
         },

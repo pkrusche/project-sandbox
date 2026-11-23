@@ -15,6 +15,8 @@
 #  10. internet-proxy-isolation — routing/bypass/failure audit (explicit opt-in)
 #  11. agent-proxy-isolation    — gateway-only network/credential audit (explicit opt-in)
 #  12. agent-proxy              — real Pi/OpenCode gateway calls (explicit opt-in)
+#  12a. pi-agent-proxy-models   — headless Pi reply per gateway provider family
+#                                 (OpenAI, Claude, Gemini; explicit opt-in; billable)
 #  13. node-npm                 — headless Playwright and ephemeral npm dependencies
 #  14. proxy-endpoints          — controlled remote HTTP/TLS fixtures (explicit opt-in)
 #  15. build-proxy              — build access through TLS-intercepting Squid (explicit opt-in;
@@ -65,6 +67,7 @@
 #                    of refusing to start; not part of the --incremental key
 #   --only SUITE     run just one suite by name (default: run every available suite).
 #                    Naming an opt-in suite is itself the opt-in, so --only agent-proxy,
+#                    --only pi-agent-proxy-models,
 #                    --only agent-proxy-isolation, --only internet-proxy-isolation,
 #                    --only proxy-endpoints, --only build-proxy, --only copilot,
 #                    --only copilot-egress, and --only egress-sidecar need no additional
@@ -91,7 +94,7 @@
 #                    a real container runtime (build-proxy on Podman also needs
 #                    Docker for its fixture), and builds enabled; billable and destructive
 #   --with-agent-proxy
-#                    run proxy isolation plus the billable agent checker
+#                    run proxy isolation plus the billable agent checkers
 #   --with-internet-proxy
 #                    run the destructive two-service Internet isolation audit;
 #                    also requires --internet-proxy-dir and --agentgateway-dir
@@ -178,6 +181,7 @@ SUITES=(
   internet-proxy-isolation
   agent-proxy-isolation
   agent-proxy
+  pi-agent-proxy-models
   proxy-endpoints
   build-proxy
   copilot
@@ -301,7 +305,7 @@ if [ -n "$ONLY" ]; then
   fi
   # Selecting an opt-in suite by name is an explicit request to run it.
   case "$ONLY" in
-    agent-proxy|agent-proxy-isolation) WITH_AGENT_PROXY=1 ;;
+    agent-proxy|agent-proxy-isolation|pi-agent-proxy-models) WITH_AGENT_PROXY=1 ;;
     internet-proxy-isolation) WITH_INTERNET_PROXY=1 ;;
     proxy-endpoints) WITH_PROXY_ENDPOINTS=1 ;;
     build-proxy) WITH_BUILD_PROXY=1 ;;
@@ -628,7 +632,8 @@ if selected internet-proxy-isolation; then
   fi
 fi
 
-# 11–12. Gateway-only isolation is non-billable, followed by two real requests.
+# 11–12a. Gateway-only isolation is non-billable, followed by real requests
+# (two agent-proxy, three pi-agent-proxy-models).
 # Never trigger either merely because a listener happens to be present.
 if [ "$WITH_AGENT_PROXY" = 1 ]; then
   if selected agent-proxy-isolation; then
@@ -648,12 +653,22 @@ if [ "$WITH_AGENT_PROXY" = 1 ]; then
       uv run python "$ROOT/scripts/check-agent-proxy.py" --base-image "$BASE_IMAGE" \
         --runtime "${CONTAINER_RUNTIME:-auto}"
   fi
+  if selected pi-agent-proxy-models; then
+    PI_PROXY_MODEL_ARGS=(--base-image "$BASE_IMAGE" --runtime "${CONTAINER_RUNTIME:-auto}")
+    [ "$NO_BUILD" = 1 ] && PI_PROXY_MODEL_ARGS+=(--no-build)
+    [ "$KEEP" = 1 ] && PI_PROXY_MODEL_ARGS+=(--keep)
+    run_suite "pi-agent-proxy-models" \
+      uv run python "$ROOT/scripts/e2e-pi-agent-proxy-models.py" "${PI_PROXY_MODEL_ARGS[@]}"
+  fi
 else
   if selected agent-proxy-isolation; then
     skip_suite "agent-proxy-isolation" "pass --with-agent-proxy"
   fi
   if selected agent-proxy; then
     skip_suite "agent-proxy" "pass --with-agent-proxy; makes two billable requests"
+  fi
+  if selected pi-agent-proxy-models; then
+    skip_suite "pi-agent-proxy-models" "pass --with-agent-proxy; makes three billable requests"
   fi
 fi
 

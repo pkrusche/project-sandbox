@@ -2,6 +2,26 @@
 
 Notable changes to `project-sandbox` are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- Agent proxy: Gemini models in Pi returned empty replies because Pi sent them
+  to the gateway's Responses API, and agentgateway's Responses-to-Gemini
+  translation drops the reply text. Pi and OpenCode now use chat completions
+  for `gemini-*` and `claude-*` models (agentgateway does not translate Responses
+  for Anthropic either) and keep the Responses API for OpenAI models.
+- Agent proxy: Pi and OpenCode now get each known model family's real context
+  window and output limit, instead of 262,144 tokens with Pi's 16,384-token
+  default output cap for every model. Unknown models use the agent's defaults.
+
+### Added
+
+- `scripts/e2e-pi-agent-proxy-models.py` (suite `pi-agent-proxy-models`,
+  opt-in with `--with-agent-proxy`) runs a headless Pi prompt through
+  `gpt-6-luna`, `claude-haiku-5-5`, and `gemini-4-hydrogen`. It checks the reply
+  text, stop reason, and API of Pi's final assistant message.
+
 ## [0.4.1]
 
 ### Added

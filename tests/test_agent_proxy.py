@@ -264,7 +264,7 @@ class AgentProxyTests(unittest.TestCase):
                     )
                 self.assertEqual(paths[selected].parent, root / selected)
 
-    def test_pi_agent_proxy_uses_responses_api(self) -> None:
+    def test_pi_agent_proxy_uses_responses_api_by_default(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
             config_agents.render(
@@ -281,10 +281,53 @@ class AgentProxyTests(unittest.TestCase):
             self.assertEqual(
                 config["providers"]["agent-proxy"]["api"], "openai-responses"
             )
+            # Unknown models fall back to pi's own (conservative) defaults.
             self.assertEqual(
-                config["providers"]["agent-proxy"]["models"],
-                [{"id": "model", "contextWindow": 262_144}],
+                config["providers"]["agent-proxy"]["models"], [{"id": "model"}]
             )
+
+    def test_pi_agent_proxy_routes_models_by_family_with_real_limits(self) -> None:
+        models = [
+            "gpt-6-luna",
+            "gpt-6.2-astra",
+            "claude-opus-5-5",
+            "claude-haiku-4-5",
+            "gemini-4-argon",
+            "gemini-4-hydrogen",
+            "google/gemini-4-neon",
+        ]
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_agents.render(
+                root,
+                agent_proxy=("http://proxy:4000/v1", models, "gateway-key", "pi"),
+            )
+
+            provider = json.loads((root / "pi" / "models.json").read_text())[
+                "providers"
+            ]["agent-proxy"]
+            entries = {entry["id"]: entry for entry in provider["models"]}
+
+        self.assertEqual(provider["api"], "openai-responses")
+        self.assertEqual(list(entries), models)
+        # OpenAI models use the provider default (Responses); Claude and Gemini
+        # are not translated on /v1/responses by agentgateway (Gemini comes back
+        # as empty text), so they must use chat completions.
+        expected = {
+            "gpt-6-luna": (None, 272_000, 128_000),
+            "gpt-6.2-astra": (None, 272_000, 128_000),
+            "claude-opus-5-5": ("openai-completions", 1_000_000, 128_000),
+            "claude-haiku-4-5": ("openai-completions", 200_000, 64_000),
+            "gemini-4-argon": ("openai-completions", 1_048_576, 32_768),
+            "gemini-4-hydrogen": ("openai-completions", 1_048_576, 65_536),
+            "google/gemini-4-neon": ("openai-completions", 1_048_576, 65_536),
+        }
+        for model, (api, context_window, max_tokens) in expected.items():
+            with self.subTest(model=model):
+                entry = entries[model]
+                self.assertEqual(entry.get("api"), api)
+                self.assertEqual(entry["contextWindow"], context_window)
+                self.assertEqual(entry["maxTokens"], max_tokens)
 
     def test_opencode_agent_proxy_uses_responses_api_sdk(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -301,7 +344,40 @@ class AgentProxyTests(unittest.TestCase):
 
             config = json.loads((root / "opencode" / "opencode.json").read_text())
             model = config["provider"]["agent-proxy"]["models"]["model"]
-            self.assertEqual(model["provider"], {"npm": "@ai-sdk/openai"})
+            self.assertEqual(
+                model, {"name": "model", "provider": {"npm": "@ai-sdk/openai"}}
+            )
+
+    def test_opencode_agent_proxy_routes_models_by_family_with_real_limits(
+        self,
+    ) -> None:
+        models = ["gpt-6-luna", "claude-haiku-5-5", "gemini-4-hydrogen"]
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_agents.render(
+                root,
+                agent_proxy=("http://proxy:4000/v1", models, "gateway-key", "opencode"),
+            )
+
+            provider = json.loads((root / "opencode" / "opencode.json").read_text())[
+                "provider"
+            ]["agent-proxy"]
+
+        self.assertEqual(provider["npm"], "@ai-sdk/openai-compatible")
+        entries = provider["models"]
+        # Responses only for OpenAI; Claude and Gemini keep the chat-completions
+        # provider package because agentgateway does not serve them on Responses.
+        self.assertEqual(entries["gpt-6-luna"]["provider"], {"npm": "@ai-sdk/openai"})
+        self.assertNotIn("provider", entries["claude-haiku-5-5"])
+        self.assertNotIn("provider", entries["gemini-4-hydrogen"])
+        self.assertEqual(
+            {model: entry["limit"] for model, entry in entries.items()},
+            {
+                "gpt-6-luna": {"context": 272_000, "output": 128_000},
+                "claude-haiku-5-5": {"context": 1_000_000, "output": 128_000},
+                "gemini-4-hydrogen": {"context": 1_048_576, "output": 65_536},
+            },
+        )
 
     def test_render_removes_stale_proxy_configs_and_only_stages_selected_agent(
         self,

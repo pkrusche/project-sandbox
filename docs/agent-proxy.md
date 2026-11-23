@@ -30,10 +30,26 @@ environment is available interactively and to commands executed by headless
 bearer key, not an OpenAI provider key. Bash proxy sessions also pre-configure
 both Pi and OpenCode with the effective sandbox URL, gateway key, discovered models,
 and selected default model, so either agent can be launched directly from the
-shell without additional provider setup. OpenCode's configured proxy models
-use the `@ai-sdk/openai` provider mapping so requests use the gateway's
-Responses API rather than chat completions. Images that include OpenCode also
-install an exact, OpenCode-compatible version of that provider package.
+shell without additional provider setup.
+
+Pi and OpenCode choose the gateway API per model family, from the model ID:
+
+| Model IDs | API | Why |
+|---|---|---|
+| `claude-*`, `gemini-*` | Chat completions (`/v1/chat/completions`) | agentgateway does not translate the Responses API for Anthropic, and its Responses translation for Gemini returns empty replies. |
+| everything else (OpenAI) | Responses (`/v1/responses`) | Needed for reasoning models with tools. |
+
+Pi uses `openai-completions` or `openai-responses`. OpenCode keeps the
+provider's `@ai-sdk/openai-compatible` package for chat completions and maps
+the other models to `@ai-sdk/openai`. Images that include OpenCode also install
+an exact, OpenCode-compatible version of that package.
+
+Known model families also get their real context window and output limit (Pi
+`contextWindow`/`maxTokens`, OpenCode `limit`). These come from Pi's built-in
+catalog, for example 272,000/128,000 tokens for GPT-6, 1,000,000/128,000 for
+Claude 5, and 1,048,576/32,768–65,536 for Gemini 4. Where a family's models
+differ, the smaller value is used. Unknown model IDs get no limits, so each
+agent uses its own defaults (Pi: 128,000/16,384).
 
 Proxy mode is gateway-only by default. The firewall omits the normal OpenAI and
 Anthropic endpoint allowlist and the devcontainer's broad host-gateway rule;
@@ -75,6 +91,15 @@ billable two-agent check run `scripts/check-agent-proxy.py`; it makes one
 minimal LLM request with each supported agent. Pass `--runtime` to select the
 container runtime; when an agent fails, the last `--output-tail` lines (default
 40) of its output are printed with the gateway key redacted.
+
+To check that each provider family actually answers through headless Pi, run
+`uv run python scripts/e2e-pi-agent-proxy-models.py --runtime docker`. It makes
+one billable request each to `gpt-6-luna`, `claude-haiku-5-5`, and
+`gemini-4-hydrogen`; use `--model` (repeatable) to choose others. It does not
+search the raw output for its marker, because Pi's JSON events echo the prompt.
+Instead it reads Pi's final assistant message and requires the marker in the
+reply text, `stopReason: "stop"`, and the API expected for that family. The run
+log of a failing model is kept for inspection.
 
 For local HTTP services on Apple `container`, agent-proxy and Ollama forwarding use
 `host.docker.internal`. Configure that name once before using either feature:

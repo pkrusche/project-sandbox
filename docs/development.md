@@ -145,7 +145,9 @@ Run `./scripts/run-e2e-tests.sh` to execute the complete E2E matrix available
 on the host. This also includes Dockerfile-tamper checks, container timeout
 teardown when a real runtime is selected, and availability-gated Ollama checks. Pass `--with-agent-proxy` only when you intend
 to run the gateway-only network/credential isolation audit followed by two
-billable Pi/OpenCode LLM requests.
+billable Pi/OpenCode LLM requests and the `pi-agent-proxy-models` suite, which
+makes three more (one headless Pi reply each from `gpt-6-luna`,
+`claude-haiku-5-5`, and `gemini-4-hydrogen`).
 
 To cover every runtime this host supports in one go, run
 `./scripts/run_all_supported_e2e_tests.sh`. It detects runtimes with
@@ -402,7 +404,8 @@ The Internet isolation audit expects the proxy to deny `--blocked-url`, which
 defaults to `https://example.com`; pass it only to check a different URL.
 
 Naming an opt-in suite with `--only` is itself the opt-in, so `--only
-proxy-endpoints`, `--only agent-proxy`, `--only agent-proxy-isolation`, `--only
+proxy-endpoints`, `--only agent-proxy`, `--only agent-proxy-isolation`,
+`--only pi-agent-proxy-models`, `--only
 copilot`, `--only copilot-egress`, `--only egress-sidecar`, and `--only
 internet-proxy-isolation` run without their corresponding `--with-*` flags
 (the destructive Internet audit still requires its `--internet-proxy-dir` and
@@ -541,7 +544,7 @@ supported real container runtime available to you:
 Run the Apple container command on macOS and the Docker and Podman commands on
 hosts where those runtimes are installed. The local agent gateway and its key
 must be configured before running this matrix. `--with-agent-proxy` includes the
-non-billable gateway isolation audit followed by two billable Pi/OpenCode LLM
+non-billable gateway isolation audit followed by five billable Pi/OpenCode LLM
 requests. Confirm that every applicable runtime passes before starting the
 release workflow; record any unavailable runtime in the release notes or pull
 request verification summary.
