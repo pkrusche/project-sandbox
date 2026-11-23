@@ -162,14 +162,9 @@ Items still to be considered:
   dollars, spaces, and wildcards) on each runtime, and fail closed for unsupported
   control characters and mount forms. Keep raw user mount parsing aligned with
   runtime grammar; JSON or argv escaping alone does not cover nested syntax.
-- **Host lock files:** `host_locks.path_lock()` correctly uses `O_NOFOLLOW` and
-  avoids truncation, but does not verify the opened inode is a regular file
-  owned by the caller. Names are predictable in shared temporary storage. Use a
-  verified private per-user lock directory, `fstat()` checks, and bounded waits
-  with useful diagnostics. Existing OS protections may limit cross-user attacks;
-  do not depend on identical behavior across Linux and macOS. Never unlink a
-  live lock file to recover it, since that can create two independently locked
-  inodes.
+- **Host lock waits:** Add bounded waits with useful diagnostics for locks that
+  currently block indefinitely. Never unlink a live lock file to recover it,
+  since that can create two independently locked inodes.
 - **Sensitive logs:** Squid's `%ru` logging includes URLs/query strings for
   visible HTTP and intercepted requests; redact sensitive fields and define
   retention/access rules. Token substitution in logs is useful but is not a

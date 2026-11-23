@@ -95,4 +95,4 @@ mounts do not erase those copies, strip history from build inputs, or prevent
 an agent with network access from obtaining another clone.
 
 See [security](security.md) and the outstanding VCS hardening tasks in
-[TODO](../TODO.md).
+[roadmap](../ROADMAP.md#vcs-defaults-and-isolated-host-capture).
