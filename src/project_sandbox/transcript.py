@@ -12,6 +12,7 @@ tolerates and skips any line that is not a JSON object.
 
 import json
 from pathlib import Path
+from typing import NamedTuple
 
 from . import generated_files
 
@@ -245,6 +246,90 @@ class LiveMarkdown:
         elif self.agent == "copilot":
             return _render_copilot_event(event)
         return []
+
+
+class OpenCodeReply(NamedTuple):
+    """The final assistant reply of a headless OpenCode run."""
+
+    text: str
+    reason: str | None
+    error: str
+
+
+def _log_events(log_path: Path) -> list[dict]:
+    if not log_path.is_file():
+        return []
+    return _parse_events(generated_files.read_text(log_path, errors="replace"))
+
+
+def final_pi_assistant_message(log_path: Path) -> dict | None:
+    """Return the last completed assistant message from a Pi JSONL log.
+
+    Pi echoes the user prompt as a ``message_end`` event too, so callers that
+    check a reply must look at this message rather than search the whole log.
+    """
+    final = None
+    for event in _log_events(log_path):
+        if event.get("type") != "message_end":
+            continue
+        message = event.get("message")
+        if isinstance(message, dict) and message.get("role") == "assistant":
+            final = message
+    return final
+
+
+def pi_message_text(message: dict) -> str:
+    """Return the text content of a Pi message, without thinking blocks."""
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    return "".join(
+        block.get("text", "")
+        for block in content
+        if isinstance(block, dict) and block.get("type") == "text"
+    )
+
+
+def final_opencode_reply(log_path: Path) -> OpenCodeReply | None:
+    """Return the final assistant reply from an OpenCode ``--format json`` log.
+
+    Only text parts of the assistant message that the last ``step_finish``
+    event ends count as the reply, so any echoed prompt text is ignored.
+    Returns None when the log holds neither a finished step nor an error.
+    """
+    texts: dict[str, dict[str, str]] = {}
+    last_message: str | None = None
+    reason: str | None = None
+    error = ""
+    for event in _log_events(log_path):
+        etype = event.get("type")
+        part = event.get("part")
+        if etype == "text" and isinstance(part, dict):
+            message_id, text = part.get("messageID"), part.get("text")
+            if isinstance(message_id, str) and isinstance(text, str):
+                part_id = str(part.get("id") or len(texts.get(message_id, {})))
+                texts.setdefault(message_id, {})[part_id] = text
+        elif etype == "step_finish" and isinstance(part, dict):
+            message_id = part.get("messageID")
+            last_message = message_id if isinstance(message_id, str) else None
+            reason = part.get("reason") if isinstance(part.get("reason"), str) else None
+        elif etype == "error":
+            detail = event.get("error")
+            if isinstance(detail, dict):
+                data = detail.get("data")
+                detail = (
+                    (data.get("message") if isinstance(data, dict) else None)
+                    or detail.get("message")
+                    or detail.get("name")
+                    or detail
+                )
+            error = str(detail)
+    if last_message is None and not error:
+        return None
+    text = "".join(texts.get(last_message, {}).values()) if last_message else ""
+    return OpenCodeReply(text, reason, error)
 
 
 def render_pi_markdown(events: list[dict]) -> str:

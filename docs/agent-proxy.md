@@ -88,9 +88,11 @@ injected gateway key is present as credential-like environment state, that Pi
 and OpenCode contain the expected proxy URL, model, and key, and that known host
 credential files or extra mounted secret files are absent. For a real,
 billable two-agent check run `scripts/check-agent-proxy.py`; it makes one
-minimal LLM request with each supported agent. Pass `--runtime` to select the
-container runtime; when an agent fails, the last `--output-tail` lines (default
-40) of its output are printed with the gateway key redacted.
+minimal LLM request with each supported agent. It reads each agent's final
+assistant reply from the JSON session log and requires the marker in its text
+and stop reason `stop`. Pass `--runtime` to select the container runtime; when
+an agent fails, the last `--output-tail` lines (default 40) of its output are
+printed with the gateway key redacted.
 
 To check that each provider family actually answers through headless Pi, run
 `uv run python scripts/e2e-pi-agent-proxy-models.py --runtime docker`. It makes

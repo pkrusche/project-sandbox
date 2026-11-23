@@ -530,6 +530,17 @@ aggregator in that order. The default `auto` runtime picks a real container
 runtime so container-only checks run; pass `--runtime chroot` on Linux for a
 host-only run without Docker or Podman.
 
+## Agent proxy model limits
+
+With `--agent-proxy`, Pi and OpenCode get each model's context window, output
+limit, and API (Responses or chat completions) from
+`config_agents._PROXY_MODEL_LIMITS` and `_PROXY_CHAT_COMPLETIONS_FAMILY`. These
+match gateway model IDs by family, and the limits follow Pi's built-in catalog.
+When you bump the Pi pin (`_PI_NPM_VERSION_PIN`, for example through
+`scripts/update-pins.py`) or add model families to the gateway, check the
+table against the new Pi catalog. Then run the `pi-agent-proxy-models` suite to
+confirm that each family still answers over the expected API.
+
 ## Releasing
 
 Before creating a release, run the comprehensive host test suite against every

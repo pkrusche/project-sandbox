@@ -762,7 +762,7 @@ class AgentProxyTests(unittest.TestCase):
         ):
             self.assertEqual(checker.main([]), 0)
             self.assertEqual(
-                [call.args[1] for call in run.call_args_list], ["pi", "opencode"]
+                [call.args[2] for call in run.call_args_list], ["pi", "opencode"]
             )
         with (
             patch.object(
@@ -777,65 +777,143 @@ class AgentProxyTests(unittest.TestCase):
         ):
             self.assertEqual(checker.main([]), 1)
 
-    @patch("subprocess.run")
-    def test_checker_propagates_custom_key_environment_name(self, run: Mock) -> None:
+    def _run_checker_agent(
+        self, agent: str, marker: str, events: list[dict], argv=(), returncode=0
+    ):
+        """Run checker.run_agent with a fake session that writes ``events``."""
         checker = _load_checker()
-        run.return_value = Mock(
-            returncode=0,
-            stdout="CUSTOM_MARKER\n",
-            stderr="",
-        )
-        args = checker.parser().parse_args(["--key-env", "CUSTOM_GATEWAY_KEY"])
-        env = {"CUSTOM_GATEWAY_KEY": "secret"}
+        args = checker.parser().parse_args(list(argv))
+        env = {args.key_env: "secret"}
+        stderr = io.StringIO()
 
-        self.assertTrue(
-            checker.run_agent(
-                Path("/tmp/project"),
-                "pi",
-                "model",
-                "CUSTOM_MARKER",
-                args,
-                env,
+        def run(command, **kwargs):
+            log = Path(command[command.index("--log") + 1])
+            log.write_text(
+                "[i] firewall ready\n"
+                + "".join(json.dumps(event) + "\n" for event in events),
+                encoding="utf-8",
             )
+            return subprocess.CompletedProcess(
+                command,
+                returncode,
+                "".join(f"line {i}\n" for i in range(50)),
+                "boom: key secret rejected\n" if returncode else "",
+            )
+
+        with (
+            TemporaryDirectory() as tmp,
+            patch.object(checker.subprocess, "run", side_effect=run) as mocked,
+            contextlib.redirect_stderr(stderr),
+        ):
+            ok = checker.run_agent(
+                Path(tmp), Path(tmp), agent, "model", marker, args, env
+            )
+        return ok, mocked.call_args.args[0], stderr.getvalue()
+
+    @staticmethod
+    def _pi_events(prompt: str, reply: str, stop: str = "stop") -> list[dict]:
+        # Pi echoes the user prompt, which contains the marker.
+        return [
+            {"type": "message_end", "message": {"role": "user", "content": prompt}},
+            {
+                "type": "message_end",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": reply}],
+                    "stopReason": stop,
+                    "rawStopReason": "end_turn",
+                },
+            },
+        ]
+
+    @staticmethod
+    def _opencode_events(reply: str, reason: str = "stop") -> list[dict]:
+        return [
+            {"type": "step_start", "part": {"messageID": "msg_a"}},
+            # Text from another message (e.g. an echoed prompt) is not the reply.
+            {
+                "type": "text",
+                "part": {"id": "p0", "messageID": "msg_u", "text": "MARKER"},
+            },
+            {
+                "type": "text",
+                "part": {"id": "p1", "messageID": "msg_a", "text": reply},
+            },
+            {
+                "type": "step_finish",
+                "part": {"messageID": "msg_a", "reason": reason},
+            },
+        ]
+
+    def test_checker_propagates_custom_key_environment_name(self) -> None:
+        ok, command, _stderr = self._run_checker_agent(
+            "pi",
+            "CUSTOM_MARKER",
+            self._pi_events("say CUSTOM_MARKER", "CUSTOM_MARKER"),
+            argv=["--key-env", "CUSTOM_GATEWAY_KEY"],
         )
-        command = run.call_args.args[0]
+        self.assertTrue(ok)
         self.assertEqual(
             command[command.index("--agent-proxy-key-env") + 1],
             "CUSTOM_GATEWAY_KEY",
         )
 
-    @patch("subprocess.run")
-    def test_checker_passes_runtime_to_sandbox(self, run: Mock) -> None:
-        checker = _load_checker()
-        run.return_value = Mock(returncode=0, stdout="MARKER\n", stderr="")
-        args = checker.parser().parse_args(["--runtime", "docker"])
-        env = {args.key_env: "secret"}
-
-        checker.run_agent(Path("/tmp/project"), "pi", "model", "MARKER", args, env)
-
-        command = run.call_args.args[0]
+    def test_checker_passes_runtime_to_sandbox(self) -> None:
+        _ok, command, _stderr = self._run_checker_agent(
+            "pi", "MARKER", [], argv=["--runtime", "docker"]
+        )
         self.assertEqual(command[command.index("--runtime") + 1], "docker")
 
-    @patch("subprocess.run")
-    def test_checker_failure_shows_redacted_output_tail(self, run: Mock) -> None:
-        checker = _load_checker()
-        run.return_value = Mock(
-            returncode=1,
-            stdout="".join(f"line {i}\n" for i in range(50)),
-            stderr="boom: key secret rejected\n",
+    def test_checker_pi_empty_reply_fails_despite_prompt_echo(self) -> None:
+        # Regression: the marker in Pi's echoed prompt used to satisfy the check.
+        ok, _command, stderr = self._run_checker_agent(
+            "pi", "MARKER", self._pi_events("Reply with exactly MARKER", "")
         )
-        args = checker.parser().parse_args(["--output-tail", "3"])
-        env = {args.key_env: "secret"}
-        stderr = io.StringIO()
+        self.assertFalse(ok)
+        self.assertIn("FAIL pi: reply text lacks MARKER: '<empty>'", stderr)
 
-        with contextlib.redirect_stderr(stderr):
-            ok = checker.run_agent(
-                Path("/tmp/project"), "pi", "model", "MARKER", args, env
-            )
+    def test_checker_pi_requires_normal_stop(self) -> None:
+        ok, _command, stderr = self._run_checker_agent(
+            "pi", "MARKER", self._pi_events("x", "MARKER", stop="length")
+        )
+        self.assertFalse(ok)
+        self.assertIn("stop reason='length' end_turn", stderr)
+
+    def test_checker_opencode_reads_final_assistant_message(self) -> None:
+        ok, _command, _stderr = self._run_checker_agent(
+            "opencode", "MARKER", self._opencode_events("MARKER")
+        )
+        self.assertTrue(ok)
+
+        ok, _command, stderr = self._run_checker_agent(
+            "opencode", "MARKER", self._opencode_events("")
+        )
+        self.assertFalse(ok)
+        self.assertIn("FAIL opencode: reply text lacks MARKER", stderr)
+
+    def test_checker_opencode_error_event_fails(self) -> None:
+        events = [
+            {
+                "type": "error",
+                "error": {"name": "APIError", "data": {"message": "bad gateway"}},
+            }
+        ]
+        ok, _command, stderr = self._run_checker_agent("opencode", "MARKER", events)
+        self.assertFalse(ok)
+        self.assertIn("stop reason=None bad gateway", stderr)
+
+    def test_checker_missing_log_fails(self) -> None:
+        ok, _command, stderr = self._run_checker_agent("opencode", "MARKER", [])
+        self.assertFalse(ok)
+        self.assertIn("no final assistant reply in the session log", stderr)
+
+    def test_checker_failure_shows_redacted_output_tail(self) -> None:
+        ok, _command, text = self._run_checker_agent(
+            "pi", "MARKER", [], argv=["--output-tail", "3"], returncode=1
+        )
 
         self.assertFalse(ok)
-        text = stderr.getvalue()
-        self.assertIn("FAIL pi: exit=1; expected marker missing", text)
+        self.assertIn("FAIL pi: exit=1; no final assistant reply", text)
         self.assertIn("  pi| line 48", text)
         self.assertIn(f"  pi| boom: key {agent_proxy.REDACTED} rejected", text)
         self.assertNotIn("line 47", text)

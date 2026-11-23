@@ -189,6 +189,18 @@ Items still to be considered:
   problem; check whether Colima-backed devcontainers (home-only exports) can see
   `/tmp` masks at all today.
 
+## Pi Ollama context limits
+
+The Pi Ollama `models.json` (`config_agents._pi_ollama_models_json`) sets no
+`contextWindow` or `maxTokens`, so Pi assumes 128,000/16,384 tokens whatever
+the model's or server's real `num_ctx` is. Options:
+
+- Query each model's context length from Ollama's `/api/show` when the config
+  is rendered.
+- Add a user-supplied cap (CLI flag or config). This is still needed with the
+  query, because the server's `num_ctx`/`OLLAMA_CONTEXT_LENGTH` can be lower
+  than the model's maximum, and `/api/show` does not reflect that server setting.
+
 ## Known issues
 
 - **Headless prompt that is exactly a subcommand name.** Prompts starting with

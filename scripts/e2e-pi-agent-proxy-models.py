@@ -25,7 +25,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import re
 import shutil
@@ -34,7 +33,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from project_sandbox import agent_proxy, config_agents
+from project_sandbox import agent_proxy, config_agents, transcript
 
 ROOT = Path(__file__).resolve().parents[1]
 # One model per gateway provider family: OpenAI, Anthropic, Gemini.
@@ -76,35 +75,8 @@ def marker_for(model: str) -> str:
     return f"PI_PROXY_{slug}_OK"
 
 
-def final_assistant_message(log_path: Path) -> dict | None:
-    """Return the last completed assistant message from a Pi JSONL log."""
-    if not log_path.is_file():
-        return None
-    final = None
-    for line in log_path.read_text(encoding="utf-8", errors="replace").splitlines():
-        try:
-            event = json.loads(line)
-        except ValueError:
-            continue
-        if not isinstance(event, dict) or event.get("type") != "message_end":
-            continue
-        message = event.get("message")
-        if isinstance(message, dict) and message.get("role") == "assistant":
-            final = message
-    return final
-
-
-def message_text(message: dict) -> str:
-    content = message.get("content")
-    if isinstance(content, str):
-        return content
-    if not isinstance(content, list):
-        return ""
-    return "".join(
-        block.get("text", "")
-        for block in content
-        if isinstance(block, dict) and block.get("type") == "text"
-    )
+final_assistant_message = transcript.final_pi_assistant_message
+message_text = transcript.pi_message_text
 
 
 def check_reply(model: str, message: dict | None) -> list[str]:
@@ -182,7 +154,7 @@ def run_model(
 
     message = final_assistant_message(log_path)
     failures += check_reply(model, message)
-    if failures:
+    if failures or message is None:
         print(f"FAIL {model}: " + "; ".join(failures), file=sys.stderr)
         for line in output.splitlines()[-args.output_tail :]:
             print(f"  {model}| {line}", file=sys.stderr)

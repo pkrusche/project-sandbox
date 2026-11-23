@@ -14,6 +14,10 @@ Notable changes to `project-sandbox` are documented here.
 - Agent proxy: Pi and OpenCode now get each known model family's real context
   window and output limit, instead of 262,144 tokens with Pi's 16,384-token
   default output cap for every model. Unknown models use the agent's defaults.
+- `scripts/check-agent-proxy.py` passed when its marker appeared anywhere in the
+  session output, including Pi's echo of the prompt, so an empty reply passed.
+  It now checks the final assistant message in Pi's and OpenCode's JSON
+  session logs, which must contain the marker and end with stop reason `stop`.
 
 ### Added
 
